@@ -1,0 +1,16 @@
+
+
+# Kafka stuff
+
+# input stuff
+
+pipeline:
+  # input stuff
+
+  # option for file or embedding
+  sql: |
+    SELECT COUNT(*) FROM source; 
+
+  # output stuff
+
+
