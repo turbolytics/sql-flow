@@ -9,6 +9,7 @@ class Pipeline:
 
 @dataclass
 class Conf:
+    sql_results_cache_dir: str
     pipeline: Pipeline
 
 

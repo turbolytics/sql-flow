@@ -1,3 +1,6 @@
 click==8.1.7
 confluent-kafka==2.3.0
+duckdb==0.9.2
+polars==0.19.15
+pyarrow==14.0.1
 PyYAML==6.0.1
