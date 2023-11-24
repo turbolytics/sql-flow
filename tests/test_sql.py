@@ -10,13 +10,14 @@ class InferredBatchTestCase(unittest.TestCase):
     def test_inferred_batch_flat(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredBatch(conf=Conf(
+            sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
             pipeline=Pipeline(
-                sql="SELECT COUNT(*) as num_rows FROM source;"
+                sql="SELECT COUNT(*) as num_rows FROM batch"
             ),
         ))
         res = list(p.invoke(f_path))
         self.assertEqual(
-            [(['num_rows'], (3,))],
+            ['{"num_rows":3}'],
             res,
         )
 
@@ -29,7 +30,7 @@ class InferredBatchTestCase(unittest.TestCase):
                     SELECT
                         {'something': city} as s1,
                         row(city, 1, 2) as nested_json
-                    FROM source
+                    FROM batch 
                 """
             ),
         ))

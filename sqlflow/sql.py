@@ -8,8 +8,15 @@ class InferredBatch:
         self.conf = conf
 
     def invoke(self, batch_file):
+        try:
+            for l in self._invoke(batch_file):
+                yield l
+        finally:
+            duckdb.sql('DROP TABLE IF EXISTS batch')
+
+    def _invoke(self, batch_file):
         duckdb.sql(
-            'CREATE TABLE source AS SELECT * FROM read_json_auto(\'{}\')'.format(
+            'CREATE TABLE batch AS SELECT * FROM read_json_auto(\'{}\')'.format(
                 batch_file
             ),
         )
