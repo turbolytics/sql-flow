@@ -21,4 +21,6 @@ jobs:
 
       - name: Test Unit
         run: |
+          mkdir /tmp/sqlflow
+          mkdir /tmp/sqlflow/resultscache
           make test-unit

@@ -9,12 +9,9 @@ pipeline:
 
   # option for file or embedding
   sql: |
-    SELECT 
-      json_extract(properties, '$.city') as city,
+    SELECT
       COUNT(*) as num_records
-    FROM source 
-    GROUP BY 
-      city;
+    FROM batch
   # output stuff
 
 
