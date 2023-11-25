@@ -1,0 +1,2 @@
+test-unit:
+	pytest tests

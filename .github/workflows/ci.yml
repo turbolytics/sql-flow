@@ -1,0 +1,26 @@
+name: CI
+on: [push]
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    steps:
+
+      - uses: actions/checkout@v2
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.9
+
+      - name: Install python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.dev.txt ]; then pip install -r requirements.dev.txt; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Test Unit
+        run: |
+          mkdir /tmp/sqlflow
+          mkdir /tmp/sqlflow/resultscache
+          make test-unit
