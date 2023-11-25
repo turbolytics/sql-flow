@@ -1,11 +1,12 @@
 import os
 import sys
 from datetime import datetime, timezone
+import socket
 
 import duckdb
-from confluent_kafka import Consumer, KafkaError, KafkaException
+from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
-from sqlflow.outputs import ConsoleWriter, Writer
+from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
 
 
 class SQLFlow:
@@ -69,6 +70,7 @@ class SQLFlow:
                     self.output.write(l)
 
                 # Only commit after all messages in batch are processed
+                self.output.flush()
                 self.consumer.commit(asynchronous=False)
                 # reset the file state
                 f = open(batch_file, 'w+')
@@ -122,10 +124,21 @@ def new_sqlflow_from_conf(conf) -> SQLFlow:
 
     consumer = Consumer(kconf)
 
+    output = ConsoleWriter()
+    if conf.pipeline.output.type == 'kafka':
+        producer = Producer({
+            'bootstrap.servers': ','.join(conf.kafka.brokers),
+            'client.id': socket.gethostname(),
+        })
+        output = KafkaWriter(
+            topic=conf.pipeline.output.topic,
+            producer=producer,
+        )
+
     sflow = SQLFlow(
         conf=conf,
         consumer=consumer,
-        output=ConsoleWriter(),
+        output=output,
     )
 
     return sflow

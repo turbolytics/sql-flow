@@ -20,6 +20,9 @@ class ConsoleWriter(Writer):
         sys.stdout.write(val)
         sys.stdout.write('\n')
 
+    def flush(self):
+        pass
+
 
 class KafkaWriter(Writer):
     def __init__(self, topic, producer):
@@ -27,4 +30,7 @@ class KafkaWriter(Writer):
         self.producer = producer
 
     def write(self, val: bytes, key: bytes = None):
-        self.producer.produce(self.topic, key, val)
+        self.producer.produce(self.topic, key=key, value=val.encode('utf-8'))
+
+    def flush(self):
+        self.producer.flush()

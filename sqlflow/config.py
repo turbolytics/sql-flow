@@ -11,6 +11,7 @@ class Kafka:
     auto_offset_reset: str
 
 
+@dataclass
 class KafkaOutput:
     type: str
     topic: str
@@ -48,7 +49,7 @@ def new_from_path(path: str):
 
     output = ConsoleOutput(type='console')
 
-    if conf['pipeline']['output'] == 'kafka':
+    if conf['pipeline']['output']['type'] == 'kafka':
         output = KafkaOutput(
             type='kafka',
             topic=conf['pipeline']['output']['topic'],

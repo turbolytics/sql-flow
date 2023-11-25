@@ -22,4 +22,5 @@ pipeline:
       city
 
   output:
-    type: console
+    type: kafka
+    topic: output-1
