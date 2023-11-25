@@ -23,5 +23,3 @@ pipeline:
 
   output:
     type: console
-
-

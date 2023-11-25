@@ -3,9 +3,6 @@ import json
 from confluent_kafka import Producer
 import socket
 
-
-
-
 event = {
   "anonymousId": "23adfd82-aa0f-45a7-a756-24f2a7a4c895",
   "context": {

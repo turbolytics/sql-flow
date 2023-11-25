@@ -1,32 +1,80 @@
 import os
-from abc import ABC, abstractmethod
+import sys
+from datetime import datetime, timezone
 
 import duckdb
+from confluent_kafka import Consumer, KafkaError, KafkaException
 
-
-class Writer(ABC):
-
-    @abstractmethod
-    def write(self, bs: bytes):
-        """
-        Writes a byte string to the underlying storage.
-
-        :param bs:
-        :return:
-        """
-        raise NotImplemented()
+from sqlflow.outputs import ConsoleWriter, Writer
 
 
 class SQLFlow:
 
-    def __init__(self, conf):
+    def __init__(self, conf, consumer, output: Writer):
         self.conf = conf
+        self.consumer = consumer
+        self.output = output
 
     def consume_loop(self):
-        pass
+        try:
+            self.consumer.subscribe(self.conf.pipeline.input.topics)
+            self._consume_loop()
+        finally:
+            self.consumer.close()
 
-    def _consume_loop(self, consumer):
-        pass
+    def _consume_loop(self):
+        num_messages = 0
+        start_dt = datetime.now(timezone.utc)
+        total_messages = 0
+
+        batch_file = os.path.join(
+            self.conf.sql_results_cache_dir,
+            'consumer_batch.json',
+        )
+        f = open(batch_file, 'w+')
+
+        while True:
+            msg = self.consumer.poll(timeout=1.0)
+            if msg is None:
+                continue
+            total_messages += 1
+            if msg.error():
+                if msg.error().code() == KafkaError.PARTITION_EOF:
+                    # End of partition event
+                    sys.stderr.write(
+                        '%% %s [%d] reached end at offset %d\n' %
+                        (msg.topic(), msg.partition(), msg.offset()),
+                        )
+                elif msg.error():
+                    raise KafkaException(msg.error())
+                continue
+
+            f.write(msg.value().decode())
+            f.write('\n')
+            num_messages += 1
+
+            if total_messages % 10000 == 0:
+                now = datetime.now(timezone.utc)
+                diff = (now - start_dt)
+                print(total_messages // diff.total_seconds(), ': reqs / second')
+
+            if num_messages == self.conf.pipeline.input.batch_size:
+                f.flush()
+                f.close()
+
+                # apply the pipeline
+                b = InferredBatch(self.conf)
+                res = b.invoke(batch_file)
+                for l in res:
+                    self.output.write(l)
+
+                # Only commit after all messages in batch are processed
+                self.consumer.commit(asynchronous=False)
+                # reset the file state
+                f = open(batch_file, 'w+')
+                f.truncate()
+                f.seek(0)
+                num_messages = 0
 
 
 class InferredBatch:
@@ -62,3 +110,22 @@ class InferredBatch:
         with open(out_file, 'r') as f:
             for l in f:
                 yield l.strip()
+
+
+def new_sqlflow_from_conf(conf) -> SQLFlow:
+    kconf = {
+        'bootstrap.servers': ','.join(conf.kafka.brokers),
+        'group.id': conf.kafka.group_id,
+        'auto.offset.reset': conf.kafka.auto_offset_reset,
+        'enable.auto.commit': False,
+    }
+
+    consumer = Consumer(kconf)
+
+    sflow = SQLFlow(
+        conf=conf,
+        consumer=consumer,
+        output=ConsoleWriter(),
+    )
+
+    return sflow

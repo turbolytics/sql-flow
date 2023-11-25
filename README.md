@@ -29,4 +29,6 @@ docker-compose -f kafka-single.yml up
 
 ```
 python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/inferred_schema.yml
+
+python publish-test-data.py
 ```
