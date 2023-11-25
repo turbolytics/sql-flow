@@ -42,7 +42,7 @@ def main():
     producer = Producer(conf)
     i = 0
     while True:
-        producer.produce('topic-2', value=j_event)
+        producer.produce('topic-1', value=j_event)
         i += 1
         if i % 1000 == 0:
             print('here')

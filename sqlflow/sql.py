@@ -1,6 +1,32 @@
 import os
+from abc import ABC, abstractmethod
 
 import duckdb
+
+
+class Writer(ABC):
+
+    @abstractmethod
+    def write(self, bs: bytes):
+        """
+        Writes a byte string to the underlying storage.
+
+        :param bs:
+        :return:
+        """
+        raise NotImplemented()
+
+
+class SQLFlow:
+
+    def __init__(self, conf):
+        self.conf = conf
+
+    def consume_loop(self):
+        pass
+
+    def _consume_loop(self, consumer):
+        pass
 
 
 class InferredBatch:

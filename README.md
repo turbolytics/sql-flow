@@ -26,3 +26,7 @@ C_INCLUDE_PATH=/opt/homebrew/Cellar/librdkafka/2.3.0/include LIBRARY_PATH=/opt/h
 cd dev 
 docker-compose -f kafka-single.yml up
 ```
+
+```
+python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/inferred_schema.yml
+```

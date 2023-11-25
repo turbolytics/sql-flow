@@ -6,20 +6,11 @@ from sqlflow import new_from_path, InferredBatch
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
 
-class SQLFlow:
-
-    def __init__(self, conf):
-        self.conf = conf
-
-    def consume_loop(self):
-        pass
-
-    def _consume_loop(self, consumer):
-        pass
-
-
 def start(config):
     conf = new_from_path(config)
+    # build the sqlflow instance
+
+    # start the consume loop
 
     kconf = {
         'bootstrap.servers': ','.join(conf.kafka.brokers),
@@ -42,7 +33,7 @@ def start(config):
         consumer.subscribe(conf.pipeline.input.topics)
 
         num_messages = 0
-        start = datetime.now(timezone.utc)
+        start_dt = datetime.now(timezone.utc)
         total_messages = 0
         while True:
             msg = consumer.poll(timeout=1.0)
@@ -66,7 +57,7 @@ def start(config):
 
             if total_messages % 10000 == 0:
                 now = datetime.now(timezone.utc)
-                diff = (now - start)
+                diff = (now - start_dt)
                 print(total_messages // diff.total_seconds(), ': reqs / second')
 
             if num_messages == conf.pipeline.input.batch_size:
