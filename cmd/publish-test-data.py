@@ -3,9 +3,6 @@ import json
 from confluent_kafka import Producer
 import socket
 
-
-
-
 event = {
   "anonymousId": "23adfd82-aa0f-45a7-a756-24f2a7a4c895",
   "context": {
@@ -42,7 +39,7 @@ def main():
     producer = Producer(conf)
     i = 0
     while True:
-        producer.produce('topic-2', value=j_event)
+        producer.produce('topic-1', value=j_event)
         i += 1
         if i % 1000 == 0:
             print('here')
