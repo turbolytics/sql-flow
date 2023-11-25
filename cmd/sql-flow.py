@@ -1,5 +1,6 @@
 import click
 from sqlflow import cli as sqlflow_cli
+import sqlflow.cli.run
 
 
 @click.group()
@@ -8,8 +9,9 @@ def cli():
 
 
 @click.command()
-def run():
-    raise NotImplemented()
+@click.argument('config')
+def run(config):
+    sqlflow.cli.run.start(config)
 
 
 @click.group()

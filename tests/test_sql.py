@@ -10,9 +10,13 @@ class InferredBatchTestCase(unittest.TestCase):
     def test_inferred_batch_flat(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredBatch(conf=Conf(
+            kafka=None,
             sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
             pipeline=Pipeline(
-                sql="SELECT COUNT(*) as num_rows FROM batch"
+                type=None,
+                input=None,
+                sql="SELECT COUNT(*) as num_rows FROM batch",
+                output=None,
             ),
         ))
         res = list(p.invoke(f_path))
@@ -24,14 +28,18 @@ class InferredBatchTestCase(unittest.TestCase):
     def test_inferred_batch_nested_return(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredBatch(conf=Conf(
+            kafka=None,
             sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
             pipeline=Pipeline(
+                type=None,
+                input=None,
                 sql="""
                     SELECT
                         {'something': city} as s1,
                         row(city, 1, 2) as nested_json
                     FROM batch 
-                """
+                """,
+                output=None,
             ),
         ))
         res = list(p.invoke(f_path))

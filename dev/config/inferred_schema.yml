@@ -1,17 +1,27 @@
 
 
 # Kafka stuff
-
-# input stuff
+kafka:
+  brokers: [localhost:9092]
+  group_id: test
+  auto_offset_reset: earliest
 
 pipeline:
   # input stuff
+  input:
+    batch_size: 1000
+    topics:
+    - "topic-2"
 
-  # option for file or embedding
   sql: |
     SELECT
-      COUNT(*) as num_records
+      properties.city as city,
+      count(*) as city_count
     FROM batch
-  # output stuff
+    GROUP BY
+      city
+
+  output:
+    type: console
 
 

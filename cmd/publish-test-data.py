@@ -1,4 +1,9 @@
+import json
+
 from confluent_kafka import Producer
+import socket
+
+
 
 
 event = {
@@ -28,7 +33,21 @@ event = {
 
 
 def main():
-    print('here')
+    conf = {
+      'bootstrap.servers': 'localhost:9092',
+      'client.id': socket.gethostname()
+    }
+    j_event = json.dumps(event)
+
+    producer = Producer(conf)
+    i = 0
+    while True:
+        producer.produce('topic-2', value=j_event)
+        i += 1
+        if i % 1000 == 0:
+            print('here')
+            producer.flush()
+    producer.flush()
 
 
 if __name__ == '__main__':
