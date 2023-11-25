@@ -4,25 +4,27 @@ from abc import abstractmethod, ABC
 
 class Writer(ABC):
     @abstractmethod
-    def write(self, bs: bytes):
+    def write(self, val: bytes, key: bytes = None):
         """
         Writes a byte string to the underlying storage.
 
-        :param bs:
+        :param val:
+        :param key:
         :return:
         """
         raise NotImplemented()
 
 
 class ConsoleWriter(Writer):
-    def write(self, bs: bytes):
-        sys.stdout.write(bs)
+    def write(self, val: bytes, key: bytes = None):
+        sys.stdout.write(val)
         sys.stdout.write('\n')
 
 
 class KafkaWriter(Writer):
-    def __init__(self):
-        pass
+    def __init__(self, topic, producer):
+        self.topic = topic
+        self.producer = producer
 
-    def write(self, bs: bytes):
-        pass
+    def write(self, val: bytes, key: bytes = None):
+        self.producer.produce(self.topic, key, val)

@@ -11,6 +11,11 @@ class Kafka:
     auto_offset_reset: str
 
 
+class KafkaOutput:
+    type: str
+    topic: str
+
+
 @dataclass
 class Input:
     batch_size: int
@@ -18,7 +23,7 @@ class Input:
 
 
 @dataclass
-class Output:
+class ConsoleOutput:
     type: str
 
 
@@ -27,7 +32,7 @@ class Pipeline:
     type: str
     input: Input
     sql: str
-    output: Output
+    output: object
 
 
 @dataclass
@@ -40,6 +45,14 @@ class Conf:
 def new_from_path(path: str):
     with open(path, 'r') as f:
         conf = safe_load(f)
+
+    output = ConsoleOutput(type='console')
+
+    if conf['pipeline']['output'] == 'kafka':
+        output = KafkaOutput(
+            type='kafka',
+            topic=conf['pipeline']['output']['topic'],
+        )
 
     return Conf(
         kafka=Kafka(
@@ -55,6 +68,6 @@ def new_from_path(path: str):
                 topics=conf['pipeline']['input']['topics'],
             ),
             sql=conf['pipeline']['sql'],
-            output=conf['pipeline']['output'],
+            output=output,
         )
     )
