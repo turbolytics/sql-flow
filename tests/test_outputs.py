@@ -28,7 +28,7 @@ class KafkaWriterTestCase(unittest.TestCase):
         w.write(val='value', key='key')
         producer.produce.assert_called_once_with(
             'test',
-            'key',
-            'value',
+            key='key',
+            value=b'value',
         )
 
