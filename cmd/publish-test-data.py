@@ -1,3 +1,7 @@
+import copy
+import random
+
+import click
 import json
 
 from confluent_kafka import Producer
@@ -29,20 +33,23 @@ event = {
 }
 
 
-def main():
+@click.command()
+@click.option('--num-messages', default=1001, type=int)
+@click.option('--topic', default='topic-1')
+def main(num_messages, topic):
     conf = {
       'bootstrap.servers': 'localhost:9092',
       'client.id': socket.gethostname()
     }
-    j_event = json.dumps(event)
 
     producer = Producer(conf)
-    i = 0
-    while True:
-        producer.produce('topic-1', value=j_event)
-        i += 1
+    for i in range(num_messages):
+        e = copy.deepcopy(event)
+        e['properties']['city'] = e['properties']['city'] + str(random.randrange(0, 1000))
+        j_event = json.dumps(e)
+        producer.produce(topic, value=j_event)
         if i % 1000 == 0:
-            print('here')
+            print('published {} of {}'.format(i, num_messages))
             producer.flush()
     producer.flush()
 
