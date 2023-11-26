@@ -1,0 +1,24 @@
+# Kafka stuff
+kafka:
+  brokers: [localhost:9092]
+  group_id: test
+  auto_offset_reset: earliest
+
+pipeline:
+  # input stuff
+  input:
+    batch_size: 1000
+    topics:
+    - "topic-simple-agg"
+
+  sql: |
+    SELECT
+      properties.city as city,
+      count(*) as city_count
+    FROM batch
+    GROUP BY
+      city
+
+  output:
+    type: kafka
+    topic: output-1

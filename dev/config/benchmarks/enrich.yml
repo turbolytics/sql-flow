@@ -1,0 +1,23 @@
+# Kafka stuff
+kafka:
+  brokers: [localhost:9092]
+  group_id: test
+  auto_offset_reset: earliest
+
+pipeline:
+  # input stuff
+  input:
+    batch_size: 1000
+    topics:
+    - "topic-enrich"
+
+  sql: |
+    SELECT
+      *,
+      {'something': properties.city} as nested_city,
+      row(properties.city, 1, 2) as nested_json
+    FROM batch
+
+  output:
+    type: kafka
+    topic: output-1
