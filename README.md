@@ -16,7 +16,6 @@ SQLFlow is a kafka consumer that embeds SQL for stream transformation:
 
 <img width="754" alt="Screenshot 2023-11-26 at 8 16 47 PM" src="https://github.com/turbolytics/sql-flow/assets/151242797/419d8688-1d08-45ce-b245-1c2c886a3157">
 
-
 ## Getting Started
 
 ### Docker
@@ -84,6 +83,11 @@ Every instance of sql-flow needs a pipeline configuration file.
 
 
 ## Recipes
+
+Coming Soon, until then checkout:
+
+- [Benchmark configurations](./dev/config/benchmarks)
+- [Unit Test configurations](./tests/)
 
 
 ## Development 
