@@ -1,43 +1,110 @@
-# sql-flow
-DuckDB for streaming data. 
+# SQLFlow: DuckDB for streaming data. 
 
-SQL Flow enables SQL-based streaming transformations, powered by DuckDB.
+SQLFlow enables SQL-based stream-processing, powered by [DuckDB](https://duckdb.org/). SQLFlow enables writing kafka stream processing logic in pure sql.
 
-SQL Flow enables writing SQL against a stream of kafka data.
+SQLFlow supports:
+- Kafka streaming - Writing a consumer that performs SQL based transformations and publishing the output to another kafka topic.
+- JSON on the wire
+- Writing stream transformations in pure SQL, powered by [DuckDB](https://duckdb.org/)
+- Performant [librdkafka](https://github.com/confluentinc/librdkafka) [python consumer](https://github.com/confluentinc/confluent-kafka-python)
 
-SQL Flow has a number of goals:
-- Make it trivial to use SQL for streaming data transformations.
-- Support high performance kafka streaming.
+SQLFlow is currently not a good fit for:
+- Stateful stream processing
+- Wire protocols other than JSON
 
-What SQL Flow isn't:
-- A stateful streaming engine like Flink. 
+SQLFlow is a kafka consumer that embeds SQL for stream transformation:
 
+<img width="754" alt="Screenshot 2023-11-26 at 8 16 47 PM" src="https://github.com/turbolytics/sql-flow/assets/151242797/419d8688-1d08-45ce-b245-1c2c886a3157">
 
 ## Getting Started
 
+### Docker
+[Docker is the easiest way to get started.](https://hub.docker.com/r/turbolytics/sql-flow)
+
+- Pull the sql-flow docker image
+```
+docker pull turbolytics/sql-flow:latest
+```
+
+- Validate config by invoking it on test data
+```
+docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow dev invoke /tmp/conf/config/inferred_schema.yml /tmp/conf/fixtures/simple.json
+
+['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
+```
+
+- Start kafka locally using docker
+```
+cd dev && docker-compose -f kafka-single.yml up
+```
+
+- Publish test messages to kafka
+```
+python3 cmd/publish-test-data.py --num-messages=10000 --topic="topic-local-docker"
+```
+
+- Start kafka consumer from inside docker-compose container
+```
+docker exec -it <container-name> kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-1
+```
+
+- Start SQLFlow in docker
+
+```
+docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow run /tmp/conf/config/local_docker.yml
+```
+
+- Verify output in the kafka consumer
+ 
+```
+...
+...
+{"city":"San Francisco504","city_count":1}
+{"city":"San Francisco735","city_count":1}
+{"city":"San Francisco533","city_count":1}
+{"city":"San Francisco556","city_count":1}
+```
+
+The `dev invoke` command enables testing a sql-flow pipeline configuration on a batch of test data. This enables fast feedback local development before launching a sql-flow consumer that reads from kafka.
+
+## Configuration
+
+The heart of sql-flow is the pipeline configuration file. Each configuration file specifies:
+
+- Kafka configuration 
+- Pipeline configuration 
+  - Input configuration
+  - SQL transformation
+  - Output configuration
+
+<img width="1021" alt="Screenshot 2023-11-26 at 8 10 44 PM" src="https://github.com/turbolytics/sql-flow/assets/151242797/4f286fdc-ac2b-4809-acdb-1dc4d239f883">
+
+Every instance of sql-flow needs a pipeline configuration file.
+
+
+## Recipes
+
+Coming Soon, until then checkout:
+
+- [Benchmark configurations](./dev/config/benchmarks)
+- [Unit Test configurations](./tests/)
 
 
 ## Development 
 
+- Install python deps
 ```
+pip install -r requirements.txt
+pip install -r requirements.dev.txt
+
 C_INCLUDE_PATH=/opt/homebrew/Cellar/librdkafka/2.3.0/include LIBRARY_PATH=/opt/homebrew/Cellar/librdkafka/2.3.0/lib pip install confluent-kafka
 ```
 
+- Run tests
 ```
-cd dev 
-docker-compose -f kafka-single.yml up
+pytests tests
 ```
-
-```
-python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/inferred_schema.yml
-
-python publish-test-data.py
-```
-
-```
-docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow dev invoke /tmp/conf/config/inferred_schema.yml /tmp/conf/fixtures/simple.json
-['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
-```
+ 
 
 ## Benchmarks
 
@@ -76,7 +143,7 @@ python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-simple-ag
 ### Enriches
 
 Performs an enrichment. Output is 1:1 records with input, but
-each output record is enchanced with additional information.
+each output record is enhanced with additional information.
 
 ```
 python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-enrich"
@@ -87,3 +154,6 @@ python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-enrich"
 368 MiB Max - maximum resident size
 124 MiB - peak memory footprint
 ```
+
+--- 
+Like SQLFlow? Use SQLFlow? Feature Requests? Please let us know! danny@turbolytics.io

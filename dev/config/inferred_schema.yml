@@ -1,13 +1,11 @@
 
 
-# Kafka stuff
 kafka:
   brokers: [localhost:9092]
   group_id: test
   auto_offset_reset: earliest
 
 pipeline:
-  # input stuff
   input:
     batch_size: 1000
     topics:
