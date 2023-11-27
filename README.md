@@ -12,6 +12,11 @@ SQLFlow is currently not a good fit for:
 - Stateful stream processing
 - Wire protocols other than JSON
 
+SQLFlow is a kafka consumer that embeds SQL for stream transformation:
+
+<img width="754" alt="Screenshot 2023-11-26 at 8 16 47 PM" src="https://github.com/turbolytics/sql-flow/assets/151242797/419d8688-1d08-45ce-b245-1c2c886a3157">
+
+
 ## Getting Started
 
 ### Docker
@@ -61,8 +66,6 @@ docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow run /tm
 {"city":"San Francisco556","city_count":1}
 ```
 
-
-
 The `dev invoke` command enables testing a sql-flow pipeline configuration on a batch of test data. This enables fast feedback local development before launching a sql-flow consumer that reads from kafka.
 
 ## Configuration
@@ -75,10 +78,12 @@ The heart of sql-flow is the pipeline configuration file. Each configuration fil
   - SQL transformation
   - Output configuration
 
-Every instance of sql-flow needs a pipeline configuraiton file.
+<img width="1021" alt="Screenshot 2023-11-26 at 8 10 44 PM" src="https://github.com/turbolytics/sql-flow/assets/151242797/4f286fdc-ac2b-4809-acdb-1dc4d239f883">
+
+Every instance of sql-flow needs a pipeline configuration file.
+
 
 ## Recipes
-
 
 
 ## Development 
