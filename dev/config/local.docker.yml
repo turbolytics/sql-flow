@@ -21,4 +21,4 @@ pipeline:
 
   output:
     type: kafka
-    topic: output-1
+    topic: output-local-docker

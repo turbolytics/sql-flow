@@ -28,7 +28,7 @@ docker pull turbolytics/sql-flow:latest
 
 - Validate config by invoking it on test data
 ```
-docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow dev invoke /tmp/conf/config/examples/basic.agg.yml /tmp/conf/fixtures/simple.json
+docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-flow:latest dev invoke /tmp/conf/config/examples/basic.agg.yml /tmp/conf/fixtures/simple.json
 
 ['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
 ```
@@ -45,13 +45,13 @@ python3 cmd/publish-test-data.py --num-messages=10000 --topic="topic-local-docke
 
 - Start kafka consumer from inside docker-compose container
 ```
-docker exec -it <container-name> kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-1
+docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-local-docker
 ```
 
 - Start SQLFlow in docker
 
 ```
-docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow run /tmp/conf/config/local_docker.yml
+docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-flow:latest run /tmp/conf/config/local.docker.yml
 ```
 
 - Verify output in the kafka consumer
