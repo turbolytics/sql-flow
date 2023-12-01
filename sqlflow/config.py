@@ -1,3 +1,4 @@
+import copy
 from typing import Optional
 
 from jinja2 import Template
@@ -60,7 +61,7 @@ class Conf:
     tables: Optional[Tables] = ()
 
 
-def new_from_path(path: str, template_vars={}):
+def new_from_path(path: str, setting_overrides={}):
     """
     Initialize a new configuration instance
     directly from the filesystem.
@@ -71,9 +72,12 @@ def new_from_path(path: str, template_vars={}):
     with open(path) as f:
         template = Template(f.read())
 
+    settings_vars = copy.deepcopy(settings.VARS)
+    for k, v in setting_overrides.items():
+        settings_vars[k] = v
+
     rendered_template = template.render(
-        **settings.VARS,
-        **template_vars,
+        **settings_vars
     )
 
     conf = safe_load(rendered_template)
@@ -94,7 +98,7 @@ def new_from_path(path: str, template_vars={}):
         ),
         tables=Tables(
             csv=[
-                CSVTable(**t_conf) for t_conf in conf['tables']['csv']
+                CSVTable(**t_conf) for t_conf in conf.get('tables', {}).get('csv', [])
             ]
         ),
         sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),

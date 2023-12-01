@@ -7,11 +7,11 @@ pipeline:
   input:
     batch_size: 1000
     topics:
-    - "topic-1"
+    - "topic-csv-filesystem-join"
 
   sql: |
     SELECT
-      state,
+      state_full,
       count(*) as city_count
     FROM batch
     JOIN read_csv('{{ STATIC_ROOT }}/fixtures/locations.csv', auto_detect=True, header=True) as locations ON
@@ -19,8 +19,9 @@ pipeline:
       locations.city = properties.city 
     )
     GROUP BY
-      state
+      state_full
+    ORDER BY state_full DESC
 
   output:
     type: kafka
-    topic: output-1
+    topic: output-csv-filesystem-join
