@@ -28,7 +28,7 @@ docker pull turbolytics/sql-flow:latest
 
 - Validate config by invoking it on test data
 ```
-docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow dev invoke /tmp/conf/config/inferred_schema.yml /tmp/conf/fixtures/simple.json
+docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow dev invoke /tmp/conf/config/basic.agg.yml /tmp/conf/fixtures/simple.json
 
 ['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
 ```
@@ -81,13 +81,16 @@ The heart of sql-flow is the pipeline configuration file. Each configuration fil
 
 Every instance of sql-flow needs a pipeline configuration file.
 
-
 ## Recipes
 
 Coming Soon, until then checkout:
 
 - [Benchmark configurations](./dev/config/benchmarks)
 - [Unit Test configurations](./tests/)
+
+#### Running multiple SQLFlow instances on the same filesystem 
+#### Verifying a configuration locally 
+
 
 
 ## Development 

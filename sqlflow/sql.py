@@ -114,6 +114,17 @@ class InferredBatch:
                 yield l.strip()
 
 
+def init_tables(tables):
+    for csv_table in tables.csv:
+        stmnt = "CREATE TABLE {} AS SELECT * from read_csv('{}', header={}, auto_detect={})".format(
+            csv_table.name,
+            csv_table.path,
+            csv_table.header,
+            csv_table.auto_detect
+        )
+        duckdb.sql(stmnt)
+
+
 def new_sqlflow_from_conf(conf) -> SQLFlow:
     kconf = {
         'bootstrap.servers': ','.join(conf.kafka.brokers),

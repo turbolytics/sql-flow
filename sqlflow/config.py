@@ -1,7 +1,23 @@
+from typing import Optional
+
+from jinja2 import Template
 from yaml import safe_load
 from dataclasses import dataclass
 
 from sqlflow import settings
+
+
+@dataclass
+class CSVTable:
+    name: str
+    path: str
+    header: bool
+    auto_detect: bool
+
+
+@dataclass
+class Tables:
+    csv: [CSVTable]
 
 
 @dataclass
@@ -41,11 +57,26 @@ class Conf:
     kafka: Kafka
     sql_results_cache_dir: str
     pipeline: Pipeline
+    tables: Optional[Tables] = ()
 
 
-def new_from_path(path: str):
-    with open(path, 'r') as f:
-        conf = safe_load(f)
+def new_from_path(path: str, template_vars={}):
+    """
+    Initialize a new configuration instance
+    directly from the filesystem.
+
+    :param path:
+    :return:
+    """
+    with open(path) as f:
+        template = Template(f.read())
+
+    rendered_template = template.render(
+        **settings.VARS,
+        **template_vars,
+    )
+
+    conf = safe_load(rendered_template)
 
     output = ConsoleOutput(type='console')
 
@@ -60,6 +91,11 @@ def new_from_path(path: str):
             brokers=conf['kafka']['brokers'],
             group_id=conf['kafka']['group_id'],
             auto_offset_reset=conf['kafka']['auto_offset_reset'],
+        ),
+        tables=Tables(
+            csv=[
+                CSVTable(**t_conf) for t_conf in conf['tables']['csv']
+            ]
         ),
         sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),
         pipeline=Pipeline(
