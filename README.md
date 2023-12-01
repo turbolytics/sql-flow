@@ -129,18 +129,22 @@ Hardware:
       Activation Lock Status: Enabled
 ```
 
+| Name               | Throughput        | Max Memory | Peak Memory Usage |
+|--------------------|-------------------|------------|-------------------|
+| Simple Aggregation | 36,000 msgs / sec | 256 MiB    | 102 MiB           |
+| Enrichment         | 13,000 msgs /sec  | 368 MiB    | 124 MiB           |
+| CSV Disk           |                   |            |                   |
+| CSV Memory         |                   |            |                   |
+
 ### Simple Aggregate 
 
 Performs a simple aggregate. Output is significantly 
 smaller than input.
 
+
 ```
 python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-simple-agg"
 /usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/benchmarks/simple_agg.yml
-
-36k messages / second
-256 MiB Max - maximum resident set size
-102 MiB Max - peak memory footprint
 ```
 
 ### Enriches
@@ -152,10 +156,6 @@ each output record is enhanced with additional information.
 python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-enrich"
 
 /usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/benchmarks/enrich.yml
-
-13k messages / second
-368 MiB Max - maximum resident size
-124 MiB - peak memory footprint
 ```
 
 --- 
