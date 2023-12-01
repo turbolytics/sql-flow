@@ -1,0 +1,36 @@
+kafka:
+  brokers: [localhost:9092]
+  group_id: test
+  auto_offset_reset: earliest
+
+tables:
+  csv:
+    - name: locations
+      path: '{{ STATIC_ROOT }}/fixtures/locations.csv'
+      # delimiter:
+      header: True
+      # columns:
+      auto_detect: True
+
+
+pipeline:
+  input:
+    batch_size: 1000
+    topics:
+      - "topic-1"
+
+  sql: |
+    SELECT
+      state,
+      count(*) as city_count
+    FROM batch
+    JOIN locations ON
+    (
+      locations.city = properties.city 
+    )
+    GROUP BY
+      state
+
+  output:
+    type: kafka
+    topic: output-1
