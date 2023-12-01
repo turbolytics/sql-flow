@@ -133,8 +133,8 @@ Hardware:
 |--------------------|-------------------|------------|-------------------|
 | Simple Aggregation | 36,000 msgs / sec | 256 MiB    | 102 MiB           |
 | Enrichment         | 13,000 msgs /sec  | 368 MiB    | 124 MiB           |
-| CSV Disk           |                   |            |                   |
-| CSV Memory         |                   |            |                   |
+| CSV Disk Join      | 11,500 msgs /sec  | 312 MiB    | 152 MiB           |
+| CSV Memory Join    | 33,200 msgs / sec | 300 MiB    | 107 MiB           |
 
 ### Simple Aggregate 
 
@@ -156,6 +156,20 @@ each output record is enhanced with additional information.
 python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-enrich"
 
 /usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/benchmarks/enrich.yml
+```
+
+### CSV Disk Join
+
+```
+python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-csv-filesystem-join"
+SQLFLOW_STATIC_ROOT=/Users/danielmican/code/github.com/turbolytics/sql-flow/dev /usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/examples/csv.filesystem.join.yml
+```
+
+## CSV Memory Join
+
+```
+SQLFLOW_STATIC_ROOT=/Users/danielmican/code/github.com/turbolytics/sql-flow/dev /usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/examples/csv.mem.join.yml
+python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-csv-mem-join"
 ```
 
 --- 

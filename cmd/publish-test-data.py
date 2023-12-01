@@ -32,6 +32,14 @@ event = {
   "originalTimestamp": "2015-12-12T19:11:01.152Z"
 }
 
+cities = [
+    'San Fransisco',
+    'Baltimore',
+    'New York',
+    'Miami',
+    'Asheville',
+]
+
 
 @click.command()
 @click.option('--num-messages', default=1001, type=int)
@@ -45,7 +53,7 @@ def main(num_messages, topic):
     producer = Producer(conf)
     for i in range(num_messages):
         e = copy.deepcopy(event)
-        e['properties']['city'] = e['properties']['city'] + str(random.randrange(0, 1000))
+        e['properties']['city'] = random.choice(cities)
         j_event = json.dumps(e)
         producer.produce(topic, value=j_event)
         if i % 1000 == 0:
