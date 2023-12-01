@@ -17,11 +17,11 @@ pipeline:
   input:
     batch_size: 1000
     topics:
-      - "topic-1"
+      - "topic-csv-mem-join"
 
   sql: |
     SELECT
-      state,
+      state_full,
       count(*) as city_count
     FROM batch
     JOIN locations ON
@@ -29,8 +29,9 @@ pipeline:
       locations.city = properties.city 
     )
     GROUP BY
-      state
+      state_full
+    ORDER BY state_full DESC
 
   output:
     type: kafka
-    topic: output-1
+    topic: output-csv-mem-join

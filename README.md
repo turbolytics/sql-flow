@@ -28,7 +28,7 @@ docker pull turbolytics/sql-flow:latest
 
 - Validate config by invoking it on test data
 ```
-docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow dev invoke /tmp/conf/config/basic.agg.yml /tmp/conf/fixtures/simple.json
+docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow sql-flow dev invoke /tmp/conf/config/examples/basic.agg.yml /tmp/conf/fixtures/simple.json
 
 ['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
 ```
