@@ -13,13 +13,20 @@ The goal is to add support to sql-flow for stateful stream processining using on
 
 *What is the change that we're proposing and/or doing?*
 
-
-
-
+Adding support for stateful stream processing backed by duckdb disk-based databases. 
 
 
 ### Implementation
 
+This ADR targest tumbling window stream aggregations. Tumbling widow aggregations have a couple of components:
+- Aggregation defintions
+- State
+- Window interval (flushing)
+- Sink
+
+
+What happens if disk becomes too full? 
+What is the consistency model for aggregations? 
 
 
 ## Consequences
