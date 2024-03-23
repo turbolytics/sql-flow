@@ -10,6 +10,9 @@ from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
 
 
 class SQLFlow:
+    '''
+    SQLFlow executes a pipeline as a daemon.
+    '''
 
     def __init__(self, conf, consumer, output: Writer):
         self.conf = conf
@@ -17,6 +20,12 @@ class SQLFlow:
         self.output = output
 
     def consume_loop(self):
+        '''
+        consume_loop subscribes to a topic and continuously processes
+        all messages within that topic, according to the pipeline configurattion.
+
+        :return:
+        '''
         try:
             self.consumer.subscribe(self.conf.pipeline.input.topics)
             self._consume_loop()
