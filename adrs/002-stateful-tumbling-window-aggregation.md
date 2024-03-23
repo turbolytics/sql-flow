@@ -31,3 +31,7 @@ What is the consistency model for aggregations?
 
 ## Consequences
 
+
+
+## References
+- https://duckdb.org/docs/connect/concurrency
