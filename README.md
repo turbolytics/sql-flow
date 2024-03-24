@@ -35,7 +35,7 @@ docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-
 
 - Start kafka locally using docker
 ```
-cd dev && docker-compose -f kafka-single.yml up
+docker-compose -f dev/kafka-single.yml up -d
 ```
 
 - Publish test messages to kafka
@@ -144,7 +144,7 @@ smaller than input.
 
 ```
 python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-simple-agg"
-/usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/benchmarks/simple_agg.yml
+/usr/bin/time -l python3 cmd/sql-flow.py run $(PWD)/dev/config/benchmarks/simple_agg.yml
 ```
 
 ### Enriches
@@ -155,20 +155,20 @@ each output record is enhanced with additional information.
 ```
 python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-enrich"
 
-/usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/benchmarks/enrich.yml
+/usr/bin/time -l python3 cmd/sql-flow.py run $(PWD)/dev/config/benchmarks/enrich.yml
 ```
 
 ### CSV Disk Join
 
 ```
 python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-csv-filesystem-join"
-SQLFLOW_STATIC_ROOT=/Users/danielmican/code/github.com/turbolytics/sql-flow/dev /usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/examples/csv.filesystem.join.yml
+SQLFLOW_STATIC_ROOT=$(PWD)dev /usr/bin/time -l python3 cmd/sql-flow.py run $(PWD)/dev/config/examples/csv.filesystem.join.yml
 ```
 
 ## CSV Memory Join
 
 ```
-SQLFLOW_STATIC_ROOT=/Users/danielmican/code/github.com/turbolytics/sql-flow/dev /usr/bin/time -l python3 cmd/sql-flow.py run /Users/danielmican/code/github.com/turbolytics/sql-flow/dev/config/examples/csv.mem.join.yml
+SQLFLOW_STATIC_ROOT=$(PWD)/dev /usr/bin/time -l python3 cmd/sql-flow.py run $(PWD)/dev/config/examples/csv.mem.join.yml
 python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-csv-mem-join"
 ```
 
