@@ -16,14 +16,14 @@ class SQLFlow:
         self.consumer = consumer
         self.output = output
 
-    def consume_loop(self):
+    def consume_loop(self, max_msgs=None):
         try:
             self.consumer.subscribe(self.conf.pipeline.input.topics)
-            self._consume_loop()
+            self._consume_loop(max_msgs)
         finally:
             self.consumer.close()
 
-    def _consume_loop(self):
+    def _consume_loop(self, max_msgs=None):
         num_messages = 0
         start_dt = datetime.now(timezone.utc)
         total_messages = 0
@@ -77,6 +77,9 @@ class SQLFlow:
                 f.truncate()
                 f.seek(0)
                 num_messages = 0
+
+            if max_msgs and max_msgs <= total_messages:
+                return
 
 
 class InferredBatch:
