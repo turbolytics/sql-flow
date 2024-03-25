@@ -141,10 +141,8 @@ Hardware:
 Performs a simple aggregate. Output is significantly 
 smaller than input.
 
-
 ```
-python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-simple-agg"
-/usr/bin/time -l python3 cmd/sql-flow.py run $(PWD)/dev/config/benchmarks/simple_agg.yml
+./benchmark/simple-agg.sh
 ```
 
 ### Enriches
@@ -153,23 +151,19 @@ Performs an enrichment. Output is 1:1 records with input, but
 each output record is enhanced with additional information.
 
 ```
-python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-enrich"
-
-/usr/bin/time -l python3 cmd/sql-flow.py run $(PWD)/dev/config/benchmarks/enrich.yml
+./benchmark/enrichment.sh
 ```
 
 ### CSV Disk Join
 
 ```
-python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-csv-filesystem-join"
-SQLFLOW_STATIC_ROOT=$(PWD)dev /usr/bin/time -l python3 cmd/sql-flow.py run $(PWD)/dev/config/examples/csv.filesystem.join.yml
+./benchmark/csv-disk-join.sh
 ```
 
 ## CSV Memory Join
 
 ```
-SQLFLOW_STATIC_ROOT=$(PWD)/dev /usr/bin/time -l python3 cmd/sql-flow.py run $(PWD)/dev/config/examples/csv.mem.join.yml
-python3 cmd/publish-test-data.py --num-messages=1000000 --topic="topic-csv-mem-join"
+./benchmark/csv-disk-join.sh
 ```
 
 --- 
