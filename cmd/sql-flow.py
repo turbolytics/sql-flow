@@ -10,8 +10,14 @@ def cli():
 
 @click.command()
 @click.argument('config')
-def run(config):
-    sqlflow.cli.run.start(config)
+@click.option(
+    '--max-msgs-to-process',
+    type=int,
+    default=None,
+    help='Terminate execution after successfully processing this number.',
+)
+def run(config, max_msgs_to_process):
+    sqlflow.cli.run.start(config, max_msgs_to_process)
 
 
 @click.group()
