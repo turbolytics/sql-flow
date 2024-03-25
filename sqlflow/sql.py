@@ -1,12 +1,17 @@
 import os
 import sys
 from datetime import datetime, timezone
+import logging
 import socket
 
 import duckdb
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
+from sqlflow import handlers
 from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
+
+
+logger = logging.getLogger(__name__)
 
 
 class SQLFlow:
@@ -57,14 +62,14 @@ class SQLFlow:
             if total_messages % 10000 == 0:
                 now = datetime.now(timezone.utc)
                 diff = (now - start_dt)
-                print(total_messages // diff.total_seconds(), ': reqs / second')
+                logger.debug('{}: reqs / second'.format(total_messages // diff.total_seconds()))
 
             if num_messages == self.conf.pipeline.input.batch_size:
                 f.flush()
                 f.close()
 
                 # apply the pipeline
-                b = InferredBatch(self.conf)
+                b = handlers.InferredBatch(self.conf)
                 res = b.invoke(batch_file)
                 for l in res:
                     self.output.write(l)
@@ -80,41 +85,6 @@ class SQLFlow:
 
             if max_msgs and max_msgs <= total_messages:
                 return
-
-
-class InferredBatch:
-    def __init__(self, conf):
-        self.conf = conf
-
-    def invoke(self, batch_file):
-        try:
-            for l in self._invoke(batch_file):
-                yield l
-        finally:
-            duckdb.sql('DROP TABLE IF EXISTS batch')
-
-    def _invoke(self, batch_file):
-        duckdb.sql(
-            'CREATE TABLE batch AS SELECT * FROM read_json_auto(\'{}\')'.format(
-                batch_file
-            ),
-        )
-
-        out_file = os.path.join(
-            self.conf.sql_results_cache_dir,
-            'out.json',
-        )
-
-        duckdb.sql(
-            "COPY ({}) TO '{}'".format(
-                self.conf.pipeline.sql,
-                out_file,
-            )
-        )
-
-        with open(out_file, 'r') as f:
-            for l in f:
-                yield l.strip()
 
 
 def init_tables(tables):

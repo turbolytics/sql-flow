@@ -1,6 +1,5 @@
-import json
-
-from sqlflow.sql import InferredBatch, init_tables
+from sqlflow.sql import init_tables
+from sqlflow.handlers import InferredBatch
 from sqlflow.config import new_from_path
 
 

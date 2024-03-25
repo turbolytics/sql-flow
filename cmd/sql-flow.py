@@ -1,6 +1,7 @@
 import click
 from sqlflow import cli as sqlflow_cli
 import sqlflow.cli.run
+from sqlflow import logging
 
 
 @click.group()
@@ -38,4 +39,5 @@ cli.add_command(dev)
 
 
 if __name__ == '__main__':
+    logging.init()
     cli()
