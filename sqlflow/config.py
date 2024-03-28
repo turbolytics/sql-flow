@@ -46,12 +46,6 @@ class ConsoleOutput:
 
 
 @dataclass
-class Batcher:
-    type: str
-    batch_size: int
-
-
-@dataclass
 class Pipeline:
     type: str
     input: Input
