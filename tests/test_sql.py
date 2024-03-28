@@ -1,7 +1,7 @@
 import unittest
 import os
 
-from sqlflow import InferredBatch, settings
+from sqlflow import InferredDiskBatch, settings
 from sqlflow.config import Conf, Pipeline
 
 
@@ -9,7 +9,7 @@ class InferredBatchTestCase(unittest.TestCase):
 
     def test_inferred_batch_flat(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
-        p = InferredBatch(conf=Conf(
+        p = InferredDiskBatch(conf=Conf(
             kafka=None,
             sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
             pipeline=Pipeline(
@@ -18,8 +18,12 @@ class InferredBatchTestCase(unittest.TestCase):
                 sql="SELECT COUNT(*) as num_rows FROM batch",
                 output=None,
             ),
-        ))
-        res = list(p.invoke(f_path))
+        )).init()
+        with open(f_path) as f:
+            for line in f:
+                p.write(line)
+
+        res = list(p.invoke())
         self.assertEqual(
             ['{"num_rows":3}'],
             res,
@@ -27,7 +31,7 @@ class InferredBatchTestCase(unittest.TestCase):
 
     def test_inferred_batch_nested_return(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
-        p = InferredBatch(conf=Conf(
+        p = InferredDiskBatch(conf=Conf(
             kafka=None,
             sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
             pipeline=Pipeline(
@@ -41,8 +45,14 @@ class InferredBatchTestCase(unittest.TestCase):
                 """,
                 output=None,
             ),
-        ))
-        res = list(p.invoke(f_path))
+        )).init()
+
+        with open(f_path) as f:
+            for line in f:
+                p.write(line)
+
+        res = list(p.invoke())
+
         self.assertEqual([
             '{"s1":{"something":"New York"},"nested_json":{"":"New York","":1,"":2}}',
             '{"s1":{"something":"New York"},"nested_json":{"":"New York","":1,"":2}}',

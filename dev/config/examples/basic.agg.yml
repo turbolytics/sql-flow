@@ -4,10 +4,12 @@ kafka:
   auto_offset_reset: earliest
 
 pipeline:
+  type: 'handlers.InferredDiskBatch'
+
   input:
     batch_size: 1000
     topics:
-    - "topic-1"
+    - "topic-simple-agg"
 
   sql: |
     SELECT
