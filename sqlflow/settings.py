@@ -18,6 +18,8 @@ STATIC_ROOT = os.environ.get(
     ),
 )
 
+LOG_LEVEL = os.environ.get('SQLFLOW_LOG_LEVEL', 'INFO')
+
 VARS = {
     'STATIC_ROOT': STATIC_ROOT,
     'SQL_RESULTS_CACHE_DIR': SQL_RESULTS_CACHE_DIR
