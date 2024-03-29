@@ -53,7 +53,6 @@ class SQLFlow:
                 continue
 
             self.handler.write(msg.value().decode())
-            self.handler.write('\n')
             num_messages += 1
 
             if total_messages % 10000 == 0:
@@ -76,6 +75,8 @@ class SQLFlow:
                 num_messages = 0
 
             if max_msgs and max_msgs <= total_messages:
+                diff = (now - start_dt)
+                logger.debug('{}: reqs / second - Total'.format(total_messages // diff.total_seconds()))
                 return
 
 

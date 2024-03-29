@@ -1,6 +1,8 @@
+import json
 import os
 
 import duckdb
+import pyarrow as pa
 
 
 class InferredDiskBatch:
@@ -9,7 +11,7 @@ class InferredDiskBatch:
     messages as implicit json.
     """
 
-    def __init__(self, conf):
+    def __init__(self, conf, *args, **kwargs):
         self.conf = conf
         self._f = None
         self._batch_file = os.path.join(
@@ -30,6 +32,7 @@ class InferredDiskBatch:
 
     def write(self, bs):
         self._f.write(bs)
+        self._f.write('\n')
 
     def invoke(self):
         self._f.flush()
@@ -59,8 +62,56 @@ class InferredDiskBatch:
                 yield l.strip()
 
 
+class InferredMemBatch:
+    """
+    InferredMemBatch buffers message batch to memory, and handles
+    messages as implicit json.
+    """
+
+    def __init__(self, conf, deserializer=None):
+        self.conf = conf
+        self.rows = None
+        self.deserializer = deserializer
+        self.conn = duckdb.connect(":memory:")
+
+    def init(self):
+        self.rows = []
+        return self
+
+    def write(self, bs):
+        o = self.deserializer.decode(bs)
+        self.rows.append(o)
+
+    def invoke(self):
+        try:
+            for l in self._invoke():
+                yield l
+        finally:
+            duckdb.sql('DROP TABLE IF EXISTS batch')
+
+    def _invoke(self):
+        batch = pa.Table.from_pylist(self.rows)
+        res = self.conn.sql(
+            self.conf.pipeline.sql,
+        )
+
+        df = res.df()
+
+        records = json.loads(
+            df.to_json(
+                orient='records',
+                index=False,
+            )
+        )
+
+        for rec in records:
+            yield json.dumps(rec)
+
+
 def get_class(s: str):
     if s == 'handlers.InferredDiskBatch':
         return InferredDiskBatch
+    elif s == 'handlers.InferredMemBatch':
+        return InferredMemBatch
     else:
         raise NotImplementedError()
