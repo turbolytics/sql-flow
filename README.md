@@ -142,7 +142,7 @@ Performs a simple aggregate. Output is significantly
 smaller than input.
 
 ```
-./benchmark/simple-agg.sh
+./benchmark/simple-agg-disk.sh
 ```
 
 ### Enriches

@@ -1,0 +1,25 @@
+kafka:
+  brokers: [localhost:9092]
+  group_id: test
+  auto_offset_reset: earliest
+
+pipeline:
+  type: 'handlers.InferredMemBatch'
+
+  input:
+    batch_size: 1000
+    topics:
+    - "topic-simple-agg-mem"
+
+  sql: |
+    SELECT
+      properties.city as city,
+      count(*) as city_count
+    FROM batch
+    GROUP BY
+      city
+    ORDER BY city DESC
+
+  output:
+    type: kafka
+    topic: output-simple-agg-mem
