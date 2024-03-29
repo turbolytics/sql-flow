@@ -129,20 +129,22 @@ Hardware:
       Activation Lock Status: Enabled
 ```
 
-| Name               | Throughput        | Max Memory | Peak Memory Usage |
-|--------------------|-------------------|------------|-------------------|
-| Simple Aggregation | 36,000 msgs / sec | 256 MiB    | 102 MiB           |
-| Enrichment         | 13,000 msgs /sec  | 368 MiB    | 124 MiB           |
-| CSV Disk Join      | 11,500 msgs /sec  | 312 MiB    | 152 MiB           |
-| CSV Memory Join    | 33,200 msgs / sec | 300 MiB    | 107 MiB           |
+| Name                      | Throughput        | Max RSS Memory | Peak Memory Usage |
+|---------------------------|-------------------|----------------|-------------------|
+| Simple Aggregation Memory | 45,000 msgs / sec | 230 MiB        | 130 MiB           |
+| Simple Aggregation Disk   | 36,000 msgs / sec | 256 MiB        | 102 MiB           |
+| Enrichment                | 13,000 msgs /sec  | 368 MiB        | 124 MiB           |
+| CSV Disk Join             | 11,500 msgs /sec  | 312 MiB        | 152 MiB           |
+| CSV Memory Join           | 33,200 msgs / sec | 300 MiB        | 107 MiB           |
 
-### Simple Aggregate 
+### Simple Aggregate - Disk / Mem
 
 Performs a simple aggregate. Output is significantly 
 smaller than input.
 
 ```
 ./benchmark/simple-agg-disk.sh
+./benchmark/simple-agg-mem.sh
 ```
 
 ### Enriches
