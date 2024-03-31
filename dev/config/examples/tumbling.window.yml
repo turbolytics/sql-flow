@@ -12,7 +12,8 @@ tables:
           date DATE,
           city VARCHAR,
           count INT 
-        )
+        );
+        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (date, city);
 
 pipeline:
   input:
@@ -28,12 +29,12 @@ pipeline:
       count(*) as count
     FROM batch
     GROUP BY 
-      city
+      date, city
+    ON CONFLICT DO UPDATE SET count = count + EXCLUDED.count
 
-
-window:
-  type: tumbling
-  size: 10m
+  window:
+    type: tumbling
+    size: 10m
 
   output:
     type: kafka
