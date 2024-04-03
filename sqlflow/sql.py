@@ -3,10 +3,8 @@ from datetime import datetime, timezone
 import logging
 import socket
 
-import duckdb
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
-from sqlflow import handlers
 from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
 
 
@@ -42,7 +40,7 @@ class SQLFlow:
                 continue
             total_messages += 1
             if msg.error():
-                if msg.error().code() == KafkaError.PARTITION_EOF:
+                if msg.error().code() == KafkaError._PARTITION_EOF:
                     # End of partition event
                     sys.stderr.write(
                         '%% %s [%d] reached end at offset %d\n' %
@@ -75,12 +73,13 @@ class SQLFlow:
                 num_messages = 0
 
             if max_msgs and max_msgs <= total_messages:
+                now = datetime.now(timezone.utc)
                 diff = (now - start_dt)
                 logger.debug('{}: reqs / second - Total'.format(total_messages // diff.total_seconds()))
                 return
 
 
-def init_tables(tables):
+def init_tables(conn, tables):
     for csv_table in tables.csv:
         stmnt = "CREATE TABLE {} AS SELECT * from read_csv('{}', header={}, auto_detect={})".format(
             csv_table.name,
@@ -88,10 +87,13 @@ def init_tables(tables):
             csv_table.header,
             csv_table.auto_detect
         )
-        duckdb.sql(stmnt)
+        conn.sql(stmnt)
+
+    for sql_table in tables.sql:
+        conn.sql(sql_table.sql)
 
 
-def new_sqlflow_from_conf(conf, handler) -> SQLFlow:
+def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
     kconf = {
         'bootstrap.servers': ','.join(conf.kafka.brokers),
         'group.id': conf.kafka.group_id,

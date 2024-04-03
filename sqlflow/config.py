@@ -17,8 +17,15 @@ class CSVTable:
 
 
 @dataclass
+class SQLTable:
+    name: str
+    sql: str
+
+
+@dataclass
 class Tables:
     csv: [CSVTable]
+    sql: [SQLTable]
 
 
 @dataclass
@@ -82,12 +89,20 @@ def new_from_path(path: str, setting_overrides={}):
 
     conf = safe_load(rendered_template)
 
-    output = ConsoleOutput(type='console')
+    output_type = conf['pipeline']['output']['type']
 
-    if conf['pipeline']['output']['type'] == 'kafka':
+    if output_type == 'kafka':
         output = KafkaOutput(
             type='kafka',
             topic=conf['pipeline']['output']['topic'],
+        )
+    elif output_type == 'console':
+        output = ConsoleOutput(type='console')
+    else:
+        raise NotImplementedError(
+            'pipeline type: {} not supported'.format(
+                conf['pipeline']['output']['type'],
+            )
         )
 
     return Conf(
@@ -99,6 +114,9 @@ def new_from_path(path: str, setting_overrides={}):
         tables=Tables(
             csv=[
                 CSVTable(**t_conf) for t_conf in conf.get('tables', {}).get('csv', [])
+            ],
+            sql=[
+                SQLTable(**sql_conf) for sql_conf in conf.get('tables', {}).get('sql', [])
             ]
         ),
         sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),

@@ -1,0 +1,44 @@
+kafka:
+  brokers: [localhost:9092]
+  group_id: test
+  auto_offset_reset: earliest
+
+tables:
+  sql:
+    - name: agg_cities_count
+      sql: |
+        CREATE TABLE agg_cities_count (
+          date DATE,
+          city VARCHAR,
+          count INT 
+        );
+        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (date, city);
+
+pipeline:
+  type: 'handlers.TumblingWindow'
+
+  input:
+    batch_size: 1000
+    topics:
+    - "tumbling-window"
+
+  sql: |
+    INSERT INTO agg_cities_count
+    BY NAME
+    SELECT 
+      timestamp::date as date,
+      properties.city as city,
+      count(*) as count
+    FROM batch
+    GROUP BY 
+      date, city
+    ON CONFLICT (date, city) 
+    DO UPDATE SET count = count + EXCLUDED.count
+
+  window:
+    type: tumbling
+    size: 10m
+    trigger: on_close
+
+  output:
+    type: console
