@@ -9,6 +9,13 @@ from sqlflow import settings
 
 
 @dataclass
+class Window:
+    type: str
+    duration_seconds: int
+    output: object
+
+
+@dataclass
 class CSVTable:
     name: str
     path: str
@@ -17,8 +24,16 @@ class CSVTable:
 
 
 @dataclass
+class SQLTable:
+    name: str
+    sql: str
+    window: Optional[Window]
+
+
+@dataclass
 class Tables:
     csv: [CSVTable]
+    sql: [SQLTable]
 
 
 @dataclass
@@ -81,14 +96,19 @@ def new_from_path(path: str, setting_overrides={}):
     )
 
     conf = safe_load(rendered_template)
+    return new_from_dict(conf)
 
-    output = ConsoleOutput(type='console')
 
-    if conf['pipeline']['output']['type'] == 'kafka':
+def new_from_dict(conf):
+    output_type = conf['pipeline'].get('output', {}).get('type')
+
+    if output_type == 'kafka':
         output = KafkaOutput(
             type='kafka',
             topic=conf['pipeline']['output']['topic'],
         )
+    else:
+        output = ConsoleOutput(type='console')
 
     return Conf(
         kafka=Kafka(
@@ -99,6 +119,9 @@ def new_from_path(path: str, setting_overrides={}):
         tables=Tables(
             csv=[
                 CSVTable(**t_conf) for t_conf in conf.get('tables', {}).get('csv', [])
+            ],
+            sql=[
+                SQLTable(**sql_conf) for sql_conf in conf.get('tables', {}).get('sql', [])
             ]
         ),
         sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),
@@ -112,3 +135,4 @@ def new_from_path(path: str, setting_overrides={}):
             output=output,
         )
     )
+
