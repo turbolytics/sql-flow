@@ -4,6 +4,7 @@ import unittest
 import duckdb
 
 from sqlflow import invoke
+from sqlflow.config import new_from_dict, Window, ConsoleOutput
 
 dev_dir = os.path.join(
     os.path.dirname(__file__),
@@ -59,3 +60,47 @@ class ExamplesTestCase(unittest.TestCase):
             '{"state_full":"New York","city_count":1777664}',
             '{"state_full":"Maryland","city_count":1232896}',
         ], out)
+
+
+class TablesTestCase(unittest.TestCase):
+    def test_init_window_success(self):
+        conf = new_from_dict({
+            'kafka': {
+                'brokers': [],
+                'group_id': 'test',
+                'auto_offset_reset': 'earliest',
+            },
+            'tables': {
+                'sql': [
+                    {
+                        'name': 'test',
+                        'sql': 'SELECT 1',
+                        'window': {
+                            'type': 'tumbling',
+                            'duration_seconds': 600,
+                            'output': {
+                                'type': 'console',
+                            }
+                        }
+
+                    }
+                ]
+            },
+            'pipeline': {
+                'sql': 'SELECT 1',
+                'input': {
+                    'batch_size': 1000,
+                    'topics': [],
+                }
+
+            },
+        })
+        self.assertEqual(
+            {
+                'type': 'tumbling',
+                'duration_seconds': 600,
+                'output': {'type': 'console'},
+            },
+            conf.tables.sql[0].window,
+        )
+

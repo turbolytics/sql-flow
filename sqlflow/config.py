@@ -9,6 +9,13 @@ from sqlflow import settings
 
 
 @dataclass
+class Window:
+    type: str
+    duration_seconds: int
+    output: object
+
+
+@dataclass
 class CSVTable:
     name: str
     path: str
@@ -20,6 +27,7 @@ class CSVTable:
 class SQLTable:
     name: str
     sql: str
+    window: Optional[Window]
 
 
 @dataclass
@@ -88,22 +96,19 @@ def new_from_path(path: str, setting_overrides={}):
     )
 
     conf = safe_load(rendered_template)
+    return new_from_dict(conf)
 
-    output_type = conf['pipeline']['output']['type']
+
+def new_from_dict(conf):
+    output_type = conf['pipeline'].get('output', {}).get('type')
 
     if output_type == 'kafka':
         output = KafkaOutput(
             type='kafka',
             topic=conf['pipeline']['output']['topic'],
         )
-    elif output_type == 'console':
-        output = ConsoleOutput(type='console')
     else:
-        raise NotImplementedError(
-            'pipeline type: {} not supported'.format(
-                conf['pipeline']['output']['type'],
-            )
-        )
+        output = ConsoleOutput(type='console')
 
     return Conf(
         kafka=Kafka(
@@ -130,3 +135,4 @@ def new_from_path(path: str, setting_overrides={}):
             output=output,
         )
     )
+

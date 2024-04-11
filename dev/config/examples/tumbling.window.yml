@@ -14,6 +14,15 @@ tables:
         );
         CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (date, city);
 
+      # tables can be managed as a windowed table.
+      # windowed tables flush the table at certain durations.
+      window:
+        type: tumbling
+        duration_seconds: 600
+
+        output:
+          type: console
+
 pipeline:
   type: 'handlers.TumblingWindow'
 
@@ -34,11 +43,3 @@ pipeline:
       date, city
     ON CONFLICT (date, city) 
     DO UPDATE SET count = count + EXCLUDED.count
-
-  window:
-    type: tumbling
-    size: 10m
-    trigger: on_close
-
-  output:
-    type: console
