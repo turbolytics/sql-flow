@@ -103,7 +103,7 @@ def new_from_path(path: str, setting_overrides={}):
         ),
         sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),
         pipeline=Pipeline(
-            type=conf['pipeline'].get('type', 'inferred'),
+            type=conf['pipeline'].get('type', 'handlers.InferredDiskBatch'),
             input=Input(
                 batch_size=conf['pipeline']['input']['batch_size'],
                 topics=conf['pipeline']['input']['topics'],

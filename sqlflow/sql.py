@@ -1,12 +1,16 @@
-import os
 import sys
 from datetime import datetime, timezone
+import logging
 import socket
 
 import duckdb
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
+from sqlflow import handlers
 from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
+
+
+logger = logging.getLogger(__name__)
 
 
 class SQLFlow:
@@ -14,34 +18,27 @@ class SQLFlow:
     SQLFlow executes a pipeline as a daemon.
     '''
 
-    def __init__(self, conf, consumer, output: Writer):
+    def __init__(self, conf, consumer, handler, output: Writer):
         self.conf = conf
         self.consumer = consumer
         self.output = output
+        self.handler = handler
 
-    def consume_loop(self):
-        '''
-        consume_loop subscribes to a topic and continuously processes
-        all messages within that topic, according to the pipeline configurattion.
 
-        :return:
-        '''
+    def consume_loop(self, max_msgs=None):
+        logger.info('consumer loop starting')
         try:
             self.consumer.subscribe(self.conf.pipeline.input.topics)
-            self._consume_loop()
+            self._consume_loop(max_msgs)
         finally:
             self.consumer.close()
 
-    def _consume_loop(self):
+    def _consume_loop(self, max_msgs=None):
         num_messages = 0
         start_dt = datetime.now(timezone.utc)
         total_messages = 0
 
-        batch_file = os.path.join(
-            self.conf.sql_results_cache_dir,
-            'consumer_batch.json',
-        )
-        f = open(batch_file, 'w+')
+        self.handler.init()
 
         while True:
             msg = self.consumer.poll(timeout=1.0)
@@ -59,68 +56,32 @@ class SQLFlow:
                     raise KafkaException(msg.error())
                 continue
 
-            f.write(msg.value().decode())
-            f.write('\n')
+            self.handler.write(msg.value().decode())
             num_messages += 1
 
             if total_messages % 10000 == 0:
                 now = datetime.now(timezone.utc)
                 diff = (now - start_dt)
-                print(total_messages // diff.total_seconds(), ': reqs / second')
+                logger.debug('{}: reqs / second'.format(total_messages // diff.total_seconds()))
 
             if num_messages == self.conf.pipeline.input.batch_size:
-                f.flush()
-                f.close()
-
                 # apply the pipeline
-                b = InferredBatch(self.conf)
-                res = b.invoke(batch_file)
-                for l in res:
+                batch = self.handler.invoke()
+                for l in batch:
                     self.output.write(l)
 
                 # Only commit after all messages in batch are processed
                 self.output.flush()
                 self.consumer.commit(asynchronous=False)
+
                 # reset the file state
-                f = open(batch_file, 'w+')
-                f.truncate()
-                f.seek(0)
+                self.handler.init()
                 num_messages = 0
 
-
-class InferredBatch:
-    def __init__(self, conf):
-        self.conf = conf
-
-    def invoke(self, batch_file):
-        try:
-            for l in self._invoke(batch_file):
-                yield l
-        finally:
-            duckdb.sql('DROP TABLE IF EXISTS batch')
-
-    def _invoke(self, batch_file):
-        duckdb.sql(
-            'CREATE TABLE batch AS SELECT * FROM read_json_auto(\'{}\')'.format(
-                batch_file
-            ),
-        )
-
-        out_file = os.path.join(
-            self.conf.sql_results_cache_dir,
-            'out.json',
-        )
-
-        duckdb.sql(
-            "COPY ({}) TO '{}'".format(
-                self.conf.pipeline.sql,
-                out_file,
-            )
-        )
-
-        with open(out_file, 'r') as f:
-            for l in f:
-                yield l.strip()
+            if max_msgs and max_msgs <= total_messages:
+                diff = (now - start_dt)
+                logger.debug('{}: reqs / second - Total'.format(total_messages // diff.total_seconds()))
+                return
 
 
 def init_tables(tables):
@@ -134,7 +95,7 @@ def init_tables(tables):
         duckdb.sql(stmnt)
 
 
-def new_sqlflow_from_conf(conf) -> SQLFlow:
+def new_sqlflow_from_conf(conf, handler) -> SQLFlow:
     kconf = {
         'bootstrap.servers': ','.join(conf.kafka.brokers),
         'group.id': conf.kafka.group_id,
@@ -158,6 +119,7 @@ def new_sqlflow_from_conf(conf) -> SQLFlow:
     sflow = SQLFlow(
         conf=conf,
         consumer=consumer,
+        handler=handler,
         output=output,
     )
 

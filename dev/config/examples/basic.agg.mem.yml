@@ -4,10 +4,12 @@ kafka:
   auto_offset_reset: earliest
 
 pipeline:
+  type: 'handlers.InferredMemBatch'
+
   input:
     batch_size: 1000
     topics:
-    - "topic-simple-agg"
+    - "topic-simple-agg-mem"
 
   sql: |
     SELECT
@@ -16,7 +18,8 @@ pipeline:
     FROM batch
     GROUP BY
       city
+    ORDER BY city DESC
 
   output:
     type: kafka
-    topic: output-1
+    topic: output-simple-agg-mem
