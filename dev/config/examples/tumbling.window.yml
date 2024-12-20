@@ -1,0 +1,41 @@
+kafka:
+  brokers: [localhost:9092]
+  group_id: test
+  auto_offset_reset: earliest
+
+tables:
+  sql:
+    - name: agg_cities_count
+      # persistence: 'memory'
+      sql: |
+        CREATE TABLE agg_cities_count (
+          date DATE,
+          city VARCHAR,
+          count INT 
+        );
+        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (date, city);
+
+pipeline:
+  input:
+    batch_size: 1000
+    topics:
+    - "cities-window-in"
+
+  sql: |
+    INSERT INTO agg_cities_count
+    SELECT 
+      time::date as date,
+      properties.city as city,
+      count(*) as count
+    FROM batch
+    GROUP BY 
+      date, city
+    ON CONFLICT DO UPDATE SET count = count + EXCLUDED.count
+
+  window:
+    type: tumbling
+    size: 10m
+
+  output:
+    type: kafka
+    topic: "cities-window-out"
