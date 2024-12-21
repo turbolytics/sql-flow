@@ -12,12 +12,16 @@ logger = logging.getLogger(__name__)
 
 
 class SQLFlow:
+    '''
+    SQLFlow executes a pipeline as a daemon.
+    '''
 
     def __init__(self, conf, consumer, handler, output: Writer):
         self.conf = conf
         self.consumer = consumer
         self.output = output
         self.handler = handler
+
 
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
