@@ -24,7 +24,7 @@ tables:
           type: console
 
 pipeline:
-  type: 'handlers.TumblingWindow'
+  type: 'handlers.InferredMemBatch'
 
   input:
     batch_size: 1000

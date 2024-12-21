@@ -63,33 +63,6 @@ class InferredDiskBatch:
                 yield l.strip()
 
 
-class TumblingWindow:
-    def __init__(self, conf, deserializer=None, conn=None):
-        self.conf = conf
-        self.rows = None
-        self.deserializer = deserializer
-        self.conn = conn if conn else duckdb.connect(":memory:")
-
-    def init(self):
-        self.rows = []
-        return self
-
-    def write(self, bs):
-        o = self.deserializer.decode(bs)
-        self.rows.append(o)
-
-    def invoke(self):
-        for l in self._invoke():
-            yield l
-
-    def _invoke(self):
-        batch = pa.Table.from_pylist(self.rows)
-        res = self.conn.sql(
-            self.conf.pipeline.sql,
-        )
-        return []
-
-
 class InferredMemBatch:
     """
     InferredMemBatch buffers message batch to memory, and handles
@@ -120,6 +93,9 @@ class InferredMemBatch:
             self.conf.pipeline.sql,
         )
 
+        if not res:
+            return
+
         df = res.df()
 
         records = json.loads(
@@ -138,7 +114,5 @@ def get_class(s: str):
         return InferredDiskBatch
     elif s == 'handlers.InferredMemBatch':
         return InferredMemBatch
-    elif s == 'handlers.TumblingWindow':
-        return TumblingWindow
     else:
         raise NotImplementedError()

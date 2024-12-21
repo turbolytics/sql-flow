@@ -1,5 +1,6 @@
 import logging
 import json
+import threading
 import time
 from dataclasses import dataclass
 
@@ -27,6 +28,7 @@ class Tumbling:
         self.size_seconds = size_seconds
         self.writer = writer
         self.poll_interval_seconds = 1
+        self.lock = threading.Lock()
 
     def collect_closed(self) -> [object]:
         # select all data with 'closed' windows.
@@ -86,11 +88,13 @@ class Tumbling:
 
     def poll(self):
         """
-        poll will check the current table state for closed windows.
+        Poll will check the current table state for closed windows.
 
         :return:
         """
-        pass
+        # take the lock
+        with self.lock:
+            logger.debug('checking for closed windows')
 
     def start(self):
         while True:

@@ -22,7 +22,6 @@ class SQLFlow:
         self.output = output
         self.handler = handler
 
-
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
         try:
