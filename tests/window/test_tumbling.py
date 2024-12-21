@@ -45,6 +45,7 @@ class TumblingTestCase(unittest.TestCase):
 
     def test_closed_results_found(self):
         conn = duckdb.connect()
+        conn.execute("SET timezone = 'UTC'")
 
         conn.sql('''
         CREATE TABLE test_table (
