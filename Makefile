@@ -1,5 +1,7 @@
+.PHONY: install-tools
 install-tools:
-	mkdir /tmp/sqlflow/resultscache
+	$(shell mkdir -p /tmp/sqlflow/resultscache)
 
+.PHONY: test-unit
 test-unit:
 	pytest tests
