@@ -48,7 +48,7 @@ class TumblingTestCase(unittest.TestCase):
 
         conn.sql('''
         CREATE TABLE test_table (
-            timestamp TIMESTAMP,
+            timestamp TIMESTAMPTZ,
             id VARCHAR
         )
         ''')
@@ -79,7 +79,7 @@ class TumblingTestCase(unittest.TestCase):
         rows = tw.collect_closed()
         self.assertEqual(
             [
-                {'timestamp': 1704049200, 'id': 'test_1'}
+                {'timestamp': 1704067200000, 'id': 'test_1'}
             ],
             rows,
         )
