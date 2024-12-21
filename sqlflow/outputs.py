@@ -15,6 +15,14 @@ class Writer(ABC):
         raise NotImplemented()
 
 
+class TestWriter(Writer):
+    def __init__(self):
+        self.writes = []
+
+    def write(self, val: bytes, key: bytes = None):
+        self.writes.append((key, val))
+
+
 class ConsoleWriter(Writer):
     def write(self, val: bytes, key: bytes = None):
         sys.stdout.write(val)

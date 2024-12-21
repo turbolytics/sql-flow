@@ -8,11 +8,11 @@ tables:
     - name: agg_cities_count
       sql: |
         CREATE TABLE agg_cities_count (
-          date DATE,
+          timestamp TIMESTAMP,
           city VARCHAR,
           count INT 
         );
-        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (date, city);
+        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (timestamp, city);
 
       # tables can be managed as a windowed table.
       # windowed tables flush the table at certain durations.
@@ -35,11 +35,11 @@ pipeline:
     INSERT INTO agg_cities_count
     BY NAME
     SELECT 
-      timestamp::date as date,
+      timestamp::date as timestamp,
       properties.city as city,
       count(*) as count
     FROM batch
     GROUP BY 
-      date, city
-    ON CONFLICT (date, city) 
+      timestamp, city
+    ON CONFLICT (timestamp, city) 
     DO UPDATE SET count = count + EXCLUDED.count

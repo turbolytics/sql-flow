@@ -7,8 +7,9 @@ from sqlflow.sql import new_sqlflow_from_conf, init_tables
 
 
 def start(config, max_msgs=None):
-    conn = duckdb.connect()
     conf = new_from_path(config)
+
+    conn = duckdb.connect()
 
     BatchHandler = get_class(conf.pipeline.type)
     h = BatchHandler(
