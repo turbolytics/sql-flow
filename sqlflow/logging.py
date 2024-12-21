@@ -1,5 +1,4 @@
 import logging
-from sqlflow import settings
 
 
 def init():
