@@ -36,7 +36,7 @@ class Tumbling:
             * 
         FROM {}
         WHERE 
-            {} < NOW() - INTERVAL {} SECOND;
+            {} < CURRENT_TIMESTAMP - INTERVAL '{}' SECOND
         '''.format(
             self.table.name,
             self.table.time_field,

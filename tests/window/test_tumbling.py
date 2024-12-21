@@ -1,5 +1,5 @@
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import duckdb
 import pyarrow as pa
@@ -53,7 +53,7 @@ class TumblingTestCase(unittest.TestCase):
         )
         ''')
 
-        d = datetime(2024, 1, 1, 0, 0, 0, 0, UTC)
+        d = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
         # create df with time right now
         test_batch = pa.Table.from_pylist([
