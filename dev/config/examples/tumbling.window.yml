@@ -8,7 +8,7 @@ tables:
     - name: agg_cities_count
       sql: |
         CREATE TABLE agg_cities_count (
-          timestamp TIMESTAMP,
+          timestamp TIMESTAMPTZ,
           city VARCHAR,
           count INT 
         );
@@ -19,6 +19,7 @@ tables:
       window:
         type: tumbling
         duration_seconds: 10
+        time_field: timestamp
 
         output:
           type: console

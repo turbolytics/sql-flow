@@ -3,7 +3,7 @@ import duckdb
 from sqlflow import new_from_path
 from sqlflow.handlers import get_class
 from sqlflow.serde import JSON
-from sqlflow.sql import new_sqlflow_from_conf, init_tables
+from sqlflow.sql import new_sqlflow_from_conf, init_tables,handle_tables
 
 
 def start(config, max_msgs=None):
@@ -19,6 +19,7 @@ def start(config, max_msgs=None):
     )
 
     init_tables(conn, conf.tables)
+    handle_tables(conn, conf.tables)
 
     sflow = new_sqlflow_from_conf(
         conf,

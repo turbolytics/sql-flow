@@ -12,6 +12,7 @@ from sqlflow import settings
 class Window:
     type: str
     duration_seconds: int
+    time_field: str
     output: object
 
 
@@ -110,20 +111,30 @@ def new_from_dict(conf):
     else:
         output = ConsoleOutput(type='console')
 
+    tables = Tables(
+        csv=[],
+        sql=[],
+    )
+    for csv_table in conf.get('tables', {}).get('csv', []):
+        tables.csv.append(CSVTable(**csv_table))
+
+    for sql_table_conf in conf.get('tables', {}).get('sql', []):
+        window_conf = sql_table_conf.pop('window')
+        if window_conf:
+            w = Window(**window_conf)
+            s = SQLTable(
+                window=w,
+                **sql_table_conf,
+            )
+            tables.sql.append(s)
+
     return Conf(
         kafka=Kafka(
             brokers=conf['kafka']['brokers'],
             group_id=conf['kafka']['group_id'],
             auto_offset_reset=conf['kafka']['auto_offset_reset'],
         ),
-        tables=Tables(
-            csv=[
-                CSVTable(**t_conf) for t_conf in conf.get('tables', {}).get('csv', [])
-            ],
-            sql=[
-                SQLTable(**sql_conf) for sql_conf in conf.get('tables', {}).get('sql', [])
-            ]
-        ),
+        tables=tables,
         sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),
         pipeline=Pipeline(
             type=conf['pipeline'].get('type', 'handlers.InferredDiskBatch'),

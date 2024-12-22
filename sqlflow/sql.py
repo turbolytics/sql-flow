@@ -1,10 +1,12 @@
 import sys
+import threading
 from datetime import datetime, timezone
 import logging
 import socket
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
+from sqlflow.window import handlers
 from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
 
 
@@ -94,6 +96,41 @@ def init_tables(conn, tables):
 
     for sql_table in tables.sql:
         conn.sql(sql_table.sql)
+
+
+def handle_tables(conn, tables):
+    """
+    Starts table management routines. Some tables are managed throughout the
+    lifetime of the sqlflow process, such as windowed tables.
+
+    This routine kicks off that management.
+
+    :param conn:
+    :param tables:
+    :return:
+    """
+    for table in tables.sql:
+        if not table.window:
+            continue
+
+        # init table
+        if table.window.type != 'tumbling':
+            raise NotImplementedError('only tumbling window is supported')
+
+        h = handlers.Tumbling(
+            conn=conn,
+            table=handlers.Table(
+                name=table.name,
+                time_field=table.window.time_field,
+            ),
+            size_seconds=table.window.duration_seconds,
+            writer=ConsoleWriter(),
+        )
+
+        t = threading.Thread(
+            target=h.start,
+        )
+        t.start()
 
 
 def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
