@@ -18,8 +18,8 @@ class SQLFlow:
     SQLFlow executes a pipeline as a daemon.
     '''
 
-    def __init__(self, conf, consumer, handler, output: Writer):
-        self.conf = conf
+    def __init__(self, input, consumer, handler, output: Writer):
+        self.input = input
         self.consumer = consumer
         self.output = output
         self.handler = handler
@@ -27,7 +27,7 @@ class SQLFlow:
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
         try:
-            self.consumer.subscribe(self.conf.pipeline.input.topics)
+            self.consumer.subscribe(self.input.topics)
             self._consume_loop(max_msgs)
         finally:
             self.consumer.close()
@@ -63,7 +63,7 @@ class SQLFlow:
                 diff = (now - start_dt)
                 logger.debug('{}: reqs / second'.format(total_messages // diff.total_seconds()))
 
-            if num_messages == self.conf.pipeline.input.batch_size:
+            if num_messages == self.input.batch_size:
                 # apply the pipeline
                 batch = self.handler.invoke()
                 for l in batch:
@@ -155,7 +155,7 @@ def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
         )
 
     sflow = SQLFlow(
-        conf=conf,
+        input=conf.pipeline.input,
         consumer=consumer,
         handler=handler,
         output=output,
