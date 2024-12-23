@@ -16,7 +16,7 @@ conf_dir = os.path.join(dev_dir, 'config')
 fixtures_dir = os.path.join(dev_dir, 'fixtures')
 
 
-class ExamplesTestCase(unittest.TestCase):
+class InvokeExamplesTestCase(unittest.TestCase):
     def test_basic_agg_disk(self):
         conn = duckdb.connect()
         out = invoke(
@@ -71,6 +71,17 @@ class ExamplesTestCase(unittest.TestCase):
             '{"state_full":"Ohio","city_count":57344}',
             '{"state_full":"New York","city_count":1777664}',
             '{"state_full":"Maryland","city_count":1232896}',
+        ], out)
+
+    def test_enrich(self):
+        conn = duckdb.connect()
+        out = invoke(
+            conn=conn,
+            config=os.path.join(conf_dir, 'examples', 'enrich.yml'),
+            fixture=os.path.join(fixtures_dir, 'enrich.jsonl'),
+        )
+        self.assertEqual([
+           '{"event":"search","properties":{"city":"New York"},"user":{"id":"123412ds"},"nested_city":{"something":"New York"},"nested_json":{"":"New York","":1,"":2}}',
         ], out)
 
 
