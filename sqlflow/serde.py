@@ -2,6 +2,8 @@ import json
 from abc import ABC, abstractmethod
 
 
+
+
 class Serializer(ABC):
     @abstractmethod
     def encode(self, d: object) -> bytes:
@@ -21,4 +23,11 @@ class JSON(Serializer, Deserializer):
     def encode(self, d: object) -> bytes:
         return json.dumps(d)
 
+
+class Noop(Serializer, Deserializer):
+    def decode(self, bs: bytes):
+        raise NotImplemented
+
+    def encode(self, d: object) -> object:
+        return d
 

@@ -78,6 +78,7 @@ class TablesTestCase(unittest.TestCase):
                         'window': {
                             'type': 'tumbling',
                             'duration_seconds': 600,
+                            'time_field': 'time',
                             'output': {
                                 'type': 'console',
                             }
@@ -96,11 +97,12 @@ class TablesTestCase(unittest.TestCase):
             },
         })
         self.assertEqual(
-            {
-                'type': 'tumbling',
-                'duration_seconds': 600,
-                'output': {'type': 'console'},
-            },
+            Window(
+                type='tumbling',
+                duration_seconds=600,
+                time_field='time',
+                output={'type': 'console'},
+            ),
             conf.tables.sql[0].window,
         )
 

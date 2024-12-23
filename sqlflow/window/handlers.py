@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlflow.outputs import Writer
-from sqlflow.serde import JSON
+from sqlflow.serde import JSON, Noop
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class Tumbling:
         self.size_seconds = size_seconds
         self.writer = writer
         self._poll_interval_seconds = 10
-        self.serde = JSON()
+        self.serde = Noop()
 
     def collect_closed(self) -> [object]:
         # select all data with 'closed' windows.
@@ -47,8 +47,7 @@ class Tumbling:
         )
         logger.debug(stmt)
         self.conn.begin()
-        res = self.conn.execute(stmt)
-        df = res.df()
+        df = self.conn.execute(stmt).df()
 
         records = json.loads(
             df.to_json(
@@ -70,11 +69,11 @@ class Tumbling:
                 val=self.serde.encode(record)
             )
 
-    def delete_closed(self):
+    def delete_closed(self) -> int:
         """
         Delete all closed windows.
 
-        :return:
+        :return: the number of deleted rows
         """
         stmt = '''
         DELETE 
@@ -88,6 +87,7 @@ class Tumbling:
         )
         logger.debug(stmt)
         res = self.conn.execute(stmt).fetchall()
+        return res[0][0]
 
     def poll(self):
         """

@@ -144,4 +144,5 @@ class TumblingTestCase(unittest.TestCase):
             writer=ConsoleWriter(),
         )
 
-        tw.delete_closed(t=1704049200)
+        num_deleted = tw.delete_closed()
+        self.assertEqual(1, num_deleted)
