@@ -2,8 +2,6 @@ import json
 from abc import ABC, abstractmethod
 
 
-
-
 class Serializer(ABC):
     @abstractmethod
     def encode(self, d: object) -> bytes:

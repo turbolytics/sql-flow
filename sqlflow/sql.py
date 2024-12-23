@@ -6,7 +6,7 @@ import socket
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
-from sqlflow.window import handlers
+from sqlflow import window
 from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
 
 
@@ -117,9 +117,9 @@ def handle_tables(conn, tables):
         if table.window.type != 'tumbling':
             raise NotImplementedError('only tumbling window is supported')
 
-        h = handlers.Tumbling(
+        h = window.Tumbling(
             conn=conn,
-            table=handlers.Table(
+            table=window.Table(
                 name=table.name,
                 time_field=table.window.time_field,
             ),
