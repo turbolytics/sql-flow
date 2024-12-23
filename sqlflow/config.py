@@ -100,16 +100,19 @@ def new_from_path(path: str, setting_overrides={}):
     return new_from_dict(conf)
 
 
-def new_from_dict(conf):
-    output_type = conf['pipeline'].get('output', {}).get('type')
-
+def build_output(c: object):
+    output_type = c.get('type')
     if output_type == 'kafka':
-        output = KafkaOutput(
+        return KafkaOutput(
             type='kafka',
-            topic=conf['pipeline']['output']['topic'],
+            topic=c['topic']
         )
     else:
-        output = ConsoleOutput(type='console')
+        return ConsoleOutput(type='console')
+
+
+def new_from_dict(conf):
+    output = build_output(conf['pipeline'].get('output', {}))
 
     tables = Tables(
         csv=[],
@@ -121,9 +124,12 @@ def new_from_dict(conf):
     for sql_table_conf in conf.get('tables', {}).get('sql', []):
         window_conf = sql_table_conf.pop('window')
         if window_conf:
-            w = Window(**window_conf)
+            output = build_output((window_conf.pop('output')))
             s = SQLTable(
-                window=w,
+                window=Window(
+                    output=output,
+                    **window_conf,
+                ),
                 **sql_table_conf,
             )
             tables.sql.append(s)

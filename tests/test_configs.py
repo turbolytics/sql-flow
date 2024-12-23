@@ -17,11 +17,23 @@ fixtures_dir = os.path.join(dev_dir, 'fixtures')
 
 
 class ExamplesTestCase(unittest.TestCase):
-    def test_basic_agg(self):
+    def test_basic_agg_disk(self):
         conn = duckdb.connect()
         out = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'basic.agg.yml'),
+            fixture=os.path.join(fixtures_dir, 'simple.json'),
+        )
+        self.assertEqual([
+            '{"city":"New York","city_count":28672}',
+            '{"city":"Baltimore","city_count":28672}',
+        ], out)
+
+    def test_basic_agg_mem(self):
+        conn = duckdb.connect()
+        out = invoke(
+            conn=conn,
+            config=os.path.join(conf_dir, 'examples', 'basic.agg.mem.yml'),
             fixture=os.path.join(fixtures_dir, 'simple.json'),
         )
         self.assertEqual([
@@ -101,7 +113,9 @@ class TablesTestCase(unittest.TestCase):
                 type='tumbling',
                 duration_seconds=600,
                 time_field='time',
-                output={'type': 'console'},
+                output=ConsoleOutput(
+                    type='console',
+                ),
             ),
             conf.tables.sql[0].window,
         )
