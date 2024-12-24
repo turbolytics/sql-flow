@@ -4,7 +4,7 @@ install-tools:
 
 .PHONY: test-unit
 test-unit:
-	pytest tests
+	pytest --ignore=tests/benchmarks --ignore=tests/integration tests
 
 
 .PHONY: start-backing-services

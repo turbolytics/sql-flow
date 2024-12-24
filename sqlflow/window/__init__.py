@@ -1,1 +1,1 @@
-from .handlers import Tumbling
+from .handlers import Tumbling, Table

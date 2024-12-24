@@ -37,8 +37,8 @@ class InvokeExamplesTestCase(unittest.TestCase):
             fixture=os.path.join(fixtures_dir, 'simple.json'),
         )
         self.assertEqual([
-            '{"city":"New York","city_count":28672}',
-            '{"city":"Baltimore","city_count":28672}',
+            '{"city": "New York", "city_count": 28672}',
+            '{"city": "Baltimore", "city_count": 28672}',
         ], out)
 
     def test_csv_filesystem_join(self):
@@ -83,6 +83,22 @@ class InvokeExamplesTestCase(unittest.TestCase):
         self.assertEqual([
            '{"event":"search","properties":{"city":"New York"},"user":{"id":"123412ds"},"nested_city":{"something":"New York"},"nested_json":{"":"New York","":1,"":2}}',
         ], out)
+
+    def test_tumbling_window(self):
+        conn = duckdb.connect()
+        out = invoke(
+            conn=conn,
+            config=os.path.join(conf_dir, 'examples', 'tumbling.window.yml'),
+            fixture=os.path.join(fixtures_dir, 'window.jsonl'),
+            flush_window=True,
+        )
+        self.assertEqual(
+            [
+                {'timestamp': 1449878400000, 'city': 'New York', 'count': 2},
+                {'timestamp': 1449878400000, 'city': 'Baltimore', 'count': 2},
+            ],
+            out,
+        )
 
 
 class TablesTestCase(unittest.TestCase):

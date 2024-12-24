@@ -98,22 +98,13 @@ def init_tables(conn, tables):
         conn.sql(sql_table.sql)
 
 
-def handle_tables(conn, tables):
-    """
-    Starts table management routines. Some tables are managed throughout the
-    lifetime of the sqlflow process, such as windowed tables.
-
-    This routine kicks off that management.
-
-    :param conn:
-    :param tables:
-    :return:
-    """
-    for table in tables.sql:
+def build_managed_tables(conn, table_confs):
+    managed_tables = []
+    for table in table_confs:
+        # windowed tables are the only supported tables currently
         if not table.window:
             continue
 
-        # init table
         if table.window.type != 'tumbling':
             raise NotImplementedError('only tumbling window is supported')
 
@@ -126,9 +117,24 @@ def handle_tables(conn, tables):
             size_seconds=table.window.duration_seconds,
             writer=ConsoleWriter(),
         )
+        managed_tables.append(h)
+    return managed_tables
 
+
+def handle_managed_tables(tables):
+    """
+    Starts table management routines. Some tables are managed throughout the
+    lifetime of the sqlflow process, such as windowed tables.
+
+    This routine kicks off that management.
+
+    :param conn:
+    :param tables:
+    :return:
+    """
+    for handler in tables:
         t = threading.Thread(
-            target=h.start,
+            target=handler.start,
         )
         t.start()
 

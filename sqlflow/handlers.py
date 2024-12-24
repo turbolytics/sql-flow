@@ -1,8 +1,11 @@
+import logging
 import json
 import os
 
 import duckdb
 import pyarrow as pa
+
+logger = logging.getLogger(__name__)
 
 
 class InferredDiskBatch:
@@ -89,9 +92,16 @@ class InferredMemBatch:
 
     def _invoke(self):
         batch = pa.Table.from_pylist(self.rows)
-        res = self.conn.sql(
-            self.conf.pipeline.sql,
-        )
+
+        try:
+            res = self.conn.sql(
+                self.conf.pipeline.sql,
+            )
+        except duckdb.duckdb.BinderException as e:
+            logger.error(
+                'could not execute sql: {}'.format(self.conf.pipeline.sql),
+            )
+            raise e
 
         if not res:
             return
