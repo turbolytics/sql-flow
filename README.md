@@ -108,25 +108,10 @@ pytests tests
 ```
  
 
-## Benchmarks
+## [Benchmarks](https://github.com/turbolytics/sql-flow/wiki/Benchmarks)
 
-**Methodology**
+The following table shows the performance of different test scenarios:
 
-Each test loads 1MM records into kafka. Each test executes sql-flow consumer until each message is processed. Each test captures the maximum resident memory during the benchmark, and the average throughput of message ingestion.
-
-**System**
-
-```
-Hardware:
-    Hardware Overview:
-      Model Name: MacBook Pro
-      Model Identifier: MacBookPro18,3
-      Model Number: Z15G001X2LL/A
-      Chip: Apple M1 Pro
-      Total Number of Cores: 10 (8 performance and 2 efficiency)
-      Memory: 32 GB
-      Activation Lock Status: Enabled
-```
 
 | Name                      | Throughput        | Max RSS Memory | Peak Memory Usage |
 |---------------------------|-------------------|----------------|-------------------|
@@ -137,45 +122,8 @@ Hardware:
 | CSV Memory Join           | 33,200 msgs / sec | 300 MiB        | 107 MiB           |
 | In Memory Tumbling Window | 44,000 msgs / sec | 198 MiB        |  96 MiB           |
 
-### Simple Aggregate - Disk / Mem
-
-Performs a simple aggregate. Output is significantly 
-smaller than input.
-
-```
-./benchmark/simple-agg-disk.sh
-./benchmark/simple-agg-mem.sh
-```
-
-### Enriches
-
-Performs an enrichment. Output is 1:1 records with input, but
-each output record is enhanced with additional information.
-
-```
-./benchmark/enrichment.sh
-```
-
-### CSV Disk Join
-
-```
-./benchmark/csv-disk-join.sh
-```
-
-## CSV Memory Join
-
-```
-./benchmark/csv-disk-join.sh
-```
-
-## In Memory Tumbling Window
-
-Tumbling window that aggregates count of cities.
-
-```
-./benchmark/tumbling-window.sh
-```
-
+[More information about benchmarks are available in the wiki](https://github.com/turbolytics/sql-flow/wiki/Benchmarks). 
 
 # Contact Us 
+
 Like SQLFlow? Use SQLFlow? Feature Requests? Please let us know! danny@turbolytics.io
