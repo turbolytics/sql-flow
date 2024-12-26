@@ -5,7 +5,7 @@ import duckdb
 import pyarrow as pa
 
 from sqlflow.outputs import ConsoleWriter, TestWriter
-from sqlflow.window.handlers import Tumbling, Table
+from sqlflow.managers.window import Tumbling, Table
 
 
 class TumblingTestCase(unittest.TestCase):

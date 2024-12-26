@@ -38,7 +38,6 @@ def test_mem_persistence_window_tumbling(bootstrap_server):
     kf.publish()
 
     # run sql flow providing the kafka bootstrap server
-    # os.path.join(conf_dir, 'examples', 'tumbling.window.yml')
     conf = new_from_path(
         path=os.path.join(settings.CONF_DIR, 'examples', 'tumbling.window.yml'),
         setting_overrides={

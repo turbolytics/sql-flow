@@ -4,7 +4,7 @@ import unittest
 import duckdb
 
 from sqlflow.lifecycle import invoke
-from sqlflow.config import new_from_dict, Window, ConsoleOutput
+from sqlflow.config import new_from_dict, ConsoleOutput, TumblingWindow, TableManager
 
 dev_dir = os.path.join(
     os.path.dirname(__file__),
@@ -114,10 +114,11 @@ class TablesTestCase(unittest.TestCase):
                     {
                         'name': 'test',
                         'sql': 'SELECT 1',
-                        'window': {
-                            'type': 'tumbling',
-                            'duration_seconds': 600,
-                            'time_field': 'time',
+                        'manager': {
+                            'tumbling_window': {
+                                'duration_seconds': 600,
+                                'time_field': 'time',
+                            },
                             'output': {
                                 'type': 'console',
                             }
@@ -136,14 +137,15 @@ class TablesTestCase(unittest.TestCase):
             },
         })
         self.assertEqual(
-            Window(
-                type='tumbling',
-                duration_seconds=600,
-                time_field='time',
+            TableManager(
+                tumbling_window=TumblingWindow(
+                    duration_seconds=600,
+                    time_field='time',
+                ),
                 output=ConsoleOutput(
                     type='console',
                 ),
             ),
-            conf.tables.sql[0].window,
+            conf.tables.sql[0].manager,
         )
 

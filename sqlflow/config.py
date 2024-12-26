@@ -9,10 +9,14 @@ from sqlflow import settings
 
 
 @dataclass
-class Window:
-    type: str
+class TumblingWindow:
     duration_seconds: int
     time_field: str
+
+
+@dataclass
+class TableManager:
+    tumbling_window: Optional[TumblingWindow]
     output: object
 
 
@@ -28,7 +32,7 @@ class CSVTable:
 class SQLTable:
     name: str
     sql: str
-    window: Optional[Window]
+    manager: Optional[TableManager]
 
 
 @dataclass
@@ -122,13 +126,16 @@ def new_from_dict(conf):
         tables.csv.append(CSVTable(**csv_table))
 
     for sql_table_conf in conf.get('tables', {}).get('sql', []):
-        window_conf = sql_table_conf.pop('window')
-        if window_conf:
-            output = build_output((window_conf.pop('output')))
+        manager_conf = sql_table_conf.pop('manager')
+        if manager_conf:
+            output = build_output(manager_conf.pop('output'))
+            window_conf = manager_conf.pop('tumbling_window')
             s = SQLTable(
-                window=Window(
+                manager=TableManager(
+                    tumbling_window=TumblingWindow(
+                        **window_conf,
+                    ),
                     output=output,
-                    **window_conf,
                 ),
                 **sql_table_conf,
             )

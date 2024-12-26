@@ -7,7 +7,7 @@ import socket
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
-from sqlflow import window
+from sqlflow.managers import window
 from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
 
 
@@ -125,26 +125,26 @@ def build_managed_tables(conn, kafka_conf, table_confs):
     managed_tables = []
     for table in table_confs:
         # windowed tables are the only supported tables currently
-        if not table.window:
+        if not table.manager:
             continue
 
-        if table.window.type != 'tumbling':
-            raise NotImplementedError('only tumbling window is supported')
+        if not table.manager.tumbling_window:
+            raise NotImplementedError('only tumbling_window manager currently supported')
 
         output = ConsoleWriter()
-        if table.window.output.type == 'kafka':
+        if table.manager.output.type == 'kafka':
             output = new_kafka_output_from_conf(
                 brokers=kafka_conf.brokers,
-                topic=table.window.output.topic,
+                topic=table.manager.output.topic,
             )
 
         h = window.Tumbling(
             conn=conn,
             table=window.Table(
                 name=table.name,
-                time_field=table.window.time_field,
+                time_field=table.manager.tumbling_window.time_field,
             ),
-            size_seconds=table.window.duration_seconds,
+            size_seconds=table.manager.tumbling_window.duration_seconds,
             writer=output,
         )
         managed_tables.append(h)

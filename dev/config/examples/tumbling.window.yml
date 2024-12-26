@@ -16,10 +16,10 @@ tables:
 
       # tables can be managed as a windowed table.
       # windowed tables flush the table at certain durations.
-      window:
-        type: tumbling
-        duration_seconds: 10
-        time_field: timestamp
+      manager:
+        tumbling_window:
+          duration_seconds: 10
+          time_field: timestamp
 
         output:
           type: kafka

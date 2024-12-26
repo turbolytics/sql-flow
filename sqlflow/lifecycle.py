@@ -15,7 +15,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     :param config:
     :param fixture:
     :param setting_overrides:
-    :param flush_window: Flushes the window after the invocation.
+    :param flush_window: Flushes the managers after the invocation.
     :return:
     """
     conf = new_from_path(config, setting_overrides)

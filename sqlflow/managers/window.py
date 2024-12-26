@@ -18,8 +18,8 @@ class Table:
 
 class Tumbling:
     """
-    Tumbling window handler manages the table provided. Management includes:
-    - Polling table for records outside the window range.
+    Tumbling managers handler manages the table provided. Management includes:
+    - Polling table for records outside the managers range.
     - Publishing records that have closed.
     - Deleteting closed records from the table.
     """
@@ -109,7 +109,7 @@ class Tumbling:
         self.delete_closed()
 
     def start(self):
-        logger.debug('starting window thread')
+        logger.debug('starting managers thread')
         while not self._stopped:
             self.poll()
             time.sleep(self._poll_interval_seconds)
