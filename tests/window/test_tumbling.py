@@ -104,8 +104,8 @@ class TumblingTestCase(unittest.TestCase):
         tw.flush(records)
         self.assertEqual(
             [
-                (None, 'first'),
-                (None, 'second'),
+                (None, '"first"'),
+                (None, '"second"'),
             ],
             writer.writes,
         )

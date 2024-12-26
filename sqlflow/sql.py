@@ -1,6 +1,6 @@
-import duckdb
 import sys
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 import socket
@@ -14,6 +14,14 @@ from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class Stats:
+    start_time: datetime = datetime.now(timezone.utc)
+    num_messages_consumed: int = 0
+    num_errors: int = 0
+    total_throughput_per_second: float = 0
+
+
 class SQLFlow:
     '''
     SQLFlow executes a pipeline as a daemon.
@@ -24,19 +32,33 @@ class SQLFlow:
         self.consumer = consumer
         self.output = output
         self.handler = handler
+        self._stats = Stats(
+            num_messages_consumed=0,
+            num_errors=0,
+            start_time=datetime.now(timezone.utc),
+        )
 
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
         try:
             self.consumer.subscribe(self.input.topics)
             self._consume_loop(max_msgs)
+
+            now = datetime.now(timezone.utc)
+            diff = (now - self._stats.start_time)
+            self._stats.total_throughput_per_second = self._stats.num_messages_consumed // diff.total_seconds()
         finally:
             self.consumer.close()
+            logger.info(
+                'consumer loop ending: total messages / sec = {}'.format(self._stats.total_throughput_per_second),
+            )
+            return self._stats
+
 
     def _consume_loop(self, max_msgs=None):
-        num_messages = 0
-        start_dt = datetime.now(timezone.utc)
-        total_messages = 0
+        num_batch_messages = 0
+        self._stats.start_time = datetime.now(timezone.utc)
+        self._stats.num_messages_consumed = 0
 
         self.handler.init()
 
@@ -44,10 +66,10 @@ class SQLFlow:
             msg = self.consumer.poll(timeout=1.0)
             if msg is None:
                 continue
-            total_messages += 1
+            self._stats.num_messages_consumed += 1
             if msg.error():
+                self._stats.num_errors += 1
                 if msg.error().code() == KafkaError._PARTITION_EOF:
-                    # End of partition event
                     sys.stderr.write(
                         '%% %s [%d] reached end at offset %d\n' %
                         (msg.topic(), msg.partition(), msg.offset()),
@@ -57,14 +79,16 @@ class SQLFlow:
                 continue
 
             self.handler.write(msg.value().decode())
-            num_messages += 1
+            num_batch_messages += 1
 
-            if total_messages % 10000 == 0:
+            if self._stats.num_messages_consumed % 10000 == 0:
                 now = datetime.now(timezone.utc)
-                diff = (now - start_dt)
-                logger.debug('{}: reqs / second'.format(total_messages // diff.total_seconds()))
+                diff = (now - self._stats.start_time)
+                logger.debug('{}: reqs / second'.format(
+                    self._stats.num_messages_consumed // diff.total_seconds()),
+                )
 
-            if num_messages == self.input.batch_size:
+            if num_batch_messages == self.input.batch_size:
                 # apply the pipeline
                 batch = self.handler.invoke()
                 for l in batch:
@@ -76,12 +100,10 @@ class SQLFlow:
 
                 # reset the file state
                 self.handler.init()
-                num_messages = 0
+                num_batch_messages = 0
 
-            if max_msgs and max_msgs <= total_messages:
-                now = datetime.now(timezone.utc)
-                diff = (now - start_dt)
-                logger.debug('{}: reqs / second - Total'.format(total_messages // diff.total_seconds()))
+            if max_msgs and max_msgs <= self._stats.num_messages_consumed:
+                logger.info('max messages reached')
                 return
 
 

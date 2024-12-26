@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlflow.outputs import Writer
-from sqlflow.serde import JSON, Noop
+from sqlflow.serde import JSON
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,11 @@ class Tumbling:
         self.size_seconds = size_seconds
         self.writer = writer
         self._poll_interval_seconds = 10
-        self.serde = Noop()
+        self.serde = JSON()
+        self._stopped = None
+
+    def stop(self):
+        self._stopped = True
 
     def collect_closed(self) -> [object]:
         # select all data with 'closed' windows.
@@ -106,6 +110,6 @@ class Tumbling:
 
     def start(self):
         logger.debug('starting window thread')
-        while True:
+        while not self._stopped:
             self.poll()
             time.sleep(self._poll_interval_seconds)

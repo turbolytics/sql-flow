@@ -29,8 +29,7 @@ pipeline:
 
   input:
     batch_size: 1000
-    topics:
-    - "tumbling-window"
+    topics: [{{ topic|default('tumbling-window') }}]
 
   sql: |
     INSERT INTO agg_cities_count

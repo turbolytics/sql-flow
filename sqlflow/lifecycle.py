@@ -74,4 +74,10 @@ def start(conf, max_msgs=None):
         conn,
         handler=h,
     )
-    sflow.consume_loop(max_msgs)
+    stats = sflow.consume_loop(max_msgs)
+
+    # stop all managed tables
+    for table in managed_tables:
+        table.stop()
+
+    return stats
