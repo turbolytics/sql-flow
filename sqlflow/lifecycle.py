@@ -1,7 +1,9 @@
-from sqlflow.serde import JSON
-from sqlflow.sql import init_tables, build_managed_tables
-from sqlflow.handlers import InferredDiskBatch, get_class
+import duckdb
+
 from sqlflow.config import new_from_path
+from sqlflow.handlers import get_class
+from sqlflow.serde import JSON
+from sqlflow.sql import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf
 
 
 def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
@@ -49,3 +51,27 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     print(res)
 
     return res
+
+def start(conf, max_msgs=None):
+    conn = duckdb.connect()
+
+    BatchHandler = get_class(conf.pipeline.type)
+    h = BatchHandler(
+        conf,
+        deserializer=JSON(),
+        conn=conn,
+    )
+
+    init_tables(conn, conf.tables)
+    managed_tables = build_managed_tables(
+        conn,
+        conf.tables.sql,
+    )
+    handle_managed_tables(managed_tables)
+
+    sflow = new_sqlflow_from_conf(
+        conf,
+        conn,
+        handler=h,
+    )
+    sflow.consume_loop(max_msgs)

@@ -3,7 +3,7 @@ import unittest
 
 import duckdb
 
-from sqlflow import invoke
+from sqlflow.lifecycle import invoke
 from sqlflow.config import new_from_dict, Window, ConsoleOutput
 
 dev_dir = os.path.join(

@@ -6,6 +6,9 @@ install-tools:
 test-unit:
 	pytest --ignore=tests/benchmarks --ignore=tests/integration tests
 
+.PHONY: test-benchmark
+test-benchmark:
+	pytest tests/benchmarks
 
 .PHONY: start-backing-services
 start-backing-services:

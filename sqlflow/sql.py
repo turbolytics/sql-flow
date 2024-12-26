@@ -1,3 +1,4 @@
+import duckdb
 import sys
 import threading
 from datetime import datetime, timezone
@@ -168,3 +169,4 @@ def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
     )
 
     return sflow
+

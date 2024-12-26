@@ -1,5 +1,5 @@
 kafka:
-  brokers: [localhost:9092]
+  brokers: [{{ kafka_brokers|default('localhost:9092') }}]
   group_id: test
   auto_offset_reset: earliest
 
