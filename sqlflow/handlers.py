@@ -1,8 +1,11 @@
+import logging
 import json
 import os
 
 import duckdb
 import pyarrow as pa
+
+logger = logging.getLogger(__name__)
 
 
 class InferredDiskBatch:
@@ -11,7 +14,7 @@ class InferredDiskBatch:
     messages as implicit json.
     """
 
-    def __init__(self, conf, *args, **kwargs):
+    def __init__(self, conf, *args, conn=None, **kwargs):
         self.conf = conf
         self._f = None
         self._batch_file = os.path.join(
@@ -22,6 +25,7 @@ class InferredDiskBatch:
             self.conf.sql_results_cache_dir,
             'out.json',
         )
+        self.conn = conn if conn else duckdb.connect(":memory:")
 
     def init(self):
         f = open(self._batch_file, 'w+')
@@ -41,16 +45,16 @@ class InferredDiskBatch:
             for l in self._invoke():
                 yield l
         finally:
-            duckdb.sql('DROP TABLE IF EXISTS batch')
+            self.conn.sql('DROP TABLE IF EXISTS batch')
 
     def _invoke(self):
-        duckdb.sql(
+        self.conn.sql(
             'CREATE TABLE batch AS SELECT * FROM read_json_auto(\'{}\')'.format(
                 self._batch_file
             ),
         )
 
-        duckdb.sql(
+        self.conn.sql(
             "COPY ({}) TO '{}'".format(
                 self.conf.pipeline.sql,
                 self._out_file,
@@ -68,11 +72,11 @@ class InferredMemBatch:
     messages as implicit json.
     """
 
-    def __init__(self, conf, deserializer=None):
+    def __init__(self, conf, deserializer=None, conn=None):
         self.conf = conf
         self.rows = None
         self.deserializer = deserializer
-        self.conn = duckdb.connect(":memory:")
+        self.conn = conn if conn else duckdb.connect(":memory:")
 
     def init(self):
         self.rows = []
@@ -83,17 +87,24 @@ class InferredMemBatch:
         self.rows.append(o)
 
     def invoke(self):
-        try:
-            for l in self._invoke():
-                yield l
-        finally:
-            duckdb.sql('DROP TABLE IF EXISTS batch')
+        for l in self._invoke():
+            yield l
 
     def _invoke(self):
         batch = pa.Table.from_pylist(self.rows)
-        res = self.conn.sql(
-            self.conf.pipeline.sql,
-        )
+
+        try:
+            res = self.conn.sql(
+                self.conf.pipeline.sql,
+            )
+        except duckdb.duckdb.BinderException as e:
+            logger.error(
+                'could not execute sql: {}'.format(self.conf.pipeline.sql),
+            )
+            raise e
+
+        if not res:
+            return
 
         df = res.df()
 

@@ -24,3 +24,12 @@ VARS = {
     'STATIC_ROOT': STATIC_ROOT,
     'SQL_RESULTS_CACHE_DIR': SQL_RESULTS_CACHE_DIR
 }
+
+DEV_DIR = os.path.join(
+    os.path.dirname(__file__),
+    '..',
+    'dev',
+)
+
+CONF_DIR = os.path.join(DEV_DIR, 'config')
+FIXTURES_DIR = os.path.join(DEV_DIR, 'fixtures')

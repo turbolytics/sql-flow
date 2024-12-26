@@ -9,7 +9,6 @@ SQLFlow supports:
 - Performant [librdkafka](https://github.com/confluentinc/librdkafka) [python consumer](https://github.com/confluentinc/confluent-kafka-python)
 
 SQLFlow is currently not a good fit for:
-- Stateful stream processing
 - Wire protocols other than JSON
 
 SQLFlow is a kafka consumer that embeds SQL for stream transformation:
@@ -136,6 +135,7 @@ Hardware:
 | Enrichment                | 13,000 msgs /sec  | 368 MiB        | 124 MiB           |
 | CSV Disk Join             | 11,500 msgs /sec  | 312 MiB        | 152 MiB           |
 | CSV Memory Join           | 33,200 msgs / sec | 300 MiB        | 107 MiB           |
+| In Memory Tumbling Window | 44,000 msgs / sec | 198 MiB        |  96 MiB           |
 
 ### Simple Aggregate - Disk / Mem
 
@@ -168,5 +168,14 @@ each output record is enhanced with additional information.
 ./benchmark/csv-disk-join.sh
 ```
 
---- 
+## In Memory Tumbling Window
+
+Tumbling window that aggregates count of cities.
+
+```
+./benchmark/tumbling-window.sh
+```
+
+
+# Contact Us 
 Like SQLFlow? Use SQLFlow? Feature Requests? Please let us know! danny@turbolytics.io

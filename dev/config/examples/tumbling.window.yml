@@ -1,41 +1,46 @@
 kafka:
-  brokers: [localhost:9092]
+  brokers: [{{ kafka_brokers|default('localhost:9092') }}]
   group_id: test
   auto_offset_reset: earliest
 
 tables:
   sql:
     - name: agg_cities_count
-      # persistence: 'memory'
       sql: |
         CREATE TABLE agg_cities_count (
-          date DATE,
+          timestamp TIMESTAMPTZ,
           city VARCHAR,
           count INT 
         );
-        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (date, city);
+        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (timestamp, city);
+
+      # tables can be managed as a windowed table.
+      # windowed tables flush the table at certain durations.
+      manager:
+        tumbling_window:
+          duration_seconds: 10
+          time_field: timestamp
+
+        output:
+          type: kafka
+          topic: output-tumbling-window-1
 
 pipeline:
+  type: 'handlers.InferredMemBatch'
+
   input:
     batch_size: 1000
-    topics:
-    - "cities-window-in"
+    topics: [{{ topic|default('tumbling-window') }}]
 
   sql: |
     INSERT INTO agg_cities_count
+    BY NAME
     SELECT 
-      time::date as date,
+      timestamp::date as timestamp,
       properties.city as city,
       count(*) as count
     FROM batch
     GROUP BY 
-      date, city
-    ON CONFLICT DO UPDATE SET count = count + EXCLUDED.count
-
-  window:
-    type: tumbling
-    size: 10m
-
-  output:
-    type: kafka
-    topic: "cities-window-out"
+      timestamp, city
+    ON CONFLICT (timestamp, city) 
+    DO UPDATE SET count = count + EXCLUDED.count

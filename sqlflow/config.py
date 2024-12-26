@@ -9,6 +9,18 @@ from sqlflow import settings
 
 
 @dataclass
+class TumblingWindow:
+    duration_seconds: int
+    time_field: str
+
+
+@dataclass
+class TableManager:
+    tumbling_window: Optional[TumblingWindow]
+    output: object
+
+
+@dataclass
 class CSVTable:
     name: str
     path: str
@@ -17,8 +29,16 @@ class CSVTable:
 
 
 @dataclass
+class SQLTable:
+    name: str
+    sql: str
+    manager: Optional[TableManager]
+
+
+@dataclass
 class Tables:
     csv: [CSVTable]
+    sql: [SQLTable]
 
 
 @dataclass
@@ -81,14 +101,45 @@ def new_from_path(path: str, setting_overrides={}):
     )
 
     conf = safe_load(rendered_template)
+    return new_from_dict(conf)
 
-    output = ConsoleOutput(type='console')
 
-    if conf['pipeline']['output']['type'] == 'kafka':
-        output = KafkaOutput(
+def build_output(c: object):
+    output_type = c.get('type')
+    if output_type == 'kafka':
+        return KafkaOutput(
             type='kafka',
-            topic=conf['pipeline']['output']['topic'],
+            topic=c['topic']
         )
+    else:
+        return ConsoleOutput(type='console')
+
+
+def new_from_dict(conf):
+    output = build_output(conf['pipeline'].get('output', {}))
+
+    tables = Tables(
+        csv=[],
+        sql=[],
+    )
+    for csv_table in conf.get('tables', {}).get('csv', []):
+        tables.csv.append(CSVTable(**csv_table))
+
+    for sql_table_conf in conf.get('tables', {}).get('sql', []):
+        manager_conf = sql_table_conf.pop('manager')
+        if manager_conf:
+            output = build_output(manager_conf.pop('output'))
+            window_conf = manager_conf.pop('tumbling_window')
+            s = SQLTable(
+                manager=TableManager(
+                    tumbling_window=TumblingWindow(
+                        **window_conf,
+                    ),
+                    output=output,
+                ),
+                **sql_table_conf,
+            )
+            tables.sql.append(s)
 
     return Conf(
         kafka=Kafka(
@@ -96,11 +147,7 @@ def new_from_path(path: str, setting_overrides={}):
             group_id=conf['kafka']['group_id'],
             auto_offset_reset=conf['kafka']['auto_offset_reset'],
         ),
-        tables=Tables(
-            csv=[
-                CSVTable(**t_conf) for t_conf in conf.get('tables', {}).get('csv', [])
-            ]
-        ),
+        tables=tables,
         sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),
         pipeline=Pipeline(
             type=conf['pipeline'].get('type', 'handlers.InferredDiskBatch'),
@@ -112,3 +159,4 @@ def new_from_path(path: str, setting_overrides={}):
             output=output,
         )
     )
+

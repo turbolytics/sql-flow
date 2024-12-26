@@ -22,3 +22,10 @@ class JSON(Serializer, Deserializer):
         return json.dumps(d)
 
 
+class Noop(Serializer, Deserializer):
+    def decode(self, bs: bytes):
+        raise NotImplemented
+
+    def encode(self, d: object) -> object:
+        return d
+
