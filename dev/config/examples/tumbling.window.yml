@@ -22,7 +22,8 @@ tables:
         time_field: timestamp
 
         output:
-          type: console
+          type: kafka
+          topic: output-tumbling-window-1
 
 pipeline:
   type: 'handlers.InferredMemBatch'

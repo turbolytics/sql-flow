@@ -121,7 +121,7 @@ def init_tables(conn, tables):
         conn.sql(sql_table.sql)
 
 
-def build_managed_tables(conn, table_confs):
+def build_managed_tables(conn, kafka_conf, table_confs):
     managed_tables = []
     for table in table_confs:
         # windowed tables are the only supported tables currently
@@ -131,6 +131,13 @@ def build_managed_tables(conn, table_confs):
         if table.window.type != 'tumbling':
             raise NotImplementedError('only tumbling window is supported')
 
+        output = ConsoleWriter()
+        if table.window.output.type == 'kafka':
+            output = new_kafka_output_from_conf(
+                brokers=kafka_conf.brokers,
+                topic=table.window.output.topic,
+            )
+
         h = window.Tumbling(
             conn=conn,
             table=window.Table(
@@ -138,7 +145,7 @@ def build_managed_tables(conn, table_confs):
                 time_field=table.window.time_field,
             ),
             size_seconds=table.window.duration_seconds,
-            writer=ConsoleWriter(),
+            writer=output,
         )
         managed_tables.append(h)
     return managed_tables
@@ -162,6 +169,16 @@ def handle_managed_tables(tables):
         t.start()
 
 
+def new_kafka_output_from_conf(brokers, topic):
+    p = Producer({
+        'bootstrap.servers': ','.join(brokers),
+        'client.id': socket.gethostname(),
+    })
+    return KafkaWriter(
+        topic=topic,
+        producer=p,
+    )
+
 def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
     kconf = {
         'bootstrap.servers': ','.join(conf.kafka.brokers),
@@ -174,13 +191,9 @@ def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
 
     output = ConsoleWriter()
     if conf.pipeline.output.type == 'kafka':
-        producer = Producer({
-            'bootstrap.servers': ','.join(conf.kafka.brokers),
-            'client.id': socket.gethostname(),
-        })
-        output = KafkaWriter(
+        output = new_kafka_output_from_conf(
+            brokers=conf.kafka.brokers,
             topic=conf.pipeline.output.topic,
-            producer=producer,
         )
 
     sflow = SQLFlow(

@@ -8,7 +8,7 @@ test-unit:
 
 .PHONY: test-benchmark
 test-benchmark:
-	pytest tests/benchmarks
+	pytest tests/benchmarks -s
 
 .PHONY: start-backing-services
 start-backing-services:

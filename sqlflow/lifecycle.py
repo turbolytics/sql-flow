@@ -30,6 +30,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     init_tables(conn, conf.tables)
     managed_tables = build_managed_tables(
         conn,
+        conf.kafka,
         conf.tables.sql,
     )
     if managed_tables:
@@ -65,6 +66,7 @@ def start(conf, max_msgs=None):
     init_tables(conn, conf.tables)
     managed_tables = build_managed_tables(
         conn,
+        conf.kafka,
         conf.tables.sql,
     )
     handle_managed_tables(managed_tables)
@@ -76,8 +78,10 @@ def start(conf, max_msgs=None):
     )
     stats = sflow.consume_loop(max_msgs)
 
-    # stop all managed tables
+    # flush and stop all managed tables
     for table in managed_tables:
+        records = table.collect_closed()
+        table.flush(records)
         table.stop()
 
     return stats
