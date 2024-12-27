@@ -107,7 +107,7 @@ Every instance of sql-flow needs a pipeline configuration file.
 
 Coming Soon, until then checkout:
 
-- [Benchmark configurations](./dev/config/benchmarks)
+- [Benchmark configurations](./benchmark)
 - [Unit Test configurations](./tests/)
 
 #### Running multiple SQLFlow instances on the same filesystem 
