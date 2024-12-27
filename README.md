@@ -6,13 +6,15 @@ SQLFlow is a kafka consumer that embeds duckdb for SQL stream transformations:
 
 <img width="754" alt="Screenshot 2023-11-26 at 8 16 47 PM" src="https://github.com/turbolytics/sql-flow/assets/151242797/419d8688-1d08-45ce-b245-1c2c886a3157">
 
-## SQLFlow Use-Cases:
+## SQLFlow Use-Cases
+
 - Streaming Data Transformations: Clean data and types and publish the new data ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
 - Stream Enrichment: Add data an input stream and publish the new data ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/enrich.yml)).
 - Data aggregation: Aggregate input data batches to decrease data volume ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
 - Tumbling Window Aggregation: Bucket data into arbitrary time windows (such as "hour" or "10 minutes") ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/tumbling.window.yml)).
 
-## SQLFlow Features: 
+## SQLFlow Features
+
 - Kafka Stream Consumers/Producers: Use kafka streaming primitives, such as consumer groups, to scale processing horizontally.
 - Configurable Serialization/Encodings: Such as JSON on the wire.
 - Stream transformations in pure SQL, powered by [DuckDB](https://duckdb.org/)
@@ -21,6 +23,7 @@ SQLFlow is a kafka consumer that embeds duckdb for SQL stream transformations:
 - Join streaming data with any CSV-based data using SQLFlow static tables. 
 
 ## SQLFlow Roadmap 
+
 - [x] Kafka Consumer using consumer groups
 - [x] Kafka Producer
 - [x] JSON Input
@@ -37,6 +40,7 @@ SQLFlow is a kafka consumer that embeds duckdb for SQL stream transformations:
 ## Getting Started
 
 ### Docker
+
 [Docker is the easiest way to get started.](https://hub.docker.com/r/turbolytics/sql-flow)
 
 - Pull the sql-flow docker image
