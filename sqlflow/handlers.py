@@ -18,11 +18,11 @@ class InferredDiskBatch:
         self.conf = conf
         self._f = None
         self._batch_file = os.path.join(
-            self.conf.sql_results_cache_dir,
+            self.conf.pipeline.handler.sql_results_cache_dir,
             'consumer_batch.json',
         )
         self._out_file = os.path.join(
-            self.conf.sql_results_cache_dir,
+            self.conf.pipeline.handler.sql_results_cache_dir,
             'out.json',
         )
         self.conn = conn if conn else duckdb.connect(":memory:")
@@ -56,7 +56,7 @@ class InferredDiskBatch:
 
         self.conn.sql(
             "COPY ({}) TO '{}'".format(
-                self.conf.pipeline.sql,
+                self.conf.pipeline.handler.sql,
                 self._out_file,
             )
         )

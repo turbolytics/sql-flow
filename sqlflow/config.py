@@ -78,6 +78,7 @@ class Sink:
 class Handler:
     type: str
     sql: str
+    sql_results_cache_dir: str = settings.SQL_RESULTS_CACHE_DIR
 
 
 @dataclass

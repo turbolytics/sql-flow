@@ -58,7 +58,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
 def start(conf, max_msgs=None):
     conn = duckdb.connect()
 
-    BatchHandler = get_class(conf.pipeline.type)
+    BatchHandler = handlers.get_class(conf.pipeline.handler.type)
     h = BatchHandler(
         conf,
         deserializer=JSON(),
@@ -66,12 +66,14 @@ def start(conf, max_msgs=None):
     )
 
     init_tables(conn, conf.tables)
+    '''
     managed_tables = build_managed_tables(
         conn,
         conf.kafka,
         conf.tables.sql,
     )
     handle_managed_tables(managed_tables)
+    '''
 
     sflow = new_sqlflow_from_conf(
         conf,
@@ -81,9 +83,11 @@ def start(conf, max_msgs=None):
     stats = sflow.consume_loop(max_msgs)
 
     # flush and stop all managed tables
+    '''
     for table in managed_tables:
         records = table.collect_closed()
         table.flush(records)
         table.stop()
+    '''
 
     return stats

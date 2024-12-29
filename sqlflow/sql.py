@@ -41,12 +41,15 @@ class SQLFlow:
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
         try:
-            self.consumer.subscribe(self.input.topics)
+            self.consumer.subscribe(self.input.kafka.topics)
             self._consume_loop(max_msgs)
 
             now = datetime.now(timezone.utc)
             diff = (now - self._stats.start_time)
             self._stats.total_throughput_per_second = self._stats.num_messages_consumed // diff.total_seconds()
+        except Exception as e:
+            logger.error('error in consumer loop: {}'.format(e))
+            raise e
         finally:
             self.consumer.close()
             logger.info(
@@ -181,23 +184,23 @@ def new_kafka_output_from_conf(brokers, topic):
 
 def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
     kconf = {
-        'bootstrap.servers': ','.join(conf.kafka.brokers),
-        'group.id': conf.kafka.group_id,
-        'auto.offset.reset': conf.kafka.auto_offset_reset,
+        'bootstrap.servers': ','.join(conf.pipeline.source.kafka.brokers),
+        'group.id': conf.pipeline.source.kafka.group_id,
+        'auto.offset.reset': conf.pipeline.source.kafka.auto_offset_reset,
         'enable.auto.commit': False,
     }
 
     consumer = Consumer(kconf)
 
     output = ConsoleWriter()
-    if conf.pipeline.output.type == 'kafka':
+    if conf.pipeline.sink.type == 'kafka':
         output = new_kafka_output_from_conf(
-            brokers=conf.kafka.brokers,
-            topic=conf.pipeline.output.topic,
+            brokers=conf.pipeline.source.kafka.brokers,
+            topic=conf.pipeline.sink.kafka.topic,
         )
 
     sflow = SQLFlow(
-        input=conf.pipeline.input,
+        input=conf.pipeline.source,
         consumer=consumer,
         handler=handler,
         output=output,
