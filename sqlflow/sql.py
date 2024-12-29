@@ -8,7 +8,7 @@ import socket
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
 from sqlflow.managers import window
-from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
+from sqlflow.sinks import ConsoleSink, Sink, KafkaSink
 
 
 logger = logging.getLogger(__name__)
@@ -27,10 +27,10 @@ class SQLFlow:
     SQLFlow executes a pipeline as a daemon.
     '''
 
-    def __init__(self, input, consumer, handler, output: Writer):
+    def __init__(self, input, consumer, handler, sink: Sink):
         self.input = input
         self.consumer = consumer
-        self.output = output
+        self.sink = sink
         self.handler = handler
         self._stats = Stats(
             num_messages_consumed=0,
@@ -95,10 +95,10 @@ class SQLFlow:
                 # apply the pipeline
                 batch = self.handler.invoke()
                 for l in batch:
-                    self.output.write(l)
+                    self.sink.write(l)
 
                 # Only commit after all messages in batch are processed
-                self.output.flush()
+                self.sink.flush()
                 self.consumer.commit(asynchronous=False)
 
                 # reset the file state
@@ -134,11 +134,11 @@ def build_managed_tables(conn, kafka_conf, table_confs):
         if not table.manager.tumbling_window:
             raise NotImplementedError('only tumbling_window manager currently supported')
 
-        output = ConsoleWriter()
-        if table.manager.output.type == 'kafka':
+        output = ConsoleSink()
+        if table.manager.sink.type == 'kafka':
             output = new_kafka_output_from_conf(
                 brokers=kafka_conf.brokers,
-                topic=table.manager.output.topic,
+                topic=table.manager.sink.topic,
             )
 
         h = window.Tumbling(
@@ -177,7 +177,7 @@ def new_kafka_output_from_conf(brokers, topic):
         'bootstrap.servers': ','.join(brokers),
         'client.id': socket.gethostname(),
     })
-    return KafkaWriter(
+    return KafkaSink(
         topic=topic,
         producer=p,
     )
@@ -192,7 +192,7 @@ def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
 
     consumer = Consumer(kconf)
 
-    output = ConsoleWriter()
+    output = ConsoleSink()
     if conf.pipeline.sink.type == 'kafka':
         output = new_kafka_output_from_conf(
             brokers=conf.pipeline.source.kafka.brokers,
@@ -203,7 +203,7 @@ def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
         input=conf.pipeline.source,
         consumer=consumer,
         handler=handler,
-        output=output,
+        sink=output,
     )
 
     return sflow

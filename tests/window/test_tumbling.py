@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import duckdb
 import pyarrow as pa
 
-from sqlflow.outputs import ConsoleWriter, TestWriter
+from sqlflow.sinks import ConsoleSink, TestSink
 from sqlflow.managers.window import Tumbling, Table
 
 
@@ -38,7 +38,7 @@ class TumblingTestCase(unittest.TestCase):
                 time_field='timestamp',
             ),
             size_seconds=600,
-            writer=ConsoleWriter(),
+            writer=ConsoleSink(),
         )
         rows = tw.collect_closed()
         self.assertEqual([], rows)
@@ -75,7 +75,7 @@ class TumblingTestCase(unittest.TestCase):
                 time_field='timestamp',
             ),
             size_seconds=600,
-            writer=ConsoleWriter(),
+            writer=ConsoleSink(),
         )
         rows = tw.collect_closed()
         self.assertEqual(
@@ -86,7 +86,7 @@ class TumblingTestCase(unittest.TestCase):
         )
 
     def test_flush_results(self):
-        writer = TestWriter()
+        writer = TestSink()
 
         tw = Tumbling(
             conn=None,
@@ -141,7 +141,7 @@ class TumblingTestCase(unittest.TestCase):
                 time_field='timestamp',
             ),
             size_seconds=600,
-            writer=ConsoleWriter(),
+            writer=ConsoleSink(),
         )
 
         num_deleted = tw.delete_closed()

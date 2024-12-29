@@ -1,14 +1,14 @@
 import unittest
 from unittest.mock import patch, call, MagicMock
 
-from sqlflow.outputs import ConsoleWriter, KafkaWriter
+from sqlflow.sinks import ConsoleSink, KafkaSink
 
 
 class ConsoleWriterTestCase(unittest.TestCase):
 
     @patch('sys.stdout')
     def test_write_val_with_newline(self, mock_stdout):
-        w = ConsoleWriter()
+        w = ConsoleSink()
         w.write('hello')
 
         mock_stdout.write.assert_has_calls([
@@ -20,7 +20,7 @@ class ConsoleWriterTestCase(unittest.TestCase):
 class KafkaWriterTestCase(unittest.TestCase):
     def test_write_key_value(self):
         producer = MagicMock()
-        w = KafkaWriter(
+        w = KafkaSink(
             topic='test',
             producer=producer,
         )

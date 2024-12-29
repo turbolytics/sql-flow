@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlflow.outputs import Writer
+from sqlflow.sinks import Sink
 from sqlflow.serde import JSON
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class Tumbling:
     - Publishing records that have closed.
     - Deleteting closed records from the table.
     """
-    def __init__(self, conn, table: Table, size_seconds, writer: Writer):
+    def __init__(self, conn, table: Table, size_seconds, writer: Sink):
         self.conn = conn
         self.table = table
         self.size_seconds = size_seconds
