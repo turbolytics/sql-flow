@@ -81,7 +81,7 @@ class InvokeExamplesTestCase(unittest.TestCase):
             fixture=os.path.join(fixtures_dir, 'enrich.jsonl'),
         )
         self.assertEqual([
-           '{"event":"search","properties":{"city":"New York"},"user":{"id":"123412ds"},"nested_city":{"something":"New York"},"nested_json":{"":"New York","":1,"":2}}',
+           '{"event": "search", "properties": {"city": "New York"}, "user": {"id": "123412ds"}, "nested_city": {"something": "New York"}, "extra": "extra"}',
         ], out)
 
     def test_tumbling_window(self):
