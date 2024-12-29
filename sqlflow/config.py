@@ -63,7 +63,6 @@ class ConsoleSink:
 @dataclass
 class Source:
     type: str
-    batch_size: int
     kafka: Optional[KafkaSource] = None
 
 
@@ -83,6 +82,7 @@ class Handler:
 
 @dataclass
 class Pipeline:
+    batch_size: int
     source: Source
     handler: Handler
     sink: Sink
@@ -145,8 +145,8 @@ def new_from_dict(conf):
     return Conf(
         tables=tables,
         pipeline=Pipeline(
+            batch_size=conf['pipeline']['batch_size'],
             source=Source(
-                batch_size=conf['pipeline']['source']['batch_size'],
                 type=conf['pipeline']['source']['type'],
                 kafka=KafkaSource(
                     brokers=conf['pipeline']['source']['kafka']['brokers'],

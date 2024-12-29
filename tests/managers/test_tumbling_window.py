@@ -8,7 +8,7 @@ from sqlflow.sinks import ConsoleSink, TestSink
 from sqlflow.managers.window import Tumbling, Table
 
 
-class TumblingTestCase(unittest.TestCase):
+class TumblingWindowTestCase(unittest.TestCase):
     def test_no_closed_results(self):
         conn = duckdb.connect()
 

@@ -9,7 +9,7 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
 from sqlflow.managers import window
 from sqlflow.sinks import ConsoleSink, Sink, KafkaSink
-
+from sqlflow.sources import Source, KafkaSource
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +27,15 @@ class SQLFlow:
     SQLFlow executes a pipeline as a daemon.
     '''
 
-    def __init__(self, input, consumer, handler, sink: Sink):
-        self.input = input
-        self.consumer = consumer
+    def __init__(self,
+                 source: Source,
+                 handler,
+                 sink: Sink,
+                 batch_size=1000):
+        self.source = source
         self.sink = sink
         self.handler = handler
+        self._batch_size = batch_size
         self._stats = Stats(
             num_messages_consumed=0,
             num_errors=0,
@@ -41,7 +45,7 @@ class SQLFlow:
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
         try:
-            self.consumer.subscribe(self.input.kafka.topics)
+            self.source.start()
             self._consume_loop(max_msgs)
 
             now = datetime.now(timezone.utc)
@@ -51,7 +55,7 @@ class SQLFlow:
             logger.error('error in consumer loop: {}'.format(e))
             raise e
         finally:
-            self.consumer.close()
+            self.source.close()
             logger.info(
                 'consumer loop ending: total messages / sec = {}'.format(self._stats.total_throughput_per_second),
             )
@@ -66,21 +70,11 @@ class SQLFlow:
         self.handler.init()
 
         while True:
-            msg = self.consumer.poll(timeout=1.0)
+            msg = self.source.read()
+            # msg = self.source.poll(timeout=1.0)
             if msg is None:
                 continue
             self._stats.num_messages_consumed += 1
-            if msg.error():
-                self._stats.num_errors += 1
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    sys.stderr.write(
-                        '%% %s [%d] reached end at offset %d\n' %
-                        (msg.topic(), msg.partition(), msg.offset()),
-                        )
-                elif msg.error():
-                    raise KafkaException(msg.error())
-                continue
-
             self.handler.write(msg.value().decode())
             num_batch_messages += 1
 
@@ -91,7 +85,7 @@ class SQLFlow:
                     self._stats.num_messages_consumed // diff.total_seconds()),
                 )
 
-            if num_batch_messages == self.input.batch_size:
+            if num_batch_messages == self._batch_size:
                 # apply the pipeline
                 batch = self.handler.invoke()
                 for l in batch:
@@ -99,7 +93,7 @@ class SQLFlow:
 
                 # Only commit after all messages in batch are processed
                 self.sink.flush()
-                self.consumer.commit(asynchronous=False)
+                self.source.commit()
 
                 # reset the file state
                 self.handler.init()
@@ -136,7 +130,7 @@ def build_managed_tables(conn, kafka_conf, table_confs):
 
         output = ConsoleSink()
         if table.manager.sink.type == 'kafka':
-            output = new_kafka_output_from_conf(
+            output = new_kafka_sink_from_conf(
                 brokers=kafka_conf.brokers,
                 topic=table.manager.sink.topic,
             )
@@ -172,7 +166,7 @@ def handle_managed_tables(tables):
         t.start()
 
 
-def new_kafka_output_from_conf(brokers, topic):
+def new_kafka_sink_from_conf(brokers, topic):
     p = Producer({
         'bootstrap.servers': ','.join(brokers),
         'client.id': socket.gethostname(),
@@ -192,18 +186,23 @@ def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
 
     consumer = Consumer(kconf)
 
-    output = ConsoleSink()
+    sink = ConsoleSink()
     if conf.pipeline.sink.type == 'kafka':
-        output = new_kafka_output_from_conf(
+        sink = new_kafka_sink_from_conf(
             brokers=conf.pipeline.source.kafka.brokers,
             topic=conf.pipeline.sink.kafka.topic,
         )
 
-    sflow = SQLFlow(
-        input=conf.pipeline.source,
+    source = KafkaSource(
         consumer=consumer,
+        topics=conf.pipeline.source.kafka.topics,
+    )
+
+    sflow = SQLFlow(
+        source=source,
         handler=handler,
-        sink=output,
+        sink=sink,
+        batch_size=conf.pipeline.batch_size,
     )
 
     return sflow

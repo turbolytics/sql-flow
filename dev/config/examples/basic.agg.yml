@@ -1,6 +1,7 @@
 pipeline:
+  batch_size: 1000
+
   source:
-    batch_size: 1000
     type: kafka
     kafka:
       brokers: [localhost:9092]
