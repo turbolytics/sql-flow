@@ -4,7 +4,7 @@ import unittest
 import duckdb
 
 from sqlflow.lifecycle import invoke
-from sqlflow.config import new_from_dict, ConsoleOutput, TumblingWindow, TableManager
+from sqlflow.config import new_from_dict, ConsoleSink, TumblingWindow, TableManager
 
 dev_dir = os.path.join(
     os.path.dirname(__file__),
@@ -142,7 +142,7 @@ class TablesTestCase(unittest.TestCase):
                     duration_seconds=600,
                     time_field='time',
                 ),
-                output=ConsoleOutput(
+                output=ConsoleSink(
                     type='console',
                 ),
             ),

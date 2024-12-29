@@ -15,13 +15,7 @@ class TumblingWindow:
 
 
 @dataclass
-class TableManager:
-    tumbling_window: Optional[TumblingWindow]
-    output: object
-
-
-@dataclass
-class CSVTable:
+class TableCSV:
     name: str
     path: str
     header: bool
@@ -29,7 +23,13 @@ class CSVTable:
 
 
 @dataclass
-class SQLTable:
+class TableManager:
+    tumbling_window: Optional[TumblingWindow]
+    output: object
+
+
+@dataclass
+class TableSQL:
     name: str
     sql: str
     manager: Optional[TableManager]
@@ -37,46 +37,58 @@ class SQLTable:
 
 @dataclass
 class Tables:
-    csv: [CSVTable]
-    sql: [SQLTable]
+    csv: [TableCSV]
+    sql: [TableSQL]
 
 
 @dataclass
-class Kafka:
+class KafkaSource:
     brokers: [str]
     group_id: str
     auto_offset_reset: str
-
-
-@dataclass
-class KafkaOutput:
-    type: str
-    topic: str
-
-
-@dataclass
-class Input:
-    batch_size: int
     topics: [str]
 
 
 @dataclass
-class ConsoleOutput:
+class KafkaSink:
+    brokers: [str]
+    topic: str
+
+
+@dataclass
+class ConsoleSink:
+    pass
+
+
+@dataclass
+class Source:
     type: str
+    batch_size: int
+    kafka: Optional[KafkaSource] = None
+
+
+@dataclass
+class Sink:
+    type: str
+    kafka: Optional[KafkaSink] = None
+    console: Optional[ConsoleSink] = None
+
+
+@dataclass
+class Handler:
+    type: str
+    sql: str
 
 
 @dataclass
 class Pipeline:
-    type: str
-    input: Input
-    sql: str
-    output: object
+    source: Source
+    handler: Handler
+    sink: Sink
 
 
 @dataclass
 class Conf:
-    kafka: Kafka
-    sql_results_cache_dir: str
     pipeline: Pipeline
     tables: Optional[Tables] = ()
 
@@ -104,24 +116,12 @@ def new_from_path(path: str, setting_overrides={}):
     return new_from_dict(conf)
 
 
-def build_output(c: object):
-    output_type = c.get('type')
-    if output_type == 'kafka':
-        return KafkaOutput(
-            type='kafka',
-            topic=c['topic']
-        )
-    else:
-        return ConsoleOutput(type='console')
-
-
 def new_from_dict(conf):
-    output = build_output(conf['pipeline'].get('output', {}))
-
     tables = Tables(
         csv=[],
         sql=[],
     )
+    '''
     for csv_table in conf.get('tables', {}).get('csv', []):
         tables.csv.append(CSVTable(**csv_table))
 
@@ -140,23 +140,31 @@ def new_from_dict(conf):
                 **sql_table_conf,
             )
             tables.sql.append(s)
-
+    '''
     return Conf(
-        kafka=Kafka(
-            brokers=conf['kafka']['brokers'],
-            group_id=conf['kafka']['group_id'],
-            auto_offset_reset=conf['kafka']['auto_offset_reset'],
-        ),
         tables=tables,
-        sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),
         pipeline=Pipeline(
-            type=conf['pipeline'].get('type', 'handlers.InferredDiskBatch'),
-            input=Input(
-                batch_size=conf['pipeline']['input']['batch_size'],
-                topics=conf['pipeline']['input']['topics'],
+            source=Source(
+                batch_size=conf['pipeline']['source']['batch_size'],
+                type=conf['pipeline']['source']['type'],
+                kafka=KafkaSource(
+                    brokers=conf['pipeline']['source']['kafka']['brokers'],
+                    group_id=conf['pipeline']['source']['kafka']['group_id'],
+                    auto_offset_reset=conf['pipeline']['source']['kafka']['auto_offset_reset'],
+                    topics=conf['pipeline']['source']['kafka']['topics'],
+                )
             ),
-            sql=conf['pipeline']['sql'],
-            output=output,
-        )
+            handler=Handler(
+                type=conf['pipeline']['handler']['type'],
+                sql=conf['pipeline']['handler']['sql'],
+            ),
+            sink=Sink(
+                type=conf['pipeline']['sink']['type'],
+                kafka=KafkaSink(
+                    brokers=conf['pipeline']['sink']['kafka']['brokers'],
+                    topic=conf['pipeline']['sink']['kafka']['topic'],
+                )
+            ),
+        ),
     )
 

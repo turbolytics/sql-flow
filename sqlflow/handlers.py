@@ -95,7 +95,7 @@ class InferredMemBatch:
 
         try:
             res = self.conn.sql(
-                self.conf.pipeline.sql,
+                self.conf.pipeline.handler.sql,
             )
         except duckdb.duckdb.BinderException as e:
             logger.error(

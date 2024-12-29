@@ -1,7 +1,7 @@
 import duckdb
 
 from sqlflow.config import new_from_path
-from sqlflow.handlers import get_class
+from sqlflow import handlers
 from sqlflow.serde import JSON
 from sqlflow.sql import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf
 
@@ -20,7 +20,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     """
     conf = new_from_path(config, setting_overrides)
 
-    BatchHandler = get_class(conf.pipeline.type)
+    BatchHandler = handlers.get_class(conf.pipeline.handler.type)
     h = BatchHandler(
         conf,
         deserializer=JSON(),
@@ -28,6 +28,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     ).init()
 
     init_tables(conn, conf.tables)
+    '''
     managed_tables = build_managed_tables(
         conn,
         conf.kafka,
@@ -36,6 +37,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     if managed_tables:
         assert len(managed_tables) == 1, \
             "only a single managed table is currently supported"
+    '''
 
     with open(fixture) as f:
         for line in f:
@@ -48,7 +50,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
         print(res)
         return res
 
-    res = managed_tables[0].collect_closed()
+    # res = managed_tables[0].collect_closed()
     print(res)
 
     return res
