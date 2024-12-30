@@ -2,7 +2,7 @@ import sys
 from abc import abstractmethod, ABC
 
 
-class Writer(ABC):
+class Sink(ABC):
     @abstractmethod
     def write(self, val: bytes, key: bytes = None):
         """
@@ -14,16 +14,28 @@ class Writer(ABC):
         """
         raise NotImplemented()
 
+    @abstractmethod
+    def flush(self):
+        """
+        Flushes any buffered data to the underlying storage.
 
-class TestWriter(Writer):
+        :return:
+        """
+        pass
+
+
+class TestSink(Sink):
     def __init__(self):
         self.writes = []
 
     def write(self, val: bytes, key: bytes = None):
         self.writes.append((key, val))
 
+    def flush(self):
+        pass
 
-class ConsoleWriter(Writer):
+
+class ConsoleSink(Sink):
     def write(self, val: bytes, key: bytes = None):
         sys.stdout.write(val)
         sys.stdout.write('\n')
@@ -32,7 +44,7 @@ class ConsoleWriter(Writer):
         pass
 
 
-class KafkaWriter(Writer):
+class KafkaSink(Sink):
     def __init__(self, topic, producer):
         self.topic = topic
         self.producer = producer

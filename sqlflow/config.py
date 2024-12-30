@@ -9,19 +9,31 @@ from sqlflow import settings
 
 
 @dataclass
+class KafkaSink:
+    brokers: [str]
+    topic: str
+
+
+@dataclass
+class ConsoleSink:
+    pass
+
+
+@dataclass
+class Sink:
+    type: str
+    kafka: Optional[KafkaSink] = None
+    console: Optional[ConsoleSink] = None
+
+
+@dataclass
 class TumblingWindow:
     duration_seconds: int
     time_field: str
 
 
 @dataclass
-class TableManager:
-    tumbling_window: Optional[TumblingWindow]
-    output: object
-
-
-@dataclass
-class CSVTable:
+class TableCSV:
     name: str
     path: str
     header: bool
@@ -29,7 +41,13 @@ class CSVTable:
 
 
 @dataclass
-class SQLTable:
+class TableManager:
+    tumbling_window: Optional[TumblingWindow]
+    sink: Sink
+
+
+@dataclass
+class TableSQL:
     name: str
     sql: str
     manager: Optional[TableManager]
@@ -37,46 +55,42 @@ class SQLTable:
 
 @dataclass
 class Tables:
-    csv: [CSVTable]
-    sql: [SQLTable]
+    csv: [TableCSV]
+    sql: [TableSQL]
 
 
 @dataclass
-class Kafka:
+class KafkaSource:
     brokers: [str]
     group_id: str
     auto_offset_reset: str
-
-
-@dataclass
-class KafkaOutput:
-    type: str
-    topic: str
-
-
-@dataclass
-class Input:
-    batch_size: int
     topics: [str]
 
 
+
 @dataclass
-class ConsoleOutput:
+class Source:
     type: str
+    kafka: Optional[KafkaSource] = None
+
+
+@dataclass
+class Handler:
+    type: str
+    sql: str
+    sql_results_cache_dir: str = settings.SQL_RESULTS_CACHE_DIR
 
 
 @dataclass
 class Pipeline:
-    type: str
-    input: Input
-    sql: str
-    output: object
+    batch_size: int
+    source: Source
+    handler: Handler
+    sink: Sink
 
 
 @dataclass
 class Conf:
-    kafka: Kafka
-    sql_results_cache_dir: str
     pipeline: Pipeline
     tables: Optional[Tables] = ()
 
@@ -104,59 +118,78 @@ def new_from_path(path: str, setting_overrides={}):
     return new_from_dict(conf)
 
 
-def build_output(c: object):
-    output_type = c.get('type')
-    if output_type == 'kafka':
-        return KafkaOutput(
-            type='kafka',
-            topic=c['topic']
+def build_source_config_from_dict(conf) -> Source:
+    source = Source(
+        type=conf['type'],
+    )
+
+    if source.type == 'kafka':
+        source.kafka = KafkaSource(
+            brokers=conf['kafka']['brokers'],
+            group_id=conf['kafka']['group_id'],
+            auto_offset_reset=conf['kafka']['auto_offset_reset'],
+            topics=conf['kafka']['topics'],
         )
     else:
-        return ConsoleOutput(type='console')
+        source.type = 'console'
+
+    return source
+
+
+def build_sink_config_from_dict(conf) -> Sink:
+    sink = Sink(
+        type=conf['type'],
+    )
+
+    if sink.type == 'kafka':
+        sink.kafka = KafkaSink(
+            brokers=conf['kafka']['brokers'],
+            topic=conf['kafka']['topic'],
+        )
+    else:
+        sink.type = 'console'
+        sink.console = ConsoleSink()
+
+    return sink
 
 
 def new_from_dict(conf):
-    output = build_output(conf['pipeline'].get('output', {}))
-
     tables = Tables(
         csv=[],
         sql=[],
     )
     for csv_table in conf.get('tables', {}).get('csv', []):
-        tables.csv.append(CSVTable(**csv_table))
+        tables.csv.append(TableCSV(**csv_table))
 
     for sql_table_conf in conf.get('tables', {}).get('sql', []):
         manager_conf = sql_table_conf.pop('manager')
         if manager_conf:
-            output = build_output(manager_conf.pop('output'))
+            sink = build_sink_config_from_dict(manager_conf.pop('sink'))
             window_conf = manager_conf.pop('tumbling_window')
-            s = SQLTable(
+            s = TableSQL(
                 manager=TableManager(
                     tumbling_window=TumblingWindow(
                         **window_conf,
                     ),
-                    output=output,
+                    sink=sink,
                 ),
                 **sql_table_conf,
             )
             tables.sql.append(s)
 
+    sink = build_sink_config_from_dict(conf['pipeline']['sink'])
+    source = build_source_config_from_dict(conf['pipeline']['source'])
+
     return Conf(
-        kafka=Kafka(
-            brokers=conf['kafka']['brokers'],
-            group_id=conf['kafka']['group_id'],
-            auto_offset_reset=conf['kafka']['auto_offset_reset'],
-        ),
         tables=tables,
-        sql_results_cache_dir=conf.get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),
         pipeline=Pipeline(
-            type=conf['pipeline'].get('type', 'handlers.InferredDiskBatch'),
-            input=Input(
-                batch_size=conf['pipeline']['input']['batch_size'],
-                topics=conf['pipeline']['input']['topics'],
+            batch_size=conf['pipeline']['batch_size'],
+            source=source,
+            handler=Handler(
+                type=conf['pipeline']['handler']['type'],
+                sql=conf['pipeline']['handler']['sql'],
             ),
-            sql=conf['pipeline']['sql'],
-            output=output,
-        )
+            sink=sink,
+        ),
     )
 

@@ -95,11 +95,11 @@ The heart of sql-flow is the pipeline configuration file. Each configuration fil
 
 - Kafka configuration 
 - Pipeline configuration 
-  - Input configuration
-  - SQL transformation
-  - Output configuration
+  - **Source**: Input configuration
+  - **Handler**: SQL transformation
+  - **Sink**: Output configuration
 
-<img width="1021" alt="Screenshot 2023-11-26 at 8 10 44 PM" src="https://github.com/turbolytics/sql-flow/assets/151242797/4f286fdc-ac2b-4809-acdb-1dc4d239f883">
+<img width="1085" alt="Screenshot 2024-12-30 at 9 08 57 AM" src="https://github.com/user-attachments/assets/66834849-b266-42f7-a125-7cbbb318d470" />
 
 Every instance of sql-flow needs a pipeline configuration file.
 

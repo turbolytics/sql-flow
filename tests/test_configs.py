@@ -4,7 +4,7 @@ import unittest
 import duckdb
 
 from sqlflow.lifecycle import invoke
-from sqlflow.config import new_from_dict, ConsoleOutput, TumblingWindow, TableManager
+from sqlflow.config import new_from_dict, ConsoleSink, TumblingWindow, TableManager, Sink
 
 dev_dir = os.path.join(
     os.path.dirname(__file__),
@@ -52,9 +52,9 @@ class InvokeExamplesTestCase(unittest.TestCase):
             }
         )
         self.assertEqual([
-            '{"state_full":"Ohio","city_count":57344}',
-            '{"state_full":"New York","city_count":1777664}',
-            '{"state_full":"Maryland","city_count":1232896}',
+            '{"state_full": "Ohio", "city_count": 57344}',
+            '{"state_full": "New York", "city_count": 1777664}',
+            '{"state_full": "Maryland", "city_count": 1232896}',
         ], out)
 
     def test_csv_mem_join(self):
@@ -68,9 +68,9 @@ class InvokeExamplesTestCase(unittest.TestCase):
             }
         )
         self.assertEqual([
-            '{"state_full":"Ohio","city_count":57344}',
-            '{"state_full":"New York","city_count":1777664}',
-            '{"state_full":"Maryland","city_count":1232896}',
+            '{"state_full": "Ohio", "city_count": 57344}',
+            '{"state_full": "New York", "city_count": 1777664}',
+            '{"state_full": "Maryland", "city_count": 1232896}',
         ], out)
 
     def test_enrich(self):
@@ -81,7 +81,7 @@ class InvokeExamplesTestCase(unittest.TestCase):
             fixture=os.path.join(fixtures_dir, 'enrich.jsonl'),
         )
         self.assertEqual([
-           '{"event":"search","properties":{"city":"New York"},"user":{"id":"123412ds"},"nested_city":{"something":"New York"},"nested_json":{"":"New York","":1,"":2}}',
+           '{"event": "search", "properties": {"city": "New York"}, "user": {"id": "123412ds"}, "nested_city": {"something": "New York"}, "extra": "extra"}',
         ], out)
 
     def test_tumbling_window(self):
@@ -104,11 +104,6 @@ class InvokeExamplesTestCase(unittest.TestCase):
 class TablesTestCase(unittest.TestCase):
     def test_init_window_success(self):
         conf = new_from_dict({
-            'kafka': {
-                'brokers': [],
-                'group_id': 'test',
-                'auto_offset_reset': 'earliest',
-            },
             'tables': {
                 'sql': [
                     {
@@ -119,7 +114,7 @@ class TablesTestCase(unittest.TestCase):
                                 'duration_seconds': 600,
                                 'time_field': 'time',
                             },
-                            'output': {
+                            'sink': {
                                 'type': 'console',
                             }
                         }
@@ -128,12 +123,23 @@ class TablesTestCase(unittest.TestCase):
                 ]
             },
             'pipeline': {
-                'sql': 'SELECT 1',
-                'input': {
-                    'batch_size': 1000,
-                    'topics': [],
+                'batch_size': 1000,
+                'source': {
+                    'type': 'kafka',
+                    'kafka': {
+                        'brokers': [],
+                        'topics': [],
+                        'group_id': 'test',
+                        'auto_offset_reset': 'earliest',
+                    }
+                },
+                'handler': {
+                    'type': 'sql',
+                    'sql': 'SELECT 1',
+                },
+                'sink': {
+                    'type': 'console',
                 }
-
             },
         })
         self.assertEqual(
@@ -142,9 +148,10 @@ class TablesTestCase(unittest.TestCase):
                     duration_seconds=600,
                     time_field='time',
                 ),
-                output=ConsoleOutput(
+                sink=Sink(
                     type='console',
-                ),
+                    console=ConsoleSink(),
+                )
             ),
             conf.tables.sql[0].manager,
         )

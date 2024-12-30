@@ -7,9 +7,10 @@ import socket
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
+from sqlflow import config
 from sqlflow.managers import window
-from sqlflow.outputs import ConsoleWriter, Writer, KafkaWriter
-
+from sqlflow.sinks import ConsoleSink, Sink, KafkaSink
+from sqlflow.sources import Source, KafkaSource
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +28,15 @@ class SQLFlow:
     SQLFlow executes a pipeline as a daemon.
     '''
 
-    def __init__(self, input, consumer, handler, output: Writer):
-        self.input = input
-        self.consumer = consumer
-        self.output = output
+    def __init__(self,
+                 source: Source,
+                 handler,
+                 sink: Sink,
+                 batch_size=1000):
+        self.source = source
+        self.sink = sink
         self.handler = handler
+        self._batch_size = batch_size
         self._stats = Stats(
             num_messages_consumed=0,
             num_errors=0,
@@ -41,14 +46,17 @@ class SQLFlow:
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
         try:
-            self.consumer.subscribe(self.input.topics)
+            self.source.start()
             self._consume_loop(max_msgs)
 
             now = datetime.now(timezone.utc)
             diff = (now - self._stats.start_time)
             self._stats.total_throughput_per_second = self._stats.num_messages_consumed // diff.total_seconds()
+        except Exception as e:
+            logger.error('error in consumer loop: {}'.format(e))
+            raise e
         finally:
-            self.consumer.close()
+            self.source.close()
             logger.info(
                 'consumer loop ending: total messages / sec = {}'.format(self._stats.total_throughput_per_second),
             )
@@ -63,21 +71,11 @@ class SQLFlow:
         self.handler.init()
 
         while True:
-            msg = self.consumer.poll(timeout=1.0)
+            msg = self.source.read()
+            # msg = self.source.poll(timeout=1.0)
             if msg is None:
                 continue
             self._stats.num_messages_consumed += 1
-            if msg.error():
-                self._stats.num_errors += 1
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    sys.stderr.write(
-                        '%% %s [%d] reached end at offset %d\n' %
-                        (msg.topic(), msg.partition(), msg.offset()),
-                        )
-                elif msg.error():
-                    raise KafkaException(msg.error())
-                continue
-
             self.handler.write(msg.value().decode())
             num_batch_messages += 1
 
@@ -88,15 +86,15 @@ class SQLFlow:
                     self._stats.num_messages_consumed // diff.total_seconds()),
                 )
 
-            if num_batch_messages == self.input.batch_size:
+            if num_batch_messages == self._batch_size:
                 # apply the pipeline
                 batch = self.handler.invoke()
                 for l in batch:
-                    self.output.write(l)
+                    self.sink.write(l)
 
                 # Only commit after all messages in batch are processed
-                self.output.flush()
-                self.consumer.commit(asynchronous=False)
+                self.sink.flush()
+                self.source.commit()
 
                 # reset the file state
                 self.handler.init()
@@ -121,7 +119,7 @@ def init_tables(conn, tables):
         conn.sql(sql_table.sql)
 
 
-def build_managed_tables(conn, kafka_conf, table_confs):
+def build_managed_tables(conn, table_confs):
     managed_tables = []
     for table in table_confs:
         # windowed tables are the only supported tables currently
@@ -131,12 +129,7 @@ def build_managed_tables(conn, kafka_conf, table_confs):
         if not table.manager.tumbling_window:
             raise NotImplementedError('only tumbling_window manager currently supported')
 
-        output = ConsoleWriter()
-        if table.manager.output.type == 'kafka':
-            output = new_kafka_output_from_conf(
-                brokers=kafka_conf.brokers,
-                topic=table.manager.output.topic,
-            )
+        sink = new_sink_from_conf(table.manager.sink)
 
         h = window.Tumbling(
             conn=conn,
@@ -145,7 +138,7 @@ def build_managed_tables(conn, kafka_conf, table_confs):
                 time_field=table.manager.tumbling_window.time_field,
             ),
             size_seconds=table.manager.tumbling_window.duration_seconds,
-            writer=output,
+            sink=sink,
         )
         managed_tables.append(h)
     return managed_tables
@@ -169,38 +162,44 @@ def handle_managed_tables(tables):
         t.start()
 
 
-def new_kafka_output_from_conf(brokers, topic):
-    p = Producer({
-        'bootstrap.servers': ','.join(brokers),
-        'client.id': socket.gethostname(),
-    })
-    return KafkaWriter(
-        topic=topic,
-        producer=p,
-    )
+def new_sink_from_conf(sink_conf: config.Sink):
+    if sink_conf.type == 'kafka':
+        p = Producer({
+            'bootstrap.servers': ','.join(sink_conf.kafka.brokers),
+            'client.id': socket.gethostname(),
+        })
+        return KafkaSink(
+            topic=sink_conf.kafka.topic,
+            producer=p,
+        )
+    elif sink_conf.type == 'console':
+        return ConsoleSink()
+
+    raise NotImplementedError('unsupported sink type: {}'.format(sink_conf.type))
+
 
 def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
     kconf = {
-        'bootstrap.servers': ','.join(conf.kafka.brokers),
-        'group.id': conf.kafka.group_id,
-        'auto.offset.reset': conf.kafka.auto_offset_reset,
+        'bootstrap.servers': ','.join(conf.pipeline.source.kafka.brokers),
+        'group.id': conf.pipeline.source.kafka.group_id,
+        'auto.offset.reset': conf.pipeline.source.kafka.auto_offset_reset,
         'enable.auto.commit': False,
     }
 
     consumer = Consumer(kconf)
 
-    output = ConsoleWriter()
-    if conf.pipeline.output.type == 'kafka':
-        output = new_kafka_output_from_conf(
-            brokers=conf.kafka.brokers,
-            topic=conf.pipeline.output.topic,
-        )
+    sink = new_sink_from_conf(conf.pipeline.sink)
+
+    source = KafkaSource(
+        consumer=consumer,
+        topics=conf.pipeline.source.kafka.topics,
+    )
 
     sflow = SQLFlow(
-        input=conf.pipeline.input,
-        consumer=consumer,
+        source=source,
         handler=handler,
-        output=output,
+        sink=sink,
+        batch_size=conf.pipeline.batch_size,
     )
 
     return sflow

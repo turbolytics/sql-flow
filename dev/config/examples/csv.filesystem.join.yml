@@ -1,27 +1,31 @@
-kafka:
-  brokers: [localhost:9092]
-  group_id: test
-  auto_offset_reset: earliest
-
 pipeline:
-  input:
-    batch_size: 1000
-    topics:
-    - "topic-csv-filesystem-join"
-
-  sql: |
-    SELECT
-      state_full,
-      count(*) as city_count
-    FROM batch
-    JOIN read_csv('{{ STATIC_ROOT }}/fixtures/locations.csv', auto_detect=True, header=True) as locations ON
-    (
-      locations.city = properties.city 
-    )
-    GROUP BY
-      state_full
-    ORDER BY state_full DESC
-
-  output:
+  batch_size: 1000
+  source:
     type: kafka
-    topic: output-csv-filesystem-join
+    kafka:
+      brokers: [localhost:9092]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "topic-csv-filesystem-join"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT
+        state_full,
+        count(*) as city_count
+      FROM batch
+      JOIN read_csv('{{ STATIC_ROOT }}/fixtures/locations.csv', auto_detect=True, header=True) as locations ON
+      (
+        locations.city = properties.city 
+      )
+      GROUP BY
+        state_full
+      ORDER BY state_full DESC
+
+  sink:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      topic: output-csv-filesystem-join

@@ -1,25 +1,28 @@
-kafka:
-  brokers: [localhost:9092]
-  group_id: test
-  auto_offset_reset: earliest
-
 pipeline:
-  type: 'handlers.InferredDiskBatch'
+  batch_size: 1000
 
-  input:
-    batch_size: 1000
-    topics:
-    - "topic-simple-agg"
-
-  sql: |
-    SELECT
-      properties.city as city,
-      count(*) as city_count
-    FROM batch
-    GROUP BY
-      city
-    ORDER BY city DESC
-
-  output:
+  source:
     type: kafka
-    topic: output-1
+    kafka:
+      brokers: [localhost:9092]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "topic-simple-agg"
+
+  handler:
+    type: 'handlers.InferredDiskBatch'
+    sql: |
+      SELECT
+        properties.city as city,
+        count(*) as city_count
+      FROM batch
+      GROUP BY
+        city
+      ORDER BY city DESC
+
+  sink:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      topic: output-simple-agg-disk

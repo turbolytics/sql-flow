@@ -1,7 +1,7 @@
 import duckdb
 
 from sqlflow.config import new_from_path
-from sqlflow.handlers import get_class
+from sqlflow import handlers
 from sqlflow.serde import JSON
 from sqlflow.sql import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf
 
@@ -20,7 +20,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     """
     conf = new_from_path(config, setting_overrides)
 
-    BatchHandler = get_class(conf.pipeline.type)
+    BatchHandler = handlers.get_class(conf.pipeline.handler.type)
     h = BatchHandler(
         conf,
         deserializer=JSON(),
@@ -30,7 +30,6 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     init_tables(conn, conf.tables)
     managed_tables = build_managed_tables(
         conn,
-        conf.kafka,
         conf.tables.sql,
     )
     if managed_tables:
@@ -44,19 +43,15 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
                 h.write(cleaned_line)
 
     res = list(h.invoke())
-    if not flush_window:
-        print(res)
-        return res
-
-    res = managed_tables[0].collect_closed()
+    if flush_window:
+        res = managed_tables[0].collect_closed()
     print(res)
-
     return res
 
 def start(conf, max_msgs=None):
     conn = duckdb.connect()
 
-    BatchHandler = get_class(conf.pipeline.type)
+    BatchHandler = handlers.get_class(conf.pipeline.handler.type)
     h = BatchHandler(
         conf,
         deserializer=JSON(),
@@ -64,9 +59,9 @@ def start(conf, max_msgs=None):
     )
 
     init_tables(conn, conf.tables)
+
     managed_tables = build_managed_tables(
         conn,
-        conf.kafka,
         conf.tables.sql,
     )
     handle_managed_tables(managed_tables)
