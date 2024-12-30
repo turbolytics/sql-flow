@@ -122,10 +122,10 @@ def new_from_dict(conf):
         csv=[],
         sql=[],
     )
-    '''
     for csv_table in conf.get('tables', {}).get('csv', []):
-        tables.csv.append(CSVTable(**csv_table))
+        tables.csv.append(TableCSV(**csv_table))
 
+    '''
     for sql_table_conf in conf.get('tables', {}).get('sql', []):
         manager_conf = sql_table_conf.pop('manager')
         if manager_conf:

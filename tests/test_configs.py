@@ -52,9 +52,9 @@ class InvokeExamplesTestCase(unittest.TestCase):
             }
         )
         self.assertEqual([
-            '{"state_full":"Ohio","city_count":57344}',
-            '{"state_full":"New York","city_count":1777664}',
-            '{"state_full":"Maryland","city_count":1232896}',
+            '{"state_full": "Ohio", "city_count": 57344}',
+            '{"state_full": "New York", "city_count": 1777664}',
+            '{"state_full": "Maryland", "city_count": 1232896}',
         ], out)
 
     def test_csv_mem_join(self):
@@ -68,9 +68,9 @@ class InvokeExamplesTestCase(unittest.TestCase):
             }
         )
         self.assertEqual([
-            '{"state_full":"Ohio","city_count":57344}',
-            '{"state_full":"New York","city_count":1777664}',
-            '{"state_full":"Maryland","city_count":1232896}',
+            '{"state_full": "Ohio", "city_count": 57344}',
+            '{"state_full": "New York", "city_count": 1777664}',
+            '{"state_full": "Maryland", "city_count": 1232896}',
         ], out)
 
     def test_enrich(self):
