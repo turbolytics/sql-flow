@@ -28,16 +28,13 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     ).init()
 
     init_tables(conn, conf.tables)
-    '''
     managed_tables = build_managed_tables(
         conn,
-        conf.kafka,
         conf.tables.sql,
     )
     if managed_tables:
         assert len(managed_tables) == 1, \
             "only a single managed table is currently supported"
-    '''
 
     with open(fixture) as f:
         for line in f:
@@ -46,13 +43,9 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
                 h.write(cleaned_line)
 
     res = list(h.invoke())
-    if not flush_window:
-        print(res)
-        return res
-
-    # res = managed_tables[0].collect_closed()
+    if flush_window:
+        res = managed_tables[0].collect_closed()
     print(res)
-
     return res
 
 def start(conf, max_msgs=None):
@@ -66,14 +59,12 @@ def start(conf, max_msgs=None):
     )
 
     init_tables(conn, conf.tables)
-    '''
+
     managed_tables = build_managed_tables(
         conn,
-        conf.kafka,
         conf.tables.sql,
     )
     handle_managed_tables(managed_tables)
-    '''
 
     sflow = new_sqlflow_from_conf(
         conf,
@@ -83,11 +74,9 @@ def start(conf, max_msgs=None):
     stats = sflow.consume_loop(max_msgs)
 
     # flush and stop all managed tables
-    '''
     for table in managed_tables:
         records = table.collect_closed()
         table.flush(records)
         table.stop()
-    '''
 
     return stats

@@ -7,6 +7,7 @@ import socket
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
+from sqlflow import config
 from sqlflow.managers import window
 from sqlflow.sinks import ConsoleSink, Sink, KafkaSink
 from sqlflow.sources import Source, KafkaSource
@@ -118,7 +119,7 @@ def init_tables(conn, tables):
         conn.sql(sql_table.sql)
 
 
-def build_managed_tables(conn, kafka_conf, table_confs):
+def build_managed_tables(conn, table_confs):
     managed_tables = []
     for table in table_confs:
         # windowed tables are the only supported tables currently
@@ -128,12 +129,7 @@ def build_managed_tables(conn, kafka_conf, table_confs):
         if not table.manager.tumbling_window:
             raise NotImplementedError('only tumbling_window manager currently supported')
 
-        output = ConsoleSink()
-        if table.manager.sink.type == 'kafka':
-            output = new_kafka_sink_from_conf(
-                brokers=kafka_conf.brokers,
-                topic=table.manager.sink.topic,
-            )
+        sink = new_sink_from_conf(table.manager.sink)
 
         h = window.Tumbling(
             conn=conn,
@@ -142,7 +138,7 @@ def build_managed_tables(conn, kafka_conf, table_confs):
                 time_field=table.manager.tumbling_window.time_field,
             ),
             size_seconds=table.manager.tumbling_window.duration_seconds,
-            writer=output,
+            sink=sink,
         )
         managed_tables.append(h)
     return managed_tables
@@ -166,15 +162,21 @@ def handle_managed_tables(tables):
         t.start()
 
 
-def new_kafka_sink_from_conf(brokers, topic):
-    p = Producer({
-        'bootstrap.servers': ','.join(brokers),
-        'client.id': socket.gethostname(),
-    })
-    return KafkaSink(
-        topic=topic,
-        producer=p,
-    )
+def new_sink_from_conf(sink_conf: config.Sink):
+    if sink_conf.type == 'kafka':
+        p = Producer({
+            'bootstrap.servers': ','.join(sink_conf.kafka.brokers),
+            'client.id': socket.gethostname(),
+        })
+        return KafkaSink(
+            topic=sink_conf.kafka.topic,
+            producer=p,
+        )
+    elif sink_conf.type == 'console':
+        return ConsoleSink()
+
+    raise NotImplementedError('unsupported sink type: {}'.format(sink_conf.type))
+
 
 def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
     kconf = {
@@ -186,12 +188,7 @@ def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
 
     consumer = Consumer(kconf)
 
-    sink = ConsoleSink()
-    if conf.pipeline.sink.type == 'kafka':
-        sink = new_kafka_sink_from_conf(
-            brokers=conf.pipeline.source.kafka.brokers,
-            topic=conf.pipeline.sink.kafka.topic,
-        )
+    sink = new_sink_from_conf(conf.pipeline.sink)
 
     source = KafkaSource(
         consumer=consumer,

@@ -2,7 +2,7 @@ import unittest
 import os
 
 from sqlflow import settings
-from sqlflow.config import Conf, Pipeline
+from sqlflow.config import Conf, Pipeline, Handler
 from sqlflow.handlers import InferredMemBatch, InferredDiskBatch
 from sqlflow.serde import JSON
 
@@ -12,13 +12,14 @@ class InferredMemBatchTestCase(unittest.TestCase):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredMemBatch(
             conf=Conf(
-                kafka=None,
-                sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
                 pipeline=Pipeline(
-                    type=None,
-                    input=None,
-                    sql="SELECT COUNT(*) as num_rows FROM batch",
-                    output=None,
+                    batch_size=1000,
+                    source=None,
+                    handler=Handler(
+                        type=None,
+                        sql="SELECT COUNT(*) as num_rows FROM batch",
+                    ),
+                    sink=None,
                 ),
             ),
             deserializer=JSON(),
@@ -37,18 +38,19 @@ class InferredMemBatchTestCase(unittest.TestCase):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredMemBatch(
             conf=Conf(
-                kafka=None,
-                sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
                 pipeline=Pipeline(
-                    type=None,
-                    input=None,
-                    sql="""
+                    batch_size=1000,
+                    source=None,
+                    handler=Handler(
+                        type=None,
+                        sql="""
                         SELECT
                             {'something': city} as s1,
                             row(city, 1, 2) as nested_json
                         FROM batch 
                     """,
-                    output=None,
+                    ),
+                    sink=None,
                 ),
             ),
             deserializer=JSON(),
@@ -73,16 +75,21 @@ class InferredDiskBatchTestCase(unittest.TestCase):
 
     def test_inferred_batch_flat(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
-        p = InferredDiskBatch(conf=Conf(
-            kafka=None,
-            sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
-            pipeline=Pipeline(
-                type=None,
-                input=None,
-                sql="SELECT COUNT(*) as num_rows FROM batch",
-                output=None,
+
+        p = InferredDiskBatch(
+            conf=Conf(
+                pipeline=Pipeline(
+                    batch_size=1000,
+                    source=None,
+                    handler=Handler(
+                        type=None,
+                        sql="SELECT COUNT(*) as num_rows FROM batch",
+                    ),
+                    sink=None,
+                ),
             ),
-        )).init()
+            deserializer=JSON(),
+        ).init()
         with open(f_path) as f:
             for line in f:
                 p.write(line)
@@ -95,21 +102,25 @@ class InferredDiskBatchTestCase(unittest.TestCase):
 
     def test_inferred_batch_nested_return(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
-        p = InferredDiskBatch(conf=Conf(
-            kafka=None,
-            sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR,
-            pipeline=Pipeline(
-                type=None,
-                input=None,
-                sql="""
-                    SELECT
-                        {'something': city} as s1,
-                        row(city, 1, 2) as nested_json
-                    FROM batch 
-                """,
-                output=None,
+        p = InferredDiskBatch(
+            conf=Conf(
+                pipeline=Pipeline(
+                    batch_size=1000,
+                    source=None,
+                    handler=Handler(
+                        type=None,
+                        sql="""
+                        SELECT
+                            {'something': city} as s1,
+                            row(city, 1, 2) as nested_json
+                        FROM batch 
+                    """,
+                    ),
+                    sink=None,
+                ),
             ),
-        )).init()
+            deserializer=JSON(),
+        ).init()
 
         with open(f_path) as f:
             for line in f:

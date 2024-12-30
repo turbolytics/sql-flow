@@ -9,6 +9,24 @@ from sqlflow import settings
 
 
 @dataclass
+class KafkaSink:
+    brokers: [str]
+    topic: str
+
+
+@dataclass
+class ConsoleSink:
+    pass
+
+
+@dataclass
+class Sink:
+    type: str
+    kafka: Optional[KafkaSink] = None
+    console: Optional[ConsoleSink] = None
+
+
+@dataclass
 class TumblingWindow:
     duration_seconds: int
     time_field: str
@@ -25,7 +43,7 @@ class TableCSV:
 @dataclass
 class TableManager:
     tumbling_window: Optional[TumblingWindow]
-    output: object
+    sink: Sink
 
 
 @dataclass
@@ -49,28 +67,11 @@ class KafkaSource:
     topics: [str]
 
 
-@dataclass
-class KafkaSink:
-    brokers: [str]
-    topic: str
-
-
-@dataclass
-class ConsoleSink:
-    pass
-
 
 @dataclass
 class Source:
     type: str
     kafka: Optional[KafkaSource] = None
-
-
-@dataclass
-class Sink:
-    type: str
-    kafka: Optional[KafkaSink] = None
-    console: Optional[ConsoleSink] = None
 
 
 @dataclass
@@ -117,6 +118,41 @@ def new_from_path(path: str, setting_overrides={}):
     return new_from_dict(conf)
 
 
+def build_source_config_from_dict(conf) -> Source:
+    source = Source(
+        type=conf['type'],
+    )
+
+    if source.type == 'kafka':
+        source.kafka = KafkaSource(
+            brokers=conf['kafka']['brokers'],
+            group_id=conf['kafka']['group_id'],
+            auto_offset_reset=conf['kafka']['auto_offset_reset'],
+            topics=conf['kafka']['topics'],
+        )
+    else:
+        source.type = 'console'
+
+    return source
+
+
+def build_sink_config_from_dict(conf) -> Sink:
+    sink = Sink(
+        type=conf['type'],
+    )
+
+    if sink.type == 'kafka':
+        sink.kafka = KafkaSink(
+            brokers=conf['kafka']['brokers'],
+            topic=conf['kafka']['topic'],
+        )
+    else:
+        sink.type = 'console'
+        sink.console = ConsoleSink()
+
+    return sink
+
+
 def new_from_dict(conf):
     tables = Tables(
         csv=[],
@@ -125,47 +161,35 @@ def new_from_dict(conf):
     for csv_table in conf.get('tables', {}).get('csv', []):
         tables.csv.append(TableCSV(**csv_table))
 
-    '''
     for sql_table_conf in conf.get('tables', {}).get('sql', []):
         manager_conf = sql_table_conf.pop('manager')
         if manager_conf:
-            output = build_output(manager_conf.pop('output'))
+            sink = build_sink_config_from_dict(manager_conf.pop('sink'))
             window_conf = manager_conf.pop('tumbling_window')
-            s = SQLTable(
+            s = TableSQL(
                 manager=TableManager(
                     tumbling_window=TumblingWindow(
                         **window_conf,
                     ),
-                    output=output,
+                    sink=sink,
                 ),
                 **sql_table_conf,
             )
             tables.sql.append(s)
-    '''
+
+    sink = build_sink_config_from_dict(conf['pipeline']['sink'])
+    source = build_source_config_from_dict(conf['pipeline']['source'])
+
     return Conf(
         tables=tables,
         pipeline=Pipeline(
             batch_size=conf['pipeline']['batch_size'],
-            source=Source(
-                type=conf['pipeline']['source']['type'],
-                kafka=KafkaSource(
-                    brokers=conf['pipeline']['source']['kafka']['brokers'],
-                    group_id=conf['pipeline']['source']['kafka']['group_id'],
-                    auto_offset_reset=conf['pipeline']['source']['kafka']['auto_offset_reset'],
-                    topics=conf['pipeline']['source']['kafka']['topics'],
-                )
-            ),
+            source=source,
             handler=Handler(
                 type=conf['pipeline']['handler']['type'],
                 sql=conf['pipeline']['handler']['sql'],
             ),
-            sink=Sink(
-                type=conf['pipeline']['sink']['type'],
-                kafka=KafkaSink(
-                    brokers=conf['pipeline']['sink']['kafka']['brokers'],
-                    topic=conf['pipeline']['sink']['kafka']['topic'],
-                )
-            ),
+            sink=sink,
         ),
     )
 

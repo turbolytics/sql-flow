@@ -23,11 +23,11 @@ class Tumbling:
     - Publishing records that have closed.
     - Deleteting closed records from the table.
     """
-    def __init__(self, conn, table: Table, size_seconds, writer: Sink):
+    def __init__(self, conn, table: Table, size_seconds, sink: Sink):
         self.conn = conn
         self.table = table
         self.size_seconds = size_seconds
-        self.writer = writer
+        self.sink = sink
         self._poll_interval_seconds = 10
         self.serde = JSON()
         self._stopped = None
@@ -69,7 +69,7 @@ class Tumbling:
         :return:
         """
         for record in records:
-            self.writer.write(
+            self.sink.write(
                 val=self.serde.encode(record)
             )
 

@@ -38,7 +38,7 @@ class TumblingWindowTestCase(unittest.TestCase):
                 time_field='timestamp',
             ),
             size_seconds=600,
-            writer=ConsoleSink(),
+            sink=ConsoleSink(),
         )
         rows = tw.collect_closed()
         self.assertEqual([], rows)
@@ -75,7 +75,7 @@ class TumblingWindowTestCase(unittest.TestCase):
                 time_field='timestamp',
             ),
             size_seconds=600,
-            writer=ConsoleSink(),
+            sink=ConsoleSink(),
         )
         rows = tw.collect_closed()
         self.assertEqual(
@@ -95,7 +95,7 @@ class TumblingWindowTestCase(unittest.TestCase):
                 time_field='timestamp',
             ),
             size_seconds=600,
-            writer=writer,
+            sink=writer,
         )
         records = [
             'first',
@@ -141,7 +141,7 @@ class TumblingWindowTestCase(unittest.TestCase):
                 time_field='timestamp',
             ),
             size_seconds=600,
-            writer=ConsoleSink(),
+            sink=ConsoleSink(),
         )
 
         num_deleted = tw.delete_closed()
