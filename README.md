@@ -17,6 +17,7 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
 ## SQLFlow Features
 
 - Kafka Stream Consumers/Producers: Use kafka streaming primitives, such as consumer groups, to scale processing horizontally.
+- Websocket Stream Consumer: Run SQL against a stream of websocket payloads, such as the Bluesky Firehose
 - Configurable Serialization/Encodings: Such as JSON on the wire.
 - Stream transformations in pure SQL, powered by [DuckDB](https://duckdb.org/)
 - High Performance: SQLFlow is benchmarked to process 10's of thousands of messages per second thanks to [DuckDB](https://duckdb.org/), [librdkafka](https://github.com/confluentinc/librdkafka), and [confluent python](https://github.com/confluentinc/confluent-kafka-python)
