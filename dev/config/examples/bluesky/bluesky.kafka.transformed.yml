@@ -1,4 +1,4 @@
-# Consumes the bluesky firehose and outputs all results to a Kafka topic.
+# Consumes the bluesky firehose
 pipeline:
   batch_size: 100
   source:
@@ -15,10 +15,9 @@ pipeline:
       FROM batch
 
   sink:
-    type: console
-
-#    kafka:
-#      brokers: [localhost:9092]
-#      topic: output-bluesky-firehose
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      topic: output-bluesky-firehose
 
 

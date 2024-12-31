@@ -1,0 +1,24 @@
+# Consumes the bluesky firehose
+pipeline:
+  batch_size: 100
+  source:
+    type: websocket
+    websocket:
+      uri: 'wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post'
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT
+        time_us as time,
+        kind
+      FROM batch
+
+  sink:
+    type: console
+
+#    kafka:
+#      brokers: [localhost:9092]
+#      topic: output-bluesky-firehose
+
+
