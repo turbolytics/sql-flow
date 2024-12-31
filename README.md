@@ -4,7 +4,7 @@ SQLFlow enables SQL-based stream-processing, powered by [DuckDB](https://duckdb.
 
 SQLFlow is a kafka consumer that embeds duckdb for SQL stream transformations:
 
-<img width="754" alt="Screenshot 2023-11-26 at 8 16 47 PM" src="https://github.com/turbolytics/sql-flow/assets/151242797/419d8688-1d08-45ce-b245-1c2c886a3157">
+<img width="1189" alt="Screenshot 2024-12-31 at 7 22 55 AM" src="https://github.com/user-attachments/assets/1295e7eb-a0b8-4087-8aa4-cad75a0c8cfa" />
 
 ## SQLFlow Use-Cases
 
