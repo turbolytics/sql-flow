@@ -1,6 +1,9 @@
 import logging
-from abc import ABC, abstractmethod, abstractproperty
-from xml.sax.handler import property_dom_node
+import typing
+from abc import ABC, abstractmethod
+from typing import Iterable
+
+from websockets.sync.client import connect
 
 from confluent_kafka import KafkaError
 
@@ -30,7 +33,7 @@ class Source(ABC):
         pass
 
     @abstractmethod
-    def read(self) -> Message | None:
+    def read(self) -> Iterable[Message | None]:
         pass
 
     @abstractmethod
@@ -61,29 +64,47 @@ class KafkaSource(Source):
             asynchronous=self._async_commit,
         )
 
-    def read(self) -> Message | None:
-        msg = self._consumer.poll(timeout=self._read_timeout)
+    def read(self) -> typing.Iterable[Message | None]:
+        while True:
+            msg = self._consumer.poll(timeout=self._read_timeout)
 
-        if msg is None:
-            return None
-
-        if not msg.error():
-            return Message(msg.value())
-
-        if msg.error().code() == KafkaError._PARTITION_EOF:
-            logger.warning(
-                '%% %s [%d] reached end at offset %d'.format(
-                    msg.topic(),
-                    msg.partition(),
-                    msg.offset(),
+            if msg is None:
+                yield None
+            elif not msg.error():
+                yield Message(msg.value())
+            elif msg.error().code() == KafkaError._PARTITION_EOF:
+                logger.warning(
+                    '%% %s [%d] reached end at offset %d'.format(
+                        msg.topic(),
+                        msg.partition(),
+                        msg.offset(),
+                    )
                 )
-            )
-            return None
-
-        # unknown error raise to caller
-        raise SourceException(msg.error())
+                yield None
+            else:
+                # unknown error raise to caller
+                raise SourceException(msg.error())
 
     def start(self):
         self._consumer.subscribe(self._topics)
 
 
+class WebsocketSource(Source):
+    def __init__(self, uri):
+        self._uri = uri
+
+    def start(self):
+        pass
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+    def read(self) -> Message | None:
+        logger.info("connecting to websocket: {}".format(self._uri))
+        with connect(self._uri) as websocket:
+            while True:
+                for msg in websocket.recv_streaming(decode=False):
+                    yield Message(msg)

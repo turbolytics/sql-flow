@@ -67,11 +67,16 @@ class KafkaSource:
     topics: [str]
 
 
+@dataclass
+class WebsocketSource:
+    uri: str
+
 
 @dataclass
 class Source:
     type: str
     kafka: Optional[KafkaSource] = None
+    websocket: Optional[WebsocketSource] = None
 
 
 @dataclass
@@ -83,10 +88,10 @@ class Handler:
 
 @dataclass
 class Pipeline:
-    batch_size: int
     source: Source
     handler: Handler
     sink: Sink
+    batch_size: int | None = None
 
 
 @dataclass
@@ -130,8 +135,13 @@ def build_source_config_from_dict(conf) -> Source:
             auto_offset_reset=conf['kafka']['auto_offset_reset'],
             topics=conf['kafka']['topics'],
         )
+
+    elif source.type == 'websocket':
+        source.websocket = WebsocketSource(
+            uri=conf['websocket']['uri'],
+        )
     else:
-        source.type = 'console'
+       raise NotImplementedError('unsupported source type: {}'.format(source.type))
 
     return source
 
@@ -183,7 +193,7 @@ def new_from_dict(conf):
     return Conf(
         tables=tables,
         pipeline=Pipeline(
-            batch_size=conf['pipeline']['batch_size'],
+            batch_size=conf['pipeline'].get('batch_size'),
             source=source,
             handler=Handler(
                 type=conf['pipeline']['handler']['type'],
