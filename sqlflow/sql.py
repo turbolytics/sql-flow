@@ -81,7 +81,7 @@ class SQLFlow:
             if self._stats.num_messages_consumed % 10000 == 0:
                 now = datetime.now(timezone.utc)
                 diff = (now - self._stats.start_time)
-                logger.debug('{}: reqs / second'.format(
+                logger.info('{}: reqs / second'.format(
                     self._stats.num_messages_consumed // diff.total_seconds()),
                 )
 
