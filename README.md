@@ -2,16 +2,17 @@
 
 SQLFlow enables SQL-based stream-processing, powered by [DuckDB](https://duckdb.org/). SQLFlow embeds duckdb, supporting [kafka stream processing](https://kafka.apache.org/) logic using pure sql.
 
-SQLFlow is a kafka consumer that embeds duckdb for SQL stream transformations:
+SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of SQLFlow as a way to run sql against a continuous stream of data. The data outputs can be shipped to sinks, such as Kafka.
 
 <img width="1189" alt="Screenshot 2024-12-31 at 7 22 55 AM" src="https://github.com/user-attachments/assets/1295e7eb-a0b8-4087-8aa4-cad75a0c8cfa" />
 
 ## SQLFlow Use-Cases
 
-- Streaming Data Transformations: Clean data and types and publish the new data ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
-- Stream Enrichment: Add data an input stream and publish the new data ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/enrich.yml)).
-- Data aggregation: Aggregate input data batches to decrease data volume ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
-- Tumbling Window Aggregation: Bucket data into arbitrary time windows (such as "hour" or "10 minutes") ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/tumbling.window.yml)).
+- **Streaming Data Transformations**: Clean data and types and publish the new data ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
+- **Stream Enrichment**: Add data an input stream and publish the new data ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/enrich.yml)).
+- **Data aggregation**: Aggregate input data batches to decrease data volume ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
+- **Tumbling Window Aggregation**: Bucket data into arbitrary time windows (such as "hour" or "10 minutes") ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/tumbling.window.yml)).
+- **Running SQL against the Bluesky Firehose**: Execute SQL against any webhook source, such as the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose).
 
 ## SQLFlow Features
 
@@ -31,8 +32,8 @@ SQLFlow is a kafka consumer that embeds duckdb for SQL stream transformations:
 - [x] Memory Persistence 
 - [x] CSV Static Files for joinging static data during processing
 - [x] Tumbling Window Aggregations
+- [x] Websocket input (for consuming bluesky firehose)
 - [ ] Duckdb extensions for outputs (https, parquet, postgres, etc)
-- [ ] Websocket input (for consuming bluesky firehose)
 - [ ] HTTP input for webhook stremms
 - [ ] Disk Persistence
 - [ ] Observability Metrics
@@ -87,11 +88,11 @@ docker run -v $(PWD)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-
 {"city":"San Francisco556","city_count":1}
 ```
 
-The `dev invoke` command enables testing a sql-flow pipeline configuration on a batch of test data. This enables fast feedback local development before launching a sql-flow consumer that reads from kafka.
+The `dev invoke` command enables testing a SQLFlow pipeline configuration on a batch of test data. This enables fast feedback local development before launching a SQLFlow consumer that reads from kafka.
 
 ## Configuration
 
-The heart of sql-flow is the pipeline configuration file. Each configuration file specifies:
+The heart of SQLFlow is the pipeline configuration file. Each configuration file specifies:
 
 - Kafka configuration 
 - Pipeline configuration 
@@ -101,11 +102,11 @@ The heart of sql-flow is the pipeline configuration file. Each configuration fil
 
 <img width="1085" alt="Screenshot 2024-12-30 at 9 08 57 AM" src="https://github.com/user-attachments/assets/66834849-b266-42f7-a125-7cbbb318d470" />
 
-Every instance of sql-flow needs a pipeline configuration file.
+Every instance of SQLFlow needs a pipeline configuration file.
 
 ## Consuming Bluesky Firehose
 
-sql-flow supports duckdb over websocket. Running SQL against the [bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) is a simple configuration file:
+SQLFlow supports DuckDB over websocket. Running SQL against the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) is a simple configuration file:
 
 <img width="1280" alt="bluesky firehose config" src="https://github.com/user-attachments/assets/86a46875-3cfa-46d3-ab08-1457c29115d9" />
 
