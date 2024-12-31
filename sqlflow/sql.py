@@ -1,4 +1,3 @@
-import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,7 +9,7 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 from sqlflow import config
 from sqlflow.managers import window
 from sqlflow.sinks import ConsoleSink, Sink, KafkaSink
-from sqlflow.sources import Source, KafkaSource
+from sqlflow.sources import Source, KafkaSource, WebsocketSource
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +48,16 @@ class SQLFlow:
             self.source.start()
             self._consume_loop(max_msgs)
 
-            now = datetime.now(timezone.utc)
-            diff = (now - self._stats.start_time)
-            self._stats.total_throughput_per_second = self._stats.num_messages_consumed // diff.total_seconds()
         except Exception as e:
             logger.error('error in consumer loop: {}'.format(e))
             raise e
         finally:
             self.source.close()
+
+            now = datetime.now(timezone.utc)
+            diff = (now - self._stats.start_time)
+            self._stats.total_throughput_per_second = self._stats.num_messages_consumed // diff.total_seconds()
+
             logger.info(
                 'consumer loop ending: total messages / sec = {}'.format(self._stats.total_throughput_per_second),
             )
@@ -70,9 +71,7 @@ class SQLFlow:
 
         self.handler.init()
 
-        while True:
-            msg = self.source.read()
-            # msg = self.source.poll(timeout=1.0)
+        for msg in self.source.read():
             if msg is None:
                 continue
             self._stats.num_messages_consumed += 1
@@ -82,7 +81,7 @@ class SQLFlow:
             if self._stats.num_messages_consumed % 10000 == 0:
                 now = datetime.now(timezone.utc)
                 diff = (now - self._stats.start_time)
-                logger.debug('{}: reqs / second'.format(
+                logger.info('{}: reqs / second'.format(
                     self._stats.num_messages_consumed // diff.total_seconds()),
                 )
 
@@ -178,23 +177,32 @@ def new_sink_from_conf(sink_conf: config.Sink):
     raise NotImplementedError('unsupported sink type: {}'.format(sink_conf.type))
 
 
+def new_source_from_conf(source_conf: config.Source):
+    if source_conf.type == 'kafka':
+        kconf = {
+            'bootstrap.servers': ','.join(source_conf.kafka.brokers),
+            'group.id': source_conf.kafka.group_id,
+            'auto.offset.reset': source_conf.kafka.auto_offset_reset,
+            'enable.auto.commit': False,
+        }
+
+        consumer = Consumer(kconf)
+
+        return KafkaSource(
+            consumer=consumer,
+            topics=source_conf.kafka.topics,
+        )
+    elif source_conf.type == 'websocket':
+        return WebsocketSource(
+            uri=source_conf.websocket.uri,
+        )
+
+    raise NotImplementedError('unsupported source type: {}'.format(source_conf.type))
+
+
 def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
-    kconf = {
-        'bootstrap.servers': ','.join(conf.pipeline.source.kafka.brokers),
-        'group.id': conf.pipeline.source.kafka.group_id,
-        'auto.offset.reset': conf.pipeline.source.kafka.auto_offset_reset,
-        'enable.auto.commit': False,
-    }
-
-    consumer = Consumer(kconf)
-
+    source = new_source_from_conf(conf.pipeline.source)
     sink = new_sink_from_conf(conf.pipeline.sink)
-
-    source = KafkaSource(
-        consumer=consumer,
-        topics=conf.pipeline.source.kafka.topics,
-    )
-
     sflow = SQLFlow(
         source=source,
         handler=handler,

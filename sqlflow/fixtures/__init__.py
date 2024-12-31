@@ -62,9 +62,9 @@ class KafkaFaker:
             j_event = json.dumps(e)
             producer.produce(self.topic, value=j_event)
             if i % 10000 == 0:
-                logger.debug('published {} of {}'.format(i, self.num_messages))
+                logger.info('published {} of {}'.format(i, self.num_messages))
                 producer.flush()
         producer.flush()
-        logger.debug('published {} of {}'.format(self.num_messages, self.num_messages))
+        logger.info('published {} of {}'.format(self.num_messages, self.num_messages))
 
 
