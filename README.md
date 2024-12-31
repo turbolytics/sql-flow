@@ -103,6 +103,16 @@ The heart of sql-flow is the pipeline configuration file. Each configuration fil
 
 Every instance of sql-flow needs a pipeline configuration file.
 
+## Consuming Bluesky Firehose
+
+sql-flow supports duckdb over websocket. Running SQL against the [bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) is a simple configuration file:
+
+<img width="1280" alt="bluesky firehose config" src="https://github.com/user-attachments/assets/86a46875-3cfa-46d3-ab08-1457c29115d9" />
+
+Invoke sql-flow using the configuration listed above:
+
+![output](https://github.com/user-attachments/assets/185c6453-debc-439a-a2b9-ed20fdc82851)
+
 ## Recipes
 
 Coming Soon, until then checkout:
@@ -112,7 +122,6 @@ Coming Soon, until then checkout:
 
 #### Running multiple SQLFlow instances on the same filesystem 
 #### Verifying a configuration locally 
-
 
 
 ## Development 
