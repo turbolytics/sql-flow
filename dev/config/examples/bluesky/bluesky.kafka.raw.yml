@@ -1,6 +1,6 @@
 # Consumes the bluesky firehose
 pipeline:
-  batch_size: 100
+  batch_size: 1
   source:
     type: websocket
     websocket:
@@ -9,16 +9,10 @@ pipeline:
   handler:
     type: 'handlers.InferredMemBatch'
     sql: |
-      SELECT
-        time_us as time,
-        kind
-      FROM batch
+      SELECT * FROM batch
 
   sink:
-    type: console
-
-#    kafka:
-#      brokers: [localhost:9092]
-#      topic: output-bluesky-firehose
-
-
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      topic: output-bluesky-firehose
