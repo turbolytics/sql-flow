@@ -27,16 +27,13 @@ ptyprocess==0.7.0
 pure-eval==0.2.2
 pyarrow==14.0.1
 Pygments==2.17.2
-pytest==7.4.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 pytz==2024.1
 PyYAML==6.0.1
 requests==2.32.3
 six==1.16.0
--e git+ssh://git@github.com/turbolytics/sql-flow.git@bca4de05fcb51a23a26110727daa57705c273b3f#egg=sqlflow
 stack-data==0.6.3
-testcontainers==4.9.0
 traitlets==5.14.0
 typing_extensions==4.12.2
 tzdata==2024.1
