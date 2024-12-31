@@ -12,7 +12,7 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
 - **Stream Enrichment**: Add data an input stream and publish the new data ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/enrich.yml)).
 - **Data aggregation**: Aggregate input data batches to decrease data volume ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
 - **Tumbling Window Aggregation**: Bucket data into arbitrary time windows (such as "hour" or "10 minutes") ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/tumbling.window.yml)).
-- **Running SQL against the Bluesky Firehose**: Execute SQL against any webhook source, such as the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose).
+- **Running SQL against the Bluesky Firehose**: Execute SQL against any webhook source, such as the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/bluesky/bluesky.kafka.raw.yml))
 
 ## SQLFlow Features
 
@@ -115,6 +115,8 @@ Invoke sql-flow using the configuration listed above:
 
 ![output](https://github.com/user-attachments/assets/185c6453-debc-439a-a2b9-ed20fdc82851)
 
+[Checkout the configuration files here](https://github.com/turbolytics/sql-flow/tree/main/dev/config/examples/bluesky)
+
 ## Recipes
 
 Coming Soon, until then checkout:
@@ -138,7 +140,7 @@ C_INCLUDE_PATH=/opt/homebrew/Cellar/librdkafka/2.3.0/include LIBRARY_PATH=/opt/h
 
 - Run tests
 ```
-pytests tests
+make test-unit
 ```
  
 
