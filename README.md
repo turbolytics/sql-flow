@@ -26,22 +26,22 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
 ## SQLFlow Roadmap 
 
 - Sources
- - [x] Kafka Consumer using consumer groups
- - [x] Websocket input (for consuming bluesky firehose)
- - [ ] HTTP (for webhooks)
+  - [x] Kafka Consumer using consumer groups
+  - [x] Websocket input (for consuming bluesky firehose)
+  - [ ] HTTP (for webhooks)
 - Sinks
- - [x] Kafka Producer
- - [x] Stdout
- - [ ] Postgres
- - [ ] Local Disk
- - [ ] S3
+  - [x] Kafka Producer
+  - [x] Stdout
+  - [ ] Postgres
+  - [ ] Local Disk
+  - [ ] S3
 - Serialization
- - [x] JSON Input
- - [x] JSON Output
- - [ ] Parquet Output
+  - [x] JSON Input
+  - [x] JSON Output
+  - [ ] Parquet Output
 - Handlers
- - [x] Memory Persistence
- - [ ] Disk Persistence
+  - [x] Memory Persistence
+  - [ ] Disk Persistence
 - [x] CSV Static Files for joinging static data during processing
 - [x] Tumbling Window Aggregations
 - [ ] Observability Metrics
