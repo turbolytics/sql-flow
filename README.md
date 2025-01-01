@@ -16,27 +16,34 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
 
 ## SQLFlow Features
 
-- Kafka Stream Consumers/Producers: Use kafka streaming primitives, such as consumer groups, to scale processing horizontally.
-- Websocket Stream Consumer: Run SQL against a stream of websocket payloads, such as the Bluesky Firehose
-- Configurable Serialization/Encodings: Such as JSON on the wire.
-- Stream transformations in pure SQL, powered by [DuckDB](https://duckdb.org/)
-- High Performance: SQLFlow is benchmarked to process 10's of thousands of messages per second thanks to [DuckDB](https://duckdb.org/), [librdkafka](https://github.com/confluentinc/librdkafka), and [confluent python](https://github.com/confluentinc/confluent-kafka-python)
-- Tumbling Window Aggregation: Aggregate data on fixed intervals, and produce data once those intervals completed. This allows for "hourly" or "10-minute" rollups.
-- Join streaming data with any CSV-based data using SQLFlow static tables. 
+- **Streaming SQL**: Execute SQL against a variety of input streams, including kafka and websockets (bluesky firehose).
+- **Custom Serialization and Encoding**: Support for various formats, such as JSON and Parquet.
+- High Throughput: Optimized to handle tens of thousands of messages per second using [DuckDB](https://duckdb.org/), [librdkafka](https://github.com/confluentinc/librdkafka), and [confluent python](https://github.com/confluentinc/confluent-kafka-python)
+- **Tumbling Window Aggregations**: Perform aggregations over fixed intervals and output data once the interval is complete, enabling rollups like hourly or 10-minute summaries.
+- **Static Table Joins**: Join streaming data with static datasets, such as CSVs, using SQLFlow.
+
 
 ## SQLFlow Roadmap 
 
-- [x] Kafka Consumer using consumer groups
-- [x] Kafka Producer
-- [x] JSON Input
-- [x] JSON Output
-- [x] Memory Persistence 
+- Sources
+ - [x] Kafka Consumer using consumer groups
+ - [x] Websocket input (for consuming bluesky firehose)
+ - [ ] HTTP (for webhooks)
+- Sinks
+ - [x] Kafka Producer
+ - [x] Stdout
+ - [ ] Postgres
+ - [ ] Local Disk
+ - [ ] S3
+- Serialization
+ - [x] JSON Input
+ - [x] JSON Output
+ - [ ] Parquet Output
+- Handlers
+ - [x] Memory Persistence
+ - [ ] Disk Persistence
 - [x] CSV Static Files for joinging static data during processing
 - [x] Tumbling Window Aggregations
-- [x] Websocket input (for consuming bluesky firehose)
-- [ ] Duckdb extensions for outputs (https, parquet, postgres, etc)
-- [ ] HTTP input for webhook stremms
-- [ ] Disk Persistence
 - [ ] Observability Metrics
 
 ## Getting Started
