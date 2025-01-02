@@ -9,8 +9,6 @@ tables:
         );
         CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (timestamp, city);
 
-      # tables can be managed as a windowed table.
-      # windowed tables flush the table at certain durations.
       manager:
         tumbling_window:
           duration_seconds: 10

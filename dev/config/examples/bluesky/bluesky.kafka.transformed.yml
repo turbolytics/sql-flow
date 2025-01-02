@@ -10,14 +10,17 @@ pipeline:
     type: 'handlers.InferredMemBatch'
     sql: |
       SELECT
-        time_us as time,
+        epoch_ms(time_us) as time,
         kind
       FROM batch
 
   sink:
-    type: kafka
-    kafka:
-      brokers: [localhost:9092]
-      topic: output-bluesky-firehose
+    type: console
+
+#
+#    type: kafka
+#    kafka:
+#      brokers: [localhost:9092]
+#      topic: output-bluesky-firehose
 
 

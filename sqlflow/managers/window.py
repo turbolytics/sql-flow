@@ -38,6 +38,7 @@ class Tumbling:
     def collect_closed(self) -> [object]:
         # select all data with 'closed' windows.
         # 'closed' is identified by times earlier than NOW() - size_seconds
+        import ipdb; ipdb.set_trace();
         stmt = '''
         SELECT 
             * 
@@ -101,15 +102,16 @@ class Tumbling:
         """
         t = datetime.now(tz=timezone.utc)
         # take the lock
-        logger.debug('checking for closed windows')
+        logger.info('checking for closed windows')
         closed_records = self.collect_closed()
-        logger.debug('found: {} closed records'.format(len(closed_records)))
-        self.flush(closed_records)
+        logger.info('found: {} closed records'.format(len(closed_records)))
+        if closed_records:
+            self.flush(closed_records)
         # get the max record present and delete from there
         self.delete_closed()
 
     def start(self):
-        logger.debug('starting managers thread')
+        logger.info('starting managers thread')
         while not self._stopped:
             self.poll()
             time.sleep(self._poll_interval_seconds)
