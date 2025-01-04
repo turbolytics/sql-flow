@@ -1,3 +1,5 @@
+import threading
+
 import duckdb
 
 from sqlflow.config import new_from_path
@@ -50,6 +52,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
 
 def start(conf, max_msgs=None):
     conn = duckdb.connect()
+    lock = threading.Lock()
 
     BatchHandler = handlers.get_class(conf.pipeline.handler.type)
     h = BatchHandler(
@@ -62,6 +65,7 @@ def start(conf, max_msgs=None):
 
     managed_tables = build_managed_tables(
         conn,
+        lock,
         conf.tables.sql,
     )
     handle_managed_tables(managed_tables)
@@ -70,6 +74,7 @@ def start(conf, max_msgs=None):
         conf,
         conn,
         handler=h,
+        lock=lock,
     )
     stats = sflow.consume_loop(max_msgs)
 

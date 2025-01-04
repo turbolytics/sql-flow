@@ -31,7 +31,8 @@ class SQLFlow:
                  source: Source,
                  handler,
                  sink: Sink,
-                 batch_size=1000):
+                 batch_size=1000,
+                 lock=threading.Lock()):
         self.source = source
         self.sink = sink
         self.handler = handler
@@ -41,6 +42,7 @@ class SQLFlow:
             num_errors=0,
             start_time=datetime.now(timezone.utc),
         )
+        self._lock = lock
 
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
@@ -87,7 +89,9 @@ class SQLFlow:
 
             if num_batch_messages == self._batch_size:
                 # apply the pipeline
-                batch = self.handler.invoke()
+                with self._lock:
+                    batch = self.handler.invoke()
+
                 for l in batch:
                     self.sink.write(l)
 
@@ -118,7 +122,7 @@ def init_tables(conn, tables):
         conn.sql(sql_table.sql)
 
 
-def build_managed_tables(conn, table_confs):
+def build_managed_tables(conn, table_confs, lock=threading.Lock()):
     managed_tables = []
     for table in table_confs:
         # windowed tables are the only supported tables currently
@@ -138,6 +142,7 @@ def build_managed_tables(conn, table_confs):
             ),
             size_seconds=table.manager.tumbling_window.duration_seconds,
             sink=sink,
+            lock=lock,
         )
         managed_tables.append(h)
     return managed_tables
@@ -200,7 +205,7 @@ def new_source_from_conf(source_conf: config.Source):
     raise NotImplementedError('unsupported source type: {}'.format(source_conf.type))
 
 
-def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
+def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
     source = new_source_from_conf(conf.pipeline.source)
     sink = new_sink_from_conf(conf.pipeline.sink)
     sflow = SQLFlow(
@@ -208,6 +213,7 @@ def new_sqlflow_from_conf(conf, conn, handler) -> SQLFlow:
         handler=handler,
         sink=sink,
         batch_size=conf.pipeline.batch_size,
+        lock=lock,
     )
 
     return sflow
