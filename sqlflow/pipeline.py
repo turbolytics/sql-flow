@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import logging
 import socket
 
-from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
+from confluent_kafka import Consumer, Producer
 
 from sqlflow import config
 from sqlflow.managers import window

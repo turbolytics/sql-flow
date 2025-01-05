@@ -1,7 +1,6 @@
 import unittest
 import os
 
-from sqlflow import settings
 from sqlflow.config import Conf, Pipeline, Handler
 from sqlflow.handlers import InferredMemBatch, InferredDiskBatch
 from sqlflow.serde import JSON
