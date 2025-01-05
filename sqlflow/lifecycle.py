@@ -50,9 +50,12 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     print(res)
     return res
 
-def start(conf, max_msgs=None):
-    conn = duckdb.connect()
-    lock = threading.Lock()
+def start(conf, conn=None, lock=None, max_msgs=None):
+    if conn is None:
+        conn = duckdb.connect()
+
+    if lock is None:
+        lock = threading.Lock()
 
     BatchHandler = handlers.get_class(conf.pipeline.handler.type)
     h = BatchHandler(
@@ -65,8 +68,8 @@ def start(conf, max_msgs=None):
 
     managed_tables = build_managed_tables(
         conn,
-        lock,
         conf.tables.sql,
+        lock,
     )
     handle_managed_tables(managed_tables)
 

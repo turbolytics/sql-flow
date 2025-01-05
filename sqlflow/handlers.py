@@ -99,7 +99,7 @@ class InferredMemBatch:
             )
         except duckdb.duckdb.BinderException as e:
             logger.error(
-                'could not execute sql: {}'.format(self.conf.pipeline.sql),
+                'could not execute sql: {}'.format(self.conf.pipeline.handler.sql),
             )
             raise e
 

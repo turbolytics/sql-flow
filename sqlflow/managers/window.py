@@ -45,7 +45,7 @@ class Tumbling:
             * 
         FROM {}
         WHERE 
-            {} < CURRENT_TIMESTAMP - INTERVAL '{}' SECOND
+            {} AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '{}' SECOND)
         '''.format(
             self.table.name,
             self.table.time_field,
@@ -85,7 +85,7 @@ class Tumbling:
         DELETE 
             FROM {} 
         WHERE
-            {} < CURRENT_TIMESTAMP - INTERVAL '{}' SECOND
+            {} AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '{}' SECOND)
         '''.format(
             self.table.name,
             self.table.time_field,
@@ -103,16 +103,15 @@ class Tumbling:
         """
         t = datetime.now(tz=timezone.utc)
         # take the lock
-        logger.info('checking for closed windows')
         with self._lock:
             closed_records = self.collect_closed()
 
-        logger.info('found: {} closed records'.format(len(closed_records)))
+        logger.debug('found: {} closed records'.format(len(closed_records)))
         if closed_records:
             self.flush(closed_records)
-        # get the max record present and delete from there
-        with self._lock:
-            self.delete_closed()
+            # get the max record present and delete from there
+            with self._lock:
+                self.delete_closed()
 
     def start(self):
         logger.info('starting managers thread')

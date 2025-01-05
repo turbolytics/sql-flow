@@ -16,7 +16,7 @@ tables:
       manager:
         # The tumbling window manager will identify records with "closed" windows i.e. windows < now - duration_seconds
         tumbling_window:
-          duration_seconds: 60
+          duration_seconds: 300
           time_field: bucket
 
         sink:
@@ -37,7 +37,7 @@ pipeline:
     sql: |
       INSERT INTO agg_post_kind_count_5_minutes
       SELECT
-        epoch_ms(time_us) as bucket,
+        time_bucket(INTERVAL '5 minutes', to_timestamp(time_us / 1000000)) as bucket,
         kind,
         count(*) as count
       FROM batch
