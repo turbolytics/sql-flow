@@ -20,10 +20,10 @@ tables:
           time_field: bucket
 
         sink:
-          type: console
-#          kafka:
-#            brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-#            topic: output-bluesky-post-kind-count-5-minutes
+          type: kafka
+          kafka:
+            brokers: [{{ kafka_brokers|default('localhost:9092') }}]
+            topic: output-bluesky-post-kind-count-5-minutes
 
 pipeline:
   batch_size: 1
