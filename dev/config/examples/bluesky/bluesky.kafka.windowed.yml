@@ -1,0 +1,50 @@
+# Counts the post "kind" using 5 minute buckets (aggregation).
+# Publishes the 5-minute windows to kafka.
+tables:
+  sql:
+    # Create the table to store the count of each post kind in 5 minute buckets
+    # This table is available for reference within the pipeline.
+    - name: agg_post_kind_count_5_minutes
+      sql: |
+        CREATE TABLE agg_post_kind_count_5_minutes (
+          bucket TIMESTAMPTZ,
+          kind VARCHAR,
+          count INT 
+        );
+        CREATE UNIQUE INDEX five_minute_post_kind_count_idx ON agg_post_kind_count_5_minutes (bucket, kind);
+
+      manager:
+        # The tumbling window manager will identify records with "closed" windows i.e. windows < now - duration_seconds
+        tumbling_window:
+          duration_seconds: 300
+          time_field: bucket
+
+        sink:
+          type: kafka
+          kafka:
+            brokers: [{{ kafka_brokers|default('localhost:9092') }}]
+            topic: output-bluesky-post-kind-count-5-minutes
+
+pipeline:
+  batch_size: 1
+  source:
+    type: websocket
+    websocket:
+      uri: 'wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post'
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      INSERT INTO agg_post_kind_count_5_minutes
+      SELECT
+        time_bucket(INTERVAL '5 minutes', to_timestamp(time_us / 1000000)) as bucket,
+        kind,
+        count(*) as count
+      FROM batch
+      GROUP BY 
+        bucket, kind 
+      ON CONFLICT (bucket, kind)
+      DO UPDATE SET count = count + EXCLUDED.count
+
+  sink:
+    type: console

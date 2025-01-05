@@ -1,5 +1,6 @@
 import logging
 import json
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,7 +24,7 @@ class Tumbling:
     - Publishing records that have closed.
     - Deleteting closed records from the table.
     """
-    def __init__(self, conn, table: Table, size_seconds, sink: Sink):
+    def __init__(self, conn, table: Table, size_seconds, sink: Sink, lock=threading.Lock()):
         self.conn = conn
         self.table = table
         self.size_seconds = size_seconds
@@ -31,6 +32,7 @@ class Tumbling:
         self._poll_interval_seconds = 10
         self.serde = JSON()
         self._stopped = None
+        self._lock = lock
 
     def stop(self):
         self._stopped = True
@@ -43,7 +45,7 @@ class Tumbling:
             * 
         FROM {}
         WHERE 
-            {} < CURRENT_TIMESTAMP - INTERVAL '{}' SECOND
+            {} AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '{}' SECOND)
         '''.format(
             self.table.name,
             self.table.time_field,
@@ -83,7 +85,7 @@ class Tumbling:
         DELETE 
             FROM {} 
         WHERE
-            {} < CURRENT_TIMESTAMP - INTERVAL '{}' SECOND
+            {} AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '{}' SECOND)
         '''.format(
             self.table.name,
             self.table.time_field,
@@ -101,15 +103,18 @@ class Tumbling:
         """
         t = datetime.now(tz=timezone.utc)
         # take the lock
-        logger.debug('checking for closed windows')
-        closed_records = self.collect_closed()
+        with self._lock:
+            closed_records = self.collect_closed()
+
         logger.debug('found: {} closed records'.format(len(closed_records)))
-        self.flush(closed_records)
-        # get the max record present and delete from there
-        self.delete_closed()
+        if closed_records:
+            self.flush(closed_records)
+            # get the max record present and delete from there
+            with self._lock:
+                self.delete_closed()
 
     def start(self):
-        logger.debug('starting managers thread')
+        logger.info('starting managers thread')
         while not self._stopped:
             self.poll()
             time.sleep(self._poll_interval_seconds)

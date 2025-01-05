@@ -14,7 +14,7 @@ class TumblingWindowTestCase(unittest.TestCase):
 
         conn.sql('''
         CREATE TABLE test_table (
-            timestamp TIMESTAMP,
+            timestamp TIMESTAMPTZ,
             id VARCHAR
         )
         ''')
