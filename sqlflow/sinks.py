@@ -89,7 +89,7 @@ class KafkaSink(Sink):
         self.producer.flush()
 
 
-class TestSink(Sink):
+class RecordingSink(Sink):
     def __init__(self):
         self.writes = []
 

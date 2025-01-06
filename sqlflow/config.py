@@ -169,6 +169,7 @@ def build_sink_config_from_dict(conf) -> Sink:
         sink.format = SinkFormat(
             type=conf['format']['type'],
         )
+        assert sink.format.type in ('parquet',), "unsupported format: {}".format(sink.format.type)
 
     if sink.type == 'kafka':
         sink.kafka = KafkaSink(
