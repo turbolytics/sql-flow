@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from sqlflow import settings
 
 
+
+@dataclass
+class SinkFormat:
+    type: str
+
+
 @dataclass
 class KafkaSink:
     brokers: [str]
@@ -20,10 +26,18 @@ class ConsoleSink:
 
 
 @dataclass
+class Local:
+    base_path: str
+    prefix: str
+
+
+@dataclass
 class Sink:
     type: str
+    format: Optional[SinkFormat] = None
     kafka: Optional[KafkaSink] = None
     console: Optional[ConsoleSink] = None
+    local: Optional[Local] = None
 
 
 @dataclass
@@ -151,10 +165,20 @@ def build_sink_config_from_dict(conf) -> Sink:
         type=conf['type'],
     )
 
+    if 'format' in conf:
+        sink.format = SinkFormat(
+            type=conf['format']['type'],
+        )
+
     if sink.type == 'kafka':
         sink.kafka = KafkaSink(
             brokers=conf['kafka']['brokers'],
             topic=conf['kafka']['topic'],
+        )
+    elif sink.type == 'local':
+        sink.local = Local(
+            base_path=conf['local']['base_path'],
+            prefix=conf['local']['prefix'],
         )
     else:
         sink.type = 'console'

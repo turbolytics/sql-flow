@@ -1,0 +1,20 @@
+pipeline:
+  batch_size: 1
+  source:
+    type: websocket
+    websocket:
+      uri: 'wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post'
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT * FROM batch
+
+  sink:
+    type: local
+    format:
+      type: parquet
+    local:
+       base_path: /tmp/bluesky
+       prefix: localparquet
+

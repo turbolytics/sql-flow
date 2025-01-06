@@ -8,7 +8,7 @@ from confluent_kafka import Consumer, Producer
 
 from sqlflow import config
 from sqlflow.managers import window
-from sqlflow.sinks import ConsoleSink, Sink, KafkaSink
+from sqlflow.sinks import ConsoleSink, Sink, KafkaSink, LocalSink
 from sqlflow.sources import Source, KafkaSource, WebsocketSource
 
 logger = logging.getLogger(__name__)
@@ -178,6 +178,12 @@ def new_sink_from_conf(sink_conf: config.Sink):
         )
     elif sink_conf.type == 'console':
         return ConsoleSink()
+    elif sink_conf.type == 'local':
+        return LocalSink(
+            base_path=sink_conf.local.base_path,
+            prefix=sink_conf.local.prefix,
+            format=sink_conf.format.type,
+        )
 
     raise NotImplementedError('unsupported sink type: {}'.format(sink_conf.type))
 

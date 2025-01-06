@@ -1,7 +1,9 @@
 import os
+import tempfile
 import unittest
 
 import duckdb
+import pyarrow.parquet as pq
 
 from sqlflow.lifecycle import invoke
 from sqlflow.config import new_from_dict, ConsoleSink, TumblingWindow, TableManager, Sink
@@ -99,6 +101,36 @@ class InvokeExamplesTestCase(unittest.TestCase):
             ],
             out,
         )
+
+    def test_local_parquet_sink(self):
+        conn = duckdb.connect()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = invoke(
+                conn=conn,
+                config=os.path.join(conf_dir, 'examples', 'local.parquet.sink.yml'),
+                fixture=os.path.join(fixtures_dir, 'window.jsonl'),
+                invoke_sink=True,
+                setting_overrides={
+                    'sink_base_path': temp_dir,
+                }
+            )
+            self.assertEqual([
+                '{"num_records": 4}'
+            ], out)
+
+            files = os.listdir(temp_dir)
+            parquet_files = [f for f in files if f.endswith('.parquet')]
+            self.assertEqual(len(parquet_files), 1)
+
+            # Read the Parquet file and verify the content
+            parquet_file_path = os.path.join(temp_dir, parquet_files[0])
+            table = pq.read_table(parquet_file_path)
+            df = table.to_pandas()
+
+            expected_data = [
+                {'num_records': 4}
+            ]
+            self.assertEqual(df.to_dict(orient='records'), expected_data)
 
 
 class TablesTestCase(unittest.TestCase):

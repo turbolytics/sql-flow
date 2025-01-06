@@ -2,9 +2,8 @@ import unittest
 import tempfile
 import os
 import json
-import duckdb
 import pyarrow.parquet as pq
-from sqlflow.sinks import LocalParquetSink
+from sqlflow.sinks import LocalSink
 
 
 class TestLocalParquetSink(unittest.TestCase):
@@ -12,7 +11,10 @@ class TestLocalParquetSink(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.base_path = self.temp_dir.name
         self.prefix = 'test'
-        self.sink = LocalParquetSink(base_path=self.base_path, prefix=self.prefix)
+        self.sink = LocalSink(
+            base_path=self.base_path,
+            prefix=self.prefix,
+        )
 
     def tearDown(self):
         self.temp_dir.cleanup()

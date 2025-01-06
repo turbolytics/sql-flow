@@ -5,10 +5,11 @@ import duckdb
 from sqlflow.config import new_from_path
 from sqlflow import handlers
 from sqlflow.serde import JSON
-from sqlflow.pipeline import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf
+from sqlflow.pipeline import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf, \
+    new_sink_from_conf
 
 
-def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
+def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invoke_sink=False):
     """
     Invoke will initialize config and invoke the configured pipleline against
     the provided fixture.
@@ -34,6 +35,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
         conn,
         conf.tables.sql,
     )
+
     if managed_tables:
         assert len(managed_tables) == 1, \
             "only a single managed table is currently supported"
@@ -47,6 +49,13 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False):
     res = list(h.invoke())
     if flush_window:
         res = managed_tables[0].collect_closed()
+
+    if invoke_sink:
+        sink = new_sink_from_conf(conf.pipeline.sink)
+        for l in res:
+            sink.write(l)
+        sink.flush()
+
     print(res)
     return res
 
