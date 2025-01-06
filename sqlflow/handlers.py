@@ -108,11 +108,8 @@ class InferredMemBatch:
 
         df = res.df()
 
-        records = json.loads(
-            df.to_json(
-                orient='records',
-                index=False,
-            )
+        records = df.to_dict(
+            orient='records',
         )
 
         for rec in records:
