@@ -1,3 +1,4 @@
+import logging
 import json
 import os
 import sys
@@ -6,6 +7,9 @@ import pyarrow as pa
 from abc import abstractmethod, ABC
 
 import duckdb
+
+
+logger = logging.getLogger(__name__)
 
 
 class Sink(ABC):
@@ -68,6 +72,7 @@ class LocalSink(Sink):
             file_name = f"{self.prefix}-{uuid.uuid4()}.parquet"
             file_path = os.path.join(self.base_path, file_name)
 
+            logger.debug(f"Writing {len(self.buffer)} records to Parquet file: {file_path}")
             # Write the table to a Parquet file
             self.conn.execute(f"COPY buffer_table TO '{file_path}' (FORMAT 'parquet')")
         else:

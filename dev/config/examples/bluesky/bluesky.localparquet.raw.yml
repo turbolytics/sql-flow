@@ -1,5 +1,5 @@
 pipeline:
-  batch_size: 1
+  batch_size: 1000
   source:
     type: websocket
     websocket:
@@ -15,6 +15,6 @@ pipeline:
     format:
       type: parquet
     local:
-       base_path: /tmp/bluesky
+       base_path: /tmp/bluesky/bluesky.localparquet.raw
        prefix: localparquet
 
