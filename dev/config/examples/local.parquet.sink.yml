@@ -1,0 +1,24 @@
+pipeline:
+  batch_size: 1000
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "topic-local-parquet-sink"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT COUNT(*) as num_records FROM batch
+
+  sink:
+    type: local
+    format:
+      type: parquet
+    local:
+      base_path: {{ sink_base_path|default('/tmp/sql-flow/test/local.parquet.sink.yml') }}
+      prefix: testing

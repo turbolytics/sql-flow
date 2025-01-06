@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import duckdb
 import pyarrow as pa
 
-from sqlflow.sinks import ConsoleSink, TestSink
+from sqlflow.sinks import ConsoleSink, RecordingSink
 from sqlflow.managers.window import Tumbling, Table
 
 
@@ -86,7 +86,7 @@ class TumblingWindowTestCase(unittest.TestCase):
         )
 
     def test_flush_results(self):
-        writer = TestSink()
+        writer = RecordingSink()
 
         tw = Tumbling(
             conn=None,
