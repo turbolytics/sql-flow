@@ -10,7 +10,7 @@ pipeline:
     type: 'handlers.InferredMemBatch'
     sql: |
       SELECT
-        epoch_ms(time_us) as time,
+        to_timestamp(time_us / 1000000) as time,
         kind
       FROM batch
 
