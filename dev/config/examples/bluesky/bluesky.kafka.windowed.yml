@@ -22,7 +22,7 @@ tables:
         sink:
           type: kafka
           kafka:
-            brokers: [{{ kafka_brokers|default('localhost:9092') }}]
+            brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
             topic: output-bluesky-post-kind-count-5-minutes
 
 pipeline:
