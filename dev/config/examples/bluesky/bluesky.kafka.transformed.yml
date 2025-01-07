@@ -16,11 +16,3 @@ pipeline:
 
   sink:
     type: console
-
-#
-#    type: kafka
-#    kafka:
-#      brokers: [localhost:9092]
-#      topic: output-bluesky-firehose
-
-

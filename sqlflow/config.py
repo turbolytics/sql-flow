@@ -1,4 +1,5 @@
 import copy
+import os
 from typing import Optional
 
 from jinja2 import Template
@@ -126,6 +127,11 @@ def new_from_path(path: str, setting_overrides={}):
         template = Template(f.read())
 
     settings_vars = copy.deepcopy(settings.VARS)
+
+    for key, value in os.environ.items():
+        if key.startswith('SQLFLOW_'):
+            settings_vars[key] = value
+
     for k, v in setting_overrides.items():
         settings_vars[k] = v
 

@@ -14,5 +14,5 @@ pipeline:
   sink:
     type: kafka
     kafka:
-      brokers: [localhost:9092]
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
       topic: output-bluesky-firehose
