@@ -52,17 +52,8 @@ class Tumbling:
             self.size_seconds,
         )
         logger.debug(stmt)
-        self.conn.begin()
-        df = self.conn.execute(stmt).df()
-
-        records = json.loads(
-            df.to_json(
-                orient='records',
-                index=False,
-            )
-        )
-        self.conn.commit()
-        return records
+        df = self.conn.sql(stmt).to_arrow_table()
+        return df.to_pylist()
 
     def flush(self, records):
         """

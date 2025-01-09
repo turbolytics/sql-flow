@@ -43,10 +43,10 @@ class InferredMemBatchTestCase(unittest.TestCase):
                     handler=Handler(
                         type=None,
                         sql="""
-                        SELECT
-                            {'something': city} as s1,
-                            row(city, 1, 2) as nested_json
-                        FROM batch 
+SELECT
+    *,
+    {'nested_city': city} AS enriched
+FROM batch
                     """,
                     ),
                     sink=None,
@@ -62,9 +62,9 @@ class InferredMemBatchTestCase(unittest.TestCase):
         res = list(p.invoke())
 
         self.assertEqual([
-            '{"s1": {"something": "New York"}, "nested_json": {"": 2}}',
-            '{"s1": {"something": "New York"}, "nested_json": {"": 2}}',
-            '{"s1": {"something": "Baltimore"}, "nested_json": {"": 2}}',
+            '{"event": "search", "city": "New York", "user_id": "123412ds", "enriched": {"nested_city": "New York"}}',
+            '{"event": "search", "city": "New York", "user_id": "123412ds", "enriched": {"nested_city": "New York"}}',
+            '{"event": "search", "city": "Baltimore", "user_id": "123412ds", "enriched": {"nested_city": "Baltimore"}}'
         ],
             res,
         )

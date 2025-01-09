@@ -16,7 +16,7 @@ tables:
       manager:
         # The tumbling window manager will identify records with "closed" windows i.e. windows < now - duration_seconds
         tumbling_window:
-          duration_seconds: 300
+          duration_seconds: 60
           time_field: bucket
 
         sink:

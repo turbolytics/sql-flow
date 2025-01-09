@@ -106,18 +106,10 @@ class InferredMemBatch:
         if not res:
             return
 
-        df = res.df()
+        df = res.to_arrow_table()
 
-        records = json.loads(
-            df.to_json(
-                orient='records',
-                index=False,
-            )
-        )
-
-        for rec in records:
+        for rec in df.to_pylist():
             yield json.dumps(rec)
-
 
 def get_class(s: str):
     if s == 'handlers.InferredDiskBatch':
