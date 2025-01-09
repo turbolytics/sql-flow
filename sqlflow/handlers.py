@@ -45,16 +45,16 @@ class InferredDiskBatch:
             for l in self._invoke():
                 yield l
         finally:
-            self.conn.sql('DROP TABLE IF EXISTS batch')
+            self.conn.execute('DROP TABLE IF EXISTS batch')
 
     def _invoke(self):
-        self.conn.sql(
+        self.conn.execute(
             'CREATE TABLE batch AS SELECT * FROM read_json_auto(\'{}\')'.format(
                 self._batch_file
             ),
         )
 
-        self.conn.sql(
+        self.conn.execute(
             "COPY ({}) TO '{}'".format(
                 self.conf.pipeline.handler.sql,
                 self._out_file,
@@ -94,7 +94,7 @@ class InferredMemBatch:
         batch = pa.Table.from_pylist(self.rows)
 
         try:
-            res = self.conn.sql(
+            res = self.conn.execute(
                 self.conf.pipeline.handler.sql,
             )
         except duckdb.duckdb.BinderException as e:
@@ -106,18 +106,10 @@ class InferredMemBatch:
         if not res:
             return
 
-        df = res.df()
+        table = res.fetch_arrow_table()
 
-        records = json.loads(
-            df.to_json(
-                orient='records',
-                index=False,
-            )
-        )
-
-        for rec in records:
+        for rec in table.to_pylist():
             yield json.dumps(rec)
-
 
 def get_class(s: str):
     if s == 'handlers.InferredDiskBatch':

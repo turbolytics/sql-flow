@@ -24,12 +24,18 @@ class Tumbling:
     - Publishing records that have closed.
     - Deleteting closed records from the table.
     """
-    def __init__(self, conn, table: Table, size_seconds, sink: Sink, lock=threading.Lock()):
+    def __init__(self,
+                 conn,
+                 collect_closed_windows_sql,
+                 delete_closed_windows_sql,
+                 poll_interval_seconds,
+                 sink: Sink,
+                 lock=threading.Lock()):
         self.conn = conn
-        self.table = table
-        self.size_seconds = size_seconds
+        self.collect_closed_windows_sql = collect_closed_windows_sql
+        self.delete_closed_windows_sql = delete_closed_windows_sql
+        self.poll_interval_seconds = poll_interval_seconds
         self.sink = sink
-        self._poll_interval_seconds = 10
         self.serde = JSON()
         self._stopped = None
         self._lock = lock
@@ -39,30 +45,8 @@ class Tumbling:
 
     def collect_closed(self) -> [object]:
         # select all data with 'closed' windows.
-        # 'closed' is identified by times earlier than NOW() - size_seconds
-        stmt = '''
-        SELECT 
-            * 
-        FROM {}
-        WHERE 
-            {} AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '{}' SECOND)
-        '''.format(
-            self.table.name,
-            self.table.time_field,
-            self.size_seconds,
-        )
-        logger.debug(stmt)
-        self.conn.begin()
-        df = self.conn.execute(stmt).df()
-
-        records = json.loads(
-            df.to_json(
-                orient='records',
-                index=False,
-            )
-        )
-        self.conn.commit()
-        return records
+        df = self.conn.execute(self.collect_closed_windows_sql).fetch_arrow_table()
+        return df.to_pylist()
 
     def flush(self, records):
         """
@@ -81,18 +65,7 @@ class Tumbling:
 
         :return: the number of deleted rows
         """
-        stmt = '''
-        DELETE 
-            FROM {} 
-        WHERE
-            {} AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '{}' SECOND)
-        '''.format(
-            self.table.name,
-            self.table.time_field,
-            self.size_seconds,
-        )
-        logger.debug(stmt)
-        res = self.conn.execute(stmt).fetchall()
+        res = self.conn.execute(self.delete_closed_windows_sql).fetchall()
         return res[0][0]
 
     def poll(self):
@@ -117,4 +90,4 @@ class Tumbling:
         logger.info('starting managers thread')
         while not self._stopped:
             self.poll()
-            time.sleep(self._poll_interval_seconds)
+            time.sleep(self.poll_interval_seconds)

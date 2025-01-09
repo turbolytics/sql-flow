@@ -94,10 +94,11 @@ class InvokeExamplesTestCase(unittest.TestCase):
             fixture=os.path.join(fixtures_dir, 'window.jsonl'),
             flush_window=True,
         )
+
         self.assertEqual(
             [
-                {'timestamp': 1449878400000, 'city': 'New York', 'count': 2},
-                {'timestamp': 1449878400000, 'city': 'Baltimore', 'count': 2},
+                {'bucket': '2015-12-12T19:00:00', 'city': 'Baltimore', 'count': 2},
+                {'bucket': '2015-12-12T19:00:00', 'city': 'New York', 'count': 2}
             ],
             out,
         )
@@ -125,12 +126,11 @@ class InvokeExamplesTestCase(unittest.TestCase):
             # Read the Parquet file and verify the content
             parquet_file_path = os.path.join(temp_dir, parquet_files[0])
             table = pq.read_table(parquet_file_path)
-            df = table.to_pandas()
 
             expected_data = [
                 {'num_records': 4}
             ]
-            self.assertEqual(df.to_dict(orient='records'), expected_data)
+            self.assertEqual(table.to_pylist(), expected_data)
 
 
 class TablesTestCase(unittest.TestCase):
@@ -143,8 +143,8 @@ class TablesTestCase(unittest.TestCase):
                         'sql': 'SELECT 1',
                         'manager': {
                             'tumbling_window': {
-                                'duration_seconds': 600,
-                                'time_field': 'time',
+                                'collect_closed_windows_sql': 'SELECT 1',
+                                'delete_closed_windows_sql': 'SELECT 1',
                             },
                             'sink': {
                                 'type': 'console',
@@ -177,8 +177,8 @@ class TablesTestCase(unittest.TestCase):
         self.assertEqual(
             TableManager(
                 tumbling_window=TumblingWindow(
-                    duration_seconds=600,
-                    time_field='time',
+                    collect_closed_windows_sql='SELECT 1',
+                    delete_closed_windows_sql='SELECT 1',
                 ),
                 sink=Sink(
                     type='console',

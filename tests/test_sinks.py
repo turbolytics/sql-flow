@@ -39,10 +39,9 @@ class TestLocalParquetSink(unittest.TestCase):
         # Read the Parquet file and verify the content
         parquet_file_path = os.path.join(self.base_path, parquet_files[0])
         table = pq.read_table(parquet_file_path)
-        df = table.to_pandas()
 
         expected_data = [
             {'id': 1, 'name': 'Alice'},
             {'id': 2, 'name': 'Bob'}
         ]
-        self.assertEqual(df.to_dict(orient='records'), expected_data)
+        self.assertEqual(table.to_pylist(), expected_data)

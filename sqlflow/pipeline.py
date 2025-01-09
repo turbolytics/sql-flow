@@ -116,10 +116,10 @@ def init_tables(conn, tables):
             csv_table.header,
             csv_table.auto_detect
         )
-        conn.sql(stmnt)
+        conn.execute(stmnt)
 
     for sql_table in tables.sql:
-        conn.sql(sql_table.sql)
+        conn.execute(sql_table.sql)
 
 
 def build_managed_tables(conn, table_confs, lock=threading.Lock()):
@@ -136,11 +136,9 @@ def build_managed_tables(conn, table_confs, lock=threading.Lock()):
 
         h = window.Tumbling(
             conn=conn,
-            table=window.Table(
-                name=table.name,
-                time_field=table.manager.tumbling_window.time_field,
-            ),
-            size_seconds=table.manager.tumbling_window.duration_seconds,
+            collect_closed_windows_sql=table.manager.tumbling_window.collect_closed_windows_sql,
+            delete_closed_windows_sql=table.manager.tumbling_window.delete_closed_windows_sql,
+            poll_interval_seconds=table.manager.tumbling_window.poll_interval_seconds,
             sink=sink,
             lock=lock,
         )

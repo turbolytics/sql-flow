@@ -43,8 +43,9 @@ class Sink:
 
 @dataclass
 class TumblingWindow:
-    duration_seconds: int
-    time_field: str
+    collect_closed_windows_sql: str
+    delete_closed_windows_sql: str
+    poll_interval_seconds: int = 10
 
 
 @dataclass

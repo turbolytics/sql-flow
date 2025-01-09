@@ -3,17 +3,27 @@ tables:
     - name: agg_cities_count
       sql: |
         CREATE TABLE agg_cities_count (
-          timestamp TIMESTAMPTZ,
+          bucket TIMESTAMPTZ,
           city VARCHAR,
           count INT 
         );
-        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (timestamp, city);
+        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (bucket, city);
 
       manager:
         tumbling_window:
-          duration_seconds: 10
-          time_field: timestamp
+          collect_closed_windows_sql: |
+            SELECT 
+              strftime(date_trunc('hour', bucket), '%Y-%m-%dT%H:%M:%S') AS bucket,
+              city,
+              count
+            FROM agg_cities_count
+            WHERE bucket AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND) 
+            ORDER BY city
 
+          delete_closed_windows_sql: |
+            DELETE FROM agg_cities_count 
+            WHERE bucket AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND)
+          
         sink:
           type: kafka
           kafka:
@@ -38,13 +48,13 @@ pipeline:
       INSERT INTO agg_cities_count
       BY NAME
       SELECT 
-        timestamp::date as timestamp,
+        date_trunc('hour', CAST(timestamp as TIMESTAMP)) as bucket,
         properties.city as city,
         count(*) as count
       FROM batch
       GROUP BY 
-        timestamp, city
-      ON CONFLICT (timestamp, city) 
+        bucket, city
+      ON CONFLICT (bucket, city) 
       DO UPDATE SET count = count + EXCLUDED.count
 
   sink:
