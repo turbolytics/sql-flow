@@ -96,8 +96,8 @@ class InvokeExamplesTestCase(unittest.TestCase):
         )
         self.assertEqual(
             [
-                {'bucket': '2015-12-11T19:00:00', 'city': 'New York', 'count': 2},
-                {'bucket': '2015-12-11T19:00:00', 'city': 'Baltimore', 'count': 2}
+                {'bucket': '2015-12-11T19:00:00', 'city': 'Baltimore', 'count': 2},
+                {'bucket': '2015-12-11T19:00:00', 'city': 'New York', 'count': 2}
             ],
             out,
         )

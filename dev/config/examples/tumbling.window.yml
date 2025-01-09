@@ -18,12 +18,12 @@ tables:
               count
             FROM agg_cities_count
             WHERE timestamp AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND) 
+            ORDER BY city
 
           delete_closed_windows_sql: |
             DELETE FROM agg_cities_count 
             WHERE timestamp AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND)
           
-
         sink:
           type: kafka
           kafka:

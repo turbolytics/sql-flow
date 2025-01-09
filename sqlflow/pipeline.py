@@ -116,10 +116,10 @@ def init_tables(conn, tables):
             csv_table.header,
             csv_table.auto_detect
         )
-        conn.sql(stmnt)
+        conn.execute(stmnt)
 
     for sql_table in tables.sql:
-        conn.sql(sql_table.sql)
+        conn.execute(sql_table.sql)
 
 
 def build_managed_tables(conn, table_confs, lock=threading.Lock()):

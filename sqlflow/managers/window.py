@@ -45,7 +45,7 @@ class Tumbling:
 
     def collect_closed(self) -> [object]:
         # select all data with 'closed' windows.
-        df = self.conn.sql(self.collect_closed_windows_sql).to_arrow_table()
+        df = self.conn.execute(self.collect_closed_windows_sql).fetch_arrow_table()
         return df.to_pylist()
 
     def flush(self, records):
