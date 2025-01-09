@@ -11,8 +11,18 @@ tables:
 
       manager:
         tumbling_window:
-          duration_seconds: 10
-          time_field: timestamp
+          collect_closed_windows_sql: |
+            SELECT 
+              strftime(date_trunc('hour', timestamp), '%Y-%m-%dT%H:%M:%S') AS bucket,
+              city,
+              count
+            FROM agg_cities_count
+            WHERE timestamp AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND) 
+
+          delete_closed_windows_sql: |
+            DELETE FROM agg_cities_count 
+            WHERE timestamp AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND)
+          
 
         sink:
           type: kafka

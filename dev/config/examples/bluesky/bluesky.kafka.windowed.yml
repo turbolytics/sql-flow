@@ -4,26 +4,35 @@ tables:
   sql:
     # Create the table to store the count of each post kind in 5 minute buckets
     # This table is available for reference within the pipeline.
-    - name: agg_post_kind_count_5_minutes
+    - name: agg_post_kind_count_1_minute
       sql: |
-        CREATE TABLE agg_post_kind_count_5_minutes (
+        CREATE TABLE agg_post_kind_count_1_minute (
           bucket TIMESTAMPTZ,
           kind VARCHAR,
           count INT 
         );
-        CREATE UNIQUE INDEX five_minute_post_kind_count_idx ON agg_post_kind_count_5_minutes (bucket, kind);
+        CREATE UNIQUE INDEX five_minute_post_kind_count_idx ON agg_post_kind_count_1_minute (bucket, kind);
 
       manager:
         # The tumbling window manager will identify records with "closed" windows i.e. windows < now - duration_seconds
         tumbling_window:
-          duration_seconds: 60
-          time_field: bucket
+          collect_closed_windows_sql: |
+            SELECT 
+              strftime(bucket, '%Y-%m-%dT%H:%M:%S') AS iso_string,
+              kind,
+              count
+            FROM agg_post_kind_count_1_minute
+            WHERE bucket AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND) 
+
+          delete_closed_windows_sql: |
+            DELETE FROM agg_post_kind_count_1_minute
+            WHERE bucket AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND)
 
         sink:
           type: kafka
           kafka:
             brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
-            topic: output-bluesky-post-kind-count-5-minutes
+            topic: output-bluesky-post-kind-count-1-minute
 
 pipeline:
   batch_size: 1
@@ -35,9 +44,9 @@ pipeline:
   handler:
     type: 'handlers.InferredMemBatch'
     sql: |
-      INSERT INTO agg_post_kind_count_5_minutes
+      INSERT INTO agg_post_kind_count_1_minute
       SELECT
-        time_bucket(INTERVAL '5 minutes', to_timestamp(time_us / 1000000)) as bucket,
+        time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000)) as bucket,
         kind,
         count(*) as count
       FROM batch

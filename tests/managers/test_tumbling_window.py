@@ -33,11 +33,9 @@ class TumblingWindowTestCase(unittest.TestCase):
 
         tw = Tumbling(
             conn=conn,
-            table=Table(
-                name='test_table',
-                time_field='timestamp',
-            ),
-            size_seconds=600,
+            collect_closed_windows_sql='SELECT * FROM test_table WHERE timestamp < NOW() - INTERVAL 10 MINUTE',
+            delete_closed_windows_sql=None,
+            poll_interval_seconds=10,
             sink=ConsoleSink(),
         )
         rows = tw.collect_closed()
@@ -70,17 +68,21 @@ class TumblingWindowTestCase(unittest.TestCase):
 
         tw = Tumbling(
             conn=conn,
-            table=Table(
-                name='test_table',
-                time_field='timestamp',
-            ),
-            size_seconds=600,
+            collect_closed_windows_sql='''
+SELECT 
+    strftime(timestamp, '%Y-%m-%dT%H:%M:%S') as timestamp, 
+    id 
+FROM test_table
+            ''',
+            delete_closed_windows_sql=None,
+            poll_interval_seconds=10,
             sink=ConsoleSink(),
         )
+
         rows = tw.collect_closed()
         self.assertEqual(
             [
-                {'timestamp': 1704067200000, 'id': 'test_1'}
+                {'timestamp': '2024-01-01T00:00:00', 'id': 'test_1'}
             ],
             rows,
         )
@@ -90,11 +92,9 @@ class TumblingWindowTestCase(unittest.TestCase):
 
         tw = Tumbling(
             conn=None,
-            table=Table(
-                name='test_table',
-                time_field='timestamp',
-            ),
-            size_seconds=600,
+            collect_closed_windows_sql=None,
+            delete_closed_windows_sql=None,
+            poll_interval_seconds=10,
             sink=writer,
         )
         records = [
@@ -136,11 +136,9 @@ class TumblingWindowTestCase(unittest.TestCase):
 
         tw = Tumbling(
             conn=conn,
-            table=Table(
-                name='test_table',
-                time_field='timestamp',
-            ),
-            size_seconds=600,
+            collect_closed_windows_sql=None,
+            delete_closed_windows_sql='DELETE FROM test_table WHERE timestamp <= NOW()',
+            poll_interval_seconds=10,
             sink=ConsoleSink(),
         )
 

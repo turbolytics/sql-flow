@@ -1,5 +1,7 @@
 NUM_MESSAGES=${NUM_MESSAGES:-1000000}
 
+echo "starting benchmark for simple-agg-disk with $NUM_MESSAGES messages"
+
 # delete kafka topic if exists
 docker exec -it kafka1 kafka-topics --bootstrap-server localhost:9092 --delete --topic topic-simple-agg || true
 

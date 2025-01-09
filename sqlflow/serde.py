@@ -1,6 +1,5 @@
 import json
 from abc import ABC, abstractmethod
-from datetime import datetime
 
 
 class Serializer(ABC):
@@ -15,20 +14,12 @@ class Deserializer(ABC):
         pass
 
 
-class DateTimeEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (datetime)):
-            # Convert datetime to ISO 8601 string
-            return obj.isoformat()
-        return super().default(obj)
-
-
 class JSON(Serializer, Deserializer):
     def decode(self, bs: bytes) -> object:
         return json.loads(bs)
 
     def encode(self, d: object) -> bytes:
-        return json.dumps(d, cls=DateTimeEncoder)
+        return json.dumps(d)
 
 
 class Noop(Serializer, Deserializer):
