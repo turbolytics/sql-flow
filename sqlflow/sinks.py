@@ -49,6 +49,33 @@ class ConsoleSink(Sink):
         pass
 
 
+class IcebergSink(Sink):
+    def __init__(self, catalog, table_name, schema=None):
+        self.catalog = catalog
+        self.table_name = table_name
+        # A schema will allow for validation on write.
+        self.schema = schema
+        self.buffer = []
+
+    def write(self, val: bytes, key: bytes = None):
+        self.buffer.append(val)
+
+    def flush(self):
+        if not self.buffer:
+            return
+
+        '''
+        # Convert buffer to a DuckDB table
+        table = pa.Table.from_pylist([json.loads(b) for b in self.buffer])
+
+        # Write the table to Iceberg
+        (self.table_name, table, self.schema)
+
+        # Clear the buffer
+        self.buffer = []
+        '''
+
+
 # TODO(turbolytics): Make this generic once more sinks (such as s3/postgres/etc) are added
 class LocalSink(Sink):
     def __init__(self, base_path, prefix, format='parquet', conn=None):
