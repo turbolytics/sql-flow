@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class Sink(ABC):
     @abstractmethod
-    def write(self, val: bytes, key: bytes = None):
+    def write_table(self, table: pa.Table):
         """
         Writes a byte string to the underlying storage.
 
@@ -35,9 +35,10 @@ class Sink(ABC):
 
 
 class ConsoleSink(Sink):
-    def write(self, val: bytes, key: bytes = None):
-        sys.stdout.write(val)
-        sys.stdout.write('\n')
+    def write_table(self, table: pa.Table):
+        for val in table:
+            sys.stdout.write(val)
+            sys.stdout.write('\n')
 
     def flush(self):
         pass
@@ -48,37 +49,37 @@ class LocalSink(Sink):
     def __init__(self, base_path, prefix, format='parquet', conn=None):
         self.base_path = base_path
         self.prefix = prefix
-        self.buffer = []
+        self.tables = []
         self.conn = conn
         self.format = format
         if self.conn is None:
             self.conn = duckdb.connect()
 
-    def write(self, val: bytes, key: bytes = None):
-        self.buffer.append(val)
+    def write_table(self, table: pa.Table):
+        self.tables.append(table)
 
     def flush(self):
-        if not self.buffer:
+        if not self.tables:
             return
 
         # Quick and dirty, will make this more generic as more formatters are added
         if self.format == 'parquet':
             # Convert buffer to a DuckDB table
-            table = pa.Table.from_pylist([json.loads(b) for b in self.buffer])
+            table = pa.concat_tables(self.tables)
             self.conn.register('buffer_table', table)
 
             # Generate a unique file name
             file_name = f"{self.prefix}-{uuid.uuid4()}.parquet"
             file_path = os.path.join(self.base_path, file_name)
 
-            logger.debug(f"Writing {len(self.buffer)} records to Parquet file: {file_path}")
+            logger.debug(f"Writing {len(table)} records to Parquet file: {file_path}")
             # Write the table to a Parquet file
             self.conn.execute(f"COPY buffer_table TO '{file_path}' (FORMAT 'parquet')")
         else:
             raise NotImplementedError(f"Unsupported format: {self.format}")
 
         # Clear the buffer
-        self.buffer = []
+        self.table = pa.table({})
 
 
 class KafkaSink(Sink):
@@ -86,8 +87,9 @@ class KafkaSink(Sink):
         self.topic = topic
         self.producer = producer
 
-    def write(self, val: bytes, key: bytes = None):
-        self.producer.produce(self.topic, key=key, value=val.encode('utf-8'))
+    def write_table(self, table: pa.Table):
+        for row in table.to_pylist():
+            self.producer.produce(self.topic, key=None, value=row)
 
     def flush(self):
         self.producer.flush()
@@ -97,8 +99,8 @@ class RecordingSink(Sink):
     def __init__(self):
         self.writes = []
 
-    def write(self, val: bytes, key: bytes = None):
-        self.writes.append((key, val))
+    def write_table(self, table: pa.Table):
+        self.writes.append(table)
 
     def flush(self):
         pass

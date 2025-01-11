@@ -92,8 +92,7 @@ class SQLFlow:
                 with self._lock:
                     batch = self.handler.invoke()
 
-                for l in batch:
-                    self.sink.write(l)
+                self.sink.write_table(batch)
 
                 # Only commit after all messages in batch are processed
                 self.sink.flush()

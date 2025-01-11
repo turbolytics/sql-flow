@@ -45,7 +45,7 @@ class InvokeExamplesTestCase(unittest.TestCase):
 
     def test_csv_filesystem_join(self):
         conn = duckdb.connect()
-        out = invoke(
+        table = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'csv.filesystem.join.yml'),
             fixture=os.path.join(fixtures_dir, 'simple.json'),
@@ -54,14 +54,14 @@ class InvokeExamplesTestCase(unittest.TestCase):
             }
         )
         self.assertEqual([
-            '{"state_full": "Ohio", "city_count": 57344}',
-            '{"state_full": "New York", "city_count": 1777664}',
-            '{"state_full": "Maryland", "city_count": 1232896}',
-        ], out)
+            {"state_full": "Ohio", "city_count": 57344},
+            {"state_full": "New York", "city_count": 1777664},
+            {"state_full": "Maryland", "city_count": 1232896},
+        ], table.to_pylist())
 
     def test_csv_mem_join(self):
         conn = duckdb.connect()
-        out = invoke(
+        table = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'csv.mem.join.yml'),
             fixture=os.path.join(fixtures_dir, 'simple.json'),
@@ -70,25 +70,25 @@ class InvokeExamplesTestCase(unittest.TestCase):
             }
         )
         self.assertEqual([
-            '{"state_full": "Ohio", "city_count": 57344}',
-            '{"state_full": "New York", "city_count": 1777664}',
-            '{"state_full": "Maryland", "city_count": 1232896}',
-        ], out)
+            {"state_full": "Ohio", "city_count": 57344},
+            {"state_full": "New York", "city_count": 1777664},
+            {"state_full": "Maryland", "city_count": 1232896},
+        ], table.to_pylist())
 
     def test_enrich(self):
         conn = duckdb.connect()
-        out = invoke(
+        table = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'enrich.yml'),
             fixture=os.path.join(fixtures_dir, 'enrich.jsonl'),
         )
         self.assertEqual([
-           '{"event": "search", "properties": {"city": "New York"}, "user": {"id": "123412ds"}, "nested_city": {"something": "New York"}, "extra": "extra"}',
-        ], out)
+           {"event": "search", "properties": {"city": "New York"}, "user": {"id": "123412ds"}, "nested_city": {"something": "New York"}, "extra": "extra"},
+        ], table.to_pylist())
 
     def test_tumbling_window(self):
         conn = duckdb.connect()
-        out = invoke(
+        res = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'tumbling.window.yml'),
             fixture=os.path.join(fixtures_dir, 'window.jsonl'),
@@ -100,13 +100,13 @@ class InvokeExamplesTestCase(unittest.TestCase):
                 {'bucket': '2015-12-12T19:00:00', 'city': 'Baltimore', 'count': 2},
                 {'bucket': '2015-12-12T19:00:00', 'city': 'New York', 'count': 2}
             ],
-            out,
+            res.to_pylist(),
         )
 
     def test_local_parquet_sink(self):
         conn = duckdb.connect()
         with tempfile.TemporaryDirectory() as temp_dir:
-            out = invoke(
+            table = invoke(
                 conn=conn,
                 config=os.path.join(conf_dir, 'examples', 'local.parquet.sink.yml'),
                 fixture=os.path.join(fixtures_dir, 'window.jsonl'),
@@ -116,8 +116,8 @@ class InvokeExamplesTestCase(unittest.TestCase):
                 }
             )
             self.assertEqual([
-                '{"num_records": 4}'
-            ], out)
+                {"num_records": 4}
+            ], table.to_pylist())
 
             files = os.listdir(temp_dir)
             parquet_files = [f for f in files if f.endswith('.parquet')]

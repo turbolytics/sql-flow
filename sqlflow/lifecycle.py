@@ -52,8 +52,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
 
     if invoke_sink:
         sink = new_sink_from_conf(conf.pipeline.sink)
-        for l in res:
-            sink.write(l)
+        sink.write_table(res)
         sink.flush()
 
     print(res)
