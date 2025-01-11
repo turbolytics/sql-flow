@@ -2,8 +2,80 @@ import unittest
 import tempfile
 import os
 import json
+from unittest.mock import patch, MagicMock, call
+
+import pyarrow as pa
 import pyarrow.parquet as pq
-from sqlflow.sinks import LocalSink
+from sqlflow.sinks import LocalSink, ConsoleSink, KafkaSink
+
+
+class ConsoleWriterTestCase(unittest.TestCase):
+
+    def test_write_single_val(self):
+        table = pa.Table.from_pydict({"greeting": ["hello"]})
+        mock_f = MagicMock()
+        w = ConsoleSink(f=mock_f)
+
+        w.write_table(table)
+
+        mock_f.write.assert_has_calls([
+            call('{"greeting": "hello"}'),
+            call('\n'),
+        ])
+
+    def test_write_multiple_vals(self):
+        table = pa.Table.from_pydict({
+            "greeting": ["hello", "hi", "hey"],
+            "name": ["Alice", "Bob", "Charlie"]
+        })
+        mock_f = MagicMock()
+        w = ConsoleSink(f=mock_f)
+
+        w.write_table(table)
+
+        mock_f.write.assert_has_calls([
+            call('{"greeting": "hello", "name": "Alice"}'),
+            call('\n'),
+            call('{"greeting": "hi", "name": "Bob"}'),
+            call('\n'),
+            call('{"greeting": "hey", "name": "Charlie"}'),
+            call('\n'),
+        ])
+
+
+class KafkaWriterTestCase(unittest.TestCase):
+    def test_write_table_single_row(self):
+        producer = MagicMock()
+        w = KafkaSink(
+            topic='test',
+            producer=producer,
+        )
+
+        table = pa.Table.from_pydict({"greeting": ["hello"]})
+        w.write_table(table)
+        producer.produce.assert_called_once_with(
+            'test',
+            value='{"greeting": "hello"}',
+        )
+
+    def test_write_table_multiple_rows(self):
+        producer = MagicMock()
+        w = KafkaSink(
+            topic='test',
+            producer=producer,
+        )
+
+        table = pa.Table.from_pydict({
+            "greeting": ["hello", "hi", "hey"],
+            "name": ["Alice", "Bob", "Charlie"]
+        })
+        w.write_table(table)
+
+        producer.produce.assert_has_calls([
+            call('test', value='{"greeting": "hello", "name": "Alice"}'),
+            call('test', value='{"greeting": "hi", "name": "Bob"}'),
+            call('test', value='{"greeting": "hey", "name": "Charlie"}'),
+        ])
 
 
 class TestLocalParquetSink(unittest.TestCase):
@@ -19,14 +91,12 @@ class TestLocalParquetSink(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_write_and_flush(self):
-        # Write some data
-        data = [
-            json.dumps({'id': 1, 'name': 'Alice'}).encode('utf-8'),
-            json.dumps({'id': 2, 'name': 'Bob'}).encode('utf-8')
-        ]
-        for record in data:
-            self.sink.write(record)
+    def test_write_and_flush_multiple_values(self):
+        table = pa.Table.from_pydict({
+            "id": [1, 2],
+            "name": ["Alice", "Bob"]
+        })
+        self.sink.write_table(table)
 
         # Flush the data to Parquet file
         self.sink.flush()

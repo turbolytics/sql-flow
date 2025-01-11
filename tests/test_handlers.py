@@ -7,7 +7,7 @@ from sqlflow.serde import JSON
 
 
 class InferredMemBatchTestCase(unittest.TestCase):
-    def test_flat(self):
+    def test_agg_batch_into_single_row(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredMemBatch(
             conf=Conf(
@@ -27,10 +27,10 @@ class InferredMemBatchTestCase(unittest.TestCase):
             for line in f:
                 p.write(line)
 
-        res = list(p.invoke())
+        table = p.invoke()
         self.assertEqual(
-            ['{"num_rows": 3}'],
-            res,
+            [{"num_rows": 3}],
+            table.to_pylist(),
         )
 
     def test_inferred_batch_nested_return(self):
@@ -59,20 +59,20 @@ FROM batch
             for line in f:
                 p.write(line)
 
-        res = list(p.invoke())
+        table = p.invoke()
 
         self.assertEqual([
-            '{"event": "search", "city": "New York", "user_id": "123412ds", "enriched": {"nested_city": "New York"}}',
-            '{"event": "search", "city": "New York", "user_id": "123412ds", "enriched": {"nested_city": "New York"}}',
-            '{"event": "search", "city": "Baltimore", "user_id": "123412ds", "enriched": {"nested_city": "Baltimore"}}'
+            {"event": "search", "city": "New York", "user_id": "123412ds", "enriched": {"nested_city": "New York"}},
+            {"event": "search", "city": "New York", "user_id": "123412ds", "enriched": {"nested_city": "New York"}},
+            {"event": "search", "city": "Baltimore", "user_id": "123412ds", "enriched": {"nested_city": "Baltimore"}}
         ],
-            res,
+            table.to_pylist(),
         )
 
 
 class InferredDiskBatchTestCase(unittest.TestCase):
 
-    def test_inferred_batch_flat(self):
+    def test_inferred_batch_single_row_return(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
 
         p = InferredDiskBatch(
@@ -93,10 +93,10 @@ class InferredDiskBatchTestCase(unittest.TestCase):
             for line in f:
                 p.write(line)
 
-        res = list(p.invoke())
+        table = p.invoke()
         self.assertEqual(
-            ['{"num_rows":3}'],
-            res,
+            [{"num_rows": 3}],
+            table.to_pylist(),
         )
 
     def test_inferred_batch_nested_return(self):
@@ -110,8 +110,8 @@ class InferredDiskBatchTestCase(unittest.TestCase):
                         type=None,
                         sql="""
                         SELECT
-                            {'something': city} as s1,
-                            row(city, 1, 2) as nested_json
+                            {'city': city} as s1,
+                            {'event': event} as nested_event
                         FROM batch 
                     """,
                     ),
@@ -125,13 +125,12 @@ class InferredDiskBatchTestCase(unittest.TestCase):
             for line in f:
                 p.write(line)
 
-        res = list(p.invoke())
+        table = p.invoke()
 
-        # TODO! Figure out this json with multiple "" keys
         self.assertEqual([
-            '{"s1":{"something":"New York"},"nested_json":{"":"New York","":1,"":2}}',
-            '{"s1":{"something":"New York"},"nested_json":{"":"New York","":1,"":2}}',
-            '{"s1":{"something":"Baltimore"},"nested_json":{"":"Baltimore","":1,"":2}}',
+            {'s1': {'city': 'New York'}, 'nested_event': {'event': 'search'}},
+            {'s1': {'city': 'New York'}, 'nested_event': {'event': 'search'}},
+            {'s1': {'city': 'Baltimore'}, 'nested_event': {'event': 'search'}}
         ],
-            res,
+            table.to_pylist(),
         )

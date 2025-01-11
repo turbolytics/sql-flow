@@ -1,10 +1,10 @@
 import logging
-import json
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import pyarrow as pa
 from sqlflow.sinks import Sink
 from sqlflow.serde import JSON
 
@@ -43,21 +43,18 @@ class Tumbling:
     def stop(self):
         self._stopped = True
 
-    def collect_closed(self) -> [object]:
+    def collect_closed(self) -> pa.Table:
         # select all data with 'closed' windows.
         table = self.conn.execute(self.collect_closed_windows_sql).fetch_arrow_table()
         return table
 
-    def flush(self, records):
+    def flush(self, records: pa.Table):
         """
         Flush writes all closed records.
 
         :return:
         """
-        for record in records:
-            self.sink.write(
-                val=self.serde.encode(record)
-            )
+        self.sink.write_table(records)
 
     def delete_closed(self) -> int:
         """

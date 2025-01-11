@@ -8,6 +8,7 @@ from abc import abstractmethod, ABC
 
 import duckdb
 
+from sqlflow.serde import JSON
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,14 @@ class Sink(ABC):
 
 
 class ConsoleSink(Sink):
+    def __init__(self, f=sys.stdout, serializer=JSON()):
+        self.f = f
+        self.serializer = serializer
+
     def write_table(self, table: pa.Table):
-        for val in table:
-            sys.stdout.write(val)
-            sys.stdout.write('\n')
+        for val in table.to_pylist():
+            self.f.write(self.serializer.encode(val))
+            self.f.write('\n')
 
     def flush(self):
         pass
@@ -83,13 +88,17 @@ class LocalSink(Sink):
 
 
 class KafkaSink(Sink):
-    def __init__(self, topic, producer):
+    def __init__(self, topic, producer, serializer=JSON()):
         self.topic = topic
         self.producer = producer
+        self.serializer = serializer
 
     def write_table(self, table: pa.Table):
         for row in table.to_pylist():
-            self.producer.produce(self.topic, key=None, value=row)
+            self.producer.produce(
+                self.topic,
+                value=self.serializer.encode(row),
+            )
 
     def flush(self):
         self.producer.flush()

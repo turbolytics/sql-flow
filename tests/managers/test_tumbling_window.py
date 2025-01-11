@@ -39,7 +39,7 @@ class TumblingWindowTestCase(unittest.TestCase):
             sink=ConsoleSink(),
         )
         rows = tw.collect_closed()
-        self.assertEqual([], rows)
+        self.assertEqual([], rows.to_pylist())
 
     def test_closed_results_found(self):
         conn = duckdb.connect()
@@ -79,12 +79,12 @@ FROM test_table
             sink=ConsoleSink(),
         )
 
-        rows = tw.collect_closed()
+        table = tw.collect_closed()
         self.assertEqual(
             [
                 {'timestamp': '2024-01-01T00:00:00', 'id': 'test_1'}
             ],
-            rows,
+            table.to_pylist(),
         )
 
     def test_flush_results(self):
@@ -97,17 +97,24 @@ FROM test_table
             poll_interval_seconds=10,
             sink=writer,
         )
-        records = [
-            'first',
-            'second',
-        ]
-        tw.flush(records)
+        table = pa.Table.from_pylist([
+            {
+                'timestamp': '2024-01-01T00:00:00',
+                'id': 'test_1',
+            },
+            {
+                'timestamp': '2024-01-01T00:00:00',
+                'id': 'test_2',
+            },
+        ])
+        tw.flush(table)
+        out_table = pa.concat_tables(writer.writes)
         self.assertEqual(
             [
-                (None, '"first"'),
-                (None, '"second"'),
+                {'timestamp': '2024-01-01T00:00:00', 'id': 'test_1'},
+                {'timestamp': '2024-01-01T00:00:00', 'id': 'test_2'},
             ],
-            writer.writes,
+            out_table.to_pylist(),
         )
 
     def test_delete_results(self):
