@@ -84,7 +84,7 @@ class LocalSink(Sink):
             raise NotImplementedError(f"Unsupported format: {self.format}")
 
         # Clear the buffer
-        self.table = pa.table({})
+        self.tables = []
 
 
 class KafkaSink(Sink):
@@ -102,6 +102,14 @@ class KafkaSink(Sink):
 
     def flush(self):
         self.producer.flush()
+
+
+class Noop(Sink):
+    def write_table(self, table: pa.Table):
+        pass
+
+    def flush(self):
+        pass
 
 
 class RecordingSink(Sink):

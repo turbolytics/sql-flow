@@ -2,6 +2,9 @@
 install-tools:
 	$(shell mkdir -p /tmp/sqlflow/resultscache)
 
+.PHONY: test
+test: test-unit test-integration
+
 .PHONY: test-unit
 test-unit:
 	pytest --ignore=tests/benchmarks --ignore=tests/integration tests
