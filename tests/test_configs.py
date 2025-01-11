@@ -21,27 +21,27 @@ fixtures_dir = os.path.join(dev_dir, 'fixtures')
 class InvokeExamplesTestCase(unittest.TestCase):
     def test_basic_agg_disk(self):
         conn = duckdb.connect()
-        out = invoke(
+        table = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'basic.agg.yml'),
             fixture=os.path.join(fixtures_dir, 'simple.json'),
         )
         self.assertEqual([
-            '{"city":"New York","city_count":28672}',
-            '{"city":"Baltimore","city_count":28672}',
-        ], out)
+            {"city": "New York", "city_count": 28672},
+            {"city": "Baltimore", "city_count": 28672},
+        ], table.to_pylist())
 
     def test_basic_agg_mem(self):
         conn = duckdb.connect()
-        out = invoke(
+        table = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'basic.agg.mem.yml'),
             fixture=os.path.join(fixtures_dir, 'simple.json'),
         )
         self.assertEqual([
-            '{"city": "New York", "city_count": 28672}',
-            '{"city": "Baltimore", "city_count": 28672}',
-        ], out)
+            {"city": "New York", "city_count": 28672},
+            {"city": "Baltimore", "city_count": 28672},
+        ], table.to_pylist())
 
     def test_csv_filesystem_join(self):
         conn = duckdb.connect()

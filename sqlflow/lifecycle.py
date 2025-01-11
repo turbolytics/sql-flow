@@ -46,7 +46,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
             if cleaned_line:
                 h.write(cleaned_line)
 
-    res = list(h.invoke())
+    res = h.invoke()
     if flush_window:
         res = managed_tables[0].collect_closed()
 

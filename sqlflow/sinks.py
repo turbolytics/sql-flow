@@ -43,7 +43,6 @@ class ConsoleSink(Sink):
         pass
 
 
-
 # TODO(turbolytics): Make this generic once more sinks (such as s3/postgres/etc) are added
 class LocalSink(Sink):
     def __init__(self, base_path, prefix, format='parquet', conn=None):
