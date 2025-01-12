@@ -104,7 +104,7 @@ class KafkaSink(Sink):
         self.producer.flush()
 
 
-class Noop(Sink):
+class NoopSink(Sink):
     def write_table(self, table: pa.Table):
         pass
 
