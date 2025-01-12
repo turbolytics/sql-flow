@@ -1,8 +1,11 @@
 import json
 import os
+import tempfile
 import unittest
 
 import pytest
+import pyarrow.parquet as pq
+import pyarrow.dataset as ds
 from confluent_kafka import KafkaException, Consumer, KafkaError
 from confluent_kafka.admin import AdminClient
 from testcontainers.kafka import KafkaContainer
@@ -74,6 +77,42 @@ def bootstrap_server():
     # Start the Kafka container
     with KafkaContainer() as kafka:
         yield kafka.get_bootstrap_server()
+
+
+def test_local_parquet_sink(bootstrap_server):
+    num_messages = 2000
+    in_topic = 'topic-local-parquet-sink'
+    group_id = 'test_local_parquet_sink'
+
+    delete_topics([in_topic], bootstrap_server)
+    delete_consumer_groups([group_id], bootstrap_server)
+    kf = KafkaFaker(
+        bootstrap_servers=bootstrap_server,
+        num_messages=num_messages,
+        topic=in_topic,
+    )
+    kf.publish()
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conf = new_from_path(
+            path=os.path.join(settings.CONF_DIR, 'examples', 'local.parquet.sink.yml'),
+            setting_overrides={
+                'kafka_brokers': bootstrap_server,
+                'sink_base_path': temp_dir,
+            },
+        )
+        stats = start(conf, max_msgs=num_messages)
+        assert stats.num_messages_consumed == num_messages
+
+        files = os.listdir(temp_dir)
+        parquet_files = [f for f in files if f.endswith('.parquet')]
+        assert len(parquet_files) == 2
+
+        # Read the Parquet file and verify the content
+        dataset = ds.dataset(temp_dir, format="parquet")
+        table = dataset.to_table()
+        total_records = sum(r['num_records'] for r in table.to_pylist())
+        assert 2000 == total_records, f"Expected 2000 records, but got {total_records}"
 
 
 def test_basic_agg_mem(bootstrap_server):
