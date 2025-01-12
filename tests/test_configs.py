@@ -64,15 +64,16 @@ class InvokeExamplesTestCase(unittest.TestCase):
         table = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'csv.mem.join.yml'),
-            fixture=os.path.join(fixtures_dir, 'simple.json'),
+            fixture=os.path.join(fixtures_dir, 'window.jsonl'),
             setting_overrides={
                 'STATIC_ROOT': dev_dir,
             }
         )
         self.assertEqual([
-            {"state_full": "Ohio", "city_count": 57344},
-            {"state_full": "New York", "city_count": 1777664},
-            {"state_full": "Maryland", "city_count": 1232896},
+            {'city': 'New York', 'state_full': 'New York'},
+            {'city': 'New York', 'state_full': 'New York'},
+            {'city': 'Baltimore', 'state_full': 'Maryland'},
+            {'city': 'Baltimore', 'state_full': 'Maryland'}
         ], table.to_pylist())
 
     def test_enrich(self):
