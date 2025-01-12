@@ -58,4 +58,4 @@ pipeline:
       DO UPDATE SET count = count + EXCLUDED.count
 
   sink:
-    type: console
+    type: noop
