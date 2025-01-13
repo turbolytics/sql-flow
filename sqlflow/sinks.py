@@ -1,5 +1,4 @@
 import logging
-import json
 import os
 import sys
 import uuid
@@ -7,6 +6,7 @@ import pyarrow as pa
 from abc import abstractmethod, ABC
 
 import duckdb
+import pyiceberg.table
 
 from sqlflow.serde import JSON
 
@@ -50,30 +50,23 @@ class ConsoleSink(Sink):
 
 
 class IcebergSink(Sink):
-    def __init__(self, catalog, table_name, schema=None):
+    def __init__(self, catalog, iceberg_table: pyiceberg.table.Table, schema=None):
         self.catalog = catalog
-        self.table_name = table_name
+        self.iceberg_table = iceberg_table
         # A schema will allow for validation on write.
         self.schema = schema
-        self.buffer = []
+        self._tables = []
 
-    def write(self, val: bytes, key: bytes = None):
-        self.buffer.append(val)
+    def write_table(self, table):
+        self._tables.append(table)
 
     def flush(self):
-        if not self.buffer:
+        if not self._tables:
             return
 
-        '''
-        # Convert buffer to a DuckDB table
-        table = pa.Table.from_pylist([json.loads(b) for b in self.buffer])
-
-        # Write the table to Iceberg
-        (self.table_name, table, self.schema)
-
-        # Clear the buffer
-        self.buffer = []
-        '''
+        table = pa.concat_tables(self._tables)
+        self.iceberg_table.append(table)
+        self._tables = []
 
 
 # TODO(turbolytics): Make this generic once more sinks (such as s3/postgres/etc) are added
