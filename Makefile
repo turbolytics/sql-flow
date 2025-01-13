@@ -24,4 +24,4 @@ start-backing-services:
 .PHONY: docker-image
 docker-image:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build -t turbolytics/sql-flow:$$GIT_HASH .
+	docker build --platform linux/amd64 -t turbolytics/sql-flow:$$GIT_HASH .
