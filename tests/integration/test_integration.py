@@ -4,7 +4,6 @@ import tempfile
 import unittest
 
 import pytest
-import pyarrow.parquet as pq
 import pyarrow.dataset as ds
 from confluent_kafka import KafkaException, Consumer, KafkaError
 from confluent_kafka.admin import AdminClient

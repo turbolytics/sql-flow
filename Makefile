@@ -9,9 +9,13 @@ test: test-unit test-integration
 test-unit:
 	pytest --ignore=tests/benchmarks --ignore=tests/integration tests
 
+.PHONY: test-image
+test-image: docker-image
+	pytest tests/release
+
 .PHONY: test-integration
 test-integration:
-	pytest tests/integration -s
+	pytest tests/integration
 
 .PHONY: start-backing-services
 start-backing-services:
@@ -19,4 +23,5 @@ start-backing-services:
 
 .PHONY: docker-image
 docker-image:
-	docker build -t turbolytics/sql-flow .
+	@GIT_HASH=$$(git rev-parse --short HEAD) && \
+	docker build -t turbolytics/sql-flow:$$GIT_HASH .

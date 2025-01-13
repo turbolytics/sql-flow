@@ -55,7 +55,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
         sink.write_table(res)
         sink.flush()
 
-    print(res)
+    print(res.to_pylist())
     return res
 
 def start(conf, conn=None, lock=None, max_msgs=None):
