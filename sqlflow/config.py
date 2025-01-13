@@ -188,6 +188,8 @@ def build_sink_config_from_dict(conf) -> Sink:
             base_path=conf['local']['base_path'],
             prefix=conf['local']['prefix'],
         )
+    elif sink.type == 'noop':
+        pass
     else:
         sink.type = 'console'
         sink.console = ConsoleSink()

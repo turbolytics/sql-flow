@@ -5,7 +5,6 @@ jobs:
     name: CI
     runs-on: ubuntu-latest
     steps:
-
       - uses: actions/checkout@v2
 
       - name: Set up Python 3.11
@@ -24,3 +23,7 @@ jobs:
           mkdir /tmp/sqlflow
           mkdir /tmp/sqlflow/resultscache
           make test-unit
+
+      - name: Test Integration
+        run: |
+          make test-integration

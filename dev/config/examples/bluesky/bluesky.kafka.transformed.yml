@@ -10,7 +10,7 @@ pipeline:
     type: 'handlers.InferredMemBatch'
     sql: |
       SELECT
-        to_timestamp(time_us / 1000000) as time,
+        strftime(to_timestamp(time_us / 1000000), '%Y-%m-%dT%H:%M:%S') as time,
         kind
       FROM batch
 

@@ -8,7 +8,7 @@ from confluent_kafka import Consumer, Producer
 
 from sqlflow import config
 from sqlflow.managers import window
-from sqlflow.sinks import ConsoleSink, Sink, KafkaSink, LocalSink
+from sqlflow.sinks import ConsoleSink, Sink, KafkaSink, LocalSink, NoopSink
 from sqlflow.sources import Source, KafkaSource, WebsocketSource
 
 logger = logging.getLogger(__name__)
@@ -92,8 +92,7 @@ class SQLFlow:
                 with self._lock:
                     batch = self.handler.invoke()
 
-                for l in batch:
-                    self.sink.write(l)
+                self.sink.write_table(batch)
 
                 # Only commit after all messages in batch are processed
                 self.sink.flush()
@@ -182,6 +181,8 @@ def new_sink_from_conf(sink_conf: config.Sink):
             prefix=sink_conf.local.prefix,
             format=sink_conf.format.type,
         )
+    elif sink_conf.type == 'noop':
+        return NoopSink()
 
     raise NotImplementedError('unsupported sink type: {}'.format(sink_conf.type))
 

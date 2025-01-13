@@ -46,17 +46,16 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
             if cleaned_line:
                 h.write(cleaned_line)
 
-    res = list(h.invoke())
+    res = h.invoke()
     if flush_window:
         res = managed_tables[0].collect_closed()
 
     if invoke_sink:
         sink = new_sink_from_conf(conf.pipeline.sink)
-        for l in res:
-            sink.write(l)
+        sink.write_table(res)
         sink.flush()
 
-    print(res)
+    print(res.to_pylist())
     return res
 
 def start(conf, conn=None, lock=None, max_msgs=None):

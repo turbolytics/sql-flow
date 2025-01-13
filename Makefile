@@ -2,13 +2,20 @@
 install-tools:
 	$(shell mkdir -p /tmp/sqlflow/resultscache)
 
+.PHONY: test
+test: test-unit test-integration
+
 .PHONY: test-unit
 test-unit:
 	pytest --ignore=tests/benchmarks --ignore=tests/integration tests
 
-.PHONY: test-benchmark
-test-benchmark:
-	pytest tests/benchmarks -s
+.PHONY: test-image
+test-image: docker-image
+	pytest tests/release
+
+.PHONY: test-integration
+test-integration:
+	pytest tests/integration
 
 .PHONY: start-backing-services
 start-backing-services:
@@ -16,4 +23,5 @@ start-backing-services:
 
 .PHONY: docker-image
 docker-image:
-	docker build -t turbolytics/sql-flow .
+	@GIT_HASH=$$(git rev-parse --short HEAD) && \
+	docker build -t turbolytics/sql-flow:$$GIT_HASH .

@@ -1,17 +1,35 @@
 import logging
-import json
 import os
+from abc import ABC, abstractmethod
+from typing import Optional
 
 import duckdb
 import pyarrow as pa
+import pyarrow.json as paj
 
 logger = logging.getLogger(__name__)
 
 
-class InferredDiskBatch:
+class Handler(ABC):
+
+    @abstractmethod
+    def init(self):
+        pass
+
+    @abstractmethod
+    def write(self, bs):
+        pass
+
+    @abstractmethod
+    def invoke(self) -> Optional[pa.Table]:
+        pass
+
+
+
+class InferredDiskBatch(Handler):
     """
     InferredDiskBatch buffers message batch to disk, and handles
-    messages as implicit json.
+    messages as  implicitjson.
     """
 
     def __init__(self, conf, *args, conn=None, **kwargs):
@@ -42,8 +60,7 @@ class InferredDiskBatch:
         self._f.flush()
         self._f.close()
         try:
-            for l in self._invoke():
-                yield l
+            return self._invoke()
         finally:
             self.conn.execute('DROP TABLE IF EXISTS batch')
 
@@ -61,12 +78,11 @@ class InferredDiskBatch:
             )
         )
 
-        with open(self._out_file, 'r') as f:
-            for l in f:
-                yield l.strip()
+        table = paj.read_json(self._out_file)
+        return table
 
 
-class InferredMemBatch:
+class InferredMemBatch(Handler):
     """
     InferredMemBatch buffers message batch to memory, and handles
     messages as implicit json.
@@ -86,9 +102,8 @@ class InferredMemBatch:
         o = self.deserializer.decode(bs)
         self.rows.append(o)
 
-    def invoke(self):
-        for l in self._invoke():
-            yield l
+    def invoke(self) -> Optional[pa.Table]:
+        return self._invoke()
 
     def _invoke(self):
         batch = pa.Table.from_pylist(self.rows)
@@ -106,10 +121,7 @@ class InferredMemBatch:
         if not res:
             return
 
-        table = res.fetch_arrow_table()
-
-        for rec in table.to_pylist():
-            yield json.dumps(rec)
+        return res.fetch_arrow_table()
 
 def get_class(s: str):
     if s == 'handlers.InferredDiskBatch':

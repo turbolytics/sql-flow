@@ -4,7 +4,7 @@ pipeline:
   source:
     type: kafka
     kafka:
-      brokers: [localhost:9092]
+      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
       group_id: test
       auto_offset_reset: earliest
       topics:
@@ -22,5 +22,5 @@ pipeline:
   sink:
     type: kafka
     kafka:
-      brokers: [localhost:9092]
+      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
       topic: output-enrich

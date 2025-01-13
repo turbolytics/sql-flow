@@ -14,7 +14,7 @@ pipeline:
   source:
     type: kafka
     kafka:
-      brokers: [localhost:9092]
+      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
       group_id: test
       auto_offset_reset: earliest
       topics:
@@ -24,19 +24,18 @@ pipeline:
     type: 'handlers.InferredMemBatch'
     sql: |
       SELECT
-        state_full,
-        count(*) as city_count
-      FROM batch
-      JOIN locations ON
-      (
-        locations.city = properties.city 
-      )
-      GROUP BY
+        properties.city,
         state_full
-      ORDER BY state_full DESC
+      FROM batch
+      LEFT JOIN (
+        SELECT *
+          FROM locations
+          WHERE locations.city = properties.city 
+        LIMIT 1 
+      ) AS single_location ON single_location.city = properties.city;
 
   sink:
     type: kafka
     kafka:
-      brokers: [localhost:9092]
+      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
       topic: output-csv-mem-join
