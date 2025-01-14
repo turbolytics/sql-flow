@@ -1,0 +1,26 @@
+pipeline:
+  batch_size: 5000
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "input-kafka-mem-iceberg"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT
+         CAST(timestamp as TIMESTAMP) as timestamp,
+        properties.city as city
+      FROM batch
+      ORDER BY timestamp, city DESC
+
+  sink:
+    type: iceberg
+    iceberg:
+      catalog_name: {{ catalog_name|default('sqlflow_test') }}
+      table_name: {{ table_name|default('default.city_events') }}

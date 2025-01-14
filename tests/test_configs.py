@@ -1,10 +1,16 @@
 import os
+import shutil
 import tempfile
 import unittest
+import datetime
 
 import duckdb
 import pyarrow.parquet as pq
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import NestedField, StringType, LongType, TimestampType
 
+from sqlflow import settings
 from sqlflow.lifecycle import invoke
 from sqlflow.config import new_from_dict, ConsoleSink, TumblingWindow, TableManager, Sink
 
@@ -132,6 +138,68 @@ class InvokeExamplesTestCase(unittest.TestCase):
                 {'num_records': 4}
             ]
             self.assertEqual(table.to_pylist(), expected_data)
+
+    def test_kafka_mem_iceberg(self):
+        warehouse_path = os.path.join(
+            settings.SQL_RESULTS_CACHE_DIR,
+            'test_kafka_mem_iceberg',
+        )
+        try:
+            shutil.rmtree(warehouse_path)
+        except FileNotFoundError:
+            pass
+
+        os.makedirs(warehouse_path)
+
+
+        # Set up the catalog
+        catalog = SqlCatalog(
+            "test_kafka_mem_iceberg",
+            **{
+                "uri": f"sqlite:///{warehouse_path}/catalog.db",
+                "warehouse": f"file://{warehouse_path}",
+            },
+        )
+
+        catalog.create_namespace("default")
+
+        schema = Schema(
+            NestedField(field_id=1, name="timestamp", field_type=TimestampType(), required=False),
+            NestedField(field_id=2, name="city", field_type=StringType(), required=False),
+        )
+
+        iceberg_table = catalog.create_table(
+            "default.city_events",
+            schema=schema,
+        )
+
+        # Load the configuration from the YAML file
+        config_path = os.path.join(conf_dir, 'examples', 'kafka.mem.iceberg.yml')
+
+        # Call invoke with the configuration
+        conn = duckdb.connect()
+        table = invoke(
+            conn=conn,
+            config=config_path,
+            fixture=os.path.join(fixtures_dir, 'window.jsonl'),
+            setting_overrides={
+                'catalog_name': 'test_kafka_mem_iceberg',
+                'table_name': 'default.city_events',
+            },
+            invoke_sink=True,
+        )
+
+        expected_data = [
+            {'city': 'New York', 'timestamp': datetime.datetime(2015, 12, 12, 19, 11, 1, 249000)},
+            {'city': 'New York', 'timestamp': datetime.datetime(2015, 12, 12, 19, 11, 1, 249000)},
+            {'city': 'Baltimore', 'timestamp': datetime.datetime(2015, 12, 12, 19, 11, 1, 249000)},
+            {'city': 'Baltimore', 'timestamp': datetime.datetime(2015, 12, 12, 19, 11, 1, 249000)},
+        ]
+        self.assertEqual(table.to_pylist(), expected_data)
+
+        iceberg_table.refresh()
+        read_table = iceberg_table.scan().to_arrow()
+        self.assertEqual(read_table.to_pylist(), expected_data)
 
 
 class TablesTestCase(unittest.TestCase):

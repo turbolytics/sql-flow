@@ -16,6 +16,12 @@ class SinkFormat:
 
 
 @dataclass
+class IcebergSink:
+    catalog_name: str
+    table_name: str
+
+
+@dataclass
 class KafkaSink:
     brokers: [str]
     topic: str
@@ -27,7 +33,7 @@ class ConsoleSink:
 
 
 @dataclass
-class Local:
+class LocalSink:
     base_path: str
     prefix: str
 
@@ -38,7 +44,8 @@ class Sink:
     format: Optional[SinkFormat] = None
     kafka: Optional[KafkaSink] = None
     console: Optional[ConsoleSink] = None
-    local: Optional[Local] = None
+    local: Optional[LocalSink] = None
+    iceberg: Optional[IcebergSink] = None
 
 
 @dataclass
@@ -184,12 +191,17 @@ def build_sink_config_from_dict(conf) -> Sink:
             topic=conf['kafka']['topic'],
         )
     elif sink.type == 'local':
-        sink.local = Local(
+        sink.local = LocalSink(
             base_path=conf['local']['base_path'],
             prefix=conf['local']['prefix'],
         )
     elif sink.type == 'noop':
         pass
+    elif sink.type == 'iceberg':
+        sink.iceberg = IcebergSink(
+            catalog_name=conf['iceberg']['catalog_name'],
+            table_name=conf['iceberg']['table_name'],
+        )
     else:
         sink.type = 'console'
         sink.console = ConsoleSink()

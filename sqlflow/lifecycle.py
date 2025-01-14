@@ -3,10 +3,9 @@ import threading
 import duckdb
 
 from sqlflow.config import new_from_path
-from sqlflow import handlers
+from sqlflow import handlers, sinks
 from sqlflow.serde import JSON
-from sqlflow.pipeline import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf, \
-    new_sink_from_conf
+from sqlflow.pipeline import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf
 
 
 def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invoke_sink=False):
@@ -51,7 +50,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
         res = managed_tables[0].collect_closed()
 
     if invoke_sink:
-        sink = new_sink_from_conf(conf.pipeline.sink)
+        sink = sinks.new_sink_from_conf(conf.pipeline.sink)
         sink.write_table(res)
         sink.flush()
 

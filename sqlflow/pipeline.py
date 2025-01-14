@@ -2,11 +2,10 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
-import socket
 
-from confluent_kafka import Consumer, Producer
+from confluent_kafka import Consumer
 
-from sqlflow import config
+from sqlflow import config, sinks
 from sqlflow.managers import window
 from sqlflow.sinks import ConsoleSink, Sink, KafkaSink, LocalSink, NoopSink
 from sqlflow.sources import Source, KafkaSource, WebsocketSource
@@ -131,7 +130,7 @@ def build_managed_tables(conn, table_confs, lock=threading.Lock()):
         if not table.manager.tumbling_window:
             raise NotImplementedError('only tumbling_window manager currently supported')
 
-        sink = new_sink_from_conf(table.manager.sink)
+        sink = sinks.new_sink_from_conf(table.manager.sink)
 
         h = window.Tumbling(
             conn=conn,
@@ -163,29 +162,6 @@ def handle_managed_tables(tables):
         t.start()
 
 
-def new_sink_from_conf(sink_conf: config.Sink):
-    if sink_conf.type == 'kafka':
-        p = Producer({
-            'bootstrap.servers': ','.join(sink_conf.kafka.brokers),
-            'client.id': socket.gethostname(),
-        })
-        return KafkaSink(
-            topic=sink_conf.kafka.topic,
-            producer=p,
-        )
-    elif sink_conf.type == 'console':
-        return ConsoleSink()
-    elif sink_conf.type == 'local':
-        return LocalSink(
-            base_path=sink_conf.local.base_path,
-            prefix=sink_conf.local.prefix,
-            format=sink_conf.format.type,
-        )
-    elif sink_conf.type == 'noop':
-        return NoopSink()
-
-    raise NotImplementedError('unsupported sink type: {}'.format(sink_conf.type))
-
 
 def new_source_from_conf(source_conf: config.Source):
     if source_conf.type == 'kafka':
@@ -212,7 +188,7 @@ def new_source_from_conf(source_conf: config.Source):
 
 def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
     source = new_source_from_conf(conf.pipeline.source)
-    sink = new_sink_from_conf(conf.pipeline.sink)
+    sink = sinks.new_sink_from_conf(conf.pipeline.sink)
     sflow = SQLFlow(
         source=source,
         handler=handler,

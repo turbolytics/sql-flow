@@ -2,14 +2,12 @@ import threading
 
 import click
 import duckdb
-from IPython.lib.deepreload import reload
 from flask import Flask
 
 from sqlflow import logging
 from sqlflow.config import new_from_path
 from sqlflow.http import DebugAPI
 from sqlflow.lifecycle import start, invoke
-
 
 
 @click.group()

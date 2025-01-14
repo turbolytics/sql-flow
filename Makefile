@@ -7,7 +7,7 @@ test: test-unit test-integration
 
 .PHONY: test-unit
 test-unit:
-	pytest --ignore=tests/benchmarks --ignore=tests/integration tests
+	PYICEBERG_HOME=$(shell pwd)/dev/config/ pytest --ignore=tests/benchmarks --ignore=tests/integration tests
 
 .PHONY: test-image
 test-image: docker-image
@@ -15,7 +15,7 @@ test-image: docker-image
 
 .PHONY: test-integration
 test-integration:
-	pytest tests/integration
+	PYICEBERG_HOME=$(shell pwd)/dev/config/ pytest tests/integration
 
 .PHONY: start-backing-services
 start-backing-services:

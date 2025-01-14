@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -7,6 +8,9 @@ import pytest
 import pyarrow.dataset as ds
 from confluent_kafka import KafkaException, Consumer, KafkaError
 from confluent_kafka.admin import AdminClient
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import NestedField, TimestampType, StringType
 from testcontainers.kafka import KafkaContainer
 
 from sqlflow.config import new_from_path
@@ -78,6 +82,71 @@ def bootstrap_server():
         yield kafka.get_bootstrap_server()
 
 
+def test_kafka_mem_iceberg(bootstrap_server):
+    num_messages = 5000
+    in_topic = 'input-kafka-mem-iceberg'
+    group_id = 'test_kafka_mem_iceberg'
+    catalog_name = 'integration_test_kafka_mem_iceberg'
+    table_name = 'default.city_events'
+
+    warehouse_path = os.path.join(
+        settings.SQL_RESULTS_CACHE_DIR,
+        'integration',
+        'test_kafka_mem_iceberg',
+    )
+
+    try:
+        shutil.rmtree(warehouse_path)
+    except FileNotFoundError:
+        pass
+
+    os.makedirs(warehouse_path)
+
+    # Set up the catalog
+    catalog = SqlCatalog(
+        catalog_name,
+        **{
+            "uri": f"sqlite:///{warehouse_path}/catalog.db",
+            "warehouse": f"file://{warehouse_path}",
+        },
+    )
+
+    catalog.create_namespace("default")
+
+    schema = Schema(
+        NestedField(field_id=1, name="timestamp", field_type=TimestampType(), required=False),
+        NestedField(field_id=2, name="city", field_type=StringType(), required=False),
+    )
+
+    iceberg_table = catalog.create_table(
+       table_name,
+        schema=schema,
+    )
+
+    delete_topics([in_topic], bootstrap_server)
+    delete_consumer_groups([group_id], bootstrap_server)
+    kf = KafkaFaker(
+        bootstrap_servers=bootstrap_server,
+        num_messages=num_messages,
+        topic=in_topic,
+    )
+    kf.publish()
+
+    conf = new_from_path(
+        path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.mem.iceberg.yml'),
+        setting_overrides={
+            'kafka_brokers': bootstrap_server,
+            'catalog_name': catalog_name,
+            'table_name': table_name,
+        },
+    )
+    stats = start(conf, max_msgs=num_messages)
+
+    iceberg_table.refresh()
+    read_table = iceberg_table.scan().to_arrow()
+    assert len(read_table) == num_messages
+
+
 def test_local_parquet_sink(bootstrap_server):
     num_messages = 2000
     in_topic = 'topic-local-parquet-sink'
@@ -98,6 +167,7 @@ def test_local_parquet_sink(bootstrap_server):
             setting_overrides={
                 'kafka_brokers': bootstrap_server,
                 'sink_base_path': temp_dir,
+                'batch_size': 1000,
             },
         )
         stats = start(conf, max_msgs=num_messages)
