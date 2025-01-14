@@ -1,5 +1,5 @@
 pipeline:
-  batch_size: 1000
+  batch_size: 5000
 
   source:
     type: kafka
@@ -14,15 +14,13 @@ pipeline:
     type: 'handlers.InferredMemBatch'
     sql: |
       SELECT
-        properties.city as city,
-        count(*) as city_count
+         CAST(timestamp as TIMESTAMP) as timestamp,
+        properties.city as city
       FROM batch
-      GROUP BY
-        city
-      ORDER BY city DESC
+      ORDER BY timestamp, city DESC
 
   sink:
     type: iceberg
     iceberg:
-      catalog_name: {{ catalog_name|default('local_kafka_mem_iceberg') }}
+      catalog_name: {{ catalog_name|default('sqlflow_test') }}
       table_name: {{ table_name|default('default.city_events') }}

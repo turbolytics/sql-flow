@@ -1,0 +1,8 @@
+catalog:
+  test_kafka_mem_iceberg:
+    uri: sqlite:////tmp/sqlflow/resultscache/test_kafka_mem_iceberg/catalog.db
+    warehouse: file:////tmp/sqlflow/resultscache/test_kafka_mem_iceberg
+
+  integration_test_kafka_mem_iceberg:
+    uri: sqlite:////tmp/sqlflow/resultscache/integration/test_kafka_mem_iceberg/catalog.db
+    warehouse: file:////tmp/sqlflow/resultscache/integration/test_kafka_mem_iceberg

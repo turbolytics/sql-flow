@@ -55,11 +55,9 @@ class ConsoleSink(Sink):
 
 
 class IcebergSink(Sink):
-    def __init__(self, catalog, iceberg_table: pyiceberg.table.Table, schema=None):
+    def __init__(self, catalog, iceberg_table: pyiceberg.table.Table):
         self.catalog = catalog
         self.iceberg_table = iceberg_table
-        # A schema will allow for validation on write.
-        self.schema = schema
         self._tables = []
 
     def write_table(self, table):
