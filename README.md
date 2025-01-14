@@ -32,13 +32,14 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
 - Sinks
   - [x] Kafka Producer
   - [x] Stdout
+  - [x] Local Disk
   - [ ] Postgres
-  - [ ] Local Disk
   - [ ] S3
 - Serialization
   - [x] JSON Input
   - [x] JSON Output
-  - [ ] Parquet Output
+  - [x] Parquet Output
+  - [x] Iceberg Output
 - Handlers
   - [x] Memory Persistence
   - [ ] Disk Persistence
@@ -118,7 +119,11 @@ SQLFlow supports DuckDB over websocket. Running SQL against the [Bluesky firehos
 
 <img width="1280" alt="bluesky firehose config" src="https://github.com/user-attachments/assets/86a46875-3cfa-46d3-ab08-1457c29115d9" />
 
-Invoke sql-flow using the configuration listed above:
+The following command starts a bluesky consumer and prints every post to stdout:
+
+```
+docker run -v $(pwd)/dev/config/examples:/examples turbolytics/sql-flow:latest run /examples/bluesky/bluesky.raw.stdout.yml
+```
 
 ![output](https://github.com/user-attachments/assets/185c6453-debc-439a-a2b9-ed20fdc82851)
 
