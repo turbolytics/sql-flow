@@ -167,6 +167,7 @@ def test_local_parquet_sink(bootstrap_server):
             setting_overrides={
                 'kafka_brokers': bootstrap_server,
                 'sink_base_path': temp_dir,
+                'batch_size': 1000,
             },
         )
         stats = start(conf, max_msgs=num_messages)
