@@ -2,12 +2,17 @@ import logging
 import os
 import sys
 import uuid
+import socket
+
 import pyarrow as pa
 from abc import abstractmethod, ABC
 
 import duckdb
 import pyiceberg.table
+from confluent_kafka import Producer
+from pyiceberg.catalog import load_catalog
 
+from sqlflow import config
 from sqlflow.serde import JSON
 
 logger = logging.getLogger(__name__)
@@ -141,3 +146,35 @@ class RecordingSink(Sink):
 
     def flush(self):
         pass
+
+
+def new_sink_from_conf(sink_conf: config.Sink) -> Sink:
+    if sink_conf.type == 'kafka':
+        p = Producer({
+            'bootstrap.servers': ','.join(sink_conf.kafka.brokers),
+            'client.id': socket.gethostname(),
+        })
+        return KafkaSink(
+            topic=sink_conf.kafka.topic,
+            producer=p,
+        )
+    elif sink_conf.type == 'console':
+        return ConsoleSink()
+    elif sink_conf.type == 'local':
+        return LocalSink(
+            base_path=sink_conf.local.base_path,
+            prefix=sink_conf.local.prefix,
+            format=sink_conf.format.type,
+        )
+    elif sink_conf.type == 'noop':
+        return NoopSink()
+    elif sink_conf.type == 'iceberg':
+        catalog = load_catalog(sink_conf.iceberg.catalog_name)
+        table = catalog.load_table(sink_conf.iceberg.table_name)
+
+        return IcebergSink(
+            catalog=sink_conf.iceberg.catalog_name,
+            iceberg_table=table,
+        )
+
+    raise NotImplementedError('unsupported sink type: {}'.format(sink_conf.type))
