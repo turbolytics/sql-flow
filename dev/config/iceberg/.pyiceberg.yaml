@@ -1,0 +1,4 @@
+catalog:
+  sqlflow_test:
+    uri: sqlite:////tmp/sqlflow/warehouse/catalog.db
+    warehouse: file:////tmp/sqlflow/warehouse

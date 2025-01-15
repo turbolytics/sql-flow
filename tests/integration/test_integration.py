@@ -135,7 +135,7 @@ def test_kafka_mem_iceberg(bootstrap_server):
     conf = new_from_path(
         path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.mem.iceberg.yml'),
         setting_overrides={
-            'kafka_brokers': bootstrap_server,
+            'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
             'catalog_name': catalog_name,
             'table_name': table_name,
         },
