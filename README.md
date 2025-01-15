@@ -129,6 +129,60 @@ docker run -v $(pwd)/dev/config/examples:/examples turbolytics/sql-flow:latest r
 
 [Checkout the configuration files here](https://github.com/turbolytics/sql-flow/tree/main/dev/config/examples/bluesky)
 
+## Streaming to Iceberg
+
+SQLFlow supports writing to Iceberg tables using [pyiceberg](https://py.iceberg.apache.org/). 
+
+The following configuration writes to an Iceberg table using a local SQLite catalog:
+
+- Initialize the SQLite iceberg catalog and test table, which will create the directories referenced in the file above
+```
+python3 cmd/setup-iceberg-local.py setup
+created default.city_events
+created default.bluesky_post_events
+Catalog setup complete.
+```
+
+- Start Kafka Locally
+```
+docker-compose -f dev/kafka-single.yml up -d
+```
+
+- Publish Test Messages to Kafka
+```
+python3 cmd/publish-test-data.py --num-messages=5000 --topic="input-kafka-mem-iceberg"
+```
+
+- Run SQLFlow, which will read from kafka and write to the iceberg table locally
+```
+docker run \
+  -e SQLFLOW_KAFKA_BROKERS=host.docker.internal:29092 \
+  -e PYICEBERG_HOME=/tmp/iceberg/ 
+  -v $(pwd)/dev/config/iceberg/.pyiceberg.yaml:/tmp/iceberg/.pyiceberg.yaml \
+  -v /tmp/sqlflow/warehouse:/tmp/sqlflow/warehouse 
+  -v $(pwd)/dev/config/examples:/examples 
+  turbolytics/sql-flow:latest run /examples/kafka.mem.iceberg.yml
+```
+
+- Verify iceberg data was written by querying it with duckdb
+```
+% duckdb
+v1.1.3 19864453f7
+Enter ".help" for usage hints.
+Connected to a transient in-memory database.
+Use ".open FILENAME" to reopen on a persistent database.
+D select count(*) from '/tmp/sqlflow/warehouse/default.db/city_events/data/*.parquet';
+┌──────────────┐
+│ count_star() │
+│    int64     │
+├──────────────┤
+│         5000 │
+└──────────────┘
+```
+
+
+
+
 ## Recipes
 
 Coming Soon, until then checkout:

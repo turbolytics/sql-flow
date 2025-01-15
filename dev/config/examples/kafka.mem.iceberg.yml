@@ -4,7 +4,7 @@ pipeline:
   source:
     type: kafka
     kafka:
-      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
       group_id: test
       auto_offset_reset: earliest
       topics:
