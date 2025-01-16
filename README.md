@@ -135,7 +135,7 @@ SQLFlow supports writing to Iceberg tables using [pyiceberg](https://py.iceberg.
 
 The following configuration writes to an Iceberg table using a local SQLite catalog:
 
-- Initialize the SQLite iceberg catalog and test table, which will create the directories referenced in the file above
+- Initialize the SQLite iceberg catalog and test table
 ```
 python3 cmd/setup-iceberg-local.py setup
 created default.city_events
