@@ -1,5 +1,7 @@
 # SQLFlow: DuckDB for Streaming Data. 
 
+![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/sql-flow)
+
 SQLFlow enables SQL-based stream-processing, powered by [DuckDB](https://duckdb.org/). SQLFlow embeds duckdb, supporting [kafka stream processing](https://kafka.apache.org/) logic using pure sql.
 
 SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of SQLFlow as a way to run sql against a continuous stream of data. The data outputs can be shipped to sinks, such as Kafka.
@@ -14,16 +16,7 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
 - **Tumbling Window Aggregation**: Bucket data into arbitrary time windows (such as "hour" or "10 minutes") ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/tumbling.window.yml)).
 - **Running SQL against the Bluesky Firehose**: Execute SQL against any webhook source, such as the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/bluesky/bluesky.kafka.raw.yml))
 
-## SQLFlow Features
-
-- **Streaming SQL**: Execute SQL against a variety of input streams, including kafka and websockets (bluesky firehose).
-- **Custom Serialization and Encoding**: Support for various formats, such as JSON and Parquet.
-- High Throughput: Optimized to handle tens of thousands of messages per second using [DuckDB](https://duckdb.org/), [librdkafka](https://github.com/confluentinc/librdkafka), and [confluent python](https://github.com/confluentinc/confluent-kafka-python)
-- **Tumbling Window Aggregations**: Perform aggregations over fixed intervals and output data once the interval is complete, enabling rollups like hourly or 10-minute summaries.
-- **Static Table Joins**: Join streaming data with static datasets, such as CSVs, using SQLFlow.
-
-
-## SQLFlow Roadmap 
+## SQLFlow Features & Roadmap
 
 - Sources
   - [x] Kafka Consumer using consumer groups
