@@ -1,13 +1,14 @@
 commands:
-  - name: attach geo ip
+  - name: load extensions
     sql: |
       LOAD httpfs;
+      INSTALL inet;
+      LOAD inet;
+
+  - name: attach geo ip
+    sql: |
       attach 'https://hive.buz.dev/ipinfo' as geoip;
       use geoip;
-
-udfs:
-  - function_name: parse_domain
-    import_path: sqlflow.udf.url.parse_domain
 
 pipeline:
   batch_size: 1000
@@ -19,20 +20,20 @@ pipeline:
       group_id: test
       auto_offset_reset: earliest
       topics:
-        - "input-attach"
+        - "input-attach-geoip"
 
   handler:
     type: 'handlers.InferredMemBatch'
     sql: |
       SELECT
+        batch.ip as ip,
+        asn.start_ip as start_ip,
+        asn.end_ip as end_ip,
         asn.name as name,
         asn.asn as asn,
-        parse_domain(url) as domain
+        asn.domain as domain
       FROM batch
-      LEFT JOIN asn ON domain = asn.domain
+      LEFT JOIN asn ON batch.ip::inet >= asn.start_ip AND batch.ip::inet <= asn.end_ip
 
   sink:
-    type: kafka
-    kafka:
-      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-      topic: output-attach
+    type: console

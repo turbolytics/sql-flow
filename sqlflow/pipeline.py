@@ -110,7 +110,7 @@ class SQLFlow:
 
 def init_commands(conn, commands):
     for command in commands:
-        logger.info('executing command: {}'.format(command.sql))
+        logger.info('executing command {}: {}'.format(command.name, command.sql))
         conn.execute(command.sql)
 
 
