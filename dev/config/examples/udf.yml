@@ -1,0 +1,28 @@
+udfs:
+  - function_name: parse_domain
+    import_path: sqlflow.udf.url.parse_domain
+
+pipeline:
+  batch_size: 1000
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "topic-enrich"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT
+        parse_domain(url) as domain
+      FROM batch
+
+  sink:
+    type: kafka
+    kafka:
+      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
+      topic: output-enrich

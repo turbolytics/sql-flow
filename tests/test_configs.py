@@ -201,6 +201,19 @@ class InvokeExamplesTestCase(unittest.TestCase):
         read_table = iceberg_table.scan().to_arrow()
         self.assertEqual(read_table.to_pylist(), expected_data)
 
+    def test_udf(self):
+        conn = duckdb.connect()
+        table = invoke(
+            conn=conn,
+            config=os.path.join(conf_dir, 'examples', 'udf.yml'),
+            fixture=os.path.join(fixtures_dir, 'udf.jsonl'),
+        )
+        self.assertEqual([
+            {'domain': 'google.com'},
+            {'domain': 'cloudflare.com'},
+            {'domain': 'duckdb.org'},
+        ], table.to_pylist())
+
 
 class TablesTestCase(unittest.TestCase):
     def test_init_window_success(self):

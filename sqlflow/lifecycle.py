@@ -5,7 +5,7 @@ import duckdb
 from sqlflow.config import new_from_path
 from sqlflow import handlers, sinks
 from sqlflow.serde import JSON
-from sqlflow.pipeline import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf
+from sqlflow.pipeline import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf, init_udfs
 
 
 def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invoke_sink=False):
@@ -30,6 +30,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
     ).init()
 
     init_tables(conn, conf.tables)
+    init_udfs(conn, conf.udfs)
     managed_tables = build_managed_tables(
         conn,
         conf.tables.sql,
@@ -72,6 +73,7 @@ def start(conf, conn=None, lock=None, max_msgs=None):
     )
 
     init_tables(conn, conf.tables)
+    init_udfs(conn, conf.udfs)
 
     managed_tables = build_managed_tables(
         conn,

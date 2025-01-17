@@ -1,6 +1,6 @@
 import copy
 import os
-from typing import Optional
+from typing import Optional, List
 
 from jinja2 import Template
 from yaml import safe_load
@@ -83,6 +83,12 @@ class Tables:
 
 
 @dataclass
+class UDF:
+    function_name: str
+    import_path: str
+
+
+@dataclass
 class KafkaSource:
     brokers: [str]
     group_id: str
@@ -121,6 +127,7 @@ class Pipeline:
 class Conf:
     pipeline: Pipeline
     tables: Optional[Tables] = ()
+    udfs: Optional[List[UDF]] = ()
 
 
 def new_from_path(path: str, setting_overrides={}):
@@ -217,6 +224,10 @@ def new_from_dict(conf):
     for csv_table in conf.get('tables', {}).get('csv', []):
         tables.csv.append(TableCSV(**csv_table))
 
+    udfs = []
+    for udf in conf.get('udfs', []):
+        udfs.append(UDF(**udf))
+
     for sql_table_conf in conf.get('tables', {}).get('sql', []):
         manager_conf = sql_table_conf.pop('manager')
         if manager_conf:
@@ -238,6 +249,7 @@ def new_from_dict(conf):
 
     return Conf(
         tables=tables,
+        udfs=udfs,
         pipeline=Pipeline(
             batch_size=conf['pipeline'].get('batch_size'),
             source=source,
