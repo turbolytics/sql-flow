@@ -108,6 +108,12 @@ class SQLFlow:
                 return
 
 
+def init_commands(conn, commands):
+    for command in commands:
+        logger.info('executing command: {}'.format(command.sql))
+        conn.execute(command.sql)
+
+
 def init_udfs(conn, udfs: List[config.UDF]):
     for udf in udfs:
         module_name, function_name = udf.import_path.rsplit('.', 1)

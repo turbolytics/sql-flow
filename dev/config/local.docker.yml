@@ -17,8 +17,6 @@ pipeline:
         properties.city as city,
         count(*) as city_count
       FROM batch
-      GROUP BY
-        city
       ORDER BY city DESC
 
   sink:
