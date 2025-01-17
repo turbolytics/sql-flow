@@ -7,7 +7,12 @@ test: test-unit test-integration
 
 .PHONY: test-unit
 test-unit:
-	PYICEBERG_HOME=$(shell pwd)/tests/config/ pytest --ignore=tests/benchmarks --ignore=tests/integration tests
+	PYICEBERG_HOME=$(shell pwd)/tests/config/ \
+		pytest \
+		--ignore=tests/benchmarks \
+		--ignore=tests/integration \
+		--ignore=tests/release \
+		tests
 
 .PHONY: test-image
 test-image: docker-image
