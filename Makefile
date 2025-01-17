@@ -17,6 +17,10 @@ test-image: docker-image
 test-integration:
 	PYICEBERG_HOME=$(shell pwd)/tests/config/ pytest tests/integration
 
+.PHONY: test-release
+test-release: docker-image
+	pytest tests/release
+
 .PHONY: start-backing-services
 start-backing-services:
 	docker-compose -f dev/kafka-single.yml up -d
