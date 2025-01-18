@@ -34,16 +34,16 @@ sink_flush_latency = meter.create_histogram(
     unit="seconds",
 )
 
-sink_flush_num_rows = meter.create_counter(
+sink_flush_num_rows = meter.create_gauge(
     name="sink_flush_num_rows",
     description="Number of rows flushed to the sink",
     unit="rows",
 )
 
-batch_counter = meter.create_counter(
-    name="batch_count",
-    description="Number of batches processed",
-    unit="batches",
+sink_flush_count = meter.create_counter(
+    name="sink_flush_count",
+    description="Number of times sink was flushed, corresponds to the # of batches processed",
+    unit="flushes",
 )
 
 batch_processing_latency = meter.create_histogram(
@@ -152,7 +152,15 @@ class SQLFlow:
                 sink_flush_start = datetime.now(timezone.utc)
                 # Only commit after all messages in batch are processed
                 self.sink.flush()
-                sink_flush_latency.record((datetime.now(timezone.utc) - sink_flush_start).total_seconds())
+                sink_flush_latency.record(
+                    (datetime.now(timezone.utc) - sink_flush_start).total_seconds(),
+                    attributes={
+                        'sink': self.sink.__class__.__name__,
+                    }
+                )
+                sink_flush_count.add(1, attributes={
+                    'sink': self.sink.__class__.__name__,
+                })
 
                 self.source.commit()
                 diff = (datetime.now(timezone.utc) - start_batch_time)
