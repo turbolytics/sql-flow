@@ -123,7 +123,12 @@ class SQLFlow:
             if msg is None:
                 continue
 
-            source_read_latency.record((datetime.now(timezone.utc) - source_read_start).total_seconds())
+            source_read_latency.record(
+                (datetime.now(timezone.utc) - source_read_start).total_seconds(),
+                attributes={
+                    'source': self.source.__class__.__name__,
+                }
+            )
             message_counter.add(1, attributes={
                 'source': self.source.__class__.__name__,
             })

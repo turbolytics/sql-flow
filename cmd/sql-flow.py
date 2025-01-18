@@ -1,13 +1,21 @@
+import logging
 import threading
 
 import click
 import duckdb
 from flask import Flask
+from opentelemetry import metrics as otelmetrics
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
+from opentelemetry.sdk.metrics import MeterProvider
+from prometheus_client import start_http_server
 
-from sqlflow import logging
+from sqlflow import logging as sqlflow_logging
 from sqlflow.config import new_from_path
 from sqlflow.http import DebugAPI
 from sqlflow.lifecycle import start, invoke
+
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -28,10 +36,24 @@ def cli():
     is_flag=True,
     help='Start Flask HTTP server for debugging.',
 )
-def run(config, max_msgs_to_process, with_http_debug):
+@click.option(
+    '--metrics',
+    type=click.Choice(['prometheus'], case_sensitive=False),
+    default=None,
+    help='Specify the metrics type.',
+)
+def run(config, max_msgs_to_process, with_http_debug, metrics):
     conf = new_from_path(config)
     conn = duckdb.connect()
     lock = threading.Lock()
+
+    if metrics == 'prometheus':
+        logger.info('Starting Prometheus metrics server: http://localhost:8000')
+        metric_reader = PrometheusMetricReader()
+        provider = MeterProvider(metric_readers=[metric_reader])
+        otelmetrics.set_meter_provider(provider)
+        start_http_server(port=8000)
+
 
     if with_http_debug:
         app = Flask(__name__)
@@ -73,5 +95,5 @@ cli.add_command(dev)
 
 
 if __name__ == '__main__':
-    logging.init()
+    sqlflow_logging.init()
     cli()
