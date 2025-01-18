@@ -150,11 +150,11 @@ python3 cmd/publish-test-data.py --num-messages=5000 --topic="input-kafka-mem-ic
 ```
 docker run \
   -e SQLFLOW_KAFKA_BROKERS=host.docker.internal:29092 \
-  -e PYICEBERG_HOME=/tmp/iceberg/ 
+  -e PYICEBERG_HOME=/tmp/iceberg/ \ 
   -v $(pwd)/dev/config/iceberg/.pyiceberg.yaml:/tmp/iceberg/.pyiceberg.yaml \
-  -v /tmp/sqlflow/warehouse:/tmp/sqlflow/warehouse 
-  -v $(pwd)/dev/config/examples:/examples 
-  turbolytics/sql-flow:latest run /examples/kafka.mem.iceberg.yml
+  -v /tmp/sqlflow/warehouse:/tmp/sqlflow/warehouse \
+  -v $(pwd)/dev/config/examples:/examples \
+  turbolytics/sql-flow:latest run /examples/kafka.mem.iceberg.yml --max-msgs-to-process=5000
 ```
 
 - Verify iceberg data was written by querying it with duckdb
