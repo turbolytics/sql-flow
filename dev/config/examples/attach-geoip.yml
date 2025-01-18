@@ -1,0 +1,39 @@
+commands:
+  - name: load extensions
+    sql: |
+      LOAD httpfs;
+      INSTALL inet;
+      LOAD inet;
+
+  - name: attach geo ip
+    sql: |
+      attach 'https://hive.buz.dev/ipinfo' as geoip;
+      use geoip;
+
+pipeline:
+  batch_size: 1000
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "input-attach-geoip"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT
+        batch.ip as ip,
+        asn.start_ip::STRING as start_ip,
+        asn.end_ip::STRING as end_ip,
+        asn.name as name,
+        asn.asn as asn,
+        asn.domain as domain
+      FROM batch
+      LEFT JOIN asn ON batch.ip::inet >= asn.start_ip AND batch.ip::inet <= asn.end_ip
+
+  sink:
+    type: noop

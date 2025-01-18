@@ -12,4 +12,7 @@ COPY sqlflow ./sqlflow
 COPY setup.py .
 RUN python setup.py install
 
+# Add /app/plugins to the Python path
+ENV PYTHONPATH="/app/plugins:${PYTHONPATH}"
+
 ENTRYPOINT [ "python", "cmd/sql-flow.py" ]

@@ -1,7 +1,9 @@
+import importlib
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
+from typing import List
 
 from confluent_kafka import Consumer
 
@@ -104,6 +106,21 @@ class SQLFlow:
             if max_msgs and max_msgs <= self._stats.num_messages_consumed:
                 logger.info('max messages reached')
                 return
+
+
+def init_commands(conn, commands):
+    for command in commands:
+        logger.info('executing command {}: {}'.format(command.name, command.sql))
+        conn.execute(command.sql)
+
+
+def init_udfs(conn, udfs: List[config.UDF]):
+    for udf in udfs:
+        module_name, function_name = udf.import_path.rsplit('.', 1)
+        module = importlib.import_module(module_name)
+        function = getattr(module, function_name)
+        logger.info('creating udf: {}'.format(udf.function_name))
+        conn.create_function(udf.function_name, function)
 
 
 def init_tables(conn, tables):

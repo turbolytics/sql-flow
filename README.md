@@ -65,18 +65,18 @@ docker-compose -f dev/kafka-single.yml up -d
 
 - Publish test messages to kafka
 ```
-python3 cmd/publish-test-data.py --num-messages=10000 --topic="topic-local-docker"
+python3 cmd/publish-test-data.py --num-messages=10000 --topic="input-simple-agg-mem"
 ```
 
 - Start kafka consumer from inside docker-compose container
 ```
-docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-local-docker
+docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-simple-agg-mem
 ```
 
 - Start SQLFlow in docker
 
 ```
-docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-flow:latest run /tmp/conf/config/local.docker.yml
+docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow -e SQLFLOW_KAFKA_BROKERS=host.docker.internal:29092 turbolytics/sql-flow:latest run /tmp/conf/config/examples/basic.agg.mem.yml --max-msgs-to-process=10000
 ```
 
 - Verify output in the kafka consumer
@@ -150,11 +150,11 @@ python3 cmd/publish-test-data.py --num-messages=5000 --topic="input-kafka-mem-ic
 ```
 docker run \
   -e SQLFLOW_KAFKA_BROKERS=host.docker.internal:29092 \
-  -e PYICEBERG_HOME=/tmp/iceberg/ 
+  -e PYICEBERG_HOME=/tmp/iceberg/ \ 
   -v $(pwd)/dev/config/iceberg/.pyiceberg.yaml:/tmp/iceberg/.pyiceberg.yaml \
-  -v /tmp/sqlflow/warehouse:/tmp/sqlflow/warehouse 
-  -v $(pwd)/dev/config/examples:/examples 
-  turbolytics/sql-flow:latest run /examples/kafka.mem.iceberg.yml
+  -v /tmp/sqlflow/warehouse:/tmp/sqlflow/warehouse \
+  -v $(pwd)/dev/config/examples:/examples \
+  turbolytics/sql-flow:latest run /examples/kafka.mem.iceberg.yml --max-msgs-to-process=5000
 ```
 
 - Verify iceberg data was written by querying it with duckdb

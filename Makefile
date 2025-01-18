@@ -7,7 +7,12 @@ test: test-unit test-integration
 
 .PHONY: test-unit
 test-unit:
-	PYICEBERG_HOME=$(shell pwd)/tests/config/ pytest --ignore=tests/benchmarks --ignore=tests/integration tests
+	PYICEBERG_HOME=$(shell pwd)/tests/config/ \
+		pytest \
+		--ignore=tests/benchmarks \
+		--ignore=tests/integration \
+		--ignore=tests/release \
+		tests
 
 .PHONY: test-image
 test-image: docker-image
@@ -16,6 +21,11 @@ test-image: docker-image
 .PHONY: test-integration
 test-integration:
 	PYICEBERG_HOME=$(shell pwd)/tests/config/ pytest tests/integration
+
+.PHONY: test-release
+test-release: docker-image
+	TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
+	pytest tests/release
 
 .PHONY: start-backing-services
 start-backing-services:
