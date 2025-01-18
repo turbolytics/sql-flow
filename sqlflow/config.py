@@ -57,14 +57,6 @@ class TumblingWindow:
 
 
 @dataclass
-class TableCSV:
-    name: str
-    path: str
-    header: bool
-    auto_detect: bool
-
-
-@dataclass
 class TableManager:
     tumbling_window: Optional[TumblingWindow]
     sink: Sink
@@ -79,7 +71,6 @@ class TableSQL:
 
 @dataclass
 class Tables:
-    csv: [TableCSV]
     sql: [TableSQL]
 
 
@@ -226,11 +217,8 @@ def build_sink_config_from_dict(conf) -> Sink:
 
 def new_from_dict(conf):
     tables = Tables(
-        csv=[],
         sql=[],
     )
-    for csv_table in conf.get('tables', {}).get('csv', []):
-        tables.csv.append(TableCSV(**csv_table))
 
     udfs = []
     for udf in conf.get('udfs', []):
