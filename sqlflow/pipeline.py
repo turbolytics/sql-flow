@@ -124,15 +124,6 @@ def init_udfs(conn, udfs: List[config.UDF]):
 
 
 def init_tables(conn, tables):
-    for csv_table in tables.csv:
-        stmnt = "CREATE TABLE {} AS SELECT * from read_csv('{}', header={}, auto_detect={})".format(
-            csv_table.name,
-            csv_table.path,
-            csv_table.header,
-            csv_table.auto_detect
-        )
-        conn.execute(stmnt)
-
     for sql_table in tables.sql:
         conn.execute(sql_table.sql)
 

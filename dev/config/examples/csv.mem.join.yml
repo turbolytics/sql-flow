@@ -1,12 +1,10 @@
-tables:
-  csv:
-    - name: locations
-      path: '{{ STATIC_ROOT }}/fixtures/locations.csv'
-      # delimiter:
-      header: True
-      # columns:
-      auto_detect: True
-
+commands:
+  - name: register locations CSV view
+    sql: |
+      CREATE VIEW locations AS
+        SELECT 
+          *
+        FROM read_csv_auto('{{ STATIC_ROOT }}/fixtures/locations.csv', header=True);
 
 pipeline:
   batch_size: 1000
