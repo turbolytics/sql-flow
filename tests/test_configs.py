@@ -42,11 +42,11 @@ class InvokeExamplesTestCase(unittest.TestCase):
         table = invoke(
             conn=conn,
             config=os.path.join(conf_dir, 'examples', 'basic.agg.mem.yml'),
-            fixture=os.path.join(fixtures_dir, 'simple.json'),
+            fixture=os.path.join(fixtures_dir, 'basic.agg.jsonl'),
         )
         self.assertEqual([
-            {"city": "New York", "city_count": 28672},
-            {"city": "Baltimore", "city_count": 28672},
+            {'city': 'New York', 'city_count': 1},
+            {'city': 'Baltimore', 'city_count': 1}
         ], table.to_pylist())
 
     def test_csv_filesystem_join(self):

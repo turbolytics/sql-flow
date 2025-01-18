@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 event = {
+    "ip": "103.22.200.1",
     "event": "search_event",
     "properties": {
         "city": "San Francisco",

@@ -16,7 +16,7 @@ pipeline:
   source:
     type: kafka
     kafka:
-      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
       group_id: test
       auto_offset_reset: earliest
       topics:
@@ -27,8 +27,8 @@ pipeline:
     sql: |
       SELECT
         batch.ip as ip,
-        asn.start_ip as start_ip,
-        asn.end_ip as end_ip,
+        asn.start_ip::STRING as start_ip,
+        asn.end_ip::STRING as end_ip,
         asn.name as name,
         asn.asn as asn,
         asn.domain as domain
@@ -36,4 +36,4 @@ pipeline:
       LEFT JOIN asn ON batch.ip::inet >= asn.start_ip AND batch.ip::inet <= asn.end_ip
 
   sink:
-    type: console
+    type: noop

@@ -24,6 +24,7 @@ test-integration:
 
 .PHONY: test-release
 test-release: docker-image
+	TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
 	pytest tests/release
 
 .PHONY: start-backing-services

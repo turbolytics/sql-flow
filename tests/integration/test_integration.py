@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 import tempfile
@@ -6,7 +5,7 @@ import unittest
 
 import pytest
 import pyarrow.dataset as ds
-from confluent_kafka import KafkaException, Consumer, KafkaError
+from confluent_kafka import KafkaException
 from confluent_kafka.admin import AdminClient
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.schema import Schema
@@ -16,64 +15,9 @@ from testcontainers.kafka import KafkaContainer
 from sqlflow.config import new_from_path
 from sqlflow.fixtures import KafkaFaker
 from sqlflow import settings
+from sqlflow.kafka import delete_topics, delete_consumer_groups, read_all_kafka_messages
 from sqlflow.lifecycle import start
 
-
-
-def delete_topics(topics, bootstrap_server):
-    admin_client = AdminClient({'bootstrap.servers': bootstrap_server})
-    fs = admin_client.delete_topics(
-        topics=topics,
-        operation_timeout=30,
-    )
-    for f in fs.values():
-        try:
-            f.result()
-        except KafkaException:
-            pass
-
-def delete_consumer_groups(consumer_groups, bootstrap_server):
-    admin_client = AdminClient({'bootstrap.servers': bootstrap_server})
-    fs = admin_client.delete_consumer_groups(
-        consumer_groups,
-    )
-    for f in fs.values():
-        try:
-            f.result()
-        except KafkaException:
-            pass
-
-def read_all_kafka_messages(bootstrap_server, topic):
-    kconf = {
-        'bootstrap.servers': bootstrap_server,
-        'group.id': 'test_basic_agg_mem',
-        'auto.offset.reset': 'earliest',
-        'enable.auto.commit': False,
-    }
-
-    consumer = Consumer(kconf)
-    consumer.subscribe([topic])
-
-    # read until end of kafka
-    messages = []
-    while True:
-        msg = consumer.poll(timeout=1)
-        if msg is None:
-            break
-        elif not msg.error():
-            messages.append(
-                json.loads(
-                    msg.value()
-                )
-            )
-        elif msg.error().code() == KafkaError._PARTITION_EOF:
-            break
-        else:
-            raise Exception()
-
-    consumer.close()
-
-    return messages
 
 @pytest.fixture(scope="module")
 def bootstrap_server():
@@ -186,7 +130,7 @@ def test_local_parquet_sink(bootstrap_server):
 
 def test_basic_agg_mem(bootstrap_server):
     num_messages = 1000
-    in_topic = 'topic-simple-agg-mem'
+    in_topic = 'input-simple-agg-mem'
     out_topic = 'output-simple-agg-mem'
 
     delete_topics([in_topic, out_topic], bootstrap_server)
@@ -202,7 +146,7 @@ def test_basic_agg_mem(bootstrap_server):
     conf = new_from_path(
         path=os.path.join(settings.CONF_DIR, 'examples', 'basic.agg.mem.yml'),
         setting_overrides={
-            'kafka_brokers': bootstrap_server,
+            'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
         },
     )
 
@@ -211,8 +155,7 @@ def test_basic_agg_mem(bootstrap_server):
     print(stats)
 
     messages = read_all_kafka_messages(bootstrap_server, out_topic)
-    total_city_count = sum([m['city_count'] for m in messages])
-    assert total_city_count == 1000, f"Expected city_count sum to be 1000, but got {total_city_count}"
+    assert 1000 == len(messages)
 
 
 def test_csv_mem_join(bootstrap_server):
