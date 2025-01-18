@@ -35,10 +35,13 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
   - [x] Iceberg Output
 - Handlers
   - [x] Memory Persistence
+  - [x] Pipeline-scoped SQL such as defining views, or attaching to databases.
+  - [x] User Defined Functions (UDF)
   - [ ] Disk Persistence
-- [x] CSV Static Files for joinging static data during processing
-- [x] Tumbling Window Aggregations
-- [ ] Observability Metrics
+- Table Managers
+  - [x] Tumbling Window Aggregations
+- Operations
+  - [ ] Observability Metrics
 
 ## Getting Started
 
@@ -92,21 +95,7 @@ docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow -e SQLFLOW_KAFKA
 
 The `dev invoke` command enables testing a SQLFlow pipeline configuration on a batch of test data. This enables fast feedback local development before launching a SQLFlow consumer that reads from kafka.
 
-## Configuration
-
-The heart of SQLFlow is the pipeline configuration file. Each configuration file specifies:
-
-- Kafka configuration 
-- Pipeline configuration 
-  - **Source**: Input configuration
-  - **Handler**: SQL transformation
-  - **Sink**: Output configuration
-
-<img width="1085" alt="Screenshot 2024-12-30 at 9 08 57 AM" src="https://github.com/user-attachments/assets/66834849-b266-42f7-a125-7cbbb318d470" />
-
-Every instance of SQLFlow needs a pipeline configuration file.
-
-## Consuming Bluesky Firehose
+### Consuming Bluesky Firehose
 
 SQLFlow supports DuckDB over websocket. Running SQL against the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) is a simple configuration file:
 
@@ -122,7 +111,7 @@ docker run -v $(pwd)/dev/config/examples:/examples turbolytics/sql-flow:latest r
 
 [Checkout the configuration files here](https://github.com/turbolytics/sql-flow/tree/main/dev/config/examples/bluesky)
 
-## Streaming to Iceberg
+### Streaming to Iceberg
 
 SQLFlow supports writing to Iceberg tables using [pyiceberg](https://py.iceberg.apache.org/). 
 
@@ -174,17 +163,12 @@ D select count(*) from '/tmp/sqlflow/warehouse/default.db/city_events/data/*.par
 ```
 
 
-
-
 ## Recipes
 
 Coming Soon, until then checkout:
 
 - [Benchmark configurations](./benchmark)
 - [Unit Test configurations](./tests/)
-
-#### Running multiple SQLFlow instances on the same filesystem 
-#### Verifying a configuration locally 
 
 
 ## Development 
@@ -202,7 +186,6 @@ C_INCLUDE_PATH=/opt/homebrew/Cellar/librdkafka/2.3.0/include LIBRARY_PATH=/opt/h
 make test-unit
 ```
  
-
 ## [Benchmarks](https://github.com/turbolytics/sql-flow/wiki/Benchmarks)
 
 The following table shows the performance of different test scenarios:
