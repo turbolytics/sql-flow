@@ -6,6 +6,7 @@ import logging
 from typing import List
 
 from confluent_kafka import Consumer
+from opentelemetry import metrics
 
 from sqlflow import config, sinks
 from sqlflow.managers import window
@@ -13,6 +14,43 @@ from sqlflow.sinks import ConsoleSink, Sink, KafkaSink, LocalSink, NoopSink
 from sqlflow.sources import Source, KafkaSource, WebsocketSource
 
 logger = logging.getLogger(__name__)
+meter = metrics.get_meter('sqlflow.pipeline')
+
+message_counter = meter.create_counter(
+    name="message_count",
+    description="Number of messages processed",
+    unit="messages",
+)
+
+source_read_latency = meter.create_histogram(
+    name="source_read_latency",
+    description="Latency of reading a message from the source",
+    unit="seconds",
+)
+
+sink_flush_latency = meter.create_histogram(
+    name="sink_flush_latency",
+    description="Latency of flushing data to the sink",
+    unit="seconds",
+)
+
+sink_flush_num_rows = meter.create_gauge(
+    name="sink_flush_num_rows",
+    description="Number of rows flushed to the sink",
+    unit="rows",
+)
+
+sink_flush_count = meter.create_counter(
+    name="sink_flush_count",
+    description="Number of times sink was flushed, corresponds to the # of batches processed",
+    unit="flushes",
+)
+
+batch_processing_latency = meter.create_histogram(
+    name="batch_processing_latency",
+    description="Latency of processing a batch of data, from first message to flush",
+    unit="seconds",
+)
 
 
 @dataclass
@@ -44,6 +82,7 @@ class SQLFlow:
             start_time=datetime.now(timezone.utc),
         )
         self._lock = lock
+        self._running = True
 
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
@@ -69,14 +108,34 @@ class SQLFlow:
 
     def _consume_loop(self, max_msgs=None):
         num_batch_messages = 0
+        start_batch_time = None
         self._stats.start_time = datetime.now(timezone.utc)
         self._stats.num_messages_consumed = 0
 
         self.handler.init()
 
-        for msg in self.source.read():
+        stream = self.source.stream()
+
+        while self._running:
+            source_read_start = datetime.now(timezone.utc)
+            msg = next(self.source.stream())
+
             if msg is None:
                 continue
+
+            source_read_latency.record(
+                (datetime.now(timezone.utc) - source_read_start).total_seconds(),
+                attributes={
+                    'source': self.source.__class__.__name__,
+                }
+            )
+            message_counter.add(1, attributes={
+                'source': self.source.__class__.__name__,
+            })
+            # start the timer for to track the message batch latency
+            if num_batch_messages == 0:
+               start_batch_time = datetime.now(timezone.utc)
+
             self._stats.num_messages_consumed += 1
             self.handler.write(msg.value().decode())
             num_batch_messages += 1
@@ -95,11 +154,24 @@ class SQLFlow:
 
                 self.sink.write_table(batch)
 
+                sink_flush_start = datetime.now(timezone.utc)
                 # Only commit after all messages in batch are processed
                 self.sink.flush()
-                self.source.commit()
+                sink_flush_latency.record(
+                    (datetime.now(timezone.utc) - sink_flush_start).total_seconds(),
+                    attributes={
+                        'sink': self.sink.__class__.__name__,
+                    }
+                )
+                sink_flush_count.add(1, attributes={
+                    'sink': self.sink.__class__.__name__,
+                })
 
-                # reset the file state
+                self.source.commit()
+                diff = (datetime.now(timezone.utc) - start_batch_time)
+                batch_processing_latency.record(diff.total_seconds())
+
+                # Send signal to handler indicating a new batch of data.
                 self.handler.init()
                 num_batch_messages = 0
 
