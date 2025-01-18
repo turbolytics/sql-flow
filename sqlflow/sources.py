@@ -1,7 +1,7 @@
 import logging
 import typing
 from abc import ABC, abstractmethod
-from typing import Iterable
+from typing import Iterator
 
 from websockets.sync.client import connect
 
@@ -33,7 +33,7 @@ class Source(ABC):
         pass
 
     @abstractmethod
-    def read(self) -> Iterable[Message | None]:
+    def stream(self) -> Iterator[Message | None]:
         pass
 
     @abstractmethod
@@ -64,7 +64,7 @@ class KafkaSource(Source):
             asynchronous=self._async_commit,
         )
 
-    def read(self) -> typing.Iterable[Message | None]:
+    def stream(self) -> typing.Iterable[Message | None]:
         while True:
             msg = self._consumer.poll(timeout=self._read_timeout)
 
@@ -102,7 +102,7 @@ class WebsocketSource(Source):
     def close(self):
         pass
 
-    def read(self) -> Message | None:
+    def stream(self) -> Message | None:
         logger.info("connecting to websocket: {}".format(self._uri))
         with connect(self._uri) as websocket:
             while True:
