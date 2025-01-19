@@ -54,7 +54,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
         res = managed_tables[0].collect_closed()
 
     if invoke_sink:
-        sink = sinks.new_sink_from_conf(conf.pipeline.sink)
+        sink = sinks.new_sink_from_conf(conf.pipeline.sink, conn)
         sink.write_table(res)
         sink.flush()
 

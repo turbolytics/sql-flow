@@ -10,7 +10,7 @@ from opentelemetry import metrics
 
 from sqlflow import config, sinks
 from sqlflow.managers import window
-from sqlflow.sinks import ConsoleSink, Sink, KafkaSink, LocalSink, NoopSink
+from sqlflow.sinks import Sink
 from sqlflow.sources import Source, KafkaSource, WebsocketSource
 
 logger = logging.getLogger(__name__)
@@ -210,7 +210,7 @@ def build_managed_tables(conn, table_confs, lock=threading.Lock()):
         if not table.manager.tumbling_window:
             raise NotImplementedError('only tumbling_window manager currently supported')
 
-        sink = sinks.new_sink_from_conf(table.manager.sink)
+        sink = sinks.new_sink_from_conf(table.manager.sink, conn)
 
         h = window.Tumbling(
             conn=conn,
@@ -268,7 +268,7 @@ def new_source_from_conf(source_conf: config.Source):
 
 def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
     source = new_source_from_conf(conf.pipeline.source)
-    sink = sinks.new_sink_from_conf(conf.pipeline.sink)
+    sink = sinks.new_sink_from_conf(conf.pipeline.sink, conn)
     sflow = SQLFlow(
         source=source,
         handler=handler,
