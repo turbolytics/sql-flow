@@ -34,9 +34,15 @@ class ConsoleSink:
 
 
 @dataclass
-class LocalSink:
-    base_path: str
-    prefix: str
+class SQLCommandSubstitution:
+    var: str
+    type: str
+
+
+@dataclass
+class SQLCommandSink:
+    sql: str
+    substitutions: List[SQLCommandSubstitution] = ()
 
 
 @dataclass
@@ -45,7 +51,7 @@ class Sink:
     format: Optional[SinkFormat] = None
     kafka: Optional[KafkaSink] = None
     console: Optional[ConsoleSink] = None
-    local: Optional[LocalSink] = None
+    sqlcommand: Optional[SQLCommandSink] = None
     iceberg: Optional[IcebergSink] = None
 
 
@@ -196,11 +202,13 @@ def build_sink_config_from_dict(conf) -> Sink:
             brokers=conf['kafka']['brokers'],
             topic=conf['kafka']['topic'],
         )
-    elif sink.type == 'local':
-        sink.local = LocalSink(
-            base_path=conf['local']['base_path'],
-            prefix=conf['local']['prefix'],
+    elif sink.type == 'sqlcommand':
+        sink.sqlcommand = SQLCommandSink(
+            sql=conf['sqlcommand']['sql'],
+            substitutions=[SQLCommandSubstitution(**s) for s in conf['sqlcommand']['substitutions']],
         )
+        for substitution in sink.sqlcommand.substitutions:
+            assert substitution.type in ('uuid4',), "unsupported substitution type: {}".format(substitution.type)
     elif sink.type == 'noop':
         pass
     elif sink.type == 'iceberg':

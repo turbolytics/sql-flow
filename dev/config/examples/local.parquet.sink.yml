@@ -16,9 +16,12 @@ pipeline:
       SELECT COUNT(*) as num_records FROM batch
 
   sink:
-    type: local
-    format:
-      type: parquet
-    local:
-      base_path: {{ sink_base_path|default('/tmp/sqlflow/test/local.parquet.sink.yml') }}
-      prefix: testing
+    type: sqlcommand
+    sqlcommand:
+      substitutions:
+        - var: $sqlflow_uuid
+          type: uuid4
+      sql: |
+        COPY sqlflow_sink_batch
+          TO '{{ sink_base_path|default('/tmp/sqlflow/test/local.parquet.sink.yml/testing') }}/$sqlflow_uuid.parquet'
+        (FORMAT 'parquet');

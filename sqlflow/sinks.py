@@ -1,5 +1,4 @@
 import logging
-import os
 import sys
 import uuid
 import socket
@@ -72,16 +71,12 @@ class IcebergSink(Sink):
         self._tables = []
 
 
-# TODO(turbolytics): Make this generic once more sinks (such as s3/postgres/etc) are added
-class LocalSink(Sink):
-    def __init__(self, base_path, prefix, format='parquet', conn=None):
-        self.base_path = base_path
-        self.prefix = prefix
-        self.tables = []
+class SQLCommandSink(Sink):
+    def __init__(self, conn, sql, substitutions=()):
         self.conn = conn
-        self.format = format
-        if self.conn is None:
-            self.conn = duckdb.connect()
+        self.sql = sql
+        self.tables = []
+        self.substitutions = substitutions
 
     def write_table(self, table: pa.Table):
         self.tables.append(table)
@@ -90,24 +85,20 @@ class LocalSink(Sink):
         if not self.tables:
             return
 
-        # Quick and dirty, will make this more generic as more formatters are added
-        if self.format == 'parquet':
-            # Convert buffer to a DuckDB table
-            table = pa.concat_tables(self.tables)
-            self.conn.register('buffer_table', table)
-
-            # Generate a unique file name
-            file_name = f"{self.prefix}-{uuid.uuid4()}.parquet"
-            file_path = os.path.join(self.base_path, file_name)
-
-            logger.debug(f"Writing {len(table)} records to Parquet file: {file_path}")
-            # Write the table to a Parquet file
-            self.conn.execute(f"COPY buffer_table TO '{file_path}' (FORMAT 'parquet')")
-        else:
-            raise NotImplementedError(f"Unsupported format: {self.format}")
-
-        # Clear the buffer
+        table = pa.concat_tables(self.tables)
+        self.conn.register('sqlflow_sink_batch', table)
+        sql = self._apply_substitutions()
+        self.conn.execute(sql)
         self.tables = []
+
+    def _apply_substitutions(self) -> str:
+        sql = self.sql[:]
+        for substitution in self.substitutions:
+            if substitution.type == 'uuid4':
+                sql = sql.replace(substitution.var, str(uuid.uuid4()))
+            else:
+                raise NotImplementedError(f"unsupported substitution type: {substitution.type}")
+        return sql
 
 
 class KafkaSink(Sink):
@@ -146,7 +137,7 @@ class RecordingSink(Sink):
         pass
 
 
-def new_sink_from_conf(sink_conf: config.Sink) -> Sink:
+def new_sink_from_conf(sink_conf: config.Sink, conn) -> Sink:
     if sink_conf.type == 'kafka':
         p = Producer({
             'bootstrap.servers': ','.join(sink_conf.kafka.brokers),
@@ -158,11 +149,11 @@ def new_sink_from_conf(sink_conf: config.Sink) -> Sink:
         )
     elif sink_conf.type == 'console':
         return ConsoleSink()
-    elif sink_conf.type == 'local':
-        return LocalSink(
-            base_path=sink_conf.local.base_path,
-            prefix=sink_conf.local.prefix,
-            format=sink_conf.format.type,
+    elif sink_conf.type == 'sqlcommand':
+        return SQLCommandSink(
+            sql=sink_conf.sqlcommand.sql,
+            conn=conn,
+            substitutions=sink_conf.sqlcommand.substitutions,
         )
     elif sink_conf.type == 'noop':
         return NoopSink()
