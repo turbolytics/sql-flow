@@ -49,7 +49,20 @@ services:
       
       echo -e 'Creating kafka topics'
       kafka-topics --bootstrap-server kafka1:29092 --create --if-not-exists --topic topic-1 --replication-factor 1 --partitions 1
+      kafka-topics --bootstrap-server kafka1:29092 --create --if-not-exists --topic input-user-clicks-demo --replication-factor 1 --partitions 1
       
       echo -e 'Successfully created the following topics:'
       kafka-topics --bootstrap-server kafka1:29092 --list
       "
+
+  postgres:
+    image: postgres:16
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    volumes:
+      - ./postgres/migrations:/docker-entrypoint-initdb.d
