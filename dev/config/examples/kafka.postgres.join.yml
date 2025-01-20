@@ -1,0 +1,48 @@
+commands:
+  - name: load extensions
+    sql: |
+      INSTALL postgres;
+      LOAD postgres;
+
+  - name: attach usersdb
+    sql: |
+      ATTACH '{{ SQLFLOW_POSTGRES_USERS_URI|default('postgresql://postgres:postgres@localhost:5432/testdb') }}' AS pgusersdb (TYPE POSTGRES, READ_ONLY);
+
+pipeline:
+  name: kafka-postgres-join
+  description: "Joins Kafka stream with PostgreSQL data and outputs enriched results"
+  batch_size: 1
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "input-user-clicks-demo"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT 
+        action,
+        CAST(timestamp as STRING) as timestamp,
+        { 
+          "user_id": users.user_id,
+          "first_name": first_name,
+          "last_name": last_name,
+          "age": age,
+          "email": email,
+          "last_login": CAST(last_login AS STRING),
+          "is_active": is_active,
+          "country": country,
+          "preferred_language": preferred_language,
+          "subscription_level": subscription_level, 
+          "marketing_opt_in": marketing_opt_in
+        } as user
+      FROM batch
+      LEFT JOIN pgusersdb.users ON batch.user_id = users.user_id
+
+  sink:
+    type: console
