@@ -9,6 +9,8 @@ commands:
       ATTACH '{{ SQLFLOW_POSTGRES_USERS_URI|default('postgresql://postgres:postgres@localhost:5432/testdb') }}' AS pgusersdb (TYPE POSTGRES, READ_ONLY);
 
 pipeline:
+  name: kafka-postgres-join
+  description: "Joins Kafka stream with PostgreSQL data and outputs enriched results"
   batch_size: 1
 
   source:
