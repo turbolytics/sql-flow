@@ -22,26 +22,28 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
   - [x] Kafka Consumer using consumer groups
   - [x] Websocket input (for consuming bluesky firehose)
   - [ ] HTTP (for webhooks)
-- Sinks
+- Sinks 
   - [x] Kafka Producer
   - [x] Stdout
   - [x] Local Disk
-  - [ ] Postgres
-  - [ ] S3
+  - [x] Postgres
+  - [x] S3
+  - [x] Any output DuckDB Supports!
 - Serialization
   - [x] JSON Input
   - [x] JSON Output
   - [x] Parquet Output
-  - [x] Iceberg Output
+  - [x] Iceberg Output (using pyiceberg)
 - Handlers
   - [x] Memory Persistence
   - [x] Pipeline-scoped SQL such as defining views, or attaching to databases.
   - [x] User Defined Functions (UDF)
-  - [ ] Disk Persistence
+  - [ ] Disk Persistence 
 - Table Managers
   - [x] Tumbling Window Aggregations
+  - [ ] Buffered Table 
 - Operations
-  - [ ] Observability Metrics
+  - [x] Observability Metrics (Prometheus)
 
 ## Getting Started
 
