@@ -38,7 +38,9 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
   - [x] Memory Persistence
   - [x] Pipeline-scoped SQL such as defining views, or attaching to databases.
   - [x] User Defined Functions (UDF)
-  - [ ] Disk Persistence 
+  - [x] Dynamic Schema Inferrence 
+  - [ ] Disk Persistence
+  - [ ] Static Schema Definition
 - Table Managers
   - [x] Tumbling Window Aggregations
   - [ ] Buffered Table 
@@ -165,12 +167,14 @@ D select count(*) from '/tmp/sqlflow/warehouse/default.db/city_events/data/*.par
 ```
 
 
-## Recipes
+## Running SQLFlow
 
-Coming Soon, until then checkout:
+Coming Soon! Until then checkout:
 
+- [Tutorials](https://github.com/turbolytics/sql-flow/wiki/Tutorials)
 - [Benchmark configurations](./benchmark)
-- [Unit Test configurations](./tests/)
+
+If you need any support please open an issue or contact us directly! (`danny` [AT] `turbolytics.io`)!
 
 
 ## Development 
