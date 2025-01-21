@@ -1,0 +1,40 @@
+commands:
+  - name: load extensions
+    sql: |
+      INSTALL postgres;
+      LOAD postgres;
+
+  - name: attach usersdb
+    sql: |
+      ATTACH '{{ SQLFLOW_POSTGRES_USERS_URI|default('postgresql://postgres:postgres@localhost:5432/testdb') }}' AS pgusersdb (TYPE POSTGRES);
+
+pipeline:
+  name: kafka-postgres-sink-example
+  description: "Inserts a kafka stream into a postgres table"
+  batch_size: 1
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "input-kafka-postgres-sink"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT 
+        CAST(timestamp as STRING) as timestamp,
+        user_id,
+        action,
+        browser
+      FROM batch
+
+  sink:
+    type: sqlcommand
+    sqlcommand:
+      sql: |
+        INSERT INTO pgusersdb.user_action (timestamp, user_id, action, browser)
+        (SELECT  * FROM sqlflow_sink_batch);
