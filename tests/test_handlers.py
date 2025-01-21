@@ -10,17 +10,7 @@ class InferredMemBatchTestCase(unittest.TestCase):
     def test_agg_batch_into_single_row(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredMemBatch(
-            conf=Conf(
-                pipeline=Pipeline(
-                    batch_size=1000,
-                    source=None,
-                    handler=Handler(
-                        type=None,
-                        sql="SELECT COUNT(*) as num_rows FROM batch",
-                    ),
-                    sink=None,
-                ),
-            ),
+            sql="SELECT COUNT(*) as num_rows FROM batch",
             deserializer=JSON(),
         ).init()
         with open(f_path) as f:
@@ -36,22 +26,12 @@ class InferredMemBatchTestCase(unittest.TestCase):
     def test_inferred_batch_nested_return(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredMemBatch(
-            conf=Conf(
-                pipeline=Pipeline(
-                    batch_size=1000,
-                    source=None,
-                    handler=Handler(
-                        type=None,
-                        sql="""
+            sql="""
 SELECT
     *,
     {'nested_city': city} AS enriched
 FROM batch
                     """,
-                    ),
-                    sink=None,
-                ),
-            ),
             deserializer=JSON(),
         ).init()
 
@@ -76,18 +56,7 @@ class InferredDiskBatchTestCase(unittest.TestCase):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
 
         p = InferredDiskBatch(
-            conf=Conf(
-                pipeline=Pipeline(
-                    batch_size=1000,
-                    source=None,
-                    handler=Handler(
-                        type=None,
-                        sql="SELECT COUNT(*) as num_rows FROM batch",
-                    ),
-                    sink=None,
-                ),
-            ),
-            deserializer=JSON(),
+            sql="SELECT COUNT(*) as num_rows FROM batch"
         ).init()
         with open(f_path) as f:
             for line in f:
@@ -102,23 +71,11 @@ class InferredDiskBatchTestCase(unittest.TestCase):
     def test_inferred_batch_nested_return(self):
         f_path = os.path.join(os.path.dirname(__file__), 'fixtures', 'flat.json')
         p = InferredDiskBatch(
-            conf=Conf(
-                pipeline=Pipeline(
-                    batch_size=1000,
-                    source=None,
-                    handler=Handler(
-                        type=None,
-                        sql="""
-                        SELECT
-                            {'city': city} as s1,
-                            {'event': event} as nested_event
-                        FROM batch 
-                    """,
-                    ),
-                    sink=None,
-                ),
-            ),
-            deserializer=JSON(),
+            sql="""
+SELECT
+    {'city': city} as s1,
+    {'event': event} as nested_event
+FROM batch""",
         ).init()
 
         with open(f_path) as f:

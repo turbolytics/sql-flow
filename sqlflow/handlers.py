@@ -7,6 +7,8 @@ import duckdb
 import pyarrow as pa
 import pyarrow.json as paj
 
+from sqlflow import config, serde, settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,15 +34,16 @@ class InferredDiskBatch(Handler):
     messages as  implicitjson.
     """
 
-    def __init__(self, conf, *args, conn=None, **kwargs):
-        self.conf = conf
+    def __init__(self, sql, sql_results_cache_dir=settings.SQL_RESULTS_CACHE_DIR, conn=None):
+        self.sql = sql
+        self.sql_results_cache_dir = sql_results_cache_dir
         self._f = None
         self._batch_file = os.path.join(
-            self.conf.pipeline.handler.sql_results_cache_dir,
+            sql_results_cache_dir,
             'consumer_batch.json',
         )
         self._out_file = os.path.join(
-            self.conf.pipeline.handler.sql_results_cache_dir,
+            sql_results_cache_dir,
             'out.json',
         )
         self.conn = conn if conn else duckdb.connect(":memory:")
@@ -73,7 +76,7 @@ class InferredDiskBatch(Handler):
 
         self.conn.execute(
             "COPY ({}) TO '{}'".format(
-                self.conf.pipeline.handler.sql,
+                self.sql,
                 self._out_file,
             )
         )
@@ -88,8 +91,8 @@ class InferredMemBatch(Handler):
     messages as implicit json.
     """
 
-    def __init__(self, conf, deserializer=None, conn=None):
-        self.conf = conf
+    def __init__(self, sql, deserializer=None, conn=None):
+        self.sql = sql
         self.rows = None
         self.deserializer = deserializer
         self.conn = conn if conn else duckdb.connect(":memory:")
@@ -110,11 +113,11 @@ class InferredMemBatch(Handler):
 
         try:
             res = self.conn.execute(
-                self.conf.pipeline.handler.sql,
+                self.sql,
             )
         except duckdb.duckdb.BinderException as e:
             logger.error(
-                'could not execute sql: {}'.format(self.conf.pipeline.handler.sql),
+                'could not execute sql: {}'.format(self.sql),
             )
             raise e
 
@@ -123,10 +126,19 @@ class InferredMemBatch(Handler):
 
         return res.fetch_arrow_table()
 
-def get_class(s: str):
-    if s == 'handlers.InferredDiskBatch':
-        return InferredDiskBatch
-    elif s == 'handlers.InferredMemBatch':
-        return InferredMemBatch
+
+def new_handler_from_conf(handler_conf: config.Handler, conn: duckdb.DuckDBPyConnection) -> Handler:
+    if handler_conf.type == 'handlers.InferredMemBatch':
+        return InferredMemBatch(
+            sql=handler_conf.sql,
+            conn=conn,
+            deserializer=serde.JSON(),
+        )
+    elif handler_conf.type == 'handlers.InferredDiskBatch':
+        return InferredDiskBatch(
+            sql=handler_conf.sql,
+            sql_results_cache_dir=handler_conf.sql_results_cache_dir,
+            conn=conn,
+        ).init()
     else:
-        raise NotImplementedError()
+        raise NotImplementedError(f"Unsupported handler type: {handler_conf.type}")
