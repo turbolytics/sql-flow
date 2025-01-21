@@ -14,6 +14,7 @@ class ConsoleWriterTestCase(unittest.TestCase):
         w = ConsoleSink(f=mock_f)
 
         w.write_table(table)
+        w.flush()
 
         mock_f.write.assert_has_calls([
             call('{"greeting": "hello"}'),
@@ -29,6 +30,7 @@ class ConsoleWriterTestCase(unittest.TestCase):
         w = ConsoleSink(f=mock_f)
 
         w.write_table(table)
+        w.flush()
 
         mock_f.write.assert_has_calls([
             call('{"greeting": "hello", "name": "Alice"}'),

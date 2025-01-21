@@ -1,9 +1,10 @@
 import unittest
+from json import JSONDecodeError
 
 from sqlflow import config, serde
 from sqlflow.handlers import InferredMemBatch
 from sqlflow.pipeline import SQLFlow
-from sqlflow.sinks import ConsoleSink
+from sqlflow.sinks import ConsoleSink, NoopSink
 from sqlflow.sources import Source, Message
 
 
@@ -29,7 +30,7 @@ class StaticSource(Source):
 
 class TestPipeline(unittest.TestCase):
 
-    def test_pipeline(self):
+    def test_pipeline_sink_error_raises_by_default(self):
         messages = [
             Message(
                 value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}',
@@ -50,8 +51,24 @@ class TestPipeline(unittest.TestCase):
         )
         with self.assertRaises(TypeError):
             stats = pipeline.consume_loop(max_msgs=1)
-        '''
-        self.assertEqual(len(sink.data), 1)
-        self.assertIn('timestamp', sink.data[0])
-        self.assertIsInstance(sink.data[0]['timestamp'], datetime.datetime)
-        '''
+
+    def test_pipeline_source_error_shows_example_input(self):
+        messages = [
+            Message(
+                value=b'{!invalidJSON!',
+            ),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink=NoopSink(),
+            batch_size=1,
+        )
+        with self.assertRaises(JSONDecodeError):
+            stats = pipeline.consume_loop(max_msgs=1)

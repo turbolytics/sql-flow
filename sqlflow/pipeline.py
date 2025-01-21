@@ -136,7 +136,12 @@ class SQLFlow:
                start_batch_time = datetime.now(timezone.utc)
 
             self._stats.num_messages_consumed += 1
-            self.handler.write(msg.value().decode())
+            try:
+                self.handler.write(msg.value().decode())
+            except Exception as e:
+                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
+                self._stats.num_errors += 1
+                raise e
             num_batch_messages += 1
 
             if self._stats.num_messages_consumed % 10000 == 0:
