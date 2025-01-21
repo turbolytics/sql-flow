@@ -89,10 +89,9 @@ class SQLFlow:
         try:
             self.source.start()
             self._consume_loop(max_msgs)
-
         except Exception as e:
             logger.error('error in consumer loop: {}'.format(e))
-            raise e
+            raise
         finally:
             self.source.close()
 
@@ -103,7 +102,7 @@ class SQLFlow:
             logger.info(
                 'consumer loop ending: total messages / sec = {}'.format(self._stats.total_throughput_per_second),
             )
-            return self._stats
+        return self._stats
 
 
     def _consume_loop(self, max_msgs=None):
@@ -118,7 +117,7 @@ class SQLFlow:
 
         while self._running:
             source_read_start = datetime.now(timezone.utc)
-            msg = next(self.source.stream())
+            msg = next(stream)
 
             if msg is None:
                 continue
@@ -137,7 +136,12 @@ class SQLFlow:
                start_batch_time = datetime.now(timezone.utc)
 
             self._stats.num_messages_consumed += 1
-            self.handler.write(msg.value().decode())
+            try:
+                self.handler.write(msg.value().decode())
+            except Exception as e:
+                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
+                self._stats.num_errors += 1
+                raise e
             num_batch_messages += 1
 
             if self._stats.num_messages_consumed % 10000 == 0:
@@ -156,7 +160,17 @@ class SQLFlow:
 
                 sink_flush_start = datetime.now(timezone.utc)
                 # Only commit after all messages in batch are processed
-                self.sink.flush()
+                try:
+                    self.sink.flush()
+                except Exception as e:
+                    sink_batch = self.sink.batch()
+                    rows = sink_batch.to_pylist() if sink_batch is not None else []
+                    logger.error('{}: error flushing sink. With data: {}'.format(
+                        e,
+                        rows,
+                    ))
+                    self._stats.num_errors += 1
+                    raise e
                 sink_flush_latency.record(
                     (datetime.now(timezone.utc) - sink_flush_start).total_seconds(),
                     attributes={

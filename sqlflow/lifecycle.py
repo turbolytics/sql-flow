@@ -23,12 +23,11 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
     """
     conf = new_from_path(config, setting_overrides)
 
-    BatchHandler = handlers.get_class(conf.pipeline.handler.type)
-    h = BatchHandler(
-        conf,
-        deserializer=JSON(),
-        conn=conn,
-    ).init()
+    h = handlers.new_handler_from_conf(
+        conf.pipeline.handler,
+        conn,
+    )
+    h.init()
 
     init_commands(conn, conf.commands)
     init_tables(conn, conf.tables)
@@ -68,12 +67,11 @@ def start(conf, conn=None, lock=None, max_msgs=None):
     if lock is None:
         lock = threading.Lock()
 
-    BatchHandler = handlers.get_class(conf.pipeline.handler.type)
-    h = BatchHandler(
-        conf,
-        deserializer=JSON(),
-        conn=conn,
+    h = handlers.new_handler_from_conf(
+        conf.pipeline.handler,
+        conn,
     )
+    h.init()
 
     init_commands(conn, conf.commands)
     init_tables(conn, conf.tables)

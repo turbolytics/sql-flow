@@ -2,11 +2,11 @@ import logging
 import sys
 import uuid
 import socket
+from typing import Optional
 
 import pyarrow as pa
 from abc import abstractmethod, ABC
 
-import duckdb
 import pyiceberg.table
 from confluent_kafka import Producer
 from pyiceberg.catalog import load_catalog
@@ -30,27 +30,39 @@ class Sink(ABC):
         raise NotImplemented()
 
     @abstractmethod
+    def batch(self) -> Optional[pa.Table]:
+        raise NotImplemented()
+
+    @abstractmethod
     def flush(self):
         """
         Flushes any buffered data to the underlying storage.
 
         :return:
         """
-        pass
+        raise NotImplemented()
 
 
 class ConsoleSink(Sink):
     def __init__(self, f=sys.stdout, serializer=JSON()):
         self.f = f
         self.serializer = serializer
+        self._tables = []
 
-    def write_table(self, table: pa.Table):
+    def batch(self) -> Optional[pa.Table]:
+        return pa.concat_tables(self._tables)
+
+    def write_table(self, table):
+        self._tables.append(table)
+
+    def flush(self):
+        if not self._tables:
+            return
+
+        table = pa.concat_tables(self._tables)
         for val in table.to_pylist():
             self.f.write(self.serializer.encode(val))
             self.f.write('\n')
-
-    def flush(self):
-        pass
 
 
 class IcebergSink(Sink):
@@ -58,6 +70,9 @@ class IcebergSink(Sink):
         self.catalog = catalog
         self.iceberg_table = iceberg_table
         self._tables = []
+
+    def batch(self) -> Optional[pa.Table]:
+        return pa.concat_tables(self._tables)
 
     def write_table(self, table):
         self._tables.append(table)
@@ -77,6 +92,9 @@ class SQLCommandSink(Sink):
         self.sql = sql
         self.tables = []
         self.substitutions = substitutions
+
+    def batch(self) -> Optional[pa.Table]:
+        return pa.concat_tables(self.tables)
 
     def write_table(self, table: pa.Table):
         self.tables.append(table)
@@ -106,9 +124,14 @@ class KafkaSink(Sink):
         self.topic = topic
         self.producer = producer
         self.serializer = serializer
+        self._table = None
+
+    def batch(self) -> Optional[pa.Table]:
+        return  self._table
 
     def write_table(self, table: pa.Table):
-        for row in table.to_pylist():
+        self._table = table
+        for row in self._table.to_pylist():
             self.producer.produce(
                 self.topic,
                 value=self.serializer.encode(row),
@@ -119,6 +142,10 @@ class KafkaSink(Sink):
 
 
 class NoopSink(Sink):
+
+    def batch(self) -> Optional[pa.Table]:
+        return None
+
     def write_table(self, table: pa.Table):
         pass
 
@@ -129,6 +156,9 @@ class NoopSink(Sink):
 class RecordingSink(Sink):
     def __init__(self):
         self.writes = []
+
+    def batch(self) -> Optional[pa.Table]:
+        return pa.concat_tables(self.writes)
 
     def write_table(self, table: pa.Table):
         self.writes.append(table)
