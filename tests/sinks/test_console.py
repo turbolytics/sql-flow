@@ -40,3 +40,13 @@ class ConsoleWriterTestCase(unittest.TestCase):
             call('{"greeting": "hey", "name": "Charlie"}'),
             call('\n'),
         ])
+
+    def test_tables_cleared_after_flush(self):
+        table = pa.Table.from_pydict({"greeting": ["hello"]})
+        mock_f = MagicMock()
+        w = ConsoleSink(f=mock_f)
+
+        w.write_table(table)
+        w.flush()
+
+        self.assertEqual(w._tables, [])

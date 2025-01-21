@@ -64,6 +64,8 @@ class ConsoleSink(Sink):
             self.f.write(self.serializer.encode(val))
             self.f.write('\n')
 
+        self._tables = []
+
 
 class IcebergSink(Sink):
     def __init__(self, catalog, iceberg_table: pyiceberg.table.Table):
@@ -127,7 +129,7 @@ class KafkaSink(Sink):
         self._table = None
 
     def batch(self) -> Optional[pa.Table]:
-        return  self._table
+        return self._table
 
     def write_table(self, table: pa.Table):
         self._table = table
