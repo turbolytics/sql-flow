@@ -32,10 +32,11 @@ cities = [
 
 
 class KafkaFaker:
-    def __init__(self, bootstrap_servers, num_messages, topic):
+    def __init__(self, bootstrap_servers, num_messages, topic, fixture=None):
         self.bootstrap_servers = bootstrap_servers
         self.num_messages = num_messages
         self.topic = topic
+        self.fixture = fixture
 
     def publish(self):
         conf = {
@@ -45,10 +46,21 @@ class KafkaFaker:
 
         producer = Producer(conf)
         for i in range(self.num_messages):
-            e = copy.deepcopy(event)
-            e['properties']['city'] = random.choice(cities)
-            e['timestamp'] = datetime.now(tz=timezone.utc).isoformat()
-            j_event = json.dumps(e)
+            if self.fixture is None:
+                e = copy.deepcopy(event)
+                e['properties']['city'] = random.choice(cities)
+                e['timestamp'] = datetime.now(tz=timezone.utc).isoformat()
+                j_event = json.dumps(e)
+            elif self.fixture == 'user_action':
+                e = {
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                    "user_id": random.randint(1, 1000),
+                    "action": random.choice(["button_click", "view", "scroll"]),
+                    "browser": random.choice(["Chrome", "Firefox", "Safari", "IE", "Edge"]),
+                }
+                j_event = json.dumps(e)
+            else:
+                raise NotImplementedError('fixture {} not implemented'.format(self.fixture))
             producer.produce(self.topic, value=j_event)
             if i % 10000 == 0:
                 logger.info('published {} of {}'.format(i, self.num_messages))

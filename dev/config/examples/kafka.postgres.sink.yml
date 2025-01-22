@@ -11,7 +11,7 @@ commands:
 pipeline:
   name: kafka-postgres-sink-example
   description: "Inserts a kafka stream into a postgres table"
-  batch_size: 1
+  batch_size: 50
 
   source:
     type: kafka
@@ -26,7 +26,7 @@ pipeline:
     type: 'handlers.InferredMemBatch'
     sql: |
       SELECT 
-        CAST(timestamp as STRING) as timestamp,
+        CAST(timestamp as TIMESTAMP) as timestamp,
         user_id,
         action,
         browser
