@@ -1,15 +1,88 @@
 # SQLFlow: DuckDB for Streaming Data. 
 
-[Quickstart](#docker) | [Tutorials](https://github.com/turbolytics/sql-flow/wiki/Tutorials) | ![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/sql-flow) 
+[Quickstart](#quick-start-getting-started-in-5-minutes) | [Tutorials](https://github.com/turbolytics/sql-flow/wiki/Tutorials) | ![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/sql-flow) 
 
-SQLFlow is a high-performance stream processing engine that simplifies building data pipelines by enabling you to define them using just SQL.
+SQLFlow is a high-performance stream processing engine that simplifies building data pipelines by enabling you to define them using just SQL. Think of SQLFLow as a lightweight, modern Flink.
 
 Key Features:
 - Process data from [Kafka](https://kafka.apache.org/), WebSockets, and more.
-- Write to databases like [PostgreSQL](https://www.postgresql.org/), Kafka topics, or cloud storage.
-- Built on [DuckDB](https://duckdb.org/) for high-speed processing and [Apache Arrow](https://arrow.apache.org/) for seamless data handling.
+- Write ouputs to [PostgreSQL](https://www.postgresql.org/), Kafka topics, or cloud storage (such as S3), in a variety of formats, including parquet and iceberg.
+- Built on [DuckDB](https://duckdb.org/) and [Apache Arrow](https://arrow.apache.org/) for high-speed processing.
+
+# Quick Start (Getting Started in 5 Minutes)
+
+1. Pull the SQLFlow docker image
+```
+docker pull turbolytics/sql-flow:latest
+```
+
+2. Validate config against test data:
+```
+docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-flow:latest dev invoke /tmp/conf/config/examples/basic.agg.yml /tmp/conf/fixtures/simple.json
+
+['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
+```
+
+3. Start kafka locally using docker:
+```
+docker-compose -f dev/kafka-single.yml up -d
+```
+
+4. Publish test messages to kafka:
+```
+python3 cmd/publish-test-data.py --num-messages=10000 --topic="input-simple-agg-mem"
+```
+
+5. Start kafka consumer from inside docker-compose container, to verify SQLFlow output
+```
+docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-simple-agg-mem
+```
+
+- Start SQLFlow in docker:
+
+```
+docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow -e SQLFLOW_KAFKA_BROKERS=host.docker.internal:29092 turbolytics/sql-flow:latest run /tmp/conf/config/examples/basic.agg.mem.yml --max-msgs-to-process=10000
+```
+
+- Verify output in the kafka consumer:
+ 
+```
+...
+...
+{"city":"San Francisco504","city_count":1}
+{"city":"San Francisco735","city_count":1}
+{"city":"San Francisco533","city_count":1}
+{"city":"San Francisco556","city_count":1}
+```
+
+You just ran SQLFlow against a stream of kafka data! 
+
+# How SQLFlow Works
+
+SQLFlow is a stream processing engine written in python. SQLFLow embeds DuckDB and Apache Arrow for high performance. SQLFLow consists of a couple of components:
 
 <img width="1189" alt="Screenshot 2024-12-31 at 7 22 55 AM" src="https://github.com/user-attachments/assets/1295e7eb-a0b8-4087-8aa4-cad75a0c8cfa" />
+
+## Core Components
+
+**Input Source**
+
+SQLFlow ingests data from a variety of input sources, including Kafka, and Webhooks. SQLFlow models the input as a stream of data.
+
+**Handler**
+
+SQLFlow uses DuckDB and Apache Arrow to execute SQL against the input source. Handlers contain the stream processing logica, filter, aggregate, enrich or drop data.
+
+**Output Sink**
+
+SQLFlow writes the results of the SQL to output sources including: Kafka, Postgres, Filesystem, Blob Storage.
+
+The following image shows an example SQLFlow configuration file:
+
+<img width="1256" alt="Image" src="https://github.com/user-attachments/assets/3d7b8434-4f73-4a66-800b-5c1392c97d52" />
+
+The file explicitly contains a `pipeline` configuration with a `source`, `handler` and `sink` section. This configuration file also contains commands to be executed prior to the pipeline running. These commands support things like attaching databases to the pipeline execution context.
+
 
 ## SQLFlow Use-Cases
 
@@ -17,8 +90,10 @@ Key Features:
 - **Stream Enrichment**: Add data an input stream and publish the new data ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/enrich.yml)).
 - **Data aggregation**: Aggregate input data batches to decrease data volume ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
 - **Tumbling Window Aggregation**: Bucket data into arbitrary time windows (such as "hour" or "10 minutes") ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/tumbling.window.yml)).
-- **Running SQL against the Bluesky Firehose**: Execute SQL against any webhook source, such as the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/bluesky/bluesky.kafka.raw.yml))
-- **Streaming Data to Iceberg**: Stream writes to an Iceberg Catalog
+- **Run SQL against the Bluesky Firehose**: Execute SQL against any webhook source, such as the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/bluesky/bluesky.kafka.raw.yml))
+- **Stream Data to Iceberg**: Stream writes to an Iceberg Catalog.
+- **Enrich Streams with Postgres Data**: Query postgres during stream processing to enrich stream data.
+- **Sink Kafka to Postgres**: Insert stream processing outputs into postgres. 
 
 ## SQLFlow Features & Roadmap
 
@@ -51,59 +126,11 @@ Key Features:
 - Operations
   - [x] Observability Metrics (Prometheus)
 
-## Getting Started
+## Examples
 
-### Docker
+Additional examples are available in the wiki: [Tutorials](https://github.com/turbolytics/sql-flow/wiki/Tutorials)
 
-[Docker is the easiest way to get started.](https://hub.docker.com/r/turbolytics/sql-flow)
-
-- Pull the sql-flow docker image
-```
-docker pull turbolytics/sql-flow:latest
-```
-
-- Validate config by invoking it on test data
-```
-docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-flow:latest dev invoke /tmp/conf/config/examples/basic.agg.yml /tmp/conf/fixtures/simple.json
-
-['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
-```
-
-- Start kafka locally using docker
-```
-docker-compose -f dev/kafka-single.yml up -d
-```
-
-- Publish test messages to kafka
-```
-python3 cmd/publish-test-data.py --num-messages=10000 --topic="input-simple-agg-mem"
-```
-
-- Start kafka consumer from inside docker-compose container
-```
-docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-simple-agg-mem
-```
-
-- Start SQLFlow in docker
-
-```
-docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow -e SQLFLOW_KAFKA_BROKERS=host.docker.internal:29092 turbolytics/sql-flow:latest run /tmp/conf/config/examples/basic.agg.mem.yml --max-msgs-to-process=10000
-```
-
-- Verify output in the kafka consumer
- 
-```
-...
-...
-{"city":"San Francisco504","city_count":1}
-{"city":"San Francisco735","city_count":1}
-{"city":"San Francisco533","city_count":1}
-{"city":"San Francisco556","city_count":1}
-```
-
-The `dev invoke` command enables testing a SQLFlow pipeline configuration on a batch of test data. This enables fast feedback local development before launching a SQLFlow consumer that reads from kafka.
-
-### Consuming Bluesky Firehose
+### Consume Bluesky Firehose
 
 SQLFlow supports DuckDB over websocket. Running SQL against the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) is a simple configuration file:
 
@@ -119,7 +146,7 @@ docker run -v $(pwd)/dev/config/examples:/examples turbolytics/sql-flow:latest r
 
 [Checkout the configuration files here](https://github.com/turbolytics/sql-flow/tree/main/dev/config/examples/bluesky)
 
-### Streaming to Iceberg
+### Stream Kafka to Iceberg
 
 SQLFlow supports writing to Iceberg tables using [pyiceberg](https://py.iceberg.apache.org/). 
 
@@ -176,7 +203,6 @@ D select count(*) from '/tmp/sqlflow/warehouse/default.db/city_events/data/*.par
 Coming Soon! Until then checkout:
 
 - [Tutorials](https://github.com/turbolytics/sql-flow/wiki/Tutorials)
-- [Benchmark configurations](./benchmark)
 
 If you need any support please open an issue or contact us directly! (`danny` [AT] `turbolytics.io`)!
 
