@@ -1,6 +1,8 @@
 # SQLFlow: DuckDB for Streaming Data. 
 
-![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/sql-flow)
+![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/sql-flow) 
+
+[Quickstart](#docker) | [Tutorials](https://github.com/turbolytics/sql-flow/wiki/Tutorials)
 
 SQLFlow enables SQL-based stream-processing, powered by [DuckDB](https://duckdb.org/). SQLFlow embeds duckdb, supporting [kafka stream processing](https://kafka.apache.org/) logic using pure sql.
 
