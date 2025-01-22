@@ -205,7 +205,7 @@ def build_sink_config_from_dict(conf) -> Sink:
     elif sink.type == 'sqlcommand':
         sink.sqlcommand = SQLCommandSink(
             sql=conf['sqlcommand']['sql'],
-            substitutions=[SQLCommandSubstitution(**s) for s in conf['sqlcommand']['substitutions']],
+            substitutions=[SQLCommandSubstitution(**s) for s in conf['sqlcommand'].get('substitutions', ())],
         )
         for substitution in sink.sqlcommand.substitutions:
             assert substitution.type in ('uuid4',), "unsupported substitution type: {}".format(substitution.type)

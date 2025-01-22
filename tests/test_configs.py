@@ -10,7 +10,7 @@ from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import NestedField, StringType, LongType, TimestampType
 
-from sqlflow import settings
+from sqlflow import settings, config
 from sqlflow.lifecycle import invoke
 from sqlflow.config import new_from_dict, ConsoleSink, TumblingWindow, TableManager, Sink
 
@@ -269,4 +269,34 @@ class TablesTestCase(unittest.TestCase):
             ),
             conf.tables.sql[0].manager,
         )
+
+    def test_sink_no_substitutions(self):
+        conf = {
+            'pipeline': {
+                'batch_size': 1000,
+                'source': {
+                    'type': 'kafka',
+                    'kafka': {
+                        'brokers': [],
+                        'topics': [],
+                        'group_id': 'test',
+                        'auto_offset_reset': 'earliest',
+                    }
+                },
+                'handler': {
+                    'type': 'sql',
+                    'sql': 'SELECT 1',
+                },
+                'sink': {
+                    'type': 'sqlcommand',
+                    'sqlcommand': {
+                        'sql': 'SELECT * FROM test_table',
+                    }
+                }
+            }
+        }
+
+        result = new_from_dict(conf)
+        self.assertIsInstance(result.pipeline.sink.sqlcommand, config.SQLCommandSink)
+        self.assertEqual(result.pipeline.sink.sqlcommand.substitutions, [])
 

@@ -26,3 +26,11 @@ INSERT INTO users (
     ( 'Hank', 'Wilson', 38, 'hank.wilson@example.com', '2025-01-18 19:00:00', TRUE, 'USA', 'en', 'basic', FALSE),
     ( 'Ivy', 'Clark', 25, 'ivy.clark@example.com', '2025-01-12 12:00:00', TRUE, 'India', 'hi', 'free', TRUE),
     ( 'Jack', 'Dawson', 36, 'jack.dawson@example.com', NULL, TRUE, 'Canada', 'en', 'premium', FALSE);
+
+
+CREATE TABLE user_action (
+    timestamp TIMESTAMP,
+    user_id TEXT,
+    action TEXT,
+    browser TEXT
+);
