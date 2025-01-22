@@ -50,6 +50,7 @@ services:
       echo -e 'Creating kafka topics'
       kafka-topics --bootstrap-server kafka1:29092 --create --if-not-exists --topic topic-1 --replication-factor 1 --partitions 1
       kafka-topics --bootstrap-server kafka1:29092 --create --if-not-exists --topic input-user-clicks-demo --replication-factor 1 --partitions 1
+      kafka-topics --bootstrap-server kafka1:29092 --create --if-not-exists --topic input-kafka-postgres-sink --replication-factor 1 --partitions 1
       
       echo -e 'Successfully created the following topics:'
       kafka-topics --bootstrap-server kafka1:29092 --list

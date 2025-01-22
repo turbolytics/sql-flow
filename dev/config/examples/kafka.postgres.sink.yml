@@ -11,7 +11,7 @@ commands:
 pipeline:
   name: kafka-postgres-sink-example
   description: "Inserts a kafka stream into a postgres table"
-  batch_size: 50
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1) }}
 
   source:
     type: kafka
