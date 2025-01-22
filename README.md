@@ -4,9 +4,12 @@
 
 [Quickstart](#docker) | [Tutorials](https://github.com/turbolytics/sql-flow/wiki/Tutorials)
 
-SQLFlow enables SQL-based stream-processing, powered by [DuckDB](https://duckdb.org/). SQLFlow embeds duckdb, supporting [kafka stream processing](https://kafka.apache.org/) logic using pure sql.
+SQLFlow is a high-performance stream processing engine that simplifies building data pipelines by enabling you to define them using just SQL.
 
-SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of SQLFlow as a way to run sql against a continuous stream of data. The data outputs can be shipped to sinks, such as Kafka.
+Key Features:
+- Process data from [Kafka](https://kafka.apache.org/), WebSockets, and more.
+- Write to databases like [PostgreSQL](https://www.postgresql.org/), Kafka topics, or cloud storage.
+- Built on [DuckDB](https://duckdb.org/) for high-speed processing and [Apache Arrow](https://arrow.apache.org/) for seamless data handling.
 
 <img width="1189" alt="Screenshot 2024-12-31 at 7 22 55 AM" src="https://github.com/user-attachments/assets/1295e7eb-a0b8-4087-8aa4-cad75a0c8cfa" />
 
@@ -17,6 +20,7 @@ SQLFlow executes SQL against streaming data, such as Kafka or webhooks. Think of
 - **Data aggregation**: Aggregate input data batches to decrease data volume ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/basic.agg.mem.yml)).
 - **Tumbling Window Aggregation**: Bucket data into arbitrary time windows (such as "hour" or "10 minutes") ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/tumbling.window.yml)).
 - **Running SQL against the Bluesky Firehose**: Execute SQL against any webhook source, such as the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) ([example config](https://github.com/turbolytics/sql-flow/blob/main/dev/config/examples/bluesky/bluesky.kafka.raw.yml))
+- **Streaming Data to Iceberg**: Stream writes to an Iceberg Catalog
 
 ## SQLFlow Features & Roadmap
 
