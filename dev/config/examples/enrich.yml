@@ -1,5 +1,6 @@
 pipeline:
   batch_size: 1000
+  flush_interval_seconds: 30
 
   source:
     type: kafka

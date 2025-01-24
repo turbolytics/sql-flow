@@ -50,7 +50,7 @@ class KafkaSource(Source):
                  consumer,
                  topics,
                  async_commit=False,
-                 read_timeout=1.0):
+                 read_timeout=5.0):
         self._consumer = consumer
         self._async_commit = async_commit
         self._read_timeout = read_timeout

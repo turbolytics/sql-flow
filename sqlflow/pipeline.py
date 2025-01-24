@@ -1,7 +1,7 @@
 import importlib
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 from typing import List
 
@@ -70,12 +70,14 @@ class SQLFlow:
                  source: Source,
                  handler,
                  sink: Sink,
-                 batch_size=1000,
+                 batch_size=1,
+                 flush_interval_seconds=30,
                  lock=threading.Lock()):
         self.source = source
         self.sink = sink
         self.handler = handler
         self._batch_size = batch_size
+        self._flush_interval_seconds = flush_interval_seconds
         self._stats = Stats(
             num_messages_consumed=0,
             num_errors=0,
@@ -89,6 +91,8 @@ class SQLFlow:
         try:
             self.source.start()
             self._consume_loop(max_msgs)
+        except StopIteration:
+            logger.warning('loop stopping due to StopIteration')
         except Exception as e:
             logger.error('error in consumer loop: {}'.format(e))
             raise
@@ -97,13 +101,42 @@ class SQLFlow:
 
             now = datetime.now(timezone.utc)
             diff = (now - self._stats.start_time)
-            self._stats.total_throughput_per_second = self._stats.num_messages_consumed // diff.total_seconds()
+            try:
+                self._stats.total_throughput_per_second = self._stats.num_messages_consumed // diff.total_seconds()
+            except ZeroDivisionError:
+                pass
 
             logger.info(
                 'consumer loop ending: total messages / sec = {}'.format(self._stats.total_throughput_per_second),
             )
         return self._stats
 
+    def _liveness_time(self):
+        return datetime.now(timezone.utc)
+
+    def _flush(self):
+        sink_flush_start = datetime.now(timezone.utc)
+        # Only commit after all messages in batch are processed
+        try:
+            self.sink.flush()
+        except Exception as e:
+            sink_batch = self.sink.batch()
+            rows = sink_batch.to_pylist() if sink_batch is not None else []
+            logger.error('{}: error flushing sink. With data: {}'.format(
+                e,
+                rows,
+            ))
+            self._stats.num_errors += 1
+            raise e
+        sink_flush_latency.record(
+            (datetime.now(timezone.utc) - sink_flush_start).total_seconds(),
+            attributes={
+                'sink': self.sink.__class__.__name__,
+            }
+        )
+        sink_flush_count.add(1, attributes={
+            'sink': self.sink.__class__.__name__,
+        })
 
     def _consume_loop(self, max_msgs=None):
         num_batch_messages = 0
@@ -113,13 +146,25 @@ class SQLFlow:
 
         self.handler.init()
 
-        stream = self.source.stream()
+        # TODO: Flush interval seconds on background loop
+        # Flush interval seconds only works right now if batch size is > 1.
+        # Flush interval is implemented through the kafka poll timeout.
+        # This means that the flush interval timeout is not supported in webhooks currently.
+        # We'd like to minimize the use of threads. Currently kafka provides a workaround as part
+        # of its implementation. If there's any adoption on the webhooks side, we can implement a
+        # more sustainable and generic solution.
+        liveness_timer_start = self._liveness_time()
 
+        stream = self.source.stream()
         while self._running:
             source_read_start = datetime.now(timezone.utc)
             msg = next(stream)
 
             if msg is None:
+                if datetime.now(timezone.utc) - liveness_timer_start > timedelta(seconds=self._flush_interval_seconds):
+                    logger.debug('liveness check passed, issuing flush')
+                    self._flush()
+                    liveness_timer_start = self._liveness_time()
                 continue
 
             source_read_latency.record(
@@ -157,30 +202,7 @@ class SQLFlow:
                     batch = self.handler.invoke()
 
                 self.sink.write_table(batch)
-
-                sink_flush_start = datetime.now(timezone.utc)
-                # Only commit after all messages in batch are processed
-                try:
-                    self.sink.flush()
-                except Exception as e:
-                    sink_batch = self.sink.batch()
-                    rows = sink_batch.to_pylist() if sink_batch is not None else []
-                    logger.error('{}: error flushing sink. With data: {}'.format(
-                        e,
-                        rows,
-                    ))
-                    self._stats.num_errors += 1
-                    raise e
-                sink_flush_latency.record(
-                    (datetime.now(timezone.utc) - sink_flush_start).total_seconds(),
-                    attributes={
-                        'sink': self.sink.__class__.__name__,
-                    }
-                )
-                sink_flush_count.add(1, attributes={
-                    'sink': self.sink.__class__.__name__,
-                })
-
+                self._flush()
                 self.source.commit()
                 diff = (datetime.now(timezone.utc) - start_batch_time)
                 batch_processing_latency.record(diff.total_seconds())
@@ -196,7 +218,7 @@ class SQLFlow:
 
 def init_commands(conn, commands):
     for command in commands:
-        logger.info('executing command {}: {}'.format(command.name, command.sql))
+        logger.info('executing command {}'.format(command.name))
         conn.execute(command.sql)
 
 
@@ -254,7 +276,6 @@ def handle_managed_tables(tables):
             target=handler.start,
         )
         t.start()
-
 
 
 def new_source_from_conf(source_conf: config.Source):
