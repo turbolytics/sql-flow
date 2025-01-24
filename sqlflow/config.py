@@ -125,6 +125,7 @@ class Pipeline:
     handler: Handler
     sink: Sink
     batch_size: int | None = None
+    flush_interval_seconds: int = 30
 
 
 @dataclass
@@ -260,7 +261,8 @@ def new_from_dict(conf):
         tables=tables,
         udfs=udfs,
         pipeline=Pipeline(
-            batch_size=conf['pipeline'].get('batch_size'),
+            batch_size=conf['pipeline'].get('batch_size', 1),
+            flush_interval_seconds=conf['pipeline'].get('flush_interval_seconds', 30),
             source=source,
             handler=Handler(
                 type=conf['pipeline']['handler']['type'],
