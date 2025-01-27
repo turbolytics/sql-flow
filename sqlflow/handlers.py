@@ -127,6 +127,60 @@ class InferredMemBatch(Handler):
         return res.fetch_arrow_table()
 
 
+class StructuredBatch(Handler):
+    """
+    StructuredBatch supports inserting buffered data into a known
+    DuckDB table schema.
+    """
+    def __init__(self, sql, table, deserializer, conn, schema):
+        self.sql = sql
+        self.rows = None
+        self.table = table
+        self.deserializer = deserializer
+        self.conn = conn
+        self.schema = schema
+
+    def init(self):
+        self.rows = []
+        return self
+
+    def write(self, bs):
+        o = self.deserializer.decode(bs)
+        self.rows.append(o)
+
+    def invoke(self) -> Optional[pa.Table]:
+        return self._invoke()
+
+    def _invoke(self):
+        batch = pa.Table.from_pylist(self.rows, schema=self.schema)
+
+        try:
+            res = self.conn.execute(
+                'INSERT INTO {} (SELECT * FROM batch)'.format(self.table),
+            )
+        except duckdb.duckdb.BinderException as e:
+            # TODO disambgituate between validation vs execution errors
+            logger.error(
+                'could not execute sql: {}'.format(self.sql),
+            )
+            raise e
+
+        try:
+            res = self.conn.execute(
+                self.sql,
+            )
+        except duckdb.duckdb.BinderException as e:
+            logger.error(
+                'could not execute sql: {}'.format(self.sql),
+            )
+            raise e
+
+        if not res:
+            return
+
+        return res.fetch_arrow_table()
+
+
 def new_handler_from_conf(handler_conf: config.Handler, conn: duckdb.DuckDBPyConnection) -> Handler:
     if handler_conf.type == 'handlers.InferredMemBatch':
         return InferredMemBatch(
