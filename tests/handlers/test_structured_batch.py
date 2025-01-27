@@ -45,59 +45,80 @@ class TestStructuredBatch(unittest.TestCase):
             table="test_table",
             deserializer=serde.JSON(),
             conn=conn,
-            schema=pa.schema([('id', pa.int32()), ('name', pa.string())])
+            schema=pa.schema([('id', pa.string()), ('name', pa.string())])
         )
         h.init()
 
         conn.execute("CREATE TABLE test_table (id INT, name VARCHAR)")
+        h.write(b'{"id": "invalid_id", "name": "Alice"}')
+        with self.assertRaises(duckdb.duckdb.ConversionException):
+            h.invoke()
 
-        handler.rows = [{'id': 1, 'name': 'Alice'}, {'id': 2, 'name': 'Bob'}]
-        with self.assertRaises(duckdb.BinderException):
-            conn.execute("INSERT INTO non_existing_table VALUES (1, 'Alice')")
-
-    '''
-    def test_invalid_sql_on_invoke(self):
+    def test_invalid_sql_on_invoke_parser_exception(self):
         conn = duckdb.connect(":memory:")
-        sql = "SELECT * FROM test_table"
-        table = "test_table"
-        deserializer = serde.JSON()
-        schema = pa.schema([('id', pa.int32()), ('name', pa.string())])
-        handler = StructuredBatch(sql, table, deserializer, conn, schema)
-        handler.init()
+        h = handlers.StructuredBatch(
+            sql="SELECT !* FROM test_table",
+            table="test_table",
+            deserializer=serde.JSON(),
+            conn=conn,
+            schema=pa.schema([('id', pa.int32()), ('name', pa.string())])
+        )
+        h.init()
         conn.execute("CREATE TABLE test_table (id INT, name VARCHAR)")
 
-        handler.rows = [{'id': 1, 'name': 'Alice'}, {'id': 2, 'name': 'Bob'}]
-        with self.assertRaises(duckdb.BinderException):
-            conn.execute("SELECT * FROM non_existing_table")
+        h.write(b'{"id": 1, "name": "Alice"}')
+        with self.assertRaises(duckdb.duckdb.ParserException):
+            h.invoke()
+
+    def test_invalid_sql_on_invoke_unknown_table_catalog_exception(self):
+        conn = duckdb.connect(":memory:")
+        h = handlers.StructuredBatch(
+            sql="SELECT * FROM unknown_table",
+            table="test_table",
+            deserializer=serde.JSON(),
+            conn=conn,
+            schema=pa.schema([('id', pa.int32()), ('name', pa.string())])
+        )
+        h.init()
+        conn.execute("CREATE TABLE test_table (id INT, name VARCHAR)")
+
+        h.write(b'{"id": 1, "name": "Alice"}')
+        with self.assertRaises(duckdb.duckdb.CatalogException):
+            h.invoke()
 
     def test_no_results_returned_on_invoke(self):
         conn = duckdb.connect(":memory:")
-        sql = "SELECT * FROM test_table"
-        table = "test_table"
-        deserializer = serde.JSON()
-        schema = pa.schema([('id', pa.int32()), ('name', pa.string())])
-        handler = StructuredBatch(sql, table, deserializer, conn, schema)
-        handler.init()
+        h = handlers.StructuredBatch(
+            sql="SELECT * FROM test_table WHERE id > 10",
+            table="test_table",
+            deserializer=serde.JSON(),
+            conn=conn,
+            schema=pa.schema([('id', pa.int32()), ('name', pa.string())])
+        )
+        h.init()
         conn.execute("CREATE TABLE test_table (id INT, name VARCHAR)")
 
-        handler.rows = [{'id': 1, 'name': 'Alice'}, {'id': 2, 'name': 'Bob'}]
-        conn.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')")
-        result = handler.invoke()
-        self.assertIsNone(result)
+        h.write(b'{"id": 1, "name": "Alice"}')
+        h.write(b'{"id": 2, "name": "Bob"}')
+        result = h.invoke()
+        self.assertEqual([], result.to_pylist())
 
     def test_with_rows_returned_on_invoke(self):
         conn = duckdb.connect(":memory:")
-        sql = "SELECT * FROM test_table"
-        table = "test_table"
-        deserializer = serde.JSON()
-        schema = pa.schema([('id', pa.int32()), ('name', pa.string())])
-        handler = StructuredBatch(sql, table, deserializer, conn, schema)
-        handler.init()
+        h = handlers.StructuredBatch(
+            sql="SELECT * FROM test_table",
+            table="test_table",
+            deserializer=serde.JSON(),
+            conn=conn,
+            schema=pa.schema([('id', pa.int32()), ('name', pa.string())])
+        )
+        h.init()
         conn.execute("CREATE TABLE test_table (id INT, name VARCHAR)")
 
-        handler.rows = [{'id': 1, 'name': 'Alice'}, {'id': 2, 'name': 'Bob'}]
-        conn.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')")
-        result = handler.invoke()
-        self.assertIsInstance(result, pa.Table)
-        self.assertEqual(result.num_rows, 2)
-    '''
+        h.write(b'{"id": 1, "name": "Alice"}')
+        h.write(b'{"id": 2, "name": "Bob"}')
+        result = h.invoke()
+        self.assertEqual([
+            {'id': 1, 'name': 'Alice'},
+            {'id': 2, 'name': 'Bob'},
+        ], result.to_pylist())

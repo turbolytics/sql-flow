@@ -159,7 +159,8 @@ class StructuredBatch(Handler):
                 'INSERT INTO {} (SELECT * FROM batch)'.format(self.table),
             )
         except duckdb.duckdb.BinderException as e:
-            # TODO disambgituate between validation vs execution errors
+            # TODO disambiguate between validation vs execution errors
+            # duckdb.duckdb.ConversionException
             logger.error(
                 'could not execute sql: {}'.format(self.sql),
             )
