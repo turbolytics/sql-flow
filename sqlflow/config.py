@@ -117,6 +117,7 @@ class Handler:
     type: str
     sql: str
     sql_results_cache_dir: str = settings.SQL_RESULTS_CACHE_DIR
+    table: str = None
 
 
 @dataclass
@@ -267,6 +268,8 @@ def new_from_dict(conf):
             handler=Handler(
                 type=conf['pipeline']['handler']['type'],
                 sql=conf['pipeline']['handler']['sql'],
+                sql_results_cache_dir=conf['pipeline']['handler'].get('sql_results_cache_dir', settings.SQL_RESULTS_CACHE_DIR),
+                table=conf['pipeline']['handler'].get('table'),
             ),
             sink=sink,
         ),

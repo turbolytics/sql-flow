@@ -195,5 +195,17 @@ def new_handler_from_conf(handler_conf: config.Handler, conn: duckdb.DuckDBPyCon
             sql_results_cache_dir=handler_conf.sql_results_cache_dir,
             conn=conn,
         ).init()
+    elif handler_conf.type == 'handlers.StructuredBatch':
+        # The structured batch handler requires a schema
+        # This schema will be fetched from the underlying table
+        assert handler_conf.table, 'StructuredBatch requires a table name'
+        table = conn.execute("SELECT * FROM {}".format(handler_conf.table)).arrow()
+        return StructuredBatch(
+            sql=handler_conf.sql,
+            table=handler_conf.table,
+            deserializer=serde.JSON(),
+            conn=conn,
+            schema=table.schema,
+        )
     else:
         raise NotImplementedError(f"Unsupported handler type: {handler_conf.type}")
