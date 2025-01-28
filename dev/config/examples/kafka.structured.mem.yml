@@ -1,0 +1,33 @@
+commands:
+  - name: create source buffer table
+    sql: |
+      CREATE TABLE source (
+            event STRING,
+            properties STRUCT(city TEXT),
+            user STRUCT(id TEXT)
+      );
+
+pipeline:
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "input-structured-mem"
+
+  handler:
+    type: "handlers.StructuredBatch"
+    # This is the name of the table that source data will be written to
+    table: source
+    sql: |
+      SELECT 
+        properties.city as city,
+        1 as city_count
+      FROM source 
+
+  sink:
+    type: console
