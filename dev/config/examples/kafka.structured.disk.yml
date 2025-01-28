@@ -1,7 +1,7 @@
 commands:
   - name: Attach to another db
     sql: |
-      ATTACH '/tmp/sqlflow/test.db' as test_db;
+      ATTACH '{{ SQLFLOW_ATTACH_DB_PATH|default("/tmp/sqlflow/test.db") }}' as test_db;
 
 pipeline:
   batch_size: {{ SQLFLOW_BATCH_SIZE|default(1) }}

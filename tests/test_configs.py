@@ -49,6 +49,44 @@ class InvokeExamplesTestCase(unittest.TestCase):
             {'city': 'Baltimore', 'city_count': 1}
         ], table.to_pylist())
 
+    def test_structured_mem(self):
+        conn = duckdb.connect()
+        table = invoke(
+            conn=conn,
+            config=os.path.join(conf_dir, 'examples', 'kafka.structured.mem.yml'),
+            fixture=os.path.join(fixtures_dir, 'basic.agg.jsonl'),
+        )
+        self.assertEqual([
+            {'city': 'New York', 'city_count': 1},
+            {'city': 'Baltimore', 'city_count': 1}
+        ], table.to_pylist())
+
+    def test_structured_disk(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_file = os.path.join(temp_dir, 'test_db.duckdb')
+            conn = duckdb.connect(database=db_file)
+            conn.execute('''
+            CREATE TABLE source (
+                event STRING,
+                properties STRUCT(city TEXT),
+                user STRUCT(id TEXT)
+            );
+            ''')
+            conn.close()
+
+            table = invoke(
+                conn=duckdb.connect(),
+                config=os.path.join(conf_dir, 'examples', 'kafka.structured.disk.yml'),
+                fixture=os.path.join(fixtures_dir, 'basic.agg.jsonl'),
+                setting_overrides={
+                    'SQLFLOW_ATTACH_DB_PATH': db_file,
+                }
+            )
+        self.assertEqual([
+            {'city': 'New York', 'city_count': 1},
+            {'city': 'Baltimore', 'city_count': 1}
+        ], table.to_pylist())
+
     def test_csv_filesystem_join(self):
         conn = duckdb.connect()
         table = invoke(
@@ -150,7 +188,6 @@ class InvokeExamplesTestCase(unittest.TestCase):
             pass
 
         os.makedirs(warehouse_path)
-
 
         # Set up the catalog
         catalog = SqlCatalog(
