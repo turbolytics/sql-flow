@@ -1,0 +1,28 @@
+commands:
+  - name: Attach to another db
+    sql: |
+      ATTACH '/tmp/sqlflow/test.db' as test_db;
+
+pipeline:
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "input-structured-mem"
+
+  handler:
+    type: "handlers.StructuredBatch"
+    table: test_db.source
+    sql: |
+      SELECT 
+        properties.city as city,
+        1 as city_count
+      FROM test_db.source 
+
+  sink:
+    type: console

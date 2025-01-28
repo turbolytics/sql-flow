@@ -4,7 +4,6 @@ import duckdb
 
 from sqlflow.config import new_from_path
 from sqlflow import handlers, sinks
-from sqlflow.serde import JSON
 from sqlflow.pipeline import init_tables, build_managed_tables, handle_managed_tables, new_sqlflow_from_conf, init_udfs, \
     init_commands
 
