@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 
@@ -68,12 +69,12 @@ def run(config, max_msgs_to_process, with_http_debug, metrics):
         flask_thread = threading.Thread(target=lambda: app.run(debug=True, use_reloader=False))
         flask_thread.start()
 
-    start(
+    asyncio.run(start(
         conf,
         conn=conn,
         lock=lock,
         max_msgs=max_msgs_to_process,
-    )
+    ))
 
 
 @click.group()

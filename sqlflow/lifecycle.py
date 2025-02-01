@@ -59,7 +59,7 @@ def invoke(conn, config, fixture, setting_overrides={}, flush_window=False, invo
     print(res.to_pylist())
     return res
 
-def start(conf, conn=None, lock=None, max_msgs=None):
+async def start(conf, conn=None, lock=None, max_msgs=None):
     if conn is None:
         conn = duckdb.connect()
 
@@ -89,7 +89,7 @@ def start(conf, conn=None, lock=None, max_msgs=None):
         handler=h,
         lock=lock,
     )
-    stats = sflow.consume_loop(max_msgs)
+    stats = await sflow.consume_loop(max_msgs)
 
     # flush and stop all managed tables
     for table in managed_tables:

@@ -1,10 +1,10 @@
+import asyncio
+import functools
 import logging
 import typing
 from abc import ABC, abstractmethod
-from typing import Iterator
 
-from websockets.sync.client import connect
-
+import websockets
 from confluent_kafka import KafkaError
 
 logger = logging.getLogger(__name__)
@@ -25,19 +25,19 @@ class Source(ABC):
     Sources read bytes from some external source and return them as messages.
     """
     @abstractmethod
-    def close(self):
+    async def close(self):
         pass
 
     @abstractmethod
-    def commit(self):
+    async def commit(self):
         pass
 
     @abstractmethod
-    def stream(self) -> Iterator[Message | None]:
+    async def stream(self) -> typing.AsyncIterator[Message | None]:
         pass
 
     @abstractmethod
-    def start(self):
+    async def start(self):
         pass
 
 
@@ -56,18 +56,24 @@ class KafkaSource(Source):
         self._read_timeout = read_timeout
         self._topics = topics
 
-    def close(self):
-        return self._consumer.close()
+    async def close(self):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._consumer.close)
 
-    def commit(self):
-        return self._consumer.commit(
-            asynchronous=self._async_commit,
+    async def commit(self):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self._consumer.commit,
+                    asynchronous=self._async_commit,
+                )
         )
 
-    def stream(self) -> typing.Iterable[Message | None]:
+    async def stream(self) -> typing.AsyncIterator[Message | None]:
+        loop = asyncio.get_event_loop()
         while True:
-            msg = self._consumer.poll(timeout=self._read_timeout)
-
+            msg = await loop.run_in_executor(None, self._consumer.poll, self._read_timeout)
             if msg is None:
                 yield None
             elif not msg.error():
@@ -82,29 +88,29 @@ class KafkaSource(Source):
                 )
                 yield None
             else:
-                # unknown error raise to caller
                 raise SourceException(msg.error())
 
-    def start(self):
-        self._consumer.subscribe(self._topics)
+    async def start(self):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._consumer.subscribe, self._topics)
 
 
 class WebsocketSource(Source):
     def __init__(self, uri):
         self._uri = uri
 
-    def start(self):
+    async def start(self):
         pass
 
-    def commit(self):
+    async def commit(self):
         pass
 
-    def close(self):
+    async def close(self):
         pass
 
-    def stream(self) -> Message | None:
+    async def stream(self) -> typing.AsyncIterator[Message | None]:
         logger.info("connecting to websocket: {}".format(self._uri))
-        with connect(self._uri) as websocket:
+        async with websockets.connect(self._uri) as websocket:
             while True:
-                for msg in websocket.recv_streaming(decode=False):
-                    yield Message(msg)
+                msg = await websocket.recv(decode=False)
+                yield Message(msg)

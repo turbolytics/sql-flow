@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import threading
 from dataclasses import dataclass
@@ -86,18 +87,18 @@ class SQLFlow:
         self._lock = lock
         self._running = True
 
-    def consume_loop(self, max_msgs=None):
+    async def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
         try:
-            self.source.start()
-            self._consume_loop(max_msgs)
+            await self.source.start()
+            await self._consume_loop(max_msgs)
         except StopIteration:
             logger.warning('loop stopping due to StopIteration')
         except Exception as e:
             logger.error('error in consumer loop: {}'.format(e))
             raise
         finally:
-            self.source.close()
+            await self.source.close()
 
             now = datetime.now(timezone.utc)
             diff = (now - self._stats.start_time)
@@ -114,11 +115,11 @@ class SQLFlow:
     def _liveness_time(self):
         return datetime.now(timezone.utc)
 
-    def _flush(self):
+    async def _flush(self):
         sink_flush_start = datetime.now(timezone.utc)
         # Only commit after all messages in batch are processed
         try:
-            self.sink.flush()
+            await self.sink.flush()
         except Exception as e:
             sink_batch = self.sink.batch()
             rows = sink_batch.to_pylist() if sink_batch is not None else []
@@ -138,7 +139,7 @@ class SQLFlow:
             'sink': self.sink.__class__.__name__,
         })
 
-    def _consume_loop(self, max_msgs=None):
+    async def _consume_loop(self, max_msgs=None):
         num_batch_messages = 0
         start_batch_time = None
         self._stats.start_time = datetime.now(timezone.utc)
@@ -158,12 +159,12 @@ class SQLFlow:
         stream = self.source.stream()
         while self._running:
             source_read_start = datetime.now(timezone.utc)
-            msg = next(stream)
+            msg = await anext(stream)
 
             if msg is None:
                 if datetime.now(timezone.utc) - liveness_timer_start > timedelta(seconds=self._flush_interval_seconds):
                     logger.debug('liveness check passed, issuing flush')
-                    self._flush()
+                    await self._flush()
                     liveness_timer_start = self._liveness_time()
                 continue
 
@@ -198,12 +199,11 @@ class SQLFlow:
 
             if num_batch_messages == self._batch_size:
                 # apply the pipeline
-                with self._lock:
-                    batch = self.handler.invoke()
+                batch = self.handler.invoke()
 
-                self.sink.write_table(batch)
-                self._flush()
-                self.source.commit()
+                await self.sink.write_table(batch)
+                await self._flush()
+                await self.source.commit()
                 diff = (datetime.now(timezone.utc) - start_batch_time)
                 batch_processing_latency.record(diff.total_seconds())
 

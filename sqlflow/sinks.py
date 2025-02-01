@@ -1,3 +1,5 @@
+import asyncio
+import functools
 import logging
 import sys
 import uuid
@@ -19,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class Sink(ABC):
     @abstractmethod
-    def write_table(self, table: pa.Table):
+    async def write_table(self, table: pa.Table):
         """
         Writes a byte string to the underlying storage.
 
@@ -34,7 +36,7 @@ class Sink(ABC):
         raise NotImplemented()
 
     @abstractmethod
-    def flush(self):
+    async def flush(self):
         """
         Flushes any buffered data to the underlying storage.
 
@@ -52,10 +54,10 @@ class ConsoleSink(Sink):
     def batch(self) -> Optional[pa.Table]:
         return pa.concat_tables(self._tables)
 
-    def write_table(self, table):
+    async def write_table(self, table):
         self._tables.append(table)
 
-    def flush(self):
+    async def flush(self):
         if not self._tables:
             return
 
@@ -76,10 +78,10 @@ class IcebergSink(Sink):
     def batch(self) -> Optional[pa.Table]:
         return pa.concat_tables(self._tables)
 
-    def write_table(self, table):
+    async def write_table(self, table):
         self._tables.append(table)
 
-    def flush(self):
+    async def flush(self):
         if not self._tables:
             return
 
@@ -98,10 +100,10 @@ class SQLCommandSink(Sink):
     def batch(self) -> Optional[pa.Table]:
         return pa.concat_tables(self.tables)
 
-    def write_table(self, table: pa.Table):
+    async def write_table(self, table: pa.Table):
         self.tables.append(table)
 
-    def flush(self):
+    async def flush(self):
         if not self.tables:
             return
 
@@ -131,16 +133,22 @@ class KafkaSink(Sink):
     def batch(self) -> Optional[pa.Table]:
         return self._table
 
-    def write_table(self, table: pa.Table):
+    async def write_table(self, table: pa.Table):
         self._table = table
+        loop = asyncio.get_event_loop()
         for row in self._table.to_pylist():
-            self.producer.produce(
-                self.topic,
-                value=self.serializer.encode(row),
+            await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self.producer.produce,
+                    self.topic,
+                    value=self.serializer.encode(row)
+                )
             )
 
-    def flush(self):
-        self.producer.flush()
+    async def flush(self):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.producer.flush)
 
 
 class NoopSink(Sink):
@@ -148,10 +156,10 @@ class NoopSink(Sink):
     def batch(self) -> Optional[pa.Table]:
         return None
 
-    def write_table(self, table: pa.Table):
+    async def write_table(self, table: pa.Table):
         pass
 
-    def flush(self):
+    async def flush(self):
         pass
 
 
@@ -165,7 +173,7 @@ class RecordingSink(Sink):
     def write_table(self, table: pa.Table):
         self.writes.append(table)
 
-    def flush(self):
+    async def flush(self):
         pass
 
 
