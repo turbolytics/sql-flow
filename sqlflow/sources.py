@@ -5,7 +5,9 @@ from typing import Iterator
 
 from websockets.sync.client import connect
 
-from confluent_kafka import KafkaError
+from confluent_kafka import KafkaError, Consumer
+
+from sqlflow import config
 
 logger = logging.getLogger(__name__)
 
@@ -108,3 +110,27 @@ class WebsocketSource(Source):
             while True:
                 for msg in websocket.recv_streaming(decode=False):
                     yield Message(msg)
+
+
+def new_source_from_conf(source_conf: config.Source):
+    if source_conf.type == 'kafka':
+        kconf = {
+            'bootstrap.servers': ','.join(source_conf.kafka.brokers),
+            'group.id': source_conf.kafka.group_id,
+            'auto.offset.reset': source_conf.kafka.auto_offset_reset,
+            'enable.auto.commit': False,
+        }
+
+        consumer = Consumer(kconf)
+
+        return KafkaSource(
+            consumer=consumer,
+            topics=source_conf.kafka.topics,
+        )
+    elif source_conf.type == 'websocket':
+        return WebsocketSource(
+            uri=source_conf.websocket.uri,
+        )
+
+    raise NotImplementedError('unsupported source type: {}'.format(source_conf.type))
+

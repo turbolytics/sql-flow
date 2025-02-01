@@ -2,6 +2,9 @@ pipeline:
   batch_size: 1000
 
   source:
+    on_error:
+      policy: ignore
+
     type: kafka
     kafka:
       brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]

@@ -5,13 +5,12 @@ from datetime import datetime, timezone, timedelta
 import logging
 from typing import List
 
-from confluent_kafka import Consumer
 from opentelemetry import metrics
 
-from sqlflow import config, sinks
+from sqlflow import config, sinks, sources
 from sqlflow.managers import window
 from sqlflow.sinks import Sink
-from sqlflow.sources import Source, KafkaSource, WebsocketSource
+from sqlflow.sources import Source
 
 logger = logging.getLogger(__name__)
 meter = metrics.get_meter('sqlflow.pipeline')
@@ -278,31 +277,8 @@ def handle_managed_tables(tables):
         t.start()
 
 
-def new_source_from_conf(source_conf: config.Source):
-    if source_conf.type == 'kafka':
-        kconf = {
-            'bootstrap.servers': ','.join(source_conf.kafka.brokers),
-            'group.id': source_conf.kafka.group_id,
-            'auto.offset.reset': source_conf.kafka.auto_offset_reset,
-            'enable.auto.commit': False,
-        }
-
-        consumer = Consumer(kconf)
-
-        return KafkaSource(
-            consumer=consumer,
-            topics=source_conf.kafka.topics,
-        )
-    elif source_conf.type == 'websocket':
-        return WebsocketSource(
-            uri=source_conf.websocket.uri,
-        )
-
-    raise NotImplementedError('unsupported source type: {}'.format(source_conf.type))
-
-
 def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
-    source = new_source_from_conf(conf.pipeline.source)
+    source = sources.new_source_from_conf(conf.pipeline.source)
     sink = sinks.new_sink_from_conf(conf.pipeline.sink, conn)
     sflow = SQLFlow(
         source=source,

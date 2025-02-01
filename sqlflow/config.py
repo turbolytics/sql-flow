@@ -2,13 +2,16 @@ import copy
 import os
 from typing import Optional, List
 
-from click import command
 from jinja2 import Template
 from yaml import safe_load
 from dataclasses import dataclass
 
 from sqlflow import settings
 
+
+@dataclass
+class OnError:
+    policy: str = 'raise'
 
 
 @dataclass
@@ -110,6 +113,7 @@ class Source:
     type: str
     kafka: Optional[KafkaSource] = None
     websocket: Optional[WebsocketSource] = None
+    on_error: Optional[OnError] = None
 
 
 @dataclass
@@ -168,6 +172,9 @@ def new_from_path(path: str, setting_overrides={}):
 def build_source_config_from_dict(conf) -> Source:
     source = Source(
         type=conf['type'],
+        on_error=OnError(
+            policy=conf.get('on_error', {}).get('policy', 'raise'),
+        ),
     )
 
     if source.type == 'kafka':
