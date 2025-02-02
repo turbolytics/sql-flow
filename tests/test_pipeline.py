@@ -3,9 +3,9 @@ from datetime import datetime, timezone
 from json import JSONDecodeError
 from unittest.mock import patch, MagicMock
 
-from sqlflow import config, serde
+from sqlflow import config, serde, errors
 from sqlflow.handlers import InferredMemBatch
-from sqlflow.pipeline import SQLFlow
+from sqlflow.pipeline import SQLFlow, PipelineErrorPolicies
 from sqlflow.sinks import ConsoleSink, NoopSink
 from sqlflow.sources import Source, Message
 
@@ -108,3 +108,28 @@ class TestPipeline(unittest.TestCase):
 
         # sink should contain single message
         sink.flush.assert_called_once()
+
+    def test_pipeline_source_error_ignores(self):
+        messages = [
+            Message(
+                value=b'{!invalidJSON!',
+            ),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink=NoopSink(),
+            batch_size=1,
+            error_policies=PipelineErrorPolicies(source=errors.Policy.IGNORE),
+        )
+
+        stats = pipeline.consume_loop(max_msgs=1)
+
+        self.assertEqual(stats.num_errors, 1)
+        self.assertEqual(stats.num_messages_consumed, 1)
