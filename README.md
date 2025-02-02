@@ -1,6 +1,6 @@
 # SQLFlow: DuckDB for Streaming Data. 
 
-[Quickstart](#quick-start-getting-started-in-5-minutes) | [Tutorials]([https://github.com/turbolytics/sql-flow/wiki/Tutorials](https://sql-flow.com/docs/category/tutorials)) | ![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/sql-flow) | [Documentation](https://sql-flow.com)
+[Quickstart](#quick-start-getting-started-in-5-minutes) | [Tutorials](https://github.com/turbolytics/sql-flow/wiki/Tutorials](https://sql-flow.com/docs/category/tutorials) | ![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/sql-flow) | [Documentation](https://sql-flow.com)
 
 SQLFlow is a high-performance stream processing engine that simplifies building data pipelines by enabling you to define them using just SQL. Think of SQLFLow as a lightweight, modern Flink.
 
