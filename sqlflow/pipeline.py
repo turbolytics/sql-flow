@@ -3,11 +3,12 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import logging
+from json import JSONDecodeError
 from typing import List
 
 from opentelemetry import metrics
 
-from sqlflow import config, sinks, sources
+from sqlflow import config, sinks, sources, errors
 from sqlflow.managers import window
 from sqlflow.sinks import Sink
 from sqlflow.sources import Source
@@ -60,6 +61,11 @@ class Stats:
     total_throughput_per_second: float = 0
 
 
+class PipelineErrorPolicies:
+    def __init__(self, source):
+        self.source = source
+
+
 class SQLFlow:
     '''
     SQLFlow executes a pipeline as a daemon.
@@ -71,7 +77,10 @@ class SQLFlow:
                  sink: Sink,
                  batch_size=1,
                  flush_interval_seconds=30,
-                 lock=threading.Lock()):
+                 lock=threading.Lock(),
+                 error_policies=PipelineErrorPolicies(
+                    source=errors.Policy.RAISE,
+                 )):
         self.source = source
         self.sink = sink
         self.handler = handler
@@ -84,6 +93,7 @@ class SQLFlow:
         )
         self._lock = lock
         self._running = True
+        self._error_policies = error_policies
 
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
@@ -180,12 +190,24 @@ class SQLFlow:
                start_batch_time = datetime.now(timezone.utc)
 
             self._stats.num_messages_consumed += 1
+
             try:
-                self.handler.write(msg.value().decode())
-            except Exception as e:
-                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
+                msgObj = msg.value().decode()
+                self.handler.write(msgObj)
+            except JSONDecodeError as e:
+                # Only supports ignore deserialization errors. JSON is the only serializer currently supported.
                 self._stats.num_errors += 1
+                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
+                if self._error_policies.source == errors.Policy.RAISE:
+                    raise e
+                elif self._error_policies.source == errors.Policy.IGNORE:
+                    continue
+            except Exception as e:
+                # any other exception will be logged and re-raised
+                self._stats.num_errors += 1
+                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
                 raise e
+
             num_batch_messages += 1
 
             if self._stats.num_messages_consumed % 10000 == 0:
@@ -280,12 +302,18 @@ def handle_managed_tables(tables):
 def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
     source = sources.new_source_from_conf(conf.pipeline.source)
     sink = sinks.new_sink_from_conf(conf.pipeline.sink, conn)
+
+    error_policies = PipelineErrorPolicies(
+        source=conf.pipeline.source.error.policy,
+    )
+
     sflow = SQLFlow(
         source=source,
         handler=handler,
         sink=sink,
         batch_size=conf.pipeline.batch_size,
         lock=lock,
+        error_policies=error_policies,
     )
 
     return sflow

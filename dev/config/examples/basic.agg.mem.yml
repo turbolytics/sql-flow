@@ -3,7 +3,7 @@ pipeline:
 
   source:
     on_error:
-      policy: ignore
+      policy: {{ SQLFLOW_SOURCE_ERROR_POLICY|default('ignore') }}
 
     type: kafka
     kafka:
