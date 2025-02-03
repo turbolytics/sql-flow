@@ -22,6 +22,12 @@ message_counter = meter.create_counter(
     unit="messages",
 )
 
+error_counter = meter.create_counter(
+    name='error_count',
+    description="Number of errors that occurred during pipeline execution",
+    unit="count",
+)
+
 source_read_latency = meter.create_histogram(
     name="source_read_latency",
     description="Latency of reading a message from the source",
@@ -197,6 +203,12 @@ class SQLFlow:
             except JSONDecodeError as e:
                 # Only supports ignore deserialization errors. JSON is the only serializer currently supported.
                 self._stats.num_errors += 1
+
+                error_counter.add(1, attributes={
+                    'type': 'message_decode',
+                    'source': self.source.__class__.__name__,
+                })
+
                 logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
                 if self._error_policies.source == errors.Policy.RAISE:
                     raise e
