@@ -108,7 +108,7 @@ class SQLCommandSink(Sink):
         table = pa.concat_tables(self.tables)
         self.conn.register('sqlflow_sink_batch', table)
         sql = self._apply_substitutions()
-        self.conn.execute(sql)
+        res = self.conn.execute(sql)
         self.tables = []
 
     def _apply_substitutions(self) -> str:
