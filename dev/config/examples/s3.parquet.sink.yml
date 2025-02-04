@@ -7,7 +7,7 @@ commands:
     sql: |
       SET s3_region='{{ SQLFLOW_S3_REGION|default('us-east-1') }}';
       SET s3_url_style='path';
-      SET s3_endpoint='localhost:9000';
+      SET s3_endpoint='{{ SQLFLOW_S3_ENDPOINT|default('localhost:9000') }}';
       SET s3_access_key_id='{{ SQLFLOW_S3_ACCESS_KEY_ID|default('minioadmin') }}';
       SET s3_secret_access_key='{{ SQLFLOW_S3_SECRET_ACCESS_KEY|default('minioadmin') }}';
       SET s3_use_ssl=false;
