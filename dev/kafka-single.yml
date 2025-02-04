@@ -67,3 +67,19 @@ services:
       POSTGRES_DB: testdb
     volumes:
       - ./postgres/migrations:/docker-entrypoint-initdb.d
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    ports:
+      - "9000:9000"  # MinIO API
+      - "9090:9090"  # MinIO Console (Web UI)
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server --console-address ":9090" /data
+
+volumes:
+  minio_data:
