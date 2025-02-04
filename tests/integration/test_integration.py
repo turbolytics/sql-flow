@@ -1,11 +1,13 @@
+import json
 import os
 import shutil
 import tempfile
 import unittest
+import socket
 
 import pytest
 import pyarrow.dataset as ds
-from confluent_kafka import KafkaException
+from confluent_kafka import KafkaException, Producer
 from confluent_kafka.admin import AdminClient
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.schema import Schema
@@ -157,6 +159,50 @@ def test_basic_agg_mem(bootstrap_server):
 
     messages = read_all_kafka_messages(bootstrap_server, out_topic)
     assert 1000 == len(messages)
+
+
+def test_basic_agg_mem_ignore_invalid(bootstrap_server):
+    num_messages = 10
+    in_topic = 'input-simple-agg-mem-ignore'
+    out_topic = 'output-simple-agg-mem-ignore'
+
+    delete_topics([in_topic, out_topic], bootstrap_server)
+    delete_consumer_groups(['test_basic_agg_mem'], bootstrap_server)
+
+    conf = {
+        'bootstrap.servers': bootstrap_server,
+        'client.id': socket.gethostname()
+    }
+    producer = Producer(conf)
+    for i in range(5):
+        producer.produce(in_topic, value='invalid!')
+
+    for i in range(5):
+        producer.produce(in_topic, value=json.dumps({
+            'properties': {
+                'city': 'test',
+            }
+        }))
+
+    producer.flush()
+
+    conf = new_from_path(
+        path=os.path.join(settings.CONF_DIR, 'examples', 'basic.agg.mem.yml'),
+        setting_overrides={
+            'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
+            'SQLFLOW_SOURCE_ERROR_POLICY': 'ignore',
+            'SQLFLOW_INPUT_TOPIC': in_topic,
+            'SQLFLOW_OUTPUT_TOPIC': out_topic,
+            'SQLFLOW_BATCH_SIZE': 1,
+        },
+    )
+
+    stats = start(conf, max_msgs=num_messages)
+    assert stats.num_messages_consumed == num_messages
+    print(stats)
+
+    messages = read_all_kafka_messages(bootstrap_server, out_topic)
+    assert 5 == len(messages)
 
 
 def test_csv_mem_join(bootstrap_server):

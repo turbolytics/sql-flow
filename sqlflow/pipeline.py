@@ -3,15 +3,15 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import logging
+from json import JSONDecodeError
 from typing import List
 
-from confluent_kafka import Consumer
 from opentelemetry import metrics
 
-from sqlflow import config, sinks
+from sqlflow import config, sinks, sources, errors
 from sqlflow.managers import window
 from sqlflow.sinks import Sink
-from sqlflow.sources import Source, KafkaSource, WebsocketSource
+from sqlflow.sources import Source
 
 logger = logging.getLogger(__name__)
 meter = metrics.get_meter('sqlflow.pipeline')
@@ -20,6 +20,12 @@ message_counter = meter.create_counter(
     name="message_count",
     description="Number of messages processed",
     unit="messages",
+)
+
+error_counter = meter.create_counter(
+    name='error_count',
+    description="Number of errors that occurred during pipeline execution",
+    unit="count",
 )
 
 source_read_latency = meter.create_histogram(
@@ -61,6 +67,11 @@ class Stats:
     total_throughput_per_second: float = 0
 
 
+class PipelineErrorPolicies:
+    def __init__(self, source):
+        self.source = source
+
+
 class SQLFlow:
     '''
     SQLFlow executes a pipeline as a daemon.
@@ -72,7 +83,10 @@ class SQLFlow:
                  sink: Sink,
                  batch_size=1,
                  flush_interval_seconds=30,
-                 lock=threading.Lock()):
+                 lock=threading.Lock(),
+                 error_policies=PipelineErrorPolicies(
+                    source=errors.Policy.RAISE,
+                 )):
         self.source = source
         self.sink = sink
         self.handler = handler
@@ -85,6 +99,7 @@ class SQLFlow:
         )
         self._lock = lock
         self._running = True
+        self._error_policies = error_policies
 
     def consume_loop(self, max_msgs=None):
         logger.info('consumer loop starting')
@@ -181,12 +196,30 @@ class SQLFlow:
                start_batch_time = datetime.now(timezone.utc)
 
             self._stats.num_messages_consumed += 1
+
             try:
-                self.handler.write(msg.value().decode())
-            except Exception as e:
-                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
+                msgObj = msg.value().decode()
+                self.handler.write(msgObj)
+            except JSONDecodeError as e:
+                # Only supports ignore deserialization errors. JSON is the only serializer currently supported.
                 self._stats.num_errors += 1
+
+                error_counter.add(1, attributes={
+                    'type': 'message_decode',
+                    'source': self.source.__class__.__name__,
+                })
+
+                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
+                if self._error_policies.source == errors.Policy.RAISE:
+                    raise e
+                elif self._error_policies.source == errors.Policy.IGNORE:
+                    continue
+            except Exception as e:
+                # any other exception will be logged and re-raised
+                self._stats.num_errors += 1
+                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
                 raise e
+
             num_batch_messages += 1
 
             if self._stats.num_messages_consumed % 10000 == 0:
@@ -278,38 +311,21 @@ def handle_managed_tables(tables):
         t.start()
 
 
-def new_source_from_conf(source_conf: config.Source):
-    if source_conf.type == 'kafka':
-        kconf = {
-            'bootstrap.servers': ','.join(source_conf.kafka.brokers),
-            'group.id': source_conf.kafka.group_id,
-            'auto.offset.reset': source_conf.kafka.auto_offset_reset,
-            'enable.auto.commit': False,
-        }
-
-        consumer = Consumer(kconf)
-
-        return KafkaSource(
-            consumer=consumer,
-            topics=source_conf.kafka.topics,
-        )
-    elif source_conf.type == 'websocket':
-        return WebsocketSource(
-            uri=source_conf.websocket.uri,
-        )
-
-    raise NotImplementedError('unsupported source type: {}'.format(source_conf.type))
-
-
 def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
-    source = new_source_from_conf(conf.pipeline.source)
+    source = sources.new_source_from_conf(conf.pipeline.source)
     sink = sinks.new_sink_from_conf(conf.pipeline.sink, conn)
+
+    error_policies = PipelineErrorPolicies(
+        source=conf.pipeline.source.error.policy,
+    )
+
     sflow = SQLFlow(
         source=source,
         handler=handler,
         sink=sink,
         batch_size=conf.pipeline.batch_size,
         lock=lock,
+        error_policies=error_policies,
     )
 
     return sflow

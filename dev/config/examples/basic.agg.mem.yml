@@ -1,14 +1,17 @@
 pipeline:
-  batch_size: 1000
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1000) }}
 
   source:
+    on_error:
+      policy: {{ SQLFLOW_SOURCE_ERROR_POLICY|default('raise') }}
+
     type: kafka
     kafka:
       brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
       group_id: test
       auto_offset_reset: earliest
       topics:
-        - "input-simple-agg-mem"
+        - {{ SQLFLOW_INPUT_TOPIC|default('input-simple-agg-mem') }}
 
   handler:
     type: 'handlers.InferredMemBatch'
@@ -23,4 +26,4 @@ pipeline:
     type: kafka
     kafka:
       brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
-      topic: output-simple-agg-mem
+      topic: {{ SQLFLOW_OUTPUT_TOPIC|default('output-simple-agg-mem') }}
