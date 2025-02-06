@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "pipeline": {
+      "type": "object",
+      "properties": {
+        "batch_size": { "type": "integer", "minimum": 1 },
+        "source": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string", "enum": ["kafka"]
+            },
+            "kafka": {
+              "type": "object",
+              "properties": {
+                "brokers": {
+                  "type": "array",
+                  "items": { "type": "string", "format": "hostname" }
+                },
+                "group_id": { "type": "string" },
+                "auto_offset_reset": {
+                  "type": "string",
+                  "enum": ["earliest", "latest"]
+                },
+                "topics": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1
+                }
+              },
+              "required": ["brokers", "group_id", "auto_offset_reset", "topics"]
+            }
+          },
+          "required": ["type", "kafka"]
+        },
+
+        "handler": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "handlers.InferredDiskBatch",
+                "handlers.InferredMemBatch"
+              ]
+            },
+            "sql": { "type": "string" }
+          },
+          "required": ["type", "sql"]
+        },
+
+        "sink": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["kafka"] },
+            "kafka": {
+              "type": "object",
+              "properties": {
+                "brokers": {
+                  "type": "array",
+                  "items": { "type": "string", "format": "hostname" }
+                },
+                "topic": { "type": "string" }
+              },
+              "required": ["brokers", "topic"]
+            }
+          },
+          "required": ["type", "kafka"]
+        }
+      },
+      "required": ["batch_size", "source", "handler", "sink"]
+    }
+  },
+  "required": ["pipeline"]
+}

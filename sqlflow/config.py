@@ -140,15 +140,7 @@ class Conf:
     udfs: Optional[List[UDF]] = ()
     commands: Optional[List[SQLCommand]] = ()
 
-
-def new_from_path(path: str, setting_overrides={}):
-    """
-    Initialize a new configuration instance
-    directly from the filesystem.
-
-    :param path:
-    :return:
-    """
+def render_config(path: str, setting_overrides={}) -> dict:
     with open(path) as f:
         template = Template(f.read())
 
@@ -165,8 +157,19 @@ def new_from_path(path: str, setting_overrides={}):
         **settings_vars
     )
 
-    conf = safe_load(rendered_template)
-    return new_from_dict(conf)
+    return safe_load(rendered_template)
+
+def new_from_path(path: str, setting_overrides={}):
+    """
+    Initialize a new configuration instance
+    directly from the filesystem.
+
+    :param path:
+    :return:
+
+    """
+    config_dict = render_config(path, setting_overrides)
+    return new_from_dict(config_dict)
 
 
 def build_source_config_from_dict(conf) -> Source:
