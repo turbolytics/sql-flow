@@ -35,3 +35,9 @@ start-backing-services:
 docker-image:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \
 	docker build --platform linux/amd64 -t turbolytics/sql-flow:$$GIT_HASH .
+
+.PHONY: docker-image-multiarch
+docker-image-multiarch:
+	@GIT_HASH=$$(git rev-parse --short HEAD) && \
+	docker build --platform linux/arm64 -t turbolytics/sql-flow:$$GIT_HASH .
+	# docker buildx build --platform linux/arm64,linux/amd64 -t turbolytics/sql-flow:multiarch-$$GIT_HASH --push .
