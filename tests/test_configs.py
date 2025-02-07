@@ -50,6 +50,7 @@ class ConfigValidationTestCase(unittest.TestCase):
             'kafka.structured.disk.yml',
             'kafka.structured.mem.yml',
             's3.parquet.sink.yml',
+            'tumbling.window.yml',
         ]
 
     def test_example_config_against_schema(self):
