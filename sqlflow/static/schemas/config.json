@@ -27,6 +27,14 @@
       "type": "object",
       "description": "Main pipeline configuration.",
       "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the pipeline."
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of the pipeline."
+        },
         "batch_size": {
           "type": "integer",
           "minimum": 1,
@@ -143,7 +151,8 @@
               "enum": [
                 "kafka",
                 "noop",
-                "iceberg"
+                "iceberg",
+                "console"
               ],
               "description": "Type of sink (supports 'kafka' or 'noop')."
             },

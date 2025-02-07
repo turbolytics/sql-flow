@@ -45,6 +45,7 @@ class ConfigValidationTestCase(unittest.TestCase):
             'csv.mem.join.yml',
             'enrich.yml',
             'kafka.mem.iceberg.yml',
+            'kafka.postgres.join.yml',
         ]
 
     def test_example_config_against_schema(self):
