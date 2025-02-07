@@ -46,6 +46,10 @@ class ConfigValidationTestCase(unittest.TestCase):
             'enrich.yml',
             'kafka.mem.iceberg.yml',
             'kafka.postgres.join.yml',
+            'kafka.postgres.sink.yml',
+            'kafka.structured.disk.yml',
+            'kafka.structured.mem.yml',
+            's3.parquet.sink.yml',
         ]
 
     def test_example_config_against_schema(self):

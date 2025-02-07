@@ -128,7 +128,8 @@
               "type": "string",
               "enum": [
                 "handlers.InferredDiskBatch",
-                "handlers.InferredMemBatch"
+                "handlers.InferredMemBatch",
+                "handlers.StructuredBatch"
               ],
               "description": "Type of handler used for processing."
             },
@@ -152,7 +153,8 @@
                 "kafka",
                 "noop",
                 "iceberg",
-                "console"
+                "console",
+                "sqlcommand"
               ],
               "description": "Type of sink (supports 'kafka' or 'noop')."
             },
@@ -195,6 +197,17 @@
                 "catalog_name",
                 "table_name"
               ]
+            },
+             "sqlcommand": {
+              "type": "object",
+              "description": "Sink type that executes a SQL command.",
+              "properties": {
+                "sql": {
+                  "type": "string",
+                  "description": "SQL command that inserts data into a database."
+                }
+              },
+              "required": ["sql"]
             }
           },
           "required": [
