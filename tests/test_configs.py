@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import tempfile
@@ -5,6 +6,7 @@ import unittest
 import datetime
 
 import duckdb
+import jsonschema
 import pyarrow.parquet as pq
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.schema import Schema
@@ -12,7 +14,7 @@ from pyiceberg.types import NestedField, StringType, LongType, TimestampType
 
 from sqlflow import settings, config
 from sqlflow.lifecycle import invoke
-from sqlflow.config import new_from_dict, ConsoleSink, TumblingWindow, TableManager, Sink
+from sqlflow.config import new_from_dict, ConsoleSink, TumblingWindow, TableManager, Sink, render_config
 
 dev_dir = os.path.join(
     os.path.dirname(__file__),
@@ -22,6 +24,35 @@ dev_dir = os.path.join(
 
 conf_dir = os.path.join(dev_dir, 'config')
 fixtures_dir = os.path.join(dev_dir, 'fixtures')
+
+
+class ConfigValidationTestCase(unittest.TestCase):
+    def setUp(self):
+        self.schema_path = os.path.join(
+            settings.PACKAGE_ROOT,
+            'static',
+            'schemas',
+            'config.json',
+        )
+        with open(self.schema_path, 'r') as f:
+            self.schema = json.load(f)
+
+        self.example = [
+            'attach-geoip.yml',
+            'basic.agg.mem.yml',
+            'basic.agg.yml',
+            'csv.filesystem.join.yml',
+            'csv.mem.join.yml',
+            'enrich.yml',
+        ]
+
+    def test_example_config_against_schema(self):
+        for example_file in self.example:
+            with self.subTest(example=example_file):
+                example_path = os.path.join(conf_dir, 'examples', example_file)
+                with open(example_path, 'r') as f:
+                    config_dict = render_config(example_path)
+                    jsonschema.validate(config_dict, self.schema)
 
 
 class InvokeExamplesTestCase(unittest.TestCase):
