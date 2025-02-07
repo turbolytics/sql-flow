@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "commands": {
+      "type": "array",
+      "description": "List of SQL commands to execute before processing the pipeline.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the command for reference."
+          },
+          "sql": {
+            "type": "string",
+            "description": "SQL statements to execute."
+          }
+        },
+        "required": [
+          "name",
+          "sql"
+        ]
+      }
+    },
+     "tables": {
+      "type": "object",
+      "description": "Predefined SQL tables used in the pipeline.",
+      "properties": {
+        "sql": {
+          "type": "array",
+          "description": "List of tables with their SQL definitions and management configurations.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Name of the table."
+              },
+              "sql": {
+                "type": "string",
+                "description": "SQL statements to create the table and indexes."
+              },
+              "manager": {
+                "type": "object",
+                "description": "Manager for handling windowing operations and clean-up.",
+                "properties": {
+                  "tumbling_window": {
+                    "type": "object",
+                    "description": "Tumbling window management for table data.",
+                    "properties": {
+                      "collect_closed_windows_sql": {
+                        "type": "string",
+                        "description": "SQL query to collect closed tumbling windows."
+                      },
+                      "delete_closed_windows_sql": {
+                        "type": "string",
+                        "description": "SQL query to delete closed tumbling windows."
+                      }
+                    },
+                    "required": ["collect_closed_windows_sql", "delete_closed_windows_sql"]
+                  },
+                  "sink": {
+                    "type": "object",
+                    "description": "Sink configuration for the managed table.",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["kafka"],
+                        "description": "Type of sink (currently only 'kafka' is supported)."
+                      },
+                      "kafka": {
+                        "type": "object",
+                        "description": "Kafka-specific sink configuration.",
+                        "properties": {
+                          "brokers": {
+                            "type": "array",
+                            "items": { "type": "string", "format": "hostname" },
+                            "description": "List of Kafka broker addresses."
+                          },
+                          "topic": {
+                            "type": "string",
+                            "description": "Kafka topic where processed data will be published."
+                          }
+                        },
+                        "required": ["brokers", "topic"]
+                      }
+                    },
+                    "required": ["type"]
+                  }
+                }
+              }
+            },
+            "required": ["name", "sql", "manager"]
+          }
+        }
+      }
+    },
+    "udfs": {
+      "type": "array",
+      "description": "List of User-Defined Functions (UDFs) to be used in SQL queries.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "function_name": {
+            "type": "string",
+            "description": "Name of the function as referenced in SQL queries."
+          },
+          "import_path": {
+            "type": "string",
+            "description": "Python import path where the function is defined."
+          }
+        },
+        "required": ["function_name", "import_path"]
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "description": "Main pipeline configuration.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the pipeline."
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of the pipeline."
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of messages processed in a batch."
+        },
+        "flush_interval_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "description": "Time interval to flush batches in seconds."
+        },
+        "source": {
+          "type": "object",
+          "description": "Configuration for the data source.",
+          "properties": {
+            "on_error": {
+              "type": "object",
+              "description": "Error handling strategy for the source.",
+              "properties": {
+                "policy": {
+                  "type": "string",
+                  "enum": [
+                    "raise",
+                    "ignore"
+                  ],
+                  "default": "raise",
+                  "description": "Defines how errors should be handled."
+                }
+              },
+              "required": [
+                "policy"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "kafka",
+                "websocket"
+              ],
+              "description": "Type of source (currently only 'kafka' is supported)."
+            },
+            "kafka": {
+              "type": "object",
+              "description": "Kafka-specific source configuration.",
+              "properties": {
+                "brokers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "hostname"
+                  },
+                  "description": "List of Kafka broker addresses."
+                },
+                "group_id": {
+                  "type": "string",
+                  "description": "Kafka consumer group ID."
+                },
+                "auto_offset_reset": {
+                  "type": "string",
+                  "enum": [
+                    "earliest",
+                    "latest"
+                  ],
+                  "description": "Offset reset policy."
+                },
+                "topics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "description": "List of Kafka topics to consume."
+                }
+              },
+              "required": [
+                "brokers",
+                "group_id",
+                "auto_offset_reset",
+                "topics"
+              ]
+            },
+            "websocket": {
+              "type": "object",
+              "description": "WebSocket-specific source configuration.",
+              "properties": {
+                "uri": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "WebSocket URI to connect to (e.g., 'wss://example.com')."
+                }
+              },
+              "required": ["uri"]
+            }
+        },
+          "required": [
+            "type"
+          ]
+        },
+        "handler": {
+          "type": "object",
+          "description": "Data processing configuration.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "handlers.InferredDiskBatch",
+                "handlers.InferredMemBatch",
+                "handlers.StructuredBatch"
+              ],
+              "description": "Type of handler used for processing."
+            },
+            "sql": {
+              "type": "string",
+              "description": "SQL query to process each batch."
+            }
+          },
+          "required": [
+            "type",
+            "sql"
+          ]
+        },
+        "sink": {
+          "type": "object",
+          "description": "Configuration for the data sink.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "kafka",
+                "noop",
+                "iceberg",
+                "console",
+                "sqlcommand"
+              ],
+              "description": "Type of sink (supports 'kafka' or 'noop')."
+            },
+            "kafka": {
+              "type": "object",
+              "description": "Kafka-specific sink configuration.",
+              "properties": {
+                "brokers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "hostname"
+                  },
+                  "description": "List of Kafka brokers for publishing data."
+                },
+                "topic": {
+                  "type": "string",
+                  "description": "Kafka topic where processed data will be written."
+                }
+              },
+              "required": [
+                "brokers",
+                "topic"
+              ]
+            },
+            "iceberg": {
+              "type": "object",
+              "description": "Iceberg-specific sink configuration.",
+              "properties": {
+                "catalog_name": {
+                  "type": "string",
+                  "description": "Name of the Iceberg catalog (e.g., 'sqlflow_test')."
+                },
+                "table_name": {
+                  "type": "string",
+                  "description": "Name of the Iceberg table (e.g., 'default.city_events')."
+                }
+              },
+              "required": [
+                "catalog_name",
+                "table_name"
+              ]
+            },
+             "sqlcommand": {
+              "type": "object",
+              "description": "Sink type that executes a SQL command.",
+              "properties": {
+                "sql": {
+                  "type": "string",
+                  "description": "SQL command that inserts data into a database."
+                }
+              },
+              "required": ["sql"]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      },
+      "required": [
+        "batch_size",
+        "source",
+        "handler",
+        "sink"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "pipeline"
+  ],
+  "additionalProperties": false
+}

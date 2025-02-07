@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import threading
 
 import click
@@ -8,9 +10,10 @@ from opentelemetry import metrics as otelmetrics
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.sdk.metrics import MeterProvider
 from prometheus_client import start_http_server
+import jsonschema
 
-from sqlflow import logging as sqlflow_logging
-from sqlflow.config import new_from_path
+from sqlflow import logging as sqlflow_logging, settings
+from sqlflow.config import new_from_path, render_config
 from sqlflow.http import DebugAPI
 from sqlflow.lifecycle import start, invoke
 
@@ -23,7 +26,7 @@ def cli():
     pass
 
 
-@click.command()
+@click.command(help='Start the SQLFlow service.')
 @click.argument('config')
 @click.option(
     '--max-msgs-to-process',
@@ -76,22 +79,41 @@ def run(config, max_msgs_to_process, with_http_debug, metrics):
     )
 
 
-@click.group()
+@click.group(help='')
+def config():
+    pass
+
+@click.command(name='validate', help='Validate the configuration file.')
+@click.argument('config')
+def config_validate(config):
+    schema_path = os.path.join(settings.PACKAGE_ROOT, 'static', 'schemas', 'config.json')
+    with open(schema_path, 'r') as f:
+        schema = json.load(f)
+    # load the file and render env vars
+    config_dict = render_config(config)
+    # validate against json schema
+    jsonschema.validate(config_dict, schema)
+
+
+@click.group(help='Development commands.')
 def dev():
     pass
 
 
-@click.command(name='invoke')
+@click.command(name='invoke', help='execute a pipeline against a static file. Use for verifying pipeline logic.')
 @click.argument('config')
 @click.argument('fixture')
-def cli_invoke(config, fixture):
+def dev_invoke(config, fixture):
     conn = duckdb.connect()
     invoke(conn, config, fixture)
 
 
-dev.add_command(cli_invoke)
+config.add_command(config_validate)
+dev.add_command(dev_invoke)
+
 cli.add_command(run)
 cli.add_command(dev)
+cli.add_command(config)
 
 
 if __name__ == '__main__':

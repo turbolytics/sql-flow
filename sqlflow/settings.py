@@ -33,3 +33,4 @@ DEV_DIR = os.path.join(
 
 CONF_DIR = os.path.join(DEV_DIR, 'config')
 FIXTURES_DIR = os.path.join(DEV_DIR, 'fixtures')
+PACKAGE_ROOT = os.path.dirname(__file__)
