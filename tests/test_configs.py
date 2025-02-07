@@ -51,6 +51,11 @@ class ConfigValidationTestCase(unittest.TestCase):
             'kafka.structured.mem.yml',
             's3.parquet.sink.yml',
             'tumbling.window.yml',
+            'udf.yml',
+            'bluesky/bluesky.kafka.raw.yml',
+            'bluesky/bluesky.kafka.transformed.yml',
+            'bluesky/bluesky.kafka.windowed.yml',
+            'bluesky/bluesky.raw.stdout.yml',
         ]
 
     def test_example_config_against_schema(self):

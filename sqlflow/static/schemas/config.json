@@ -96,6 +96,24 @@
         }
       }
     },
+    "udfs": {
+      "type": "array",
+      "description": "List of User-Defined Functions (UDFs) to be used in SQL queries.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "function_name": {
+            "type": "string",
+            "description": "Name of the function as referenced in SQL queries."
+          },
+          "import_path": {
+            "type": "string",
+            "description": "Python import path where the function is defined."
+          }
+        },
+        "required": ["function_name", "import_path"]
+      }
+    },
     "pipeline": {
       "type": "object",
       "description": "Main pipeline configuration.",
@@ -143,7 +161,8 @@
             "type": {
               "type": "string",
               "enum": [
-                "kafka"
+                "kafka",
+                "websocket"
               ],
               "description": "Type of source (currently only 'kafka' is supported)."
             },
@@ -186,11 +205,22 @@
                 "auto_offset_reset",
                 "topics"
               ]
+            },
+            "websocket": {
+              "type": "object",
+              "description": "WebSocket-specific source configuration.",
+              "properties": {
+                "uri": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "WebSocket URI to connect to (e.g., 'wss://example.com')."
+                }
+              },
+              "required": ["uri"]
             }
-          },
+        },
           "required": [
-            "type",
-            "kafka"
+            "type"
           ]
         },
         "handler": {
