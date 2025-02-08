@@ -62,12 +62,18 @@
                   },
                   "sink": {
                     "type": "object",
-                    "description": "Sink configuration for the managed table.",
+                    "description": "Configuration for the data sink.",
                     "properties": {
                       "type": {
                         "type": "string",
-                        "enum": ["kafka"],
-                        "description": "Type of sink (currently only 'kafka' is supported)."
+                        "enum": [
+                          "kafka",
+                          "noop",
+                          "iceberg",
+                          "console",
+                          "sqlcommand"
+                        ],
+                        "description": "Sink identifier."
                       },
                       "kafka": {
                         "type": "object",
@@ -75,18 +81,55 @@
                         "properties": {
                           "brokers": {
                             "type": "array",
-                            "items": { "type": "string", "format": "hostname" },
-                            "description": "List of Kafka broker addresses."
+                            "items": {
+                              "type": "string",
+                              "format": "hostname"
+                            },
+                            "description": "List of Kafka brokers for publishing data."
                           },
                           "topic": {
                             "type": "string",
-                            "description": "Kafka topic where processed data will be published."
+                            "description": "Kafka topic where processed data will be written."
                           }
                         },
-                        "required": ["brokers", "topic"]
+                        "required": [
+                          "brokers",
+                          "topic"
+                        ]
+                      },
+                      "iceberg": {
+                        "type": "object",
+                        "description": "Iceberg-specific sink configuration.",
+                        "properties": {
+                          "catalog_name": {
+                            "type": "string",
+                            "description": "Name of the Iceberg catalog (e.g., 'sqlflow_test')."
+                          },
+                          "table_name": {
+                            "type": "string",
+                            "description": "Name of the Iceberg table (e.g., 'default.city_events')."
+                          }
+                        },
+                        "required": [
+                          "catalog_name",
+                          "table_name"
+                        ]
+                      },
+                      "sqlcommand": {
+                        "type": "object",
+                        "description": "Sink type that executes a SQL command.",
+                        "properties": {
+                          "sql": {
+                            "type": "string",
+                            "description": "SQL command that inserts data into a database."
+                          }
+                        },
+                        "required": ["sql"]
                       }
                     },
-                    "required": ["type"]
+                    "required": [
+                      "type"
+                    ]
                   }
                 }
               }
@@ -164,7 +207,7 @@
                 "kafka",
                 "websocket"
               ],
-              "description": "Type of source (currently only 'kafka' is supported)."
+              "description": "Type of source."
             },
             "kafka": {
               "type": "object",
