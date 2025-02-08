@@ -13,7 +13,7 @@ from prometheus_client import start_http_server
 import jsonschema
 
 from sqlflow import logging as sqlflow_logging, settings
-from sqlflow.config import new_from_path, render_config
+from sqlflow.config import new_from_path, render_config, jsonschema_to_yaml
 from sqlflow.http import DebugAPI
 from sqlflow.lifecycle import start, invoke
 
@@ -83,6 +83,14 @@ def run(config, max_msgs_to_process, with_http_debug, metrics):
 def config():
     pass
 
+
+@click.command(name='example')
+def config_example():
+    schema_path = os.path.join(settings.PACKAGE_ROOT, 'static', 'schemas', 'config.json')
+    example_yml = jsonschema_to_yaml(schema_path)
+    print('\n'.join(example_yml))
+
+
 @click.command(name='validate', help='Validate the configuration file.')
 @click.argument('config')
 def config_validate(config):
@@ -109,6 +117,7 @@ def dev_invoke(config, fixture):
 
 
 config.add_command(config_validate)
+config.add_command(config_example)
 dev.add_command(dev_invoke)
 
 cli.add_command(run)

@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 from typing import Optional, List
 
@@ -285,3 +286,69 @@ def new_from_dict(conf):
         ),
     )
 
+
+def jsonschema_to_yaml(jsonschema_file):
+    """
+    Converts a JSON Schema file to YAML format with:
+    - Descriptions as comments.
+    - Primitive types as placeholders (e.g., <string>, <integer>).
+    - Enum values displayed as 'value1|value2|etc'.
+
+    Args:
+        jsonschema_file (str): Path to the JSON Schema file.
+        yaml_output_file (str): Path to save the generated YAML file.
+    """
+    # Load the JSON schema
+    with open(jsonschema_file, 'r') as file:
+        main_schema = json.load(file)
+
+    def process_properties(properties, level=0):
+        """
+        Process JSON Schema properties to generate YAML with comments.
+        """
+        yaml_output = []
+        indent = "  " * level
+
+        for key, value in properties.items():
+            description = value.get("description", "")
+
+            # Add description as a YAML comment
+            if description:
+                yaml_output.append(f"{indent}# {description}")
+
+            # Determine placeholder value
+            if "enum" in value:
+                placeholder = " | ".join(map(str, value["enum"]))  # Enum values as a list
+            elif "type" in value:
+                type_mapping = {
+                    "string": "<string>",
+                    "integer": "<integer>",
+                    "boolean": "<boolean>",
+                    "number": "<number>",
+                    "array": "<array>",
+                    "object": "<object>"
+                }
+                placeholder = type_mapping.get(value["type"], "<unknown>")
+            else:
+                placeholder = "<unknown>"
+
+            # Handle different schema types
+            if value.get("type") == "object":
+                yaml_output.append(f"{indent}{key}:")
+                if "properties" in value:
+                    yaml_output.extend(process_properties(value["properties"], level + 1))
+            elif value.get("type") == "array":
+                yaml_output.append(f"{indent}{key}:")
+                if "items" in value and "properties" in value["items"]:
+                    yaml_output.append(f"{indent}  -")  # Show array structure
+                    yaml_output.extend(process_properties(value["items"]["properties"], level + 2))
+                else:
+                    yaml_output.append(f"{indent}  - {placeholder}")
+            else:
+                yaml_output.append(f"{indent}{key}: {placeholder}")
+
+        return yaml_output
+
+    # Convert the root properties
+    yaml_lines = process_properties(main_schema.get("properties", {}))
+    return yaml_lines
