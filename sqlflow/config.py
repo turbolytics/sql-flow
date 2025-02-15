@@ -50,6 +50,12 @@ class SQLCommandSink:
 
 
 @dataclass
+class ClikhouseSink:
+    dsn: str
+    table: str
+
+
+@dataclass
 class Sink:
     type: str
     format: Optional[SinkFormat] = None
@@ -57,6 +63,7 @@ class Sink:
     console: Optional[ConsoleSink] = None
     sqlcommand: Optional[SQLCommandSink] = None
     iceberg: Optional[IcebergSink] = None
+    clickhouse: Optional[ClikhouseSink] = None
 
 
 @dataclass
@@ -228,6 +235,11 @@ def build_sink_config_from_dict(conf) -> Sink:
         sink.iceberg = IcebergSink(
             catalog_name=conf['iceberg']['catalog_name'],
             table_name=conf['iceberg']['table_name'],
+        )
+    elif sink.type == 'clickhouse':
+        sink.clickhouse = ClikhouseSink(
+            dsn=conf['clickhouse']['dsn'],
+            table=conf['clickhouse']['table'],
         )
     else:
         sink.type = 'console'

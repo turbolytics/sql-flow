@@ -1,0 +1,29 @@
+pipeline:
+  name: kafka-clickhouse-sink
+  description: "Sinks data from Kafka to Clickhouse"
+  batch_size: 50000
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      topics:
+        - "input-clickhouse-sink-user-actions"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT 
+        CAST(timestamp as TIMESTAMP) as timestamp,
+        user_id,
+        action,
+        browser
+      FROM batch
+
+  sink:
+    type: clickhouse
+    clickhouse:
+      dsn: {{ SQLFLOW_CLICKHOUSE_DSN|default('clickhouse://localhost:8123/test') }}
+      table: user_actions

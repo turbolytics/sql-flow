@@ -4,6 +4,7 @@ import uuid
 import socket
 from typing import Optional
 
+import clickhouse_connect
 import pyarrow as pa
 from abc import abstractmethod, ABC
 
@@ -143,6 +144,23 @@ class KafkaSink(Sink):
         self.producer.flush()
 
 
+class ClickhouseSink(Sink):
+    def __init__(self, client, table_name):
+        self.table_name = table_name
+        self.client = client
+        self._table = None
+
+    def batch(self) -> Optional[pa.Table]:
+        return None
+
+    def write_table(self, table: pa.Table):
+        self._table = table
+
+    def flush(self):
+        self.client.insert_arrow(self.table_name, self._table)
+        self._table = None
+
+
 class NoopSink(Sink):
 
     def batch(self) -> Optional[pa.Table]:
@@ -196,6 +214,12 @@ def new_sink_from_conf(sink_conf: config.Sink, conn) -> Sink:
         return IcebergSink(
             catalog=sink_conf.iceberg.catalog_name,
             iceberg_table=table,
+        )
+    elif sink_conf.type == 'clickhouse':
+        client = clickhouse_connect.get_client(dsn=sink_conf.clickhouse.dsn)
+        return ClickhouseSink(
+            client=client,
+            table_name=sink_conf.clickhouse.table,
         )
 
     raise NotImplementedError('unsupported sink type: {}'.format(sink_conf.type))

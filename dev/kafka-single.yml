@@ -81,5 +81,29 @@ services:
       - minio_data:/data
     command: server --console-address ":9090" /data
 
+  clickhouse:
+    image: 'clickhouse/clickhouse-server:latest'
+    user: '101:101'
+    container_name: clickhouse
+    hostname: clickhouse
+    volumes:
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./clickhouse/users.xml:/etc/clickhouse-server/users.d/users.xml
+      - ./clickhouse/initdb.sql:/docker-entrypoint-initdb.d/initdb.sql
+    ports:
+      - '127.0.0.1:8123:8123'
+      - '127.0.0.1:9001:9000'
+    depends_on:
+      - clickhouse-keeper
+  clickhouse-keeper:
+    image: 'clickhouse/clickhouse-keeper:latest-alpine'
+    user: '101:101'
+    container_name: clickhouse-keeper
+    hostname: clickhouse-keeper
+    volumes:
+      - ./clickhouse-keeper/config.xml:/etc/clickhouse-keeper/keeper_config.xml
+    ports:
+      - '127.0.0.1:9181:9181'
+
 volumes:
   minio_data:

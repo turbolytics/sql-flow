@@ -300,7 +300,8 @@
                 "noop",
                 "iceberg",
                 "console",
-                "sqlcommand"
+                "sqlcommand",
+                "clickhouse"
               ],
               "description": "Type of sink (supports 'kafka' or 'noop')."
             },
@@ -324,6 +325,24 @@
               "required": [
                 "brokers",
                 "topic"
+              ]
+            },
+            "clickhouse": {
+              "type": "object" ,
+              "description": "ClickHouse-specific sink configuration.",
+              "properties": {
+                "dsn": {
+                  "type": "string",
+                  "description": "ClickHouse DSN (e.g., 'clickhouse://localhost:9000')."
+                },
+                "table": {
+                  "type": "string",
+                  "description": "ClickHouse table name."
+                }
+              },
+              "required": [
+                "dsn",
+                "table"
               ]
             },
             "iceberg": {
