@@ -17,12 +17,12 @@ tables:
               city,
               count
             FROM agg_cities_count
-            WHERE bucket AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND) 
+            WHERE bucket < (now()::timestamptz - INTERVAL '60' SECOND) 
             ORDER BY city
 
           delete_closed_windows_sql: |
             DELETE FROM agg_cities_count 
-            WHERE bucket AT TIME ZONE 'utc' < (now()::timestamptz AT TIME ZONE 'UTC' - INTERVAL '60' SECOND)
+            WHERE bucket < (now()::timestamptz - INTERVAL '60' SECOND)
           
         sink:
           type: kafka

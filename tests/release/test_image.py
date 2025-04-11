@@ -1,8 +1,6 @@
 import subprocess
-import unittest
 
 import pytest
-from click import command
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.network import Network
 from testcontainers.core.waiting_utils import wait_for_logs
@@ -11,7 +9,6 @@ from testcontainers.kafka import KafkaContainer
 from sqlflow import settings
 from sqlflow.fixtures import KafkaFaker
 from sqlflow.kafka import read_all_kafka_messages
-from tests.integration.test_integration import bootstrap_server
 
 
 @pytest.fixture(scope="module")
