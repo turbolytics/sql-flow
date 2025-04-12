@@ -157,10 +157,10 @@ class InvokeExamplesTestCase(unittest.TestCase):
             }
         )
         self.assertEqual([
-            {'city': 'New York', 'state_full': 'New York'},
-            {'city': 'New York', 'state_full': 'New York'},
             {'city': 'Baltimore', 'state_full': 'Maryland'},
-            {'city': 'Baltimore', 'state_full': 'Maryland'}
+            {'city': 'Baltimore', 'state_full': 'Maryland'},
+            {'city': 'New York', 'state_full': 'New York'},
+            {'city': 'New York', 'state_full': 'New York'},
         ], table.to_pylist())
 
     def test_enrich(self):

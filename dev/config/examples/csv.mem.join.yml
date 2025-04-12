@@ -30,7 +30,8 @@ pipeline:
           FROM locations
           WHERE locations.city = properties.city 
         LIMIT 1 
-      ) AS single_location ON single_location.city = properties.city;
+      ) AS single_location ON single_location.city = properties.city
+      ORDER BY properties.city ASC;
 
   sink:
     type: kafka
