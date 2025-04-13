@@ -1,0 +1,46 @@
+commands:
+  - name: load extensions
+    sql: |
+      INSTALL azure;
+      LOAD azure;
+  - name: create adls secret
+    sql: |
+      CREATE SECRET adls_conn (
+        TYPE azure,
+        PROVIDER credential_chain,
+        CHAIN 'default;cli;env',
+        ACCOUNT_NAME '{{ SQLFLOW_AZURE_ACCOUNT_NAME }}'
+      );
+
+pipeline:
+  name: kafka-azure-duckdb-sink
+  description: "Writes Kafka stream into Azure Data Lake using DuckDB Azure extension"
+  batch_size: 50
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: sql-flow-consumer-001
+      auto_offset_reset: earliest
+      topics:
+        - "input-azure-pipeline-dev"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT
+        *,
+        CAST(TO_TIMESTAMP(payload.source.ts_ms / 1000) AS DATE) AS SourceDatePartition
+      FROM batch;
+
+  sink:
+    type: sqlcommand
+    sqlcommand:
+      substitutions:
+          - var: $sqlflow_uuid
+            type: uuid4
+      sql: |
+        COPY sqlflow_sink_batch
+        TO 'abfss://somecontainer@someaccount.dfs.core.windows.net/path/$sqlflow_uuid.parquet'
+        (FORMAT 'parquet', PARTITION_BY (SourceDatePartition), OVERWRITE_OR_IGNORE 1);
