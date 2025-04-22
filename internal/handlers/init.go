@@ -1,15 +1,11 @@
 package handlers
 
 import (
-	"fmt"
 	"github.com/turbolytics/turbine/internal/config"
 	"github.com/turbolytics/turbine/internal/core"
-	"sync"
-
-	"github.com/apache/arrow/go/v14/arrow"
-	"github.com/apache/arrow/go/v14/arrow/memory"
 )
 
+/*
 type StructuredBatchHandler struct {
 	mu     sync.Mutex
 	batch  []jsonRow
@@ -100,8 +96,8 @@ func (h *StructuredBatchHandler) Invoke() (any, error) {
 			}
 
 		return result, nil
-	*/
 }
+*/
 
 func New(c config.Handler) (core.Handler, error) {
 	return nil, nil

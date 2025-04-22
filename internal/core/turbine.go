@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"sync"
 	"time"
@@ -29,7 +28,7 @@ type Message interface {
 
 type Handler interface {
 	Init()
-	Write(msg string) error
+	Write(msg []byte) error
 	Invoke() any
 }
 
@@ -137,17 +136,19 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 			if numBatchMessages == 0 {
 			}
 
-			var msgObj string
-			if err := json.Unmarshal(msg.Value(), &msgObj); err != nil {
-				t.stats.NumErrors++
-				log.Printf("error decoding message: %v", err)
-				if t.errorPolicy.Source == PolicyRaise {
-					return nil, err
+			/*
+				var msgObj string
+				if err := json.Unmarshal(msg.Value(), &msgObj); err != nil {
+					t.stats.NumErrors++
+					log.Printf("error decoding message: %v", err)
+					if t.errorPolicy.Source == PolicyRaise {
+						return nil, err
+					}
+					continue
 				}
-				continue
-			}
+			*/
 
-			if err := t.handler.Write(msgObj); err != nil {
+			if err := t.handler.Write(msg.Value()); err != nil {
 				t.stats.NumErrors++
 				log.Printf("error writing message: %v", err)
 				return nil, err
