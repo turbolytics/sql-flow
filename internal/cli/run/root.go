@@ -1,18 +1,16 @@
 package run
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"github.com/spf13/cobra"
-	"github.com/turbolytics/turbine/internal/sinks"
+	"github.com/turbolytics/turbine/internal/handlers"
 	"github.com/turbolytics/turbine/internal/sources"
+	"go.uber.org/zap"
 	"sync"
 	"time"
 
 	"github.com/turbolytics/turbine/internal/config"
 	"github.com/turbolytics/turbine/internal/core"
-	"github.com/turbolytics/turbine/internal/handlers"
 )
 
 func NewCommand() *cobra.Command {
@@ -22,9 +20,10 @@ func NewCommand() *cobra.Command {
 		Use:   "run",
 		Short: "Run turbine against a stream of data",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if configPath == "" {
-				return errors.New("missing required --config flag")
-			}
+			ctx := cmd.Context()
+			logger, _ := zap.NewDevelopment()
+			defer logger.Sync()
+			l := logger.Named("turbine")
 
 			conf, err := config.Load(configPath, map[string]string{})
 			if err != nil {
@@ -36,31 +35,32 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to create source: %w", err)
 			}
 
-			sink, err := sinks.New(conf.Pipeline.Sink)
-			if err != nil {
-				return fmt.Errorf("failed to create sink: %w", err)
-			}
+			/*
+				sink, err := sinks.New(conf.Pipeline.Sink)
+				if err != nil {
+					return fmt.Errorf("failed to create sink: %w", err)
+				}
 
-			handler, err := handlers.New(conf.Pipeline.Handler)
-			if err != nil {
-				return fmt.Errorf("failed to create handler: %w", err)
-			}
+				handler, err := handlers.New(conf.Pipeline.Handler)
+				if err != nil {
+					return fmt.Errorf("failed to create handler: %w", err)
+				}
+			*/
 
 			lock := &sync.Mutex{}
 			turbine := core.NewTurbine(
 				src,
-				handler,
-				sink,
+				handlers.Noop{},
+				nil,
 				conf.Pipeline.BatchSize,
 				time.Duration(conf.Pipeline.FlushIntervalSeconds)*time.Second,
 				lock,
 				core.PipelineErrorPolicies{
 					// Source: conf.Pipeline.Source.Error.Policy,
 				},
-				nil, // metrics meter - can be wired later
+				core.WithTurbineLogger(l),
 			)
 
-			ctx := context.Background()
 			_, err = turbine.ConsumeLoop(ctx, 0)
 			return err
 		},
