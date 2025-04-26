@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"github.com/apache/arrow-go/v18/arrow"
+	"go.uber.org/zap"
 	"log"
 	"sync"
 	"time"
@@ -27,9 +29,9 @@ type Message interface {
 }
 
 type Handler interface {
-	Init()
+	Init() error
 	Write(msg []byte) error
-	Invoke() any
+	Invoke() (*arrow.Table, error)
 }
 
 type Stats struct {
@@ -61,6 +63,8 @@ type Turbine struct {
 	stats         Stats
 	errorPolicy   PipelineErrorPolicies
 
+	logger *zap.Logger
+
 	// Metrics
 	messageCounter         metric.Int64Counter
 	errorCounter           metric.Int64Counter
@@ -71,6 +75,14 @@ type Turbine struct {
 	batchProcessingLatency metric.Float64Histogram
 }
 
+func WithTurbineLogger(l *zap.Logger) TurbineOption {
+	return func(t *Turbine) {
+		t.logger = l
+	}
+}
+
+type TurbineOption func(turbine *Turbine)
+
 func NewTurbine(
 	source Source,
 	handler Handler,
@@ -79,9 +91,9 @@ func NewTurbine(
 	flushInterval time.Duration,
 	lock *sync.Mutex,
 	policy PipelineErrorPolicies,
-	meter metric.Meter,
+	opts ...TurbineOption,
 ) *Turbine {
-	return &Turbine{
+	t := &Turbine{
 		source:        source,
 		sink:          sink,
 		handler:       handler,
@@ -94,8 +106,14 @@ func NewTurbine(
 		},
 		errorPolicy: policy,
 
-		// Initialize metrics here if desired
+		logger: zap.NewNop(),
 	}
+
+	for _, opt := range opts {
+		opt(t)
+	}
+
+	return t
 }
 
 func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) {
@@ -112,9 +130,10 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 
 	t.stats.StartTime = time.Now().UTC()
 	t.stats.NumMessagesConsumed = 0
-	t.handler.Init()
+	if err := t.handler.Init(); err != nil {
+		return nil, err
+	}
 
-	livenessTimer := time.Now()
 	numBatchMessages := 0
 
 	for t.running {
@@ -124,11 +143,6 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 			break
 		case msg := <-t.source.Stream():
 			if msg == nil {
-				if time.Since(livenessTimer) > t.flushInterval {
-					log.Println("liveness check passed, issuing flush")
-					t.flush()
-					livenessTimer = time.Now()
-				}
 				continue
 			}
 
@@ -147,7 +161,6 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 					continue
 				}
 			*/
-
 			if err := t.handler.Write(msg.Value()); err != nil {
 				t.stats.NumErrors++
 				log.Printf("error writing message: %v", err)
@@ -162,7 +175,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 
 			if numBatchMessages == t.batchSize {
 				t.lock.Lock()
-				batch := t.handler.Invoke()
+				batch, _ := t.handler.Invoke()
 				t.lock.Unlock()
 
 				if err := t.sink.WriteTable(batch); err != nil {

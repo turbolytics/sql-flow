@@ -1,27 +1,31 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
+	"github.com/flosch/pongo2/v6"
+	"gopkg.in/yaml.v3"
 	"os"
 	"strings"
-	"text/template"
-
-	"gopkg.in/yaml.v3"
 )
 
 func RenderTemplate(path string, overrides map[string]string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+	/*
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+	*/
 
-	tmpl, err := template.New("config").Parse(string(raw))
-	if err != nil {
-		return nil, err
-	}
+	tmpl := pongo2.Must(pongo2.FromFile(path))
 
-	vars := map[string]string{}
+	/*
+		tmpl, err := template.New("config").Parse(string(raw))
+		if err != nil {
+			return nil, err
+		}
+	*/
+
+	vars := pongo2.Context{}
 	for _, v := range os.Environ() {
 		parts := strings.SplitN(v, "=", 2)
 		if len(parts) == 2 && strings.HasPrefix(parts[0], "SQLFLOW_") {
@@ -32,12 +36,12 @@ func RenderTemplate(path string, overrides map[string]string) ([]byte, error) {
 		vars[k] = v
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, vars); err != nil {
-		return nil, err
+	out, err := tmpl.Execute(vars)
+	if err != nil {
+		return nil, fmt.Errorf("rendering template failed: %w", err)
 	}
 
-	return buf.Bytes(), nil
+	return []byte(out), nil
 }
 
 func Load(path string, overrides map[string]string) (*Conf, error) {
