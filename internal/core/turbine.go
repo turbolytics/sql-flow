@@ -19,9 +19,9 @@ type Source interface {
 }
 
 type Sink interface {
-	WriteTable(data any) error
+	WriteTable(batch arrow.Table) error
 	Flush() error
-	Batch() any
+	Batch() (arrow.Table, error)
 }
 
 type Message interface {
@@ -29,9 +29,9 @@ type Message interface {
 }
 
 type Handler interface {
-	Init() error
+	Init(ctx context.Context) error
 	Write(msg []byte) error
-	Invoke() (*arrow.Table, error)
+	Invoke(ctx context.Context) (arrow.Table, error)
 }
 
 type Stats struct {
@@ -130,7 +130,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 
 	t.stats.StartTime = time.Now().UTC()
 	t.stats.NumMessagesConsumed = 0
-	if err := t.handler.Init(); err != nil {
+	if err := t.handler.Init(ctx); err != nil {
 		return nil, err
 	}
 
@@ -175,18 +175,18 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 
 			if numBatchMessages == t.batchSize {
 				t.lock.Lock()
-				batch, _ := t.handler.Invoke()
+				batch, _ := t.handler.Invoke(ctx)
 				t.lock.Unlock()
 
 				if err := t.sink.WriteTable(batch); err != nil {
 					t.stats.NumErrors++
 					return nil, err
 				}
-				t.flush()
+				t.flush(batch)
 				if err := t.source.Commit(); err != nil {
 					return nil, err
 				}
-				t.handler.Init()
+				t.handler.Init(ctx)
 				numBatchMessages = 0
 			}
 		}
@@ -201,13 +201,13 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 	return &t.stats, nil
 }
 
-func (t *Turbine) flush() {
+func (t *Turbine) flush(batch arrow.Table) {
 	start := time.Now()
 	if err := t.sink.Flush(); err != nil {
 		t.stats.NumErrors++
-		rows := t.sink.Batch()
+		rows, _ := t.sink.Batch()
 		log.Printf("flush error: %v, rows: %+v", err, rows)
 		return
 	}
-	log.Printf("flushed sink in %v", time.Since(start))
+	log.Printf("flushed sink with %d rows in %v", batch.NumRows(), time.Since(start))
 }

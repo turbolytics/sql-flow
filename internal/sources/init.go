@@ -13,9 +13,10 @@ func New(c config.Source) (core.Source, error) {
 	switch c.Type {
 	case "kafka":
 		consumer, _ := kafka.NewConsumer(&kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"group.id":          c.Kafka.GroupID,
-			"auto.offset.reset": c.Kafka.AutoOffsetReset,
+			"bootstrap.servers":  "localhost:9092",
+			"group.id":           c.Kafka.GroupID,
+			"auto.offset.reset":  c.Kafka.AutoOffsetReset,
+			"enable.auto.commit": false,
 		})
 		k, err := tkafka.NewSource(
 			consumer,

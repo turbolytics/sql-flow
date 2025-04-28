@@ -2,14 +2,15 @@ package local
 
 import (
 	"encoding/json"
-	"fmt"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"os"
 	"sync"
 )
 
 type ConsoleSink struct {
 	mu      sync.Mutex
-	buf     []any
+	buf     []arrow.Table
 	encoder *json.Encoder
 	out     *os.File
 }
@@ -21,20 +22,20 @@ func NewConsoleSink() *ConsoleSink {
 	}
 }
 
-func (s *ConsoleSink) WriteTable(data any) error {
+func (s *ConsoleSink) WriteTable(batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Retain to prevent premature release
-	s.buf = append(s.buf, data)
+	s.buf = append(s.buf, batch)
 	return nil
 }
 
-func (s *ConsoleSink) Batch() any {
+func (s *ConsoleSink) Batch() (arrow.Table, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.buf
+	return nil, nil
 }
 
 func (s *ConsoleSink) Flush() error {
@@ -45,8 +46,14 @@ func (s *ConsoleSink) Flush() error {
 		return nil
 	}
 
-	for _, rec := range s.buf {
-		fmt.Println(rec)
+	for _, table := range s.buf {
+		tr := array.NewTableReader(table, 0)
+		for tr.Next() {
+			rec := tr.Record()
+			if err := s.encoder.Encode(rec); err != nil {
+				return err
+			}
+		}
 	}
 	s.buf = nil
 	return nil
