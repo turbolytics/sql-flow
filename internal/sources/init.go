@@ -6,12 +6,18 @@ import (
 	"github.com/turbolytics/turbine/internal/config"
 	"github.com/turbolytics/turbine/internal/core"
 	tkafka "github.com/turbolytics/turbine/internal/kafka"
-	"time"
+	"go.uber.org/zap"
 )
 
-func New(c config.Source) (core.Source, error) {
+func New(c config.Source, l *zap.Logger) (core.Source, error) {
 	switch c.Type {
 	case "kafka":
+		l.Info(
+			"initializing kafka source",
+			zap.String("topics", fmt.Sprintf("%v", c.Kafka.Topics)),
+			zap.String("group.id", c.Kafka.GroupID),
+			zap.String("auto.offset.reset", c.Kafka.AutoOffsetReset),
+		)
 		consumer, _ := kafka.NewConsumer(&kafka.ConfigMap{
 			"bootstrap.servers":  "localhost:9092",
 			"group.id":           c.Kafka.GroupID,
@@ -21,7 +27,7 @@ func New(c config.Source) (core.Source, error) {
 		k, err := tkafka.NewSource(
 			consumer,
 			c.Kafka.Topics,
-			time.Second*5,
+			tkafka.WithLogger(l),
 		)
 		return k, err
 

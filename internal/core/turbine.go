@@ -116,13 +116,19 @@ func NewTurbine(
 	return t
 }
 
-func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) {
+func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, err error) {
 	log.Println("consumer loop starting")
 
 	if err := t.source.Start(); err != nil {
 		return nil, err
 	}
 	defer func() {
+		t.logger.Info("closing source from ConsumeLoop",
+			zap.Bool("running", t.running),
+			zap.String("here", "here"),
+			zap.Error(err),
+		)
+
 		if err := t.source.Close(); err != nil {
 			panic(err)
 		}
@@ -136,39 +142,38 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 
 	numBatchMessages := 0
 
+	stream := t.source.Stream()
+
 	for t.running {
+		t.logger.Debug("top of loop", zap.Bool("running", t.running))
 		select {
 		case <-ctx.Done():
+			t.logger.Warn("context done, stopping consumer loop")
 			t.running = false
 			break
-		case msg := <-t.source.Stream():
+		case msg, ok := <-stream:
+			if !ok {
+				t.logger.Warn("stream channel closed")
+				t.running = false
+				break
+			}
+
 			if msg == nil {
+				t.logger.Debug("received nil message")
 				continue
 			}
 
 			t.stats.NumMessagesConsumed++
-			if numBatchMessages == 0 {
-			}
 
-			/*
-				var msgObj string
-				if err := json.Unmarshal(msg.Value(), &msgObj); err != nil {
-					t.stats.NumErrors++
-					log.Printf("error decoding message: %v", err)
-					if t.errorPolicy.Source == PolicyRaise {
-						return nil, err
-					}
-					continue
-				}
-			*/
 			if err := t.handler.Write(msg.Value()); err != nil {
 				t.stats.NumErrors++
-				log.Printf("error writing message: %v", err)
+				t.logger.Error("error writing message", zap.Error(err))
 				return nil, err
 			}
 
 			numBatchMessages++
 			if maxMsgs > 0 && t.stats.NumMessagesConsumed >= maxMsgs {
+				t.logger.Info("max messages consumed, stopping consumer loop")
 				t.running = false
 				break
 			}
@@ -180,13 +185,27 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 
 				if err := t.sink.WriteTable(batch); err != nil {
 					t.stats.NumErrors++
+					t.logger.Error("error writing batch to sink", zap.Error(err))
 					return nil, err
 				}
-				t.flush(batch)
+
+				if err := t.flush(batch); err != nil {
+					t.stats.NumErrors++
+					t.logger.Error("error flushing sink", zap.Error(err))
+					return nil, err
+				}
+
 				if err := t.source.Commit(); err != nil {
+					t.logger.Error("error committing source", zap.Error(err))
 					return nil, err
 				}
-				t.handler.Init(ctx)
+
+				if err := t.handler.Init(ctx); err != nil {
+					t.stats.NumErrors++
+					t.logger.Error("error reinitializing handler", zap.Error(err))
+					return nil, err
+				}
+
 				numBatchMessages = 0
 			}
 		}
@@ -197,17 +216,18 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (*Stats, error) 
 		t.stats.TotalThroughputPerSecond = float64(t.stats.NumMessagesConsumed) / duration
 	}
 
-	log.Printf("consumer loop ending: total messages/sec = %f", t.stats.TotalThroughputPerSecond)
+	t.logger.Info("consumer loop finished", zap.Float64("total_throughput", t.stats.TotalThroughputPerSecond))
 	return &t.stats, nil
 }
 
-func (t *Turbine) flush(batch arrow.Table) {
+func (t *Turbine) flush(batch arrow.Table) error {
 	start := time.Now()
 	if err := t.sink.Flush(); err != nil {
 		t.stats.NumErrors++
 		rows, _ := t.sink.Batch()
 		log.Printf("flush error: %v, rows: %+v", err, rows)
-		return
+		return err
 	}
 	log.Printf("flushed sink with %d rows in %v", batch.NumRows(), time.Since(start))
+	return nil
 }

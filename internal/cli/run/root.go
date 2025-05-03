@@ -24,10 +24,9 @@ func NewCommand() *cobra.Command {
 		Use:   "run",
 		Short: "Run turbine against a stream of data",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
 			logger, _ := zap.NewDevelopment()
 			defer logger.Sync()
-			l := logger.Named("turbine")
+			l := logger.Named("turbine.run")
 
 			conf, err := config.Load(configPath, map[string]string{})
 			if err != nil {
@@ -70,7 +69,10 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to init commands: %w", err)
 			}
 
-			src, err := sources.New(conf.Pipeline.Source)
+			src, err := sources.New(
+				conf.Pipeline.Source,
+				logger,
+			)
 			if err != nil {
 				return fmt.Errorf("failed to create source: %w", err)
 			}
@@ -102,8 +104,12 @@ func NewCommand() *cobra.Command {
 				core.WithTurbineLogger(l),
 			)
 
-			_, err = turbine.ConsumeLoop(ctx, 0)
-			return err
+			_, err = turbine.ConsumeLoop(context.Background(), 0)
+			if err != nil {
+				l.Error("failed to consume loop", zap.Error(err))
+				return err
+			}
+			return nil
 		},
 	}
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/turbine/internal/cli/run"
+	"github.com/turbolytics/turbine/internal/cli/tail"
 	"os"
 )
 
@@ -19,6 +20,7 @@ func NewRootCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(run.NewCommand())
+	cmd.AddCommand(tail.NewCommand())
 
 	return cmd
 }

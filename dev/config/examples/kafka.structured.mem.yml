@@ -17,7 +17,7 @@ pipeline:
       group_id: test
       auto_offset_reset: earliest
       topics:
-        - "input-structured-mem"
+        - "input-structured-mem-1"
 
   handler:
     type: "handlers.StructuredBatch"
