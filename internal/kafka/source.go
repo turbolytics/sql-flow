@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/turbolytics/turbine/internal/core"
-	"log"
+	"go.uber.org/zap"
 	"sync"
 	"time"
 )
@@ -25,16 +25,40 @@ type Source struct {
 	streamChan  chan core.Message
 	stopChan    chan struct{}
 	closeOnce   sync.Once
+
+	logger *zap.Logger
 }
 
-func NewSource(consumer *kafka.Consumer, topics []string, timeout time.Duration) (*Source, error) {
-	return &Source{
+type Option func(*Source)
+
+func WithReadTimeout(timeout time.Duration) Option {
+	return func(s *Source) {
+		s.readTimeout = timeout
+	}
+}
+
+func WithLogger(logger *zap.Logger) Option {
+	return func(s *Source) {
+		s.logger = logger
+	}
+}
+
+func NewSource(consumer *kafka.Consumer, topics []string, opts ...Option) (*Source, error) {
+	s := &Source{
 		consumer:    consumer,
 		topics:      topics,
-		readTimeout: timeout,
+		readTimeout: time.Second * 5,
 		streamChan:  make(chan core.Message),
 		stopChan:    make(chan struct{}),
-	}, nil
+
+		logger: zap.NewNop(),
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s, nil
 }
 
 func (k *Source) Start() error {
@@ -42,6 +66,7 @@ func (k *Source) Start() error {
 }
 
 func (k *Source) Close() error {
+	fmt.Printf("closing consumer for topics: %s\n", k.topics)
 	k.closeOnce.Do(func() {
 		close(k.stopChan)
 		close(k.streamChan)
@@ -55,7 +80,7 @@ func (k *Source) Commit() error {
 		var kafkaErr kafka.Error
 		if errors.As(err, &kafkaErr) && kafkaErr.Code() == kafka.ErrNoOffset {
 			// Handle ErrNoOffset specifically
-			log.Printf("No offset found for topic %s, ignoring commit error", k.topics)
+			fmt.Printf("No offset found for topic %s, ignoring commit error\n", k.topics)
 			return nil
 		}
 	}
@@ -64,17 +89,18 @@ func (k *Source) Commit() error {
 }
 
 func (k *Source) Stream() <-chan core.Message {
+	fmt.Println("starting stream")
 	go func() {
 		for {
 			select {
 			case <-k.stopChan:
+				fmt.Println("Stopping stream")
 				k.closeOnce.Do(func() {
 					close(k.streamChan)
 				})
 				return
 			default:
 				ev := k.consumer.Poll(int(k.readTimeout.Milliseconds()))
-				fmt.Println("here", ev)
 				if ev == nil {
 					continue
 				}
@@ -83,16 +109,12 @@ func (k *Source) Stream() <-chan core.Message {
 				case *kafka.Message:
 					k.streamChan <- &Message{value: msg.Value}
 				case kafka.PartitionEOF:
-					log.Printf("%s reached end at offset %v\n", k.topics, msg)
+					fmt.Printf("%s reached end at offset %v\n", k.topics, msg)
 				case kafka.Error:
 					if msg.Code() == kafka.ErrPartitionEOF {
-						log.Printf("%s reached end at offsetd\n", k.topics)
+						fmt.Printf("%s reached end at offsetd\n", k.topics)
 					} else {
-						log.Printf("Kafka error: %v", msg)
-						k.closeOnce.Do(func() {
-							close(k.streamChan)
-						})
-						return
+						fmt.Printf("Kafka error: %v\n", msg)
 					}
 				default:
 					// Ignore other types
