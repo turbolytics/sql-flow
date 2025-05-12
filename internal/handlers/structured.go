@@ -8,6 +8,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/marcboeker/go-duckdb"
+	"go.uber.org/zap"
+	"runtime/debug"
 	"sync"
 )
 
@@ -17,6 +19,7 @@ type StructuredBatchHandler struct {
 
 	alloc  *memory.GoAllocator
 	arr    *duckdb.Arrow
+	logger *zap.Logger
 	schema *arrow.Schema
 	sql    string
 
@@ -60,6 +63,27 @@ func (h *StructuredBatchHandler) Write(r []byte) error {
 }
 
 func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error) {
+	var records []arrow.Record
+	defer func() {
+		if r := recover(); r != nil {
+			// Log the panic details for debugging
+			h.logger.Error(
+				"Panic occurred in Invoke: %v\n",
+				zap.Error(r.(error)),
+			)
+
+			for _, rec := range records {
+				bs, _ := rec.MarshalJSON()
+				h.logger.Debug("record", zap.String("record", string(bs)))
+			}
+
+			for _, rec := range h.batch {
+				bs, _ := rec.MarshalJSON()
+				h.logger.Debug("batch_record", zap.String("record", string(bs)))
+			}
+			debug.PrintStack() // Print the stack trace for more context
+		}
+	}()
 	recordReader, err := array.NewRecordReader(
 		h.schema,
 		h.batch,
@@ -67,6 +91,7 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 	if err != nil {
 		return nil, err
 	}
+	defer recordReader.Release()
 
 	release, err := h.arr.RegisterView(
 		recordReader,
@@ -99,20 +124,41 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 
 	defer rdr.Release()
 
-	var records []arrow.Record
 	for rdr.Next() {
-		records = append(records, rdr.Record())
+		rec := rdr.Record()
+		rec.Retain()
+		records = append(records, rec)
 	}
 
 	table := array.NewTableFromRecords(
 		rdr.Schema(),
 		records,
 	)
+	table.Retain()
+
+	for _, rec := range records {
+		rec.Release()
+	}
 
 	return table, nil
 }
 
-func NewStructuredBatchHandler(arr *duckdb.Arrow, sql string, tableName string, schema *arrow.Schema) (*StructuredBatchHandler, error) {
+type StructuredBatchHandlerOption func(*StructuredBatchHandler)
+
+func StructuredBatchWithLogger(l *zap.Logger) StructuredBatchHandlerOption {
+	return func(h *StructuredBatchHandler) {
+		h.logger = l
+	}
+}
+
+func NewStructuredBatchHandler(
+	arr *duckdb.Arrow,
+	sql string,
+	tableName string,
+	schema *arrow.Schema,
+	opts ...StructuredBatchHandlerOption,
+) (*StructuredBatchHandler, error) {
+
 	pool := memory.NewGoAllocator()
 
 	s := &StructuredBatchHandler{
@@ -121,6 +167,12 @@ func NewStructuredBatchHandler(arr *duckdb.Arrow, sql string, tableName string, 
 		schema:    schema,
 		sql:       sql,
 		tableName: tableName,
+		logger:    zap.NewNop(),
 	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
 	return s, nil
 }

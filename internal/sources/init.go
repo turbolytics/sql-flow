@@ -23,6 +23,7 @@ func New(c config.Source, l *zap.Logger) (core.Source, error) {
 			"group.id":           c.Kafka.GroupID,
 			"auto.offset.reset":  c.Kafka.AutoOffsetReset,
 			"enable.auto.commit": false,
+			"fetch.wait.max.ms":  10,
 		})
 		k, err := tkafka.NewSource(
 			consumer,

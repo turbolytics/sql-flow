@@ -85,6 +85,7 @@ func NewCommand() *cobra.Command {
 			handler, err := handlers.New(
 				arr,
 				conf.Pipeline.Handler,
+				logger,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to create handler: %w", err)
@@ -103,6 +104,12 @@ func NewCommand() *cobra.Command {
 				},
 				core.WithTurbineLogger(l),
 			)
+
+			go func() {
+				if err := turbine.StatusLoop(context.Background()); err != nil {
+					l.Error("failed to start status loop", zap.Error(err))
+				}
+			}()
 
 			_, err = turbine.ConsumeLoop(context.Background(), 0)
 			if err != nil {

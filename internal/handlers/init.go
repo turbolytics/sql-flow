@@ -6,9 +6,10 @@ import (
 	"github.com/marcboeker/go-duckdb"
 	"github.com/turbolytics/turbine/internal/config"
 	"github.com/turbolytics/turbine/internal/core"
+	"go.uber.org/zap"
 )
 
-func New(arrConn *duckdb.Arrow, c config.Handler) (core.Handler, error) {
+func New(arrConn *duckdb.Arrow, c config.Handler, l *zap.Logger) (core.Handler, error) {
 	switch c.Type {
 	case "handlers.StructuredBatch":
 		rdr, err := arrConn.QueryContext(
@@ -24,6 +25,7 @@ func New(arrConn *duckdb.Arrow, c config.Handler) (core.Handler, error) {
 			c.SQL,
 			c.Table,
 			rdr.Schema(),
+			StructuredBatchWithLogger(l),
 		)
 		return h, err
 	default:

@@ -23,7 +23,6 @@ type Source struct {
 	topics      []string
 	readTimeout time.Duration
 	streamChan  chan core.Message
-	stopChan    chan struct{}
 	closeOnce   sync.Once
 
 	logger *zap.Logger
@@ -39,7 +38,8 @@ func WithReadTimeout(timeout time.Duration) Option {
 
 func WithLogger(logger *zap.Logger) Option {
 	return func(s *Source) {
-		s.logger = logger
+		l := logger.Named("source.kafka")
+		s.logger = l
 	}
 }
 
@@ -49,7 +49,6 @@ func NewSource(consumer *kafka.Consumer, topics []string, opts ...Option) (*Sour
 		topics:      topics,
 		readTimeout: time.Second * 5,
 		streamChan:  make(chan core.Message),
-		stopChan:    make(chan struct{}),
 
 		logger: zap.NewNop(),
 	}
@@ -62,13 +61,14 @@ func NewSource(consumer *kafka.Consumer, topics []string, opts ...Option) (*Sour
 }
 
 func (k *Source) Start() error {
+	k.logger.Info("starting consumer", zap.String("topics", fmt.Sprintf("%v", k.topics)))
 	return k.consumer.SubscribeTopics(k.topics, nil)
 }
 
 func (k *Source) Close() error {
-	fmt.Printf("closing consumer for topics: %s\n", k.topics)
+	k.logger.Info("closing consumer for topics: \n", zap.String("topics", fmt.Sprintf("%v", k.topics)))
 	k.closeOnce.Do(func() {
-		close(k.stopChan)
+		k.logger.Error("closing consumer in do once")
 		close(k.streamChan)
 	})
 	return k.consumer.Close()
@@ -77,6 +77,7 @@ func (k *Source) Close() error {
 func (k *Source) Commit() error {
 	_, err := k.consumer.Commit()
 	if err != nil {
+		k.logger.Error("failed to commit offsets", zap.Error(err))
 		var kafkaErr kafka.Error
 		if errors.As(err, &kafkaErr) && kafkaErr.Code() == kafka.ErrNoOffset {
 			// Handle ErrNoOffset specifically
@@ -89,16 +90,19 @@ func (k *Source) Commit() error {
 }
 
 func (k *Source) Stream() <-chan core.Message {
-	fmt.Println("starting stream")
+	k.logger.Info("starting stream")
 	go func() {
 		for {
 			select {
-			case <-k.stopChan:
-				fmt.Println("Stopping stream")
-				k.closeOnce.Do(func() {
-					close(k.streamChan)
-				})
-				return
+			/*
+				case <-k.stopChan:
+					k.logger.Info("stopping stream")
+					k.closeOnce.Do(func() {
+						close(k.streamChan)
+					})
+					return
+
+			*/
 			default:
 				ev := k.consumer.Poll(int(k.readTimeout.Milliseconds()))
 				if ev == nil {
@@ -109,12 +113,17 @@ func (k *Source) Stream() <-chan core.Message {
 				case *kafka.Message:
 					k.streamChan <- &Message{value: msg.Value}
 				case kafka.PartitionEOF:
-					fmt.Printf("%s reached end at offset %v\n", k.topics, msg)
+					k.logger.Info("%s reached end at offset %v\n",
+						zap.String("topic", fmt.Sprintf("%v", k.topics)),
+						zap.String("message", fmt.Sprintf("%v", msg)),
+					)
 				case kafka.Error:
 					if msg.Code() == kafka.ErrPartitionEOF {
-						fmt.Printf("%s reached end at offsetd\n", k.topics)
+						k.logger.Info("%s reached end at offset\n",
+							zap.String("topic", fmt.Sprintf("%v", k.topics)),
+						)
 					} else {
-						fmt.Printf("Kafka error: %v\n", msg)
+						k.logger.Error("Kafka error: %v\n", zap.String("error", msg.Error()))
 					}
 				default:
 					// Ignore other types
