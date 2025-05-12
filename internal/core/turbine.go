@@ -35,10 +35,30 @@ type Handler interface {
 }
 
 type Stats struct {
+	mu                  sync.Mutex
+	numMessagesConsumed int
+
 	StartTime                time.Time
-	NumMessagesConsumed      int
 	NumErrors                int
 	TotalThroughputPerSecond float64
+}
+
+func (s *Stats) SetNumMessagesConsumed(num int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.numMessagesConsumed = num
+}
+
+func (s *Stats) MessagesConsumed() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.numMessagesConsumed
+}
+
+func (s *Stats) IncrementMessagesConsumed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.numMessagesConsumed++
 }
 
 type ErrorPolicy int
@@ -60,7 +80,7 @@ type Turbine struct {
 	flushInterval time.Duration
 	lock          *sync.Mutex
 	running       bool
-	stats         Stats
+	stats         *Stats
 	errorPolicy   PipelineErrorPolicies
 
 	logger *zap.Logger
@@ -101,7 +121,7 @@ func NewTurbine(
 		flushInterval: flushInterval,
 		lock:          lock,
 		running:       true,
-		stats: Stats{
+		stats: &Stats{
 			StartTime: time.Now().UTC(),
 		},
 		errorPolicy: policy,
@@ -114,6 +134,19 @@ func NewTurbine(
 	}
 
 	return t
+}
+
+func (t *Turbine) StatusLoop(ctx context.Context) error {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			t.logger.Info("status update", zap.Int("total_messages", t.stats.MessagesConsumed()))
+		case <-ctx.Done():
+			return nil
+		}
+	}
 }
 
 func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, err error) {
@@ -135,7 +168,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 	}()
 
 	t.stats.StartTime = time.Now().UTC()
-	t.stats.NumMessagesConsumed = 0
+	t.stats.SetNumMessagesConsumed(0)
 	if err := t.handler.Init(ctx); err != nil {
 		return nil, err
 	}
@@ -145,7 +178,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 	stream := t.source.Stream()
 
 	for t.running {
-		t.logger.Debug("top of loop", zap.Bool("running", t.running))
+		// t.logger.Debug("top of loop", zap.Bool("running", t.running))
 		select {
 		case <-ctx.Done():
 			t.logger.Warn("context done, stopping consumer loop")
@@ -163,7 +196,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				continue
 			}
 
-			t.stats.NumMessagesConsumed++
+			t.stats.IncrementMessagesConsumed()
 
 			if err := t.handler.Write(msg.Value()); err != nil {
 				t.stats.NumErrors++
@@ -172,7 +205,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			}
 
 			numBatchMessages++
-			if maxMsgs > 0 && t.stats.NumMessagesConsumed >= maxMsgs {
+			if maxMsgs > 0 && t.stats.MessagesConsumed() >= maxMsgs {
 				t.logger.Info("max messages consumed, stopping consumer loop")
 				t.running = false
 				break
@@ -180,8 +213,14 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 
 			if numBatchMessages == t.batchSize {
 				t.lock.Lock()
-				batch, _ := t.handler.Invoke(ctx)
+				batch, err := t.handler.Invoke(ctx)
 				t.lock.Unlock()
+
+				if err != nil {
+					t.stats.NumErrors++
+					t.logger.Error("error invoking handler", zap.Error(err))
+					return nil, err
+				}
 
 				if err := t.sink.WriteTable(batch); err != nil {
 					t.stats.NumErrors++
@@ -199,6 +238,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 					t.logger.Error("error committing source", zap.Error(err))
 					return nil, err
 				}
+				batch.Release()
 
 				if err := t.handler.Init(ctx); err != nil {
 					t.stats.NumErrors++
@@ -213,11 +253,11 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 
 	duration := time.Since(t.stats.StartTime).Seconds()
 	if duration > 0 {
-		t.stats.TotalThroughputPerSecond = float64(t.stats.NumMessagesConsumed) / duration
+		t.stats.TotalThroughputPerSecond = float64(t.stats.MessagesConsumed()) / duration
 	}
 
 	t.logger.Info("consumer loop finished", zap.Float64("total_throughput", t.stats.TotalThroughputPerSecond))
-	return &t.stats, nil
+	return t.stats, nil
 }
 
 func (t *Turbine) flush(batch arrow.Table) error {
