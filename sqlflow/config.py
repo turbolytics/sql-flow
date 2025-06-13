@@ -11,11 +11,6 @@ from sqlflow import settings, errors
 
 
 @dataclass
-class Error:
-    policy: errors.Policy = errors.Policy.RAISE
-
-
-@dataclass
 class SinkFormat:
     type: str
 
@@ -64,6 +59,17 @@ class Sink:
     sqlcommand: Optional[SQLCommandSink] = None
     iceberg: Optional[IcebergSink] = None
     clickhouse: Optional[ClikhouseSink] = None
+
+
+@dataclass
+class DLQErrorPolicy:
+    sink: Sink
+
+
+@dataclass
+class Error:
+    dlq: Optional[DLQErrorPolicy] = None
+    policy: errors.Policy = errors.Policy.RAISE
 
 
 @dataclass
@@ -121,7 +127,6 @@ class Source:
     type: str
     kafka: Optional[KafkaSource] = None
     websocket: Optional[WebsocketSource] = None
-    error: Optional[Error] = None
 
 
 @dataclass
@@ -130,6 +135,7 @@ class Handler:
     sql: str
     sql_results_cache_dir: str = settings.SQL_RESULTS_CACHE_DIR
     table: str = None
+    error: Optional[Error] = None
 
 
 @dataclass
@@ -183,9 +189,6 @@ def new_from_path(path: str, setting_overrides={}):
 def build_source_config_from_dict(conf) -> Source:
     source = Source(
         type=conf['type'],
-        error=Error(
-            policy=conf.get('on_error', {}).get('policy', errors.Policy.RAISE),
-        ),
     )
 
     if source.type == 'kafka':
