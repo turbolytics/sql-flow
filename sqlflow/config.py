@@ -135,7 +135,6 @@ class Handler:
     sql: str
     sql_results_cache_dir: str = settings.SQL_RESULTS_CACHE_DIR
     table: str = None
-    on_error: Optional[ErrorPolicy] = None
 
 
 @dataclass
@@ -145,6 +144,7 @@ class Pipeline:
     sink: Sink
     batch_size: int | None = None
     flush_interval_seconds: int = 30
+    on_error: Optional[ErrorPolicy] = None
 
 
 @dataclass
@@ -283,6 +283,16 @@ def new_from_dict(conf):
     sink = build_sink_config_from_dict(conf['pipeline']['sink'])
     source = build_source_config_from_dict(conf['pipeline']['source'])
 
+    error_policy_conf = conf['pipeline'].get('on_error', {})
+    dlq_sink = None
+    if 'dlq' in error_policy_conf:
+        dlq_sink = build_sink_config_from_dict(error_policy_conf['dlq'])
+
+    error_policy = ErrorPolicy(
+        dlq=DLQErrorPolicy(sink=dlq_sink) if dlq_sink else None,
+        policy=errors.Policy[error_policy_conf.get('policy', 'RAISE').upper()],
+    )
+
     return Conf(
         commands=commands,
         tables=tables,
@@ -298,6 +308,7 @@ def new_from_dict(conf):
                 table=conf['pipeline']['handler'].get('table'),
             ),
             sink=sink,
+            on_error=error_policy,
         ),
     )
 

@@ -323,8 +323,13 @@ def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
     source = sources.new_source_from_conf(conf.pipeline.source)
     sink = sinks.new_sink_from_conf(conf.pipeline.sink, conn)
 
+    dlq_sink = None
+    if conf.pipeline.on_error and conf.pipeline.on_error.dlq:
+        dlq_sink = sinks.new_sink_from_conf(conf.pipeline.on_error.dlq.sink, conn)
+
     error_policies = PipelineErrorPolicies(
-        source=conf.pipeline.source.error.policy,
+        policy=conf.pipeline.on_error.policy,
+        dlq_sink=dlq_sink if dlq_sink else NoopSink(),
     )
 
     sflow = SQLFlow(

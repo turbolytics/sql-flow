@@ -1,7 +1,7 @@
 pipeline:
   batch_size: {{ SQLFLOW_BATCH_SIZE|default(1000) }}
   on_error:
-    policy: {{ SQLFLOW_SOURCE_ERROR_POLICY|default('dlq') }}
+    policy: {{ SQLFLOW_SOURCE_ERROR_POLICY|default('DLQ') }}
     dlq:
       type: kafka
       kafka:
