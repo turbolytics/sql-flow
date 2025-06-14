@@ -30,14 +30,198 @@
         "sql": {
           "type": "array",
           "description": "List of tables with their SQL definitions and management configurations.",
-          "items": {}
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "sql": {
+                "type": "string"
+              },
+              "manager": {
+                "type": "object",
+                "properties": {
+                  "tumbling_window": {
+                    "type": "object",
+                    "properties": {
+                      "collect_closed_windows_sql": {
+                        "type": "string"
+                      },
+                      "delete_closed_windows_sql": {
+                        "type": "string"
+                      },
+                      "poll_interval_seconds": {
+                        "type": "integer",
+                        "default": 10
+                      }
+                    },
+                    "required": [
+                      "collect_closed_windows_sql",
+                      "delete_closed_windows_sql"
+                    ]
+                  },
+                  "sink": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "kafka",
+                          "noop",
+                          "iceberg",
+                          "console",
+                          "sqlcommand",
+                          "clickhouse"
+                        ],
+                        "description": "Sink identifier."
+                      },
+                      "format": {
+                        "type": "object",
+                        "description": "Format settings (e.g., for Parquet).",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "parquet"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "kafka": {
+                        "type": "object",
+                        "description": "Kafka-specific sink configuration.",
+                        "properties": {
+                          "brokers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "format": "hostname"
+                            },
+                            "description": "List of Kafka brokers."
+                          },
+                          "topic": {
+                            "type": "string",
+                            "description": "Target Kafka topic."
+                          }
+                        },
+                        "required": [
+                          "brokers",
+                          "topic"
+                        ]
+                      },
+                      "sqlcommand": {
+                        "type": "object",
+                        "description": "SQL-command sink configuration.",
+                        "properties": {
+                          "sql": {
+                            "type": "string"
+                          },
+                          "substitutions": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "var": {
+                                  "type": "string"
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "uuid4"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "var",
+                                "type"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "sql"
+                        ]
+                      },
+                      "iceberg": {
+                        "type": "object",
+                        "description": "Iceberg-specific sink configuration.",
+                        "properties": {
+                          "catalog_name": {
+                            "type": "string"
+                          },
+                          "table_name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "catalog_name",
+                          "table_name"
+                        ]
+                      },
+                      "clickhouse": {
+                        "type": "object",
+                        "description": "ClickHouse-specific sink configuration.",
+                        "properties": {
+                          "dsn": {
+                            "type": "string"
+                          },
+                          "table": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "dsn",
+                          "table"
+                        ]
+                      },
+                      "console": {
+                        "type": "object",
+                        "description": "Console output sink configuration.",
+                        "properties": {}
+                      }
+                    },
+                    "required": [
+                      "type"
+                    ]
+                  }
+                },
+                "required": [
+                  "tumbling_window",
+                  "sink"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "sql",
+              "manager"
+            ]
+          }
         }
       }
     },
     "udfs": {
       "type": "array",
       "description": "List of User-Defined Functions (UDFs) to be used in SQL queries.",
-      "items": {}
+      "items": {
+        "type": "object",
+        "properties": {
+          "function_name": {
+            "type": "string"
+          },
+          "import_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_name",
+          "import_path"
+        ]
+      }
     },
     "pipeline": {
       "type": "object",
@@ -62,14 +246,85 @@
         "source": {
           "type": "object",
           "description": "Configuration for the data source.",
-          "properties": {},
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "kafka",
+                "websocket"
+              ]
+            },
+            "kafka": {
+              "type": "object",
+              "properties": {
+                "brokers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "group_id": {
+                  "type": "string"
+                },
+                "auto_offset_reset": {
+                  "type": "string",
+                  "enum": [
+                    "earliest",
+                    "latest"
+                  ]
+                },
+                "topics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "brokers",
+                "group_id",
+                "auto_offset_reset",
+                "topics"
+              ]
+            },
+            "websocket": {
+              "type": "object",
+              "properties": {
+                "uri": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              },
+              "required": [
+                "uri"
+              ]
+            }
+          },
           "required": [
             "type"
           ]
         },
         "handler": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "handlers.InferredDiskBatch",
+                "handlers.InferredMemBatch",
+                "handlers.StructuredBatch"
+              ]
+            },
+            "sql": {
+              "type": "string"
+            },
+            "sql_results_cache_dir": {
+              "type": "string"
+            },
+            "table": {
+              "type": "string"
+            }
+          },
           "required": [
             "type",
             "sql"
@@ -77,7 +332,127 @@
         },
         "sink": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "kafka",
+                "noop",
+                "iceberg",
+                "console",
+                "sqlcommand",
+                "clickhouse"
+              ],
+              "description": "Sink identifier."
+            },
+            "format": {
+              "type": "object",
+              "description": "Format settings (e.g., for Parquet).",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "parquet"
+                  ]
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "kafka": {
+              "type": "object",
+              "description": "Kafka-specific sink configuration.",
+              "properties": {
+                "brokers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "hostname"
+                  },
+                  "description": "List of Kafka brokers."
+                },
+                "topic": {
+                  "type": "string",
+                  "description": "Target Kafka topic."
+                }
+              },
+              "required": [
+                "brokers",
+                "topic"
+              ]
+            },
+            "sqlcommand": {
+              "type": "object",
+              "description": "SQL-command sink configuration.",
+              "properties": {
+                "sql": {
+                  "type": "string"
+                },
+                "substitutions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "var": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "uuid4"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "var",
+                      "type"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "sql"
+              ]
+            },
+            "iceberg": {
+              "type": "object",
+              "description": "Iceberg-specific sink configuration.",
+              "properties": {
+                "catalog_name": {
+                  "type": "string"
+                },
+                "table_name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "catalog_name",
+                "table_name"
+              ]
+            },
+            "clickhouse": {
+              "type": "object",
+              "description": "ClickHouse-specific sink configuration.",
+              "properties": {
+                "dsn": {
+                  "type": "string"
+                },
+                "table": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "dsn",
+                "table"
+              ]
+            },
+            "console": {
+              "type": "object",
+              "description": "Console output sink configuration.",
+              "properties": {}
+            }
+          },
           "required": [
             "type"
           ]
@@ -93,13 +468,133 @@
                 "IGNORE",
                 "DLQ"
               ],
-              "default": "RAISE",
+              "default": "raise",
               "description": "Defines how errors should be handled."
             },
             "dlq": {
               "type": "object",
               "description": "Dead-letter queue configuration. Failed messages will be routed to this sink.",
-              "properties": {},
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "kafka",
+                    "noop",
+                    "iceberg",
+                    "console",
+                    "sqlcommand",
+                    "clickhouse"
+                  ],
+                  "description": "Sink identifier."
+                },
+                "format": {
+                  "type": "object",
+                  "description": "Format settings (e.g., for Parquet).",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "parquet"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                },
+                "kafka": {
+                  "type": "object",
+                  "description": "Kafka-specific sink configuration.",
+                  "properties": {
+                    "brokers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "format": "hostname"
+                      },
+                      "description": "List of Kafka brokers."
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "Target Kafka topic."
+                    }
+                  },
+                  "required": [
+                    "brokers",
+                    "topic"
+                  ]
+                },
+                "sqlcommand": {
+                  "type": "object",
+                  "description": "SQL-command sink configuration.",
+                  "properties": {
+                    "sql": {
+                      "type": "string"
+                    },
+                    "substitutions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "var": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "uuid4"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "var",
+                          "type"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "sql"
+                  ]
+                },
+                "iceberg": {
+                  "type": "object",
+                  "description": "Iceberg-specific sink configuration.",
+                  "properties": {
+                    "catalog_name": {
+                      "type": "string"
+                    },
+                    "table_name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "catalog_name",
+                    "table_name"
+                  ]
+                },
+                "clickhouse": {
+                  "type": "object",
+                  "description": "ClickHouse-specific sink configuration.",
+                  "properties": {
+                    "dsn": {
+                      "type": "string"
+                    },
+                    "table": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "dsn",
+                    "table"
+                  ]
+                },
+                "console": {
+                  "type": "object",
+                  "description": "Console output sink configuration.",
+                  "properties": {}
+                }
+              },
               "required": [
                 "type"
               ]

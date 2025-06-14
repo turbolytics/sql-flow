@@ -45,7 +45,7 @@ class ConfigValidationTestCase(unittest.TestCase):
             'csv.mem.join.yml',
             'enrich.yml',
             'kafka.clickhouse.yml',
-            # 'kafka.dlq.yml',
+            'kafka.dlq.yml',
             'kafka.mem.iceberg.yml',
             'kafka.postgres.join.yml',
             'kafka.postgres.sink.yml',
