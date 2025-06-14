@@ -218,9 +218,9 @@ class SQLFlow:
                     continue
                 elif self._error_policies.policy == errors.Policy.DLQ:
                     dlq_message = {
-                        "error": str(e),
-                        "message": msg.value(),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "error": [str(e)],
+                        "message": [msg.value()],
+                        "timestamp": [datetime.now(timezone.utc).isoformat()],
                     }
                     self._error_policies.dlq_sink.write_table(
                         pa.Table.from_pydict(dlq_message),

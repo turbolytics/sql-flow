@@ -133,3 +133,90 @@ class TestPipeline(unittest.TestCase):
 
         self.assertEqual(stats.num_errors, 1)
         self.assertEqual(stats.num_messages_consumed, 1)
+
+    def test_pipeline_handler_invoke_ignores_invalid_sql(self):
+        messages = [
+            Message(
+                value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}',
+            ),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='INVALID SQL SYNTAX',
+            deserializer=serde.JSON(),
+        )
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink=NoopSink(),
+            batch_size=1,
+            error_policies=PipelineErrorPolicies(policy=errors.Policy.IGNORE),
+        )
+
+        stats = pipeline.consume_loop(max_msgs=1)
+
+        self.assertEqual(stats.num_errors, 1)
+        self.assertEqual(stats.num_messages_consumed, 1)
+
+    def test_pipeline_dlq_policy_invalid_json(self):
+        messages = [
+            Message(
+                value=b'{!invalidJSON!',
+            ),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+        dlq_sink = MagicMock()
+        dlq_sink.write_table = MagicMock()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink=NoopSink(),
+            batch_size=1,
+            error_policies=PipelineErrorPolicies(
+                policy=errors.Policy.DLQ,
+                dlq_sink=dlq_sink,
+            ),
+        )
+
+        stats = pipeline.consume_loop(max_msgs=1)
+
+        self.assertEqual(stats.num_errors, 1)
+        self.assertEqual(stats.num_messages_consumed, 1)
+        dlq_sink.write_table.assert_called_once()
+
+    def test_pipeline_dlq_policy_invalid_sql(self):
+        messages = [
+            Message(
+                value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}',
+            ),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='INVALID SQL SYNTAX',
+            deserializer=serde.JSON(),
+        )
+        dlq_sink = MagicMock()
+        dlq_sink.write_table = MagicMock()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink=NoopSink(),
+            batch_size=1,
+            error_policies=PipelineErrorPolicies(
+                policy=errors.Policy.DLQ,
+                dlq_sink=dlq_sink,
+            ),
+        )
+
+        stats = pipeline.consume_loop(max_msgs=1)
+
+        self.assertEqual(stats.num_errors, 1)
+        self.assertEqual(stats.num_messages_consumed, 1)
+        dlq_sink.write_table.assert_called_once()
