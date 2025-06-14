@@ -67,7 +67,7 @@ class DLQErrorPolicy:
 
 
 @dataclass
-class Error:
+class ErrorPolicy:
     dlq: Optional[DLQErrorPolicy] = None
     policy: errors.Policy = errors.Policy.RAISE
 
@@ -135,7 +135,7 @@ class Handler:
     sql: str
     sql_results_cache_dir: str = settings.SQL_RESULTS_CACHE_DIR
     table: str = None
-    error: Optional[Error] = None
+    on_error: Optional[ErrorPolicy] = None
 
 
 @dataclass

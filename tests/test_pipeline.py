@@ -126,7 +126,7 @@ class TestPipeline(unittest.TestCase):
             handler,
             sink=NoopSink(),
             batch_size=1,
-            error_policies=PipelineErrorPolicies(source=errors.Policy.IGNORE),
+            error_policies=PipelineErrorPolicies(policy=errors.Policy.IGNORE),
         )
 
         stats = pipeline.consume_loop(max_msgs=1)

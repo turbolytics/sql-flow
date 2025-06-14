@@ -3,14 +3,14 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import logging
-from json import JSONDecodeError
 from typing import List
 
 from opentelemetry import metrics
+import pyarrow as pa
 
 from sqlflow import config, sinks, sources, errors
 from sqlflow.managers import window
-from sqlflow.sinks import Sink
+from sqlflow.sinks import Sink, NoopSink
 from sqlflow.sources import Source
 
 logger = logging.getLogger(__name__)
@@ -68,8 +68,9 @@ class Stats:
 
 
 class PipelineErrorPolicies:
-    def __init__(self, source):
-        self.source = source
+    def __init__(self, policy, dlq_sink=NoopSink()):
+        self.policy = policy
+        self.dlq_sink = dlq_sink
 
 
 class SQLFlow:
@@ -85,7 +86,7 @@ class SQLFlow:
                  flush_interval_seconds=30,
                  lock=threading.Lock(),
                  error_policies=PipelineErrorPolicies(
-                    source=errors.Policy.RAISE,
+                    policy=errors.Policy.RAISE,
                  )):
         self.source = source
         self.sink = sink
@@ -164,9 +165,9 @@ class SQLFlow:
         # TODO: Flush interval seconds on background loop
         # Flush interval seconds only works right now if batch size is > 1.
         # Flush interval is implemented through the kafka poll timeout.
-        # This means that the flush interval timeout is not supported in webhooks currently.
+        # This means that the flush interval timeout is not supported in websockets currently.
         # We'd like to minimize the use of threads. Currently kafka provides a workaround as part
-        # of its implementation. If there's any adoption on the webhooks side, we can implement a
+        # of its implementation. If there's any adoption on the websocket side, we can implement a
         # more sustainable and generic solution.
         liveness_timer_start = self._liveness_time()
 
@@ -200,25 +201,32 @@ class SQLFlow:
             try:
                 msgObj = msg.value().decode()
                 self.handler.write(msgObj)
-            except JSONDecodeError as e:
-                # Only supports ignore deserialization errors. JSON is the only serializer currently supported.
-                self._stats.num_errors += 1
-
-                error_counter.add(1, attributes={
-                    'type': 'message_decode',
-                    'source': self.source.__class__.__name__,
-                })
-
-                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
-                if self._error_policies.source == errors.Policy.RAISE:
-                    raise e
-                elif self._error_policies.source == errors.Policy.IGNORE:
-                    continue
             except Exception as e:
-                # any other exception will be logged and re-raised
                 self._stats.num_errors += 1
+                error_counter.add(
+                    1,
+                    attributes={
+                        'type': type(e).__name__,
+                        'source': self.source.__class__.__name__
+                    },
+                )
                 logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
-                raise e
+
+                if self._error_policies.policy == errors.Policy.RAISE:
+                    raise e
+                elif self._error_policies.policy == errors.Policy.IGNORE:
+                    continue
+                elif self._error_policies.policy == errors.Policy.DLQ:
+                    dlq_message = {
+                        "error": str(e),
+                        "message": msg.value(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    self._error_policies.dlq_sink.write_table(
+                        pa.Table.from_pydict(dlq_message),
+                    )
+                    self._error_policies.dlq_sink.flush()
+                    continue
 
             num_batch_messages += 1
 
