@@ -220,3 +220,74 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(stats.num_errors, 1)
         self.assertEqual(stats.num_messages_consumed, 1)
         dlq_sink.write_table.assert_called_once()
+
+    def test_pipeline_batch_size_handling(self):
+        messages = [
+            Message(value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}'),
+            Message(value=b'{"time": "2021-01-01T00:01:00Z", "value": 2}'),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+        sink = MagicMock()
+        sink.write_table = MagicMock()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink,
+            batch_size=2,
+        )
+
+        stats = pipeline.consume_loop(max_msgs=2)
+
+        self.assertEqual(stats.num_messages_consumed, 2)
+        sink.write_table.assert_called_once()
+
+    def test_pipeline_source_commit_behavior(self):
+        messages = [
+            Message(value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}'),
+        ]
+        source = StaticSource(messages)
+        source.commit = MagicMock()
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+        sink = NoopSink()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink,
+            batch_size=1,
+        )
+
+        pipeline.consume_loop(max_msgs=1)
+
+        source.commit.assert_called_once()
+
+    def test_pipeline_sink_flush_behavior(self):
+        messages = [
+            Message(value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}'),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+        sink = MagicMock()
+        sink.flush = MagicMock()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink,
+            batch_size=1,
+        )
+
+        pipeline.consume_loop(max_msgs=1)
+
+        sink.flush.assert_called_once()

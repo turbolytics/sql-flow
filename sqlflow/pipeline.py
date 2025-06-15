@@ -220,6 +220,7 @@ class SQLFlow:
                     dlq_message = {
                         "error": [str(e)],
                         "message": [msg.value()],
+                        "phase": ['handler.write'],
                         "timestamp": [datetime.now(timezone.utc).isoformat()],
                     }
                     self._error_policies.dlq_sink.write_table(
@@ -239,10 +240,40 @@ class SQLFlow:
 
             if num_batch_messages == self._batch_size:
                 # apply the pipeline
-                with self._lock:
-                    batch = self.handler.invoke()
+                batch = None
+                try:
+                    with self._lock:
+                        batch = self.handler.invoke()
+                except Exception as e:
+                    self._stats.num_errors += 1
+                    error_counter.add(
+                        1,
+                        attributes={
+                            'type': type(e).__name__,
+                            'handler': self.handler.__class__.__name__,
+                        },
+                    )
+                    logger.error('{}: error invoking handler: {}'.format(type(e).__name__, e))
 
-                self.sink.write_table(batch)
+                    if self._error_policies.policy == errors.Policy.RAISE:
+                        raise e
+                    elif self._error_policies.policy == errors.Policy.IGNORE:
+                        pass
+                    elif self._error_policies.policy == errors.Policy.DLQ:
+                        dlq_message = {
+                            "error": [str(e)],
+                            "message": ["Handler invocation failed"],
+                            "phase": ['handler.invoke'],
+                            "timestamp": [datetime.now(timezone.utc).isoformat()],
+                        }
+                        self._error_policies.dlq_sink.write_table(
+                            pa.Table.from_pydict(dlq_message),
+                        )
+                        self._error_policies.dlq_sink.flush()
+
+                if batch is not None:
+                    self.sink.write_table(batch)
+
                 self._flush()
                 self.source.commit()
                 diff = (datetime.now(timezone.utc) - start_batch_time)
