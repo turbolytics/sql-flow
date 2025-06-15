@@ -299,3 +299,91 @@ def test_mem_persistence_window_tumbling(bootstrap_server):
     stats = start(conf, max_msgs=num_messages)
     assert stats.num_messages_consumed == num_messages
     print(stats)
+
+def test_dlq_functionality_handler_write(bootstrap_server):
+    num_messages = 1
+    in_topic = 'input-dlq-test'
+    dlq_topic = 'dlq-dlq-test'
+    group_id = 'test_dlq_functionality'
+
+    # Clean up topics and consumer groups
+    delete_topics([in_topic, dlq_topic], bootstrap_server)
+    delete_consumer_groups([group_id], bootstrap_server)
+
+    # Publish invalid JSON to the input topic
+    conf = {
+        'bootstrap.servers': bootstrap_server,
+        'client.id': socket.gethostname()
+    }
+    producer = Producer(conf)
+    producer.produce(in_topic, value=b'{!invalidJSON!')
+    producer.flush()
+
+    # Configure pipeline with DLQ enabled
+    conf = new_from_path(
+        path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.dlq.yml'),
+        setting_overrides={
+            'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
+            'SQLFLOW_INPUT_TOPIC': in_topic,
+            'SQLFLOW_DLQ_TOPIC': dlq_topic,
+            'SQLFLOW_SOURCE_ERROR_POLICY': 'dlq',
+            'SQLFLOW_BATCH_SIZE': 1,
+        },
+    )
+
+    # Run the pipeline
+    stats = start(conf, max_msgs=num_messages)
+    assert stats.num_messages_consumed == 1
+    assert stats.num_errors == 1
+
+    # Verify DLQ topic contains the error message
+    dlq_messages = read_all_kafka_messages(bootstrap_server, dlq_topic)
+    assert len(dlq_messages) == 1, f"Expected 1 DLQ message, but got {len(dlq_messages)}"
+    m = dlq_messages[0]
+    assert m['error'] == 'Expecting property name enclosed in double quotes: line 1 column 2 (char 1)'
+    assert m['message'] == '{!invalidJSON!'
+    assert m['phase'] == 'handler.write'
+
+def test_dlq_functionality_handler_invoke(bootstrap_server):
+    num_messages = 1
+    in_topic = 'input-dlq-test'
+    dlq_topic = 'dlq-dlq-test'
+    group_id = 'test_dlq_functionality'
+
+    # Clean up topics and consumer groups
+    delete_topics([in_topic, dlq_topic], bootstrap_server)
+    delete_consumer_groups([group_id], bootstrap_server)
+
+    # Publish invalid JSON to the input topic
+    conf = {
+        'bootstrap.servers': bootstrap_server,
+        'client.id': socket.gethostname()
+    }
+    producer = Producer(conf)
+    producer.produce(in_topic, value=b'{"valid": "json"}')
+    producer.flush()
+
+    # Configure pipeline with DLQ enabled
+    conf = new_from_path(
+        path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.dlq.yml'),
+        setting_overrides={
+            'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
+            'SQLFLOW_INPUT_TOPIC': in_topic,
+            'SQLFLOW_DLQ_TOPIC': dlq_topic,
+            'SQLFLOW_SOURCE_ERROR_POLICY': 'dlq',
+            'SQLFLOW_BATCH_SIZE': 1,
+        },
+    )
+
+    # Run the pipeline
+    stats = start(conf, max_msgs=num_messages)
+    assert stats.num_messages_consumed == 1
+    assert stats.num_errors == 1
+
+    # Verify DLQ topic contains the error message
+    dlq_messages = read_all_kafka_messages(bootstrap_server, dlq_topic)
+    assert len(dlq_messages) == 1, f"Expected 1 DLQ message, but got {len(dlq_messages)}"
+    m = dlq_messages[0]
+    assert m['error'] == 'Binder Error: Referenced column "broken" not found in FROM clause!\nCandidate bindings: "valid"\n\nLINE 2:   broken\n          ^'
+    assert m['message'] == 'Handler invocation failed'
+    assert m['phase'] == 'handler.invoke'

@@ -173,6 +173,10 @@ class SQLFlow:
 
         stream = self.source.stream()
         while self._running:
+            if self._should_exit(max_msgs):
+                logger.info('Max messages reached. Exiting.')
+                return
+
             source_read_start = datetime.now(timezone.utc)
             msg = next(stream)
 
@@ -206,8 +210,7 @@ class SQLFlow:
                 error_counter.add(
                     1,
                     attributes={
-                        'type': type(e).__name__,
-                        'source': self.source.__class__.__name__
+                        'phase': 'handler.write',
                     },
                 )
                 logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
@@ -219,7 +222,7 @@ class SQLFlow:
                 elif self._error_policies.policy == errors.Policy.DLQ:
                     dlq_message = {
                         "error": [str(e)],
-                        "message": [msg.value()],
+                        "message": [msg.value().decode('utf-8')],
                         "phase": ['handler.write'],
                         "timestamp": [datetime.now(timezone.utc).isoformat()],
                     }
@@ -249,8 +252,7 @@ class SQLFlow:
                     error_counter.add(
                         1,
                         attributes={
-                            'type': type(e).__name__,
-                            'handler': self.handler.__class__.__name__,
+                            'phase': 'handler.invoke',
                         },
                     )
                     logger.error('{}: error invoking handler: {}'.format(type(e).__name__, e))
@@ -283,10 +285,8 @@ class SQLFlow:
                 self.handler.init()
                 num_batch_messages = 0
 
-            if max_msgs and max_msgs <= self._stats.num_messages_consumed:
-                logger.info('max messages reached')
-                return
-
+    def _should_exit(self, max_msgs):
+        return max_msgs and self._stats.num_messages_consumed >= max_msgs
 
 def init_commands(conn, commands):
     for command in commands:
