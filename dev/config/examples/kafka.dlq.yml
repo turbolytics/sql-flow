@@ -1,7 +1,12 @@
 pipeline:
   batch_size: {{ SQLFLOW_BATCH_SIZE|default(1000) }}
   on_error:
-    policy: {{ SQLFLOW_SOURCE_ERROR_POLICY|default('RAISE') }}
+    policy: {{ SQLFLOW_SOURCE_ERROR_POLICY|default('DLQ') }}
+    dlq:
+      type: kafka
+      kafka:
+        brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+        topic: {{ SQLFLOW_DLQ_TOPIC|default('dlq-topic') }}
 
   source:
     type: kafka
@@ -16,13 +21,8 @@ pipeline:
     type: 'handlers.InferredMemBatch'
     sql: |
       SELECT
-        properties.city as city,
-        1 as city_count
+        broken
       FROM batch
-      ORDER BY city DESC
 
   sink:
-    type: kafka
-    kafka:
-      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
-      topic: {{ SQLFLOW_OUTPUT_TOPIC|default('output-simple-agg-mem') }}
+    type: console

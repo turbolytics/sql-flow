@@ -3,14 +3,14 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import logging
-from json import JSONDecodeError
 from typing import List
 
 from opentelemetry import metrics
+import pyarrow as pa
 
 from sqlflow import config, sinks, sources, errors
 from sqlflow.managers import window
-from sqlflow.sinks import Sink
+from sqlflow.sinks import Sink, NoopSink
 from sqlflow.sources import Source
 
 logger = logging.getLogger(__name__)
@@ -67,9 +67,10 @@ class Stats:
     total_throughput_per_second: float = 0
 
 
-class PipelineErrorPolicies:
-    def __init__(self, source):
-        self.source = source
+class PipelineErrorPolicy:
+    def __init__(self, policy, dlq_sink=NoopSink()):
+        self.policy = policy
+        self.dlq_sink = dlq_sink
 
 
 class SQLFlow:
@@ -84,8 +85,8 @@ class SQLFlow:
                  batch_size=1,
                  flush_interval_seconds=30,
                  lock=threading.Lock(),
-                 error_policies=PipelineErrorPolicies(
-                    source=errors.Policy.RAISE,
+                 error_policies=PipelineErrorPolicy(
+                    policy=errors.Policy.RAISE,
                  )):
         self.source = source
         self.sink = sink
@@ -164,14 +165,18 @@ class SQLFlow:
         # TODO: Flush interval seconds on background loop
         # Flush interval seconds only works right now if batch size is > 1.
         # Flush interval is implemented through the kafka poll timeout.
-        # This means that the flush interval timeout is not supported in webhooks currently.
+        # This means that the flush interval timeout is not supported in websockets currently.
         # We'd like to minimize the use of threads. Currently kafka provides a workaround as part
-        # of its implementation. If there's any adoption on the webhooks side, we can implement a
+        # of its implementation. If there's any adoption on the websocket side, we can implement a
         # more sustainable and generic solution.
         liveness_timer_start = self._liveness_time()
 
         stream = self.source.stream()
         while self._running:
+            if self._should_exit(max_msgs):
+                logger.info('Max messages reached. Exiting.')
+                return
+
             source_read_start = datetime.now(timezone.utc)
             msg = next(stream)
 
@@ -200,25 +205,32 @@ class SQLFlow:
             try:
                 msgObj = msg.value().decode()
                 self.handler.write(msgObj)
-            except JSONDecodeError as e:
-                # Only supports ignore deserialization errors. JSON is the only serializer currently supported.
-                self._stats.num_errors += 1
-
-                error_counter.add(1, attributes={
-                    'type': 'message_decode',
-                    'source': self.source.__class__.__name__,
-                })
-
-                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
-                if self._error_policies.source == errors.Policy.RAISE:
-                    raise e
-                elif self._error_policies.source == errors.Policy.IGNORE:
-                    continue
             except Exception as e:
-                # any other exception will be logged and re-raised
                 self._stats.num_errors += 1
+                error_counter.add(
+                    1,
+                    attributes={
+                        'phase': 'handler.write',
+                    },
+                )
                 logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
-                raise e
+
+                if self._error_policies.policy == errors.Policy.RAISE:
+                    raise e
+                elif self._error_policies.policy == errors.Policy.IGNORE:
+                    continue
+                elif self._error_policies.policy == errors.Policy.DLQ:
+                    dlq_message = {
+                        "error": [str(e)],
+                        "message": [msg.value().decode('utf-8')],
+                        "phase": ['handler.write'],
+                        "timestamp": [datetime.now(timezone.utc).isoformat()],
+                    }
+                    self._error_policies.dlq_sink.write_table(
+                        pa.Table.from_pydict(dlq_message),
+                    )
+                    self._error_policies.dlq_sink.flush()
+                    continue
 
             num_batch_messages += 1
 
@@ -231,10 +243,39 @@ class SQLFlow:
 
             if num_batch_messages == self._batch_size:
                 # apply the pipeline
-                with self._lock:
-                    batch = self.handler.invoke()
+                batch = None
+                try:
+                    with self._lock:
+                        batch = self.handler.invoke()
+                except Exception as e:
+                    self._stats.num_errors += 1
+                    error_counter.add(
+                        1,
+                        attributes={
+                            'phase': 'handler.invoke',
+                        },
+                    )
+                    logger.error('{}: error invoking handler: {}'.format(type(e).__name__, e))
 
-                self.sink.write_table(batch)
+                    if self._error_policies.policy == errors.Policy.RAISE:
+                        raise e
+                    elif self._error_policies.policy == errors.Policy.IGNORE:
+                        pass
+                    elif self._error_policies.policy == errors.Policy.DLQ:
+                        dlq_message = {
+                            "error": [str(e)],
+                            "message": ["Handler invocation failed"],
+                            "phase": ['handler.invoke'],
+                            "timestamp": [datetime.now(timezone.utc).isoformat()],
+                        }
+                        self._error_policies.dlq_sink.write_table(
+                            pa.Table.from_pydict(dlq_message),
+                        )
+                        self._error_policies.dlq_sink.flush()
+
+                if batch is not None:
+                    self.sink.write_table(batch)
+
                 self._flush()
                 self.source.commit()
                 diff = (datetime.now(timezone.utc) - start_batch_time)
@@ -244,10 +285,8 @@ class SQLFlow:
                 self.handler.init()
                 num_batch_messages = 0
 
-            if max_msgs and max_msgs <= self._stats.num_messages_consumed:
-                logger.info('max messages reached')
-                return
-
+    def _should_exit(self, max_msgs):
+        return max_msgs and self._stats.num_messages_consumed >= max_msgs
 
 def init_commands(conn, commands):
     for command in commands:
@@ -315,8 +354,13 @@ def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
     source = sources.new_source_from_conf(conf.pipeline.source)
     sink = sinks.new_sink_from_conf(conf.pipeline.sink, conn)
 
-    error_policies = PipelineErrorPolicies(
-        source=conf.pipeline.source.error.policy,
+    dlq_sink = None
+    if conf.pipeline.on_error and conf.pipeline.on_error.dlq:
+        dlq_sink = sinks.new_sink_from_conf(conf.pipeline.on_error.dlq.sink, conn)
+
+    error_policies = PipelineErrorPolicy(
+        policy=conf.pipeline.on_error.policy,
+        dlq_sink=dlq_sink if dlq_sink else NoopSink(),
     )
 
     sflow = SQLFlow(

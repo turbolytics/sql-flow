@@ -11,11 +11,6 @@ from sqlflow import settings, errors
 
 
 @dataclass
-class Error:
-    policy: errors.Policy = errors.Policy.RAISE
-
-
-@dataclass
 class SinkFormat:
     type: str
 
@@ -64,6 +59,17 @@ class Sink:
     sqlcommand: Optional[SQLCommandSink] = None
     iceberg: Optional[IcebergSink] = None
     clickhouse: Optional[ClikhouseSink] = None
+
+
+@dataclass
+class DLQErrorPolicy:
+    sink: Sink
+
+
+@dataclass
+class ErrorPolicy:
+    dlq: Optional[DLQErrorPolicy] = None
+    policy: errors.Policy = errors.Policy.RAISE
 
 
 @dataclass
@@ -121,7 +127,6 @@ class Source:
     type: str
     kafka: Optional[KafkaSource] = None
     websocket: Optional[WebsocketSource] = None
-    error: Optional[Error] = None
 
 
 @dataclass
@@ -139,6 +144,7 @@ class Pipeline:
     sink: Sink
     batch_size: int | None = None
     flush_interval_seconds: int = 30
+    on_error: Optional[ErrorPolicy] = None
 
 
 @dataclass
@@ -183,9 +189,6 @@ def new_from_path(path: str, setting_overrides={}):
 def build_source_config_from_dict(conf) -> Source:
     source = Source(
         type=conf['type'],
-        error=Error(
-            policy=conf.get('on_error', {}).get('policy', errors.Policy.RAISE),
-        ),
     )
 
     if source.type == 'kafka':
@@ -280,6 +283,16 @@ def new_from_dict(conf):
     sink = build_sink_config_from_dict(conf['pipeline']['sink'])
     source = build_source_config_from_dict(conf['pipeline']['source'])
 
+    error_policy_conf = conf['pipeline'].get('on_error', {})
+    dlq_sink = None
+    if 'dlq' in error_policy_conf:
+        dlq_sink = build_sink_config_from_dict(error_policy_conf['dlq'])
+
+    error_policy = ErrorPolicy(
+        dlq=DLQErrorPolicy(sink=dlq_sink) if dlq_sink else None,
+        policy=errors.Policy[error_policy_conf.get('policy', 'RAISE').upper()],
+    )
+
     return Conf(
         commands=commands,
         tables=tables,
@@ -295,6 +308,7 @@ def new_from_dict(conf):
                 table=conf['pipeline']['handler'].get('table'),
             ),
             sink=sink,
+            on_error=error_policy,
         ),
     )
 

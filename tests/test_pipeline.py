@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 from sqlflow import config, serde, errors
 from sqlflow.handlers import InferredMemBatch
-from sqlflow.pipeline import SQLFlow, PipelineErrorPolicies
+from sqlflow.pipeline import SQLFlow, PipelineErrorPolicy
 from sqlflow.sinks import ConsoleSink, NoopSink
 from sqlflow.sources import Source, Message
 
@@ -126,10 +126,168 @@ class TestPipeline(unittest.TestCase):
             handler,
             sink=NoopSink(),
             batch_size=1,
-            error_policies=PipelineErrorPolicies(source=errors.Policy.IGNORE),
+            error_policies=PipelineErrorPolicy(policy=errors.Policy.IGNORE),
         )
 
         stats = pipeline.consume_loop(max_msgs=1)
 
         self.assertEqual(stats.num_errors, 1)
         self.assertEqual(stats.num_messages_consumed, 1)
+
+    def test_pipeline_handler_invoke_ignores_invalid_sql(self):
+        messages = [
+            Message(
+                value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}',
+            ),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='INVALID SQL SYNTAX',
+            deserializer=serde.JSON(),
+        )
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink=NoopSink(),
+            batch_size=1,
+            error_policies=PipelineErrorPolicy(policy=errors.Policy.IGNORE),
+        )
+
+        stats = pipeline.consume_loop(max_msgs=1)
+
+        self.assertEqual(stats.num_errors, 1)
+        self.assertEqual(stats.num_messages_consumed, 1)
+
+    def test_pipeline_dlq_policy_invalid_json(self):
+        messages = [
+            Message(
+                value=b'{!invalidJSON!',
+            ),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+        dlq_sink = MagicMock()
+        dlq_sink.write_table = MagicMock()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink=NoopSink(),
+            batch_size=1,
+            error_policies=PipelineErrorPolicy(
+                policy=errors.Policy.DLQ,
+                dlq_sink=dlq_sink,
+            ),
+        )
+
+        stats = pipeline.consume_loop(max_msgs=1)
+
+        self.assertEqual(stats.num_errors, 1)
+        self.assertEqual(stats.num_messages_consumed, 1)
+        dlq_sink.write_table.assert_called_once()
+
+    def test_pipeline_dlq_policy_invalid_sql(self):
+        messages = [
+            Message(
+                value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}',
+            ),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='INVALID SQL SYNTAX',
+            deserializer=serde.JSON(),
+        )
+        dlq_sink = MagicMock()
+        dlq_sink.write_table = MagicMock()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink=NoopSink(),
+            batch_size=1,
+            error_policies=PipelineErrorPolicy(
+                policy=errors.Policy.DLQ,
+                dlq_sink=dlq_sink,
+            ),
+        )
+
+        stats = pipeline.consume_loop(max_msgs=1)
+
+        self.assertEqual(stats.num_errors, 1)
+        self.assertEqual(stats.num_messages_consumed, 1)
+        dlq_sink.write_table.assert_called_once()
+
+    def test_pipeline_batch_size_handling(self):
+        messages = [
+            Message(value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}'),
+            Message(value=b'{"time": "2021-01-01T00:01:00Z", "value": 2}'),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+        sink = MagicMock()
+        sink.write_table = MagicMock()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink,
+            batch_size=2,
+        )
+
+        stats = pipeline.consume_loop(max_msgs=2)
+
+        self.assertEqual(stats.num_messages_consumed, 2)
+        sink.write_table.assert_called_once()
+
+    def test_pipeline_source_commit_behavior(self):
+        messages = [
+            Message(value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}'),
+        ]
+        source = StaticSource(messages)
+        source.commit = MagicMock()
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+        sink = NoopSink()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink,
+            batch_size=1,
+        )
+
+        pipeline.consume_loop(max_msgs=1)
+
+        source.commit.assert_called_once()
+
+    def test_pipeline_sink_flush_behavior(self):
+        messages = [
+            Message(value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}'),
+        ]
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            deserializer=serde.JSON(),
+        )
+        sink = MagicMock()
+        sink.flush = MagicMock()
+
+        pipeline = SQLFlow(
+            source,
+            handler,
+            sink,
+            batch_size=1,
+        )
+
+        pipeline.consume_loop(max_msgs=1)
+
+        sink.flush.assert_called_once()
