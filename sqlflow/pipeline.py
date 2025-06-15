@@ -67,7 +67,7 @@ class Stats:
     total_throughput_per_second: float = 0
 
 
-class PipelineErrorPolicies:
+class PipelineErrorPolicy:
     def __init__(self, policy, dlq_sink=NoopSink()):
         self.policy = policy
         self.dlq_sink = dlq_sink
@@ -85,7 +85,7 @@ class SQLFlow:
                  batch_size=1,
                  flush_interval_seconds=30,
                  lock=threading.Lock(),
-                 error_policies=PipelineErrorPolicies(
+                 error_policies=PipelineErrorPolicy(
                     policy=errors.Policy.RAISE,
                  )):
         self.source = source
@@ -358,7 +358,7 @@ def new_sqlflow_from_conf(conf, conn, handler, lock) -> SQLFlow:
     if conf.pipeline.on_error and conf.pipeline.on_error.dlq:
         dlq_sink = sinks.new_sink_from_conf(conf.pipeline.on_error.dlq.sink, conn)
 
-    error_policies = PipelineErrorPolicies(
+    error_policies = PipelineErrorPolicy(
         policy=conf.pipeline.on_error.policy,
         dlq_sink=dlq_sink if dlq_sink else NoopSink(),
     )

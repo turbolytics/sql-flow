@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 from sqlflow import config, serde, errors
 from sqlflow.handlers import InferredMemBatch
-from sqlflow.pipeline import SQLFlow, PipelineErrorPolicies
+from sqlflow.pipeline import SQLFlow, PipelineErrorPolicy
 from sqlflow.sinks import ConsoleSink, NoopSink
 from sqlflow.sources import Source, Message
 
@@ -126,7 +126,7 @@ class TestPipeline(unittest.TestCase):
             handler,
             sink=NoopSink(),
             batch_size=1,
-            error_policies=PipelineErrorPolicies(policy=errors.Policy.IGNORE),
+            error_policies=PipelineErrorPolicy(policy=errors.Policy.IGNORE),
         )
 
         stats = pipeline.consume_loop(max_msgs=1)
@@ -151,7 +151,7 @@ class TestPipeline(unittest.TestCase):
             handler,
             sink=NoopSink(),
             batch_size=1,
-            error_policies=PipelineErrorPolicies(policy=errors.Policy.IGNORE),
+            error_policies=PipelineErrorPolicy(policy=errors.Policy.IGNORE),
         )
 
         stats = pipeline.consume_loop(max_msgs=1)
@@ -178,7 +178,7 @@ class TestPipeline(unittest.TestCase):
             handler,
             sink=NoopSink(),
             batch_size=1,
-            error_policies=PipelineErrorPolicies(
+            error_policies=PipelineErrorPolicy(
                 policy=errors.Policy.DLQ,
                 dlq_sink=dlq_sink,
             ),
@@ -209,7 +209,7 @@ class TestPipeline(unittest.TestCase):
             handler,
             sink=NoopSink(),
             batch_size=1,
-            error_policies=PipelineErrorPolicies(
+            error_policies=PipelineErrorPolicy(
                 policy=errors.Policy.DLQ,
                 dlq_sink=dlq_sink,
             ),
