@@ -1,0 +1,37 @@
+commands:
+  - name: attach to motherduck
+    sql: |
+      ATTACH 'md:my_db'
+
+pipeline:
+  name: kafka-motherduck-sink
+  description: "Sinks data from kafka to motherduck"
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1000) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: motherduck-sink-1
+      auto_offset_reset: earliest
+      topics:
+        - "input-user-clicks-motherduck"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      INSERT INTO my_db.events
+      SELECT
+        ip,
+        event,
+        properties ->> 'city' AS properties_city,
+        properties ->> 'country' AS properties_country,
+        CAST(timestamp AS TIMESTAMP) AS timestamp,
+        type,
+        userId
+      FROM batch;
+
+
+
+  sink:
+    type: noop
