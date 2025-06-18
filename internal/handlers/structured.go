@@ -82,8 +82,20 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 			debug.PrintStack() // Print the stack trace for more context
 		}
 	}()
+
+	h.mu.Lock()
+	batch := h.batch
+	h.batch = nil
+	h.mu.Unlock()
+
+	defer func() {
+		for _, rec := range records {
+			rec.Release()
+		}
+	}()
+
 	// Merge records into one for ingestion
-	recordReader, err := array.NewRecordReader(h.schema, h.batch)
+	recordReader, err := array.NewRecordReader(h.schema, batch)
 	if err != nil {
 		return nil, err
 	}
@@ -92,9 +104,14 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 	var allRecords []arrow.Record
 	for recordReader.Next() {
 		rec := recordReader.Record()
-		rec.Retain() // prevent premature GC
+		rec.Retain()
 		allRecords = append(allRecords, rec)
 	}
+	defer func() {
+		for _, rec := range allRecords {
+			rec.Release()
+		}
+	}()
 
 	var allColumns []arrow.Array
 	var totalRows int64
@@ -105,11 +122,18 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 			if len(allColumns) <= i {
 				allColumns = append(allColumns, rec.Column(i))
 			} else {
-				allColumns[i], _ = array.Concatenate([]arrow.Array{allColumns[i], rec.Column(i)}, h.alloc)
+				concatenated, _ := array.Concatenate([]arrow.Array{allColumns[i], rec.Column(i)}, h.alloc)
+				allColumns[i].Release()
+				allColumns[i] = concatenated
 			}
 		}
 		totalRows += rec.NumRows()
 	}
+	defer func() {
+		for _, col := range allColumns {
+			col.Release()
+		}
+	}()
 
 	// Build the combined record
 	combined := array.NewRecord(h.schema, allColumns, totalRows)
