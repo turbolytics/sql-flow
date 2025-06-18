@@ -26,6 +26,9 @@ type Source struct {
 	closeOnce   sync.Once
 
 	logger *zap.Logger
+
+	sync.Mutex
+	lastMessage *kafka.Message
 }
 
 type Option func(*Source)
@@ -60,6 +63,18 @@ func NewSource(consumer *kafka.Consumer, topics []string, opts ...Option) (*Sour
 	return s, nil
 }
 
+func (k *Source) SetLastMessage(msg *kafka.Message) {
+	k.Lock()
+	defer k.Unlock()
+	k.lastMessage = msg
+}
+
+func (k *Source) LastMessage() *kafka.Message {
+	k.Lock()
+	defer k.Unlock()
+	return k.lastMessage
+}
+
 func (k *Source) Start() error {
 	k.logger.Info("starting consumer", zap.String("topics", fmt.Sprintf("%v", k.topics)))
 	return k.consumer.SubscribeTopics(k.topics, nil)
@@ -75,7 +90,13 @@ func (k *Source) Close() error {
 }
 
 func (k *Source) Commit() error {
-	_, err := k.consumer.Commit()
+	msg := k.LastMessage()
+	if msg == nil {
+		k.logger.Warn("no last message to commit")
+		return nil
+	}
+
+	_, err := k.consumer.CommitMessage(msg)
 	if err != nil {
 		k.logger.Error("failed to commit offsets", zap.Error(err))
 		var kafkaErr kafka.Error
@@ -111,6 +132,7 @@ func (k *Source) Stream() <-chan core.Message {
 
 				switch msg := ev.(type) {
 				case *kafka.Message:
+					k.SetLastMessage(msg)
 					k.streamChan <- &Message{value: msg.Value}
 				case kafka.PartitionEOF:
 					k.logger.Info("%s reached end at offset %v\n",

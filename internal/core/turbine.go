@@ -35,12 +35,24 @@ type Handler interface {
 }
 
 type Stats struct {
-	mu                  sync.Mutex
-	numMessagesConsumed int
+	mu sync.Mutex
 
+	numMessagesConsumed      int
 	StartTime                time.Time
 	NumErrors                int
 	TotalThroughputPerSecond float64
+}
+
+func (s *Stats) SetThroughput(throughput float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.TotalThroughputPerSecond = throughput
+}
+
+func (s *Stats) GetThroughput() float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.TotalThroughputPerSecond
 }
 
 func (s *Stats) SetNumMessagesConsumed(num int) {
@@ -142,7 +154,7 @@ func (t *Turbine) StatusLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ticker.C:
-			t.logger.Info("status update", zap.Int("total_messages", t.stats.MessagesConsumed()))
+			t.logThroughput()
 		case <-ctx.Done():
 			return nil
 		}
@@ -251,13 +263,25 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		}
 	}
 
-	duration := time.Since(t.stats.StartTime).Seconds()
-	if duration > 0 {
-		t.stats.TotalThroughputPerSecond = float64(t.stats.MessagesConsumed()) / duration
+	t.logThroughput()
+	return t.stats, nil
+}
+
+func (t *Turbine) logThroughput() {
+	if duration := time.Since(t.stats.StartTime).Seconds(); duration > 0 {
+		t.stats.SetThroughput(float64(t.stats.MessagesConsumed()) / duration)
+	} else {
+		t.stats.SetThroughput(0)
 	}
 
-	t.logger.Info("consumer loop finished", zap.Float64("total_throughput", t.stats.TotalThroughputPerSecond))
-	return t.stats, nil
+	if t.stats.TotalThroughputPerSecond > 0 {
+		t.logger.Info("throughput",
+			zap.Int("messages_consumed", t.stats.MessagesConsumed()),
+			zap.Float64("total_throughput_per_second", t.stats.GetThroughput()),
+		)
+	} else {
+		t.logger.Info("no messages consumed, throughput is zero")
+	}
 }
 
 func (t *Turbine) flush(batch arrow.Table) error {

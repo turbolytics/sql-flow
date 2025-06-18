@@ -10,6 +10,8 @@ import (
 	"github.com/turbolytics/turbine/internal/sinks"
 	"github.com/turbolytics/turbine/internal/sources"
 	"go.uber.org/zap"
+	"net/http"
+	_ "net/http/pprof"
 	"sync"
 	"time"
 
@@ -27,6 +29,14 @@ func NewCommand() *cobra.Command {
 			logger, _ := zap.NewDevelopment()
 			defer logger.Sync()
 			l := logger.Named("turbine.run")
+
+			// Start pprof server
+			go func() {
+				l.Info("starting pprof server on :6060")
+				if err := http.ListenAndServe(":6060", nil); err != nil {
+					l.Error("failed to start pprof server", zap.Error(err))
+				}
+			}()
 
 			conf, err := config.Load(configPath, map[string]string{})
 			if err != nil {

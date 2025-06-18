@@ -140,6 +140,11 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 		rec.Release()
 	}
 
+	for _, rec := range h.batch {
+		rec.Release()
+	}
+	h.batch = nil
+
 	return table, nil
 }
 
