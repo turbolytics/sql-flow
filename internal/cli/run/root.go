@@ -2,9 +2,8 @@ package run
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"github.com/marcboeker/go-duckdb"
+	"github.com/apache/arrow-adbc/go/adbc/drivermgr" // Import the driver manager
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/turbine/internal/handlers"
 	"github.com/turbolytics/turbine/internal/sinks"
@@ -43,40 +42,29 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
-			connector, err := duckdb.NewConnector(":memory:", nil)
+			// Initialize ADBC connection using driver manager
+			var drv drivermgr.Driver
+			db, err := drv.NewDatabase(map[string]string{
+				"driver":     "/opt/homebrew/lib/libduckdb.dylib",
+				"entrypoint": "duckdb_adbc_init",
+			})
 			if err != nil {
-				return fmt.Errorf("failed to create connector: %w", err)
+				return fmt.Errorf("failed to initialize DuckDB driver: %w", err)
 			}
-			defer func() {
-				if err := connector.Close(); err != nil {
-					l.Error("failed to close connector", zap.Error(err))
-				}
-			}()
 
-			db := sql.OpenDB(connector)
-			defer func() {
-				if err := db.Close(); err != nil {
-					l.Error("failed to close db", zap.Error(err))
-				}
-			}()
-
-			conn, err := connector.Connect(context.Background())
+			conn, err := db.Open(context.Background())
 			if err != nil {
-				return fmt.Errorf("failed to connect: %w", err)
+				return fmt.Errorf("failed to open DuckDB connection: %w", err)
 			}
 			defer func() {
 				if err := conn.Close(); err != nil {
-					l.Error("failed to close connection", zap.Error(err))
+					l.Error("failed to close DuckDB connection", zap.Error(err))
 				}
 			}()
 
-			arr, err := duckdb.NewArrowFromConn(conn)
-			if err != nil {
-				return fmt.Errorf("failed to create arrow from conn: %w", err)
-			}
-
-			if err := core.InitCommands(arr, conf); err != nil {
-				return fmt.Errorf("failed to init commands: %w", err)
+			// Initialize commands
+			if err := core.InitCommands(conn, conf); err != nil {
+				return fmt.Errorf("failed to initialize commands: %w", err)
 			}
 
 			src, err := sources.New(
@@ -93,7 +81,7 @@ func NewCommand() *cobra.Command {
 			}
 
 			handler, err := handlers.New(
-				arr,
+				conn,
 				conf.Pipeline.Handler,
 				logger,
 			)

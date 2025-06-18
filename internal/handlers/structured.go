@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/marcboeker/go-duckdb"
 	"go.uber.org/zap"
 	"runtime/debug"
 	"sync"
@@ -18,7 +18,8 @@ type StructuredBatchHandler struct {
 	batch []arrow.Record
 
 	alloc  *memory.GoAllocator
-	arr    *duckdb.Arrow
+	conn   adbc.Connection
+	stmt   adbc.Statement
 	logger *zap.Logger
 	schema *arrow.Schema
 	sql    string
@@ -30,17 +31,14 @@ func (h *StructuredBatchHandler) Init(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.batch = nil
-	rdr, err := h.arr.QueryContext(
-		ctx,
-		fmt.Sprintf(
-			"TRUNCATE TABLE %s;",
-			h.tableName,
-		),
-	)
-	if err != nil {
+
+	// Execute truncate table statement
+	if err := h.stmt.SetSqlQuery(fmt.Sprintf("TRUNCATE TABLE %s;", h.tableName)); err != nil {
 		return err
 	}
-	rdr.Release()
+	if _, err := h.stmt.ExecuteUpdate(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -84,68 +82,105 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 			debug.PrintStack() // Print the stack trace for more context
 		}
 	}()
-	recordReader, err := array.NewRecordReader(
-		h.schema,
-		h.batch,
-	)
+	// Merge records into one for ingestion
+	recordReader, err := array.NewRecordReader(h.schema, h.batch)
 	if err != nil {
 		return nil, err
 	}
 	defer recordReader.Release()
 
-	release, err := h.arr.RegisterView(
-		recordReader,
-		"batch",
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-
-	copyRes, err := h.arr.QueryContext(
-		ctx,
-		fmt.Sprintf(
-			"INSERT INTO %s (SELECT * FROM batch)",
-			h.tableName,
-		),
-	)
-	if err != nil {
-		return nil, err
-	}
-	copyRes.Release()
-
-	rdr, err := h.arr.QueryContext(
-		ctx,
-		h.sql,
-	)
-	if err != nil {
-		return nil, err
+	var allRecords []arrow.Record
+	for recordReader.Next() {
+		rec := recordReader.Record()
+		rec.Retain() // prevent premature GC
+		allRecords = append(allRecords, rec)
 	}
 
-	defer rdr.Release()
+	var allColumns []arrow.Array
+	var totalRows int64
 
-	for rdr.Next() {
-		rec := rdr.Record()
+	// Collect columns and count total rows
+	for _, rec := range allRecords {
+		for i := 0; i < int(rec.NumCols()); i++ {
+			if len(allColumns) <= i {
+				allColumns = append(allColumns, rec.Column(i))
+			} else {
+				allColumns[i], _ = array.Concatenate([]arrow.Array{allColumns[i], rec.Column(i)}, h.alloc)
+			}
+		}
+		totalRows += rec.NumRows()
+	}
+
+	// Build the combined record
+	combined := array.NewRecord(h.schema, allColumns, totalRows)
+	defer combined.Release()
+
+	stmt, err := h.conn.NewStatement()
+	if err != nil {
+		return nil, fmt.Errorf("new statement error: %v", err)
+	}
+	defer stmt.Close()
+
+	// Use append mode if schema is known, otherwise create
+	if h.schema == nil {
+		if err := stmt.SetOption(adbc.OptionKeyIngestMode, adbc.OptionValueIngestModeCreate); err != nil {
+			return nil, fmt.Errorf("set option ingest mode create error: %v", err)
+		}
+	} else {
+		if err := stmt.SetOption(adbc.OptionKeyIngestMode, adbc.OptionValueIngestModeAppend); err != nil {
+			return nil, fmt.Errorf("set option ingest mode append error: %v", err)
+		}
+	}
+
+	if err := stmt.SetOption(adbc.OptionKeyIngestTargetTable, h.tableName); err != nil {
+		return nil, fmt.Errorf("set option target table error: %v", err)
+	}
+
+	if err := stmt.Bind(ctx, combined); err != nil {
+		return nil, fmt.Errorf("statement binding arrow record error: %v", err)
+	}
+
+	if _, err := stmt.ExecuteUpdate(ctx); err != nil {
+		return nil, fmt.Errorf("execute update error: %w", err)
+	}
+
+	// Query results back using your stored SQL
+	queryStmt, err := h.conn.NewStatement()
+	if err != nil {
+		return nil, fmt.Errorf("new query statement error: %v", err)
+	}
+	defer queryStmt.Close()
+
+	if err := queryStmt.SetSqlQuery(h.sql); err != nil {
+		return nil, fmt.Errorf("set query error: %v", err)
+	}
+
+	reader, _, err := queryStmt.ExecuteQuery(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("query execution error: %v", err)
+	}
+	defer reader.Release()
+
+	for reader.Next() {
+		rec := reader.Record()
 		rec.Retain()
 		records = append(records, rec)
 	}
 
-	table := array.NewTableFromRecords(
-		rdr.Schema(),
-		records,
-	)
-	table.Retain()
-
-	for _, rec := range records {
-		rec.Release()
-	}
-
+	// Clean up batch
 	for _, rec := range h.batch {
 		rec.Release()
 	}
 	h.batch = nil
 
-	return table, nil
+	result := array.NewTableFromRecords(reader.Schema(), records)
+	result.Retain()
+
+	for _, rec := range records {
+		rec.Release()
+	}
+
+	return result, nil
 }
 
 type StructuredBatchHandlerOption func(*StructuredBatchHandler)
@@ -157,7 +192,7 @@ func StructuredBatchWithLogger(l *zap.Logger) StructuredBatchHandlerOption {
 }
 
 func NewStructuredBatchHandler(
-	arr *duckdb.Arrow,
+	conn adbc.Connection,
 	sql string,
 	tableName string,
 	schema *arrow.Schema,
@@ -166,9 +201,15 @@ func NewStructuredBatchHandler(
 
 	pool := memory.NewGoAllocator()
 
+	stmt, err := conn.NewStatement()
+	if err != nil {
+		return nil, err
+	}
+
 	s := &StructuredBatchHandler{
 		alloc:     pool,
-		arr:       arr,
+		conn:      conn,
+		stmt:      stmt,
 		schema:    schema,
 		sql:       sql,
 		tableName: tableName,
