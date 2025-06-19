@@ -154,139 +154,118 @@ class SQLFlow:
             'sink': self.sink.__class__.__name__,
         })
 
-    def _consume_loop(self, max_msgs=None):
-        num_batch_messages = 0
-        start_batch_time = None
-        self._stats.start_time = datetime.now(timezone.utc)
+    def _flush_batch(self):
+        try:
+            with self._lock:
+                batch = self.handler.invoke()
+            if batch is not None:
+                self.sink.write_table(batch)
+        except Exception as e:
+            self._handle_error(e, "handler.invoke")
+        else:
+            self._flush()
+            self.source.commit()
+            batch_processing_latency.record((datetime.now(timezone.utc) - self._batch_start_time).total_seconds())
+            self.handler.init()
+            self._batch_count = 0
+
+    def _initialize_loop(self):
+        self._stats.start_time = self._now()
         self._stats.num_messages_consumed = 0
-
+        self._batch_count = 0
+        self._batch_start_time = None
         self.handler.init()
+        self._liveness_timer = self._now()
 
-        # TODO: Flush interval seconds on background loop
-        # Flush interval seconds only works right now if batch size is > 1.
-        # Flush interval is implemented through the kafka poll timeout.
-        # This means that the flush interval timeout is not supported in websockets currently.
-        # We'd like to minimize the use of threads. Currently kafka provides a workaround as part
-        # of its implementation. If there's any adoption on the websocket side, we can implement a
-        # more sustainable and generic solution.
-        liveness_timer_start = self._liveness_time()
+    def _process_message(self, msg):
+        try:
+            self._stats.num_messages_consumed += 1
+            self._track_telemetry(msg)
+            self.handler.write(msg.value().decode())
+            self._batch_count += 1
+            if self._batch_count == 1:
+                self._batch_start_time = self._now()
+        except Exception as e:
+            self._handle_error(e, "handler.write", msg)
 
+    def _should_exit(self, max_msgs):
+        return max_msgs and self._stats.num_messages_consumed >= max_msgs
+
+    def _should_flush_batch(self):
+        return self._batch_count >= self._batch_size
+
+    def _should_flush(self):
+        return self._now() - self._liveness_timer > timedelta(seconds=self._flush_interval_seconds)
+
+    def _get_next_message(self, stream):
+        start = self._now()
+        msg = next(stream)
+        source_read_latency.record((self._now() - start).total_seconds(), attributes={
+            'source': self.source.__class__.__name__,
+        })
+        return msg
+
+    def _now(self):
+        return datetime.now(timezone.utc)
+
+    def _track_telemetry(self, msg):
+        message_counter.add(1, attributes={
+            'source': self.source.__class__.__name__,
+        })
+
+    def _send_to_dlq(self, error, phase, msg):
+        dlq_message = {
+            "error": [str(error)],
+            "message": [msg.value().decode()] if msg else ["<n/a>"],
+            "phase": [phase],
+            "timestamp": [datetime.now(timezone.utc).isoformat()],
+        }
+        self._error_policies.dlq_sink.write_table(pa.Table.from_pydict(dlq_message))
+        self._error_policies.dlq_sink.flush()
+
+    def _handle_error(self, e: Exception, phase: str, msg=None):
+        self._stats.num_errors += 1
+        error_counter.add(1, attributes={
+            'type': type(e).__name__,
+            'phase': phase,
+        })
+        logger.error(f'{type(e).__name__}: error in phase "{phase}": {e}')
+
+        if self._error_policies.policy == errors.Policy.RAISE:
+            raise e
+        elif self._error_policies.policy == errors.Policy.DLQ:
+            self._send_to_dlq(e, phase, msg)
+
+    def _check_liveness(self):
+        """
+        Checks if the flush interval has passed and flushes the sink if necessary.
+        Resets the liveness timer.
+        """
+        if self._now() - self._liveness_timer > timedelta(seconds=self._flush_interval_seconds):
+            logger.debug("Liveness flush triggered.")
+            self._flush()
+            self._liveness_timer = self._now()
+
+    def _consume_loop(self, max_msgs=None):
+        self._initialize_loop()
         stream = self.source.stream()
+
         while self._running:
             if self._should_exit(max_msgs):
                 logger.info('Max messages reached. Exiting.')
                 return
 
-            source_read_start = datetime.now(timezone.utc)
-            msg = next(stream)
+            msg = self._get_next_message(stream)
 
             if msg is None:
-                if datetime.now(timezone.utc) - liveness_timer_start > timedelta(seconds=self._flush_interval_seconds):
-                    logger.debug('liveness check passed, issuing flush')
-                    self._flush()
-                    liveness_timer_start = self._liveness_time()
+                self._check_liveness()
                 continue
 
-            source_read_latency.record(
-                (datetime.now(timezone.utc) - source_read_start).total_seconds(),
-                attributes={
-                    'source': self.source.__class__.__name__,
-                }
-            )
-            message_counter.add(1, attributes={
-                'source': self.source.__class__.__name__,
-            })
-            # start the timer for to track the message batch latency
-            if num_batch_messages == 0:
-               start_batch_time = datetime.now(timezone.utc)
+            self._process_message(msg)
 
-            self._stats.num_messages_consumed += 1
+            if self._should_flush_batch():
+                self._flush_batch()
 
-            try:
-                msgObj = msg.value().decode()
-                self.handler.write(msgObj)
-            except Exception as e:
-                self._stats.num_errors += 1
-                error_counter.add(
-                    1,
-                    attributes={
-                        'phase': 'handler.write',
-                    },
-                )
-                logger.error('{}: error processing message: "{}"'.format(e, msg.value()))
-
-                if self._error_policies.policy == errors.Policy.RAISE:
-                    raise e
-                elif self._error_policies.policy == errors.Policy.IGNORE:
-                    continue
-                elif self._error_policies.policy == errors.Policy.DLQ:
-                    dlq_message = {
-                        "error": [str(e)],
-                        "message": [msg.value().decode('utf-8')],
-                        "phase": ['handler.write'],
-                        "timestamp": [datetime.now(timezone.utc).isoformat()],
-                    }
-                    self._error_policies.dlq_sink.write_table(
-                        pa.Table.from_pydict(dlq_message),
-                    )
-                    self._error_policies.dlq_sink.flush()
-                    continue
-
-            num_batch_messages += 1
-
-            if self._stats.num_messages_consumed % 10000 == 0:
-                now = datetime.now(timezone.utc)
-                diff = (now - self._stats.start_time)
-                logger.info('{}: reqs / second'.format(
-                    self._stats.num_messages_consumed // diff.total_seconds()),
-                )
-
-            if num_batch_messages == self._batch_size:
-                # apply the pipeline
-                batch = None
-                try:
-                    with self._lock:
-                        batch = self.handler.invoke()
-                except Exception as e:
-                    self._stats.num_errors += 1
-                    error_counter.add(
-                        1,
-                        attributes={
-                            'phase': 'handler.invoke',
-                        },
-                    )
-                    logger.error('{}: error invoking handler: {}'.format(type(e).__name__, e))
-
-                    if self._error_policies.policy == errors.Policy.RAISE:
-                        raise e
-                    elif self._error_policies.policy == errors.Policy.IGNORE:
-                        pass
-                    elif self._error_policies.policy == errors.Policy.DLQ:
-                        dlq_message = {
-                            "error": [str(e)],
-                            "message": ["Handler invocation failed"],
-                            "phase": ['handler.invoke'],
-                            "timestamp": [datetime.now(timezone.utc).isoformat()],
-                        }
-                        self._error_policies.dlq_sink.write_table(
-                            pa.Table.from_pydict(dlq_message),
-                        )
-                        self._error_policies.dlq_sink.flush()
-
-                if batch is not None:
-                    self.sink.write_table(batch)
-
-                self._flush()
-                self.source.commit()
-                diff = (datetime.now(timezone.utc) - start_batch_time)
-                batch_processing_latency.record(diff.total_seconds())
-
-                # Send signal to handler indicating a new batch of data.
-                self.handler.init()
-                num_batch_messages = 0
-
-    def _should_exit(self, max_msgs):
-        return max_msgs and self._stats.num_messages_consumed >= max_msgs
 
 def init_commands(conn, commands):
     for command in commands:

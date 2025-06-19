@@ -75,38 +75,53 @@ class TestPipeline(unittest.TestCase):
         with self.assertRaises(JSONDecodeError):
             stats = pipeline.consume_loop(max_msgs=1)
 
-    def test_liveness_counter(self):
+    def test_check_liveness_called_once(self):
+        messages = [None]  # Simulate no new messages to trigger liveness
+        source = StaticSource(messages)
+        handler = InferredMemBatch(
+            sql='SELECT * FROM batch',
+            deserializer=serde.JSON(),
+        )
+        sink = NoopSink()
+
+        pipeline = SQLFlow(
+            source=source,
+            handler=handler,
+            sink=sink,
+            batch_size=1,
+            flush_interval_seconds=1,
+        )
+
+        with patch.object(pipeline, '_check_liveness') as mock_check_liveness:
+            pipeline.consume_loop(max_msgs=1)
+
+        mock_check_liveness.assert_called_once()
+
+    def test_liveness_flush_triggers_sink_flush(self):
         messages = [
             Message(value=b'{"time": "2021-01-01T00:00:00Z", "value": 1}'),
-            None,
+            None  # Triggers liveness flush
         ]
         source = StaticSource(messages)
         handler = InferredMemBatch(
-            sql='SELECT CAST(time AS TIMESTAMP) as timestamp FROM batch',
+            sql='SELECT * FROM batch',
             deserializer=serde.JSON(),
         )
         sink = NoopSink()
         sink.flush = MagicMock()
 
         pipeline = SQLFlow(
-            source,
-            handler,
-            sink,
-            batch_size=2,
-            flush_interval_seconds=1  # Set a short interval for testing
+            source=source,
+            handler=handler,
+            sink=sink,
+            batch_size=2,  # > 1 so liveness is needed
+            flush_interval_seconds=1
         )
 
-        # this is quite clunky. This should be simplified with a status loop.
-        # the status loop will run on an interval and flush if necessary.
-        pipeline._liveness_time = MagicMock(
-            return_value=datetime(2022, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
-        )
-
-        with patch('sqlflow.pipeline.datetime') as mock_datetime:
-            mock_datetime.now.return_value = datetime(2023, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        with patch.object(pipeline, '_check_liveness') as mock_check_liveness:
             pipeline.consume_loop(max_msgs=2)
 
-        # sink should contain single message
+        mock_check_liveness.assert_called_once()
         sink.flush.assert_called_once()
 
     def test_pipeline_source_error_ignores(self):
@@ -186,8 +201,16 @@ class TestPipeline(unittest.TestCase):
 
         stats = pipeline.consume_loop(max_msgs=1)
 
-        self.assertEqual(stats.num_errors, 1)
-        self.assertEqual(stats.num_messages_consumed, 1)
+        self.assertEqual(
+            stats.num_errors,
+            1,
+            f'expected 1 error received: {stats.num_errors}',
+        )
+        self.assertEqual(
+            stats.num_messages_consumed,
+            1,
+            f'expected 1 message consumed, received: {stats.num_messages_consumed}'
+        )
         dlq_sink.write_table.assert_called_once()
 
     def test_pipeline_dlq_policy_invalid_sql(self):
