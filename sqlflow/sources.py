@@ -4,9 +4,12 @@ import logging
 import typing
 from abc import ABC, abstractmethod
 from typing import Iterator
+from threading import Thread, Lock
 
 from fastapi import FastAPI, Request, HTTPException
-from threading import Thread, Lock
+from opentelemetry import metrics
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from queue import Queue, Empty
 import uvicorn
 
@@ -17,7 +20,19 @@ from confluent_kafka import KafkaError, Consumer
 from sqlflow import config
 
 logger = logging.getLogger(__name__)
+meter = metrics.get_meter('sqlflow.sources.http')
 
+REQUEST_COUNT = meter.create_counter(
+    "webhook_requests_total",
+    "requests",
+    "Total number of requests to the webhook source",
+)
+
+REQUEST_DURATION = meter.create_histogram(
+    "webhook_request_duration_seconds",
+    "seconds",
+    "Duration of requests to the webhook source in seconds",
+)
 
 class Message:
     def __init__(self, value: bytes):
@@ -126,9 +141,28 @@ class HMACConfig:
         self.secret = secret
 
 
+class MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        import time
+        start_time = time.time()
+        response = await call_next(request)
+        duration = time.time() - start_time
+        status_code = str(response.status_code)
+        REQUEST_COUNT.add(1, attributes={
+           'status_code': status_code,
+        })
+        REQUEST_DURATION.record(
+            duration, attributes={
+                'status_code': status_code,
+        })
+        return response
+
+
 class WebhookSource(Source):
     def __init__(self, host="0.0.0.0", port=8001, hmac_config: typing.Optional[HMACConfig] = None):
-        self._app = FastAPI()
+        self._app = FastAPI(
+            middleware=[Middleware(MetricsMiddleware)]
+        )
         # maxsize=1 to ensure we only keep the latest message
         # this ensures at least 1 message delivery since the queue will
         # be consumed synchronously by the pipeline
@@ -138,7 +172,6 @@ class WebhookSource(Source):
         self._port = port
         self._server_thread = None
         self._hmac_config = hmac_config
-
 
         # Define the FastAPI endpoint
         @self._app.post("/events")
