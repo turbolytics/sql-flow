@@ -3,6 +3,11 @@ import typing
 from abc import ABC, abstractmethod
 from typing import Iterator
 
+from fastapi import FastAPI, Request
+from threading import Thread, Lock
+from queue import Queue, Empty
+import uvicorn
+
 from websockets.sync.client import connect
 
 from confluent_kafka import KafkaError, Consumer
@@ -112,6 +117,54 @@ class WebsocketSource(Source):
                     yield Message(msg)
 
 
+class FastAPISource(Source):
+    def __init__(self, host="0.0.0.0", port=8001):
+        self._app = FastAPI()
+        self._queue = Queue()
+        self._lock = Lock()
+        self._host = host
+        self._port = port
+        self._server_thread = None
+
+        # Define the FastAPI endpoint
+        @self._app.post("/events")
+        async def receive_events(request: Request):
+            data = await request.body()
+            with self._lock:
+                self._queue.put(Message(data))
+            return {"status": "received"}
+
+    def start(self):
+        # Start the FastAPI server in a separate thread
+        logger.info('Starting FastAPI server at http://{}:{}'.format(self._host, self._port))
+        def run_server():
+            uvicorn.run(
+                self._app,
+                host=self._host,
+                port=self._port,
+                log_level="info",
+            )
+
+        self._server_thread = Thread(target=run_server, daemon=True)
+        self._server_thread.start()
+
+    def stream(self):
+        # Return an iterator over the messages in the queue
+        while True:
+            try:
+                yield self._queue.get(timeout=1)
+            except Empty:
+                yield None
+
+    def commit(self):
+        # Commit logic (if needed) can be implemented here
+        pass
+
+    def close(self):
+        # Close the source (if needed)
+        pass
+
+
 def new_source_from_conf(source_conf: config.Source):
     if source_conf.type == 'kafka':
         kconf = {
@@ -131,6 +184,8 @@ def new_source_from_conf(source_conf: config.Source):
         return WebsocketSource(
             uri=source_conf.websocket.uri,
         )
+    elif source_conf.type == 'webhook':
+        return FastAPISource()
 
     raise NotImplementedError('unsupported source type: {}'.format(source_conf.type))
 
