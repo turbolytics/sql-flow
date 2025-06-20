@@ -17,6 +17,7 @@ pipeline:
         header: 'X-Hub-Signature-256'
         sig_key: 'sha256' # sha256=
         # ? add support for timing
+        secret: '{{ SQLFLOW_GITHUB_WEBHOOK_SECRET }}'
 
   handler:
     type: 'handlers.InferredMemBatch'

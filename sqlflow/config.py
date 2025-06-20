@@ -14,6 +14,7 @@ from sqlflow import settings, errors
 class HMACConfig:
     header: str  # Header name for the HMAC signature
     sig_key: str  # Key used for HMAC signature validation
+    secret: str # Shared Secret
 
 
 @dataclass
@@ -222,6 +223,7 @@ def build_source_config_from_dict(conf) -> Source:
             hmac=HMACConfig(
                 header=conf['webhook']['hmac']['header'],
                 sig_key=conf['webhook']['hmac']['sig_key'],
+                secret=conf['webhook']['hmac']['secret'],
             ) if 'hmac' in conf['webhook'] else None,
         )
     else:

@@ -1,9 +1,11 @@
+import hmac
+import hashlib
 import logging
 import typing
 from abc import ABC, abstractmethod
 from typing import Iterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from threading import Thread, Lock
 from queue import Queue, Empty
 import uvicorn
@@ -117,18 +119,44 @@ class WebsocketSource(Source):
                     yield Message(msg)
 
 
-class FastAPISource(Source):
-    def __init__(self, host="0.0.0.0", port=8001):
+class HMACConfig:
+    def __init__(self, header: str, sig_key: str, secret: str):
+        self.header = header  # Header name for the HMAC signature
+        self.sig_key = sig_key  # Key used for HMAC signature validation
+        self.secret = secret
+
+
+class WebhookSource(Source):
+    def __init__(self, host="0.0.0.0", port=8001, hmac_config: typing.Optional[HMACConfig] = None):
         self._app = FastAPI()
-        self._queue = Queue()
+        # maxsize=1 to ensure we only keep the latest message
+        # this ensures at least 1 message delivery since the queue will
+        # be consumed synchronously by the pipeline
+        self._queue = Queue(maxsize=1)
         self._lock = Lock()
         self._host = host
         self._port = port
         self._server_thread = None
+        self._hmac_config = hmac_config
+
 
         # Define the FastAPI endpoint
         @self._app.post("/events")
         async def receive_events(request: Request):
+            if self._hmac_config:
+                header_signature = request.headers.get(self._hmac_config.header)
+                if not header_signature:
+                    raise HTTPException(status_code=400, detail="Missing HMAC signature")
+                body = await request.body()
+                mac = hmac.new(
+                    self._hmac_config.secret.encode(),
+                    body,
+                    hashlib.sha256
+                )
+                expected_signature = f"sha256={mac.hexdigest()}"
+                if not hmac.compare_digest(header_signature, expected_signature):
+                    raise HTTPException(status_code=403, detail="Invalid HMAC signature")
+
             data = await request.body()
             with self._lock:
                 self._queue.put(Message(data))
@@ -185,7 +213,14 @@ def new_source_from_conf(source_conf: config.Source):
             uri=source_conf.websocket.uri,
         )
     elif source_conf.type == 'webhook':
-        return FastAPISource()
+        hmac_config = None
+        if source_conf.webhook.signature_type == 'hmac' and source_conf.webhook.hmac:
+            hmac_config = HMACConfig(
+                header=source_conf.webhook.hmac.header,
+                sig_key=source_conf.webhook.hmac.sig_key,
+                secret=source_conf.webhook.hmac.secret,
+            )
+        return WebhookSource(hmac_config=hmac_config)
 
     raise NotImplementedError('unsupported source type: {}'.format(source_conf.type))
 
