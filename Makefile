@@ -31,6 +31,10 @@ test-release: docker-image
 start-backing-services:
 	docker-compose -f dev/kafka-single.yml up -d
 
+.PHONY: stop-backing-services
+stop-backing-services:
+	docker-compose -f dev/kafka-single.yml down --remove-orphans
+
 .PHONY: docker-image
 docker-image:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \
