@@ -7,7 +7,7 @@ from sqlflow import config, serde, errors
 from sqlflow.handlers import InferredMemBatch
 from sqlflow.pipeline import SQLFlow, PipelineErrorPolicy
 from sqlflow.sinks import ConsoleSink, NoopSink
-from sqlflow.sources import Source, Message
+from sqlflow.sources.base import Source, Message
 
 
 class StaticSource(Source):

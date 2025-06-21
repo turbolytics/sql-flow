@@ -11,6 +11,19 @@ from sqlflow import settings, errors
 
 
 @dataclass
+class HMACConfig:
+    header: str  # Header name for the HMAC signature
+    sig_key: str  # Key used for HMAC signature validation
+    secret: str # Shared Secret
+
+
+@dataclass
+class WebhookSource:
+    signature_type: Optional[str] = None  # Type of signature validation (e.g., 'hmac')
+    hmac: Optional[HMACConfig] = None
+
+
+@dataclass
 class SinkFormat:
     type: str
 
@@ -127,6 +140,7 @@ class Source:
     type: str
     kafka: Optional[KafkaSource] = None
     websocket: Optional[WebsocketSource] = None
+    webhook: Optional[WebhookSource] = None
 
 
 @dataclass
@@ -202,6 +216,15 @@ def build_source_config_from_dict(conf) -> Source:
     elif source.type == 'websocket':
         source.websocket = WebsocketSource(
             uri=conf['websocket']['uri'],
+        )
+    elif source.type == 'webhook':
+        source.webhook = WebhookSource(
+            signature_type=conf['webhook'].get('signature_type'),
+            hmac=HMACConfig(
+                header=conf['webhook']['hmac']['header'],
+                sig_key=conf['webhook']['hmac']['sig_key'],
+                secret=conf['webhook']['hmac']['secret'],
+            ) if 'hmac' in conf['webhook'] else None,
         )
     else:
        raise NotImplementedError('unsupported source type: {}'.format(source.type))

@@ -20,18 +20,16 @@ pipeline:
   handler:
     type: 'handlers.InferredMemBatch'
     sql: |
-      INSERT INTO my_db.events
+      INSERT INTO my_db.issues
       SELECT
-        ip,
-        event,
-        properties ->> 'city' AS properties_city,
-        properties ->> 'country' AS properties_country,
-        CAST(timestamp AS TIMESTAMP) AS timestamp,
-        type,
-        userId
+        action,
+        issue ->> 'id' AS issue_id,
+        issue ->> 'title' AS issue_title,
+        issue ->> 'number' AS issue_number,
+        issue ->> 'user' ->> 'login' AS issue_user_login,
+        issue ->> 'repository' ->> 'name' AS issue_repo_name,
+        issue ->> 'repository' ->> 'id' AS issue_repo_id
       FROM batch;
-
-
 
   sink:
     type: noop
