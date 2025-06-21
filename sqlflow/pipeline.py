@@ -11,7 +11,7 @@ import pyarrow as pa
 from sqlflow import config, sinks, sources, errors
 from sqlflow.managers import window
 from sqlflow.sinks import Sink, NoopSink
-from sqlflow.sources import Source
+from sqlflow.sources.base import Source
 
 logger = logging.getLogger(__name__)
 meter = metrics.get_meter('sqlflow.pipeline')
