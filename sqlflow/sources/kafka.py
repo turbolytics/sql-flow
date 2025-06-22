@@ -1,8 +1,12 @@
+import logging
 import typing
 
 from confluent_kafka import KafkaError
 
 from .base import Source, Message, SourceException
+
+
+logger = logging.getLogger(__name__)
 
 
 class KafkaSource(Source):

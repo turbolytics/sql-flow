@@ -123,11 +123,28 @@ class SQLCommand:
 
 
 @dataclass
+class KafkaSSLConfig:
+    ca_location: str  # Path to the CA certificate
+    certificate_location: str  # Path to the client certificate
+    key_location: str  # Path to the client private key
+
+
+@dataclass
+class KafkaSASLConfig:
+    mechanism: str  # SASL mechanism (e.g., PLAIN, SCRAM-SHA-256)
+    username: str  # SASL username
+    password: str  # SASL password
+
+
+@dataclass
 class KafkaSource:
     brokers: [str]
     group_id: str
     auto_offset_reset: str
     topics: [str]
+    security_protocol: Optional[str] = None  # Security protocol (e.g., PLAINTEXT, SSL, SASL_SSL)
+    ssl: Optional[KafkaSSLConfig] = None  # SSL configuration
+    sasl: Optional[KafkaSASLConfig] = None  # SASL configuration
 
 
 @dataclass
@@ -206,11 +223,30 @@ def build_source_config_from_dict(conf) -> Source:
     )
 
     if source.type == 'kafka':
+        ssl_config = None
+        if 'ssl' in conf['kafka']:
+            ssl_config = KafkaSSLConfig(
+                ca_location=conf['kafka']['ssl']['ca_location'],
+                certificate_location=conf['kafka']['ssl']['certificate_location'],
+                key_location=conf['kafka']['ssl']['key_location'],
+            )
+
+        sasl_config = None
+        if 'sasl' in conf['kafka']:
+            sasl_config = KafkaSASLConfig(
+                mechanism=conf['kafka']['sasl']['mechanism'],
+                username=conf['kafka']['sasl']['username'],
+                password=conf['kafka']['sasl']['password'],
+            )
+
         source.kafka = KafkaSource(
             brokers=conf['kafka']['brokers'],
             group_id=conf['kafka']['group_id'],
             auto_offset_reset=conf['kafka']['auto_offset_reset'],
             topics=conf['kafka']['topics'],
+            security_protocol=conf['kafka'].get('security_protocol'),
+            ssl=ssl_config,
+            sasl=sasl_config,
         )
 
     elif source.type == 'websocket':

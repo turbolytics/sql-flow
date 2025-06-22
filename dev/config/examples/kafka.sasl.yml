@@ -1,0 +1,24 @@
+pipeline:
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('127.0.0.1:9094') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      security_protocol: SASL_PLAINTEXT
+      sasl:
+        mechanism: PLAIN
+        username: testuser
+        password: testpassword
+
+      topics:
+        - "input-sasl-1"
+
+  handler:
+    type: "handlers.InferredMemBatch"
+    sql: SELECT * FROM batch
+
+  sink:
+    type: console
