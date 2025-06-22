@@ -49,6 +49,7 @@ class ConfigValidationTestCase(unittest.TestCase):
             'kafka.mem.iceberg.yml',
             'kafka.postgres.join.yml',
             'kafka.postgres.sink.yml',
+            'kafka.sasl-tls.yml',
             'kafka.structured.disk.yml',
             'kafka.structured.mem.yml',
             'local.parquet.sink.yml',

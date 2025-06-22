@@ -278,6 +278,60 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "security_protocol": {
+                  "type": "string",
+                  "enum": [
+                    "SASL_SSL",
+                    "SSL",
+                    "SASL_PLAINTEXT",
+                    "PLAINTEXT"
+                  ]
+                },
+                "ssl": {
+                  "type": "object",
+                  "properties": {
+                    "ca_location": {
+                      "type": "string"
+                    },
+                    "key_location": {
+                      "type": "string"
+                    },
+                    "certificate_location": {
+                      "type": "string"
+                    },
+                    "key_password": {
+                      "type": "string"
+                    },
+                    "endpoint_identification_algorithm": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "sasl": {
+                  "type": "object",
+                  "properties": {
+                    "mechanism": {
+                      "type": "string",
+                      "enum": [
+                        "PLAIN",
+                        "SCRAM-SHA-256",
+                        "SCRAM-SHA-512",
+                        "GSSAPI"
+                      ]
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "password": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "mechanism",
+                    "username",
+                    "password"
+                  ]
                 }
               },
               "required": [
