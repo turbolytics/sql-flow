@@ -15,7 +15,6 @@ def new_source_from_conf(source_conf: config.Source):
             'auto.offset.reset': source_conf.kafka.auto_offset_reset,
             'enable.auto.commit': False,
         }
-        import ipdb; ipdb.set_trace();
 
         if source_conf.kafka.security_protocol == 'SASL_PLAINTEXT':
             kconf['security.protocol'] = 'SASL_PLAINTEXT'
