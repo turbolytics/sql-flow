@@ -127,6 +127,8 @@ class KafkaSSLConfig:
     ca_location: str  # Path to the CA certificate
     certificate_location: str  # Path to the client certificate
     key_location: str  # Path to the client private key
+    key_password: Optional[str] = None
+    endpoint_identification_algorithm: Optional[str] = None  # e.g., https, none (default is https)
 
 
 @dataclass
@@ -226,9 +228,11 @@ def build_source_config_from_dict(conf) -> Source:
         ssl_config = None
         if 'ssl' in conf['kafka']:
             ssl_config = KafkaSSLConfig(
-                ca_location=conf['kafka']['ssl']['ca_location'],
-                certificate_location=conf['kafka']['ssl']['certificate_location'],
-                key_location=conf['kafka']['ssl']['key_location'],
+                ca_location=conf['kafka']['ssl'].get('ca_location'),
+                certificate_location=conf['kafka']['ssl'].get('certificate_location'),
+                key_location=conf['kafka']['ssl'].get('key_location'),
+                key_password=conf['kafka']['ssl'].get('key_password'),
+                endpoint_identification_algorithm=conf['kafka']['ssl'].get('endpoint_identification_algorithm'),
             )
 
         sasl_config = None

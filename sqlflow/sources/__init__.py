@@ -23,6 +23,25 @@ def new_source_from_conf(source_conf: config.Source):
             kconf['sasl.username'] = source_conf.kafka.sasl.username
             kconf['sasl.password'] = source_conf.kafka.sasl.password
 
+        if source_conf.kafka.security_protocol == 'SSL':
+            kconf['security.protocol'] = 'SSL'
+            kconf['ssl.ca.location'] = source_conf.kafka.ssl.ca_location
+            kconf['ssl.certificate.location'] = source_conf.kafka.ssl.certificate_location
+            kconf['ssl.key.location'] = source_conf.kafka.ssl.key_location
+            kconf['ssl.key.password'] = source_conf.kafka.ssl.key_password
+            kconf['ssl.endpoint.identification.algorithm'] = source_conf.kafka.ssl.endpoint_identification_algorithm
+
+        if source_conf.kafka.security_protocol == 'SASL_SSL':
+            kconf['security.protocol'] = 'SASL_SSL'
+            kconf['sasl.mechanism'] = source_conf.kafka.sasl.mechanism
+            kconf['sasl.username'] = source_conf.kafka.sasl.username
+            kconf['sasl.password'] = source_conf.kafka.sasl.password
+            kconf['ssl.ca.location'] = source_conf.kafka.ssl.ca_location
+            kconf['ssl.certificate.location'] = source_conf.kafka.ssl.certificate_location
+            kconf['ssl.key.location'] = source_conf.kafka.ssl.key_location
+            kconf['ssl.key.password'] = source_conf.kafka.ssl.key_password
+            kconf['ssl.endpoint.identification.algorithm'] = source_conf.kafka.ssl.endpoint_identification_algorithm
+
         consumer = Consumer(kconf)
 
         return KafkaSource(

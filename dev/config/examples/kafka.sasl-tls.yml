@@ -1,0 +1,30 @@
+pipeline:
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: test
+      auto_offset_reset: earliest
+      security_protocol: SASL_SSL
+      ssl:
+        ca_location: {{ SQLFLOW_ROOT_DIR }}/dev/kafka/certs/ca-cert.pem
+        key_location: {{ SQLFLOW_ROOT_DIR }}/dev/kafka/certs/client-key.pem
+        certificate_location: {{ SQLFLOW_ROOT_DIR }}/dev/kafka/certs/client-cert.pem
+        key_password: testpass
+        endpoint_identification_algorithm: 'none'
+      sasl:
+        mechanism: PLAIN
+        username: user
+        password: bitnami
+
+      topics:
+        - "input-sasl-tls-1"
+
+  handler:
+    type: "handlers.InferredMemBatch"
+    sql: SELECT * FROM batch
+
+  sink:
+    type: console
