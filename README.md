@@ -16,24 +16,29 @@ Key Features:
 docker pull turbolytics/sql-flow:latest
 ```
 
-2. Validate config against test data:
+2. Setup Local Development Environment
+```
+make setup-dev 
+```
+
+3. Validate config against test data:
 ```
 docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-flow:latest dev invoke /tmp/conf/config/examples/basic.agg.yml /tmp/conf/fixtures/simple.json
 
 ['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
 ```
 
-3. Start kafka locally using docker:
+4. Start kafka locally using docker:
 ```
 docker-compose -f dev/kafka-single.yml up -d
 ```
 
-4. Publish test messages to kafka:
+5. Publish test messages to kafka:
 ```
 python3 cmd/publish-test-data.py --num-messages=10000 --topic="input-simple-agg-mem"
 ```
 
-5. Start kafka consumer from inside docker-compose container, to verify SQLFlow output
+6. Start kafka consumer from inside docker-compose container, to verify SQLFlow output
 ```
 docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-simple-agg-mem
 ```
