@@ -11,6 +11,22 @@ from sqlflow import settings, errors
 
 
 @dataclass
+class KafkaSSLConfig:
+    ca_location: str  # Path to the CA certificate
+    certificate_location: str  # Path to the client certificate
+    key_location: str  # Path to the client private key
+    key_password: Optional[str] = None
+    endpoint_identification_algorithm: Optional[str] = None  # e.g., https, none (default is https)
+
+
+@dataclass
+class KafkaSASLConfig:
+    mechanism: str  # SASL mechanism (e.g., PLAIN, SCRAM-SHA-256)
+    username: str  # SASL username
+    password: str  # SASL password
+
+
+@dataclass
 class HMACConfig:
     header: str  # Header name for the HMAC signature
     sig_key: str  # Key used for HMAC signature validation
@@ -38,6 +54,9 @@ class IcebergSink:
 class KafkaSink:
     brokers: [str]
     topic: str
+    security_protocol: Optional[str] = None  # Security protocol (e.g., PLAINTEXT, SSL, SASL_SSL)
+    ssl: Optional[KafkaSSLConfig] = None  # SSL configuration
+    sasl: Optional[KafkaSASLConfig] = None  # SASL configuration
 
 
 @dataclass
@@ -121,21 +140,6 @@ class SQLCommand:
     name: str
     sql: str
 
-
-@dataclass
-class KafkaSSLConfig:
-    ca_location: str  # Path to the CA certificate
-    certificate_location: str  # Path to the client certificate
-    key_location: str  # Path to the client private key
-    key_password: Optional[str] = None
-    endpoint_identification_algorithm: Optional[str] = None  # e.g., https, none (default is https)
-
-
-@dataclass
-class KafkaSASLConfig:
-    mechanism: str  # SASL mechanism (e.g., PLAIN, SCRAM-SHA-256)
-    username: str  # SASL username
-    password: str  # SASL password
 
 
 @dataclass
@@ -272,26 +276,48 @@ def build_source_config_from_dict(conf) -> Source:
     return source
 
 
-def build_sink_config_from_dict(conf) -> Sink:
+def build_sink_config_from_dict(raw_conf) -> Sink:
     sink = Sink(
-        type=conf['type'],
+        type=raw_conf['type'],
     )
 
-    if 'format' in conf:
+    if 'format' in raw_conf:
         sink.format = SinkFormat(
-            type=conf['format']['type'],
+            type=raw_conf['format']['type'],
         )
         assert sink.format.type in ('parquet',), "unsupported format: {}".format(sink.format.type)
 
     if sink.type == 'kafka':
+        ssl_config = None
+        if 'ssl' in raw_conf['kafka']:
+            ssl_config = KafkaSSLConfig(
+                ca_location=raw_conf['kafka']['ssl'].get('ca_location'),
+                certificate_location=raw_conf['kafka']['ssl'].get('certificate_location'),
+                key_location=raw_conf['kafka']['ssl'].get('key_location'),
+                key_password=raw_conf['kafka']['ssl'].get('key_password'),
+                endpoint_identification_algorithm=raw_conf['kafka']['ssl'].get('endpoint_identification_algorithm'),
+            )
+
+        sasl_config = None
+        if 'sasl' in raw_conf['kafka']:
+            sasl_config = KafkaSASLConfig(
+                mechanism=raw_conf['kafka']['sasl']['mechanism'],
+                username=raw_conf['kafka']['sasl']['username'],
+                password=raw_conf['kafka']['sasl']['password'],
+            )
+
         sink.kafka = KafkaSink(
-            brokers=conf['kafka']['brokers'],
-            topic=conf['kafka']['topic'],
+            brokers=raw_conf['kafka']['brokers'],
+            topic=raw_conf['kafka']['topic'],
+            security_protocol=raw_conf['kafka'].get('security_protocol'),
+            ssl=ssl_config,
+            sasl=sasl_config,
         )
+
     elif sink.type == 'sqlcommand':
         sink.sqlcommand = SQLCommandSink(
-            sql=conf['sqlcommand']['sql'],
-            substitutions=[SQLCommandSubstitution(**s) for s in conf['sqlcommand'].get('substitutions', ())],
+            sql=raw_conf['sqlcommand']['sql'],
+            substitutions=[SQLCommandSubstitution(**s) for s in raw_conf['sqlcommand'].get('substitutions', ())],
         )
         for substitution in sink.sqlcommand.substitutions:
             assert substitution.type in ('uuid4',), "unsupported substitution type: {}".format(substitution.type)
@@ -299,13 +325,13 @@ def build_sink_config_from_dict(conf) -> Sink:
         pass
     elif sink.type == 'iceberg':
         sink.iceberg = IcebergSink(
-            catalog_name=conf['iceberg']['catalog_name'],
-            table_name=conf['iceberg']['table_name'],
+            catalog_name=raw_conf['iceberg']['catalog_name'],
+            table_name=raw_conf['iceberg']['table_name'],
         )
     elif sink.type == 'clickhouse':
         sink.clickhouse = ClikhouseSink(
-            dsn=conf['clickhouse']['dsn'],
-            table=conf['clickhouse']['table'],
+            dsn=raw_conf['clickhouse']['dsn'],
+            table=raw_conf['clickhouse']['table'],
         )
     else:
         sink.type = 'console'
