@@ -1,6 +1,11 @@
 .PHONY: install-tools
 install-tools:
+	@echo "Installing tools..."
+	@echo "creating resultscache directory... '/tmp/sqlflow/resultscache'"
 	$(shell mkdir -p /tmp/sqlflow/resultscache)
+
+.PHONY: setup-dev
+setup-dev: install-tools
 
 .PHONY: test
 test: test-unit test-integration
