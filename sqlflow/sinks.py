@@ -187,12 +187,34 @@ class RecordingSink(Sink):
         pass
 
 
+def new_producer_from_conf(conf):
+    producer_conf = {
+        'bootstrap.servers': ','.join(conf.brokers),
+        'client.id': socket.gethostname(),
+    }
+
+    if conf.security_protocol:
+        producer_conf['security.protocol'] = conf.security_protocol
+
+    if conf.sasl:
+        producer_conf['sasl.mechanism'] = conf.sasl.mechanism
+        producer_conf['sasl.username'] = conf.sasl.username
+        producer_conf['sasl.password'] = conf.sasl.password
+
+    if conf.ssl:
+        producer_conf['ssl.ca.location'] = conf.ssl.ca_location
+        producer_conf['ssl.certificate.location'] = conf.ssl.certificate_location
+        producer_conf['ssl.key.location'] = conf.ssl.key_location
+        producer_conf['ssl.key.password'] = conf.ssl.key_password
+        producer_conf['ssl.endpoint.identification.algorithm'] = conf.ssl.endpoint_identification_algorithm
+
+    return Producer(producer_conf)
+
+
 def new_sink_from_conf(sink_conf: config.Sink, conn) -> Sink:
     if sink_conf.type == 'kafka':
-        p = Producer({
-            'bootstrap.servers': ','.join(sink_conf.kafka.brokers),
-            'client.id': socket.gethostname(),
-        })
+        p = new_producer_from_conf(sink_conf.kafka)
+
         return KafkaSink(
             topic=sink_conf.kafka.topic,
             producer=p,
