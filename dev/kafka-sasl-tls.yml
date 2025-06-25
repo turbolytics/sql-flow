@@ -1,0 +1,29 @@
+version: '3.7'
+
+services:
+  kafka:
+    image: bitnami/kafka
+    # container_name: example.kafka.com
+    # hostname: example.kafka.com
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    expose:
+      - "9093"
+    env_file:
+      - ./kafka.env
+    volumes:
+      - ./kafka/kafka_server_jaas.conf:/opt/bitnami/kafka/config/kafka_server_jaas.conf
+      # - ./server.properties:/opt/bitnami/kafka/config/server.properties
+      - ./kafka/keystore/kafka.keystore.jks:/opt/bitnami/kafka/config/certs/kafka.keystore.jks:ro
+      - ./kafka/truststore/kafka.truststore.jks:/opt/bitnami/kafka/config/certs/kafka.truststore.jks:ro
+      # - ./producer.properties:/opt/bitnami/kafka/config/producer.properties
+      # - ./consumer.properties:/opt/bitnami/kafka/config/consumer.properties
+    networks:
+      - kafka
+
+networks:
+  kafka:
+#    driver: bridge
+#    name: kafka
+#    external: true
