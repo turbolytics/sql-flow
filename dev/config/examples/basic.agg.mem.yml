@@ -17,8 +17,10 @@ pipeline:
     sql: |
       SELECT
         properties.city as city,
-        1 as city_count
+        count(*) as city_count
       FROM batch
+      GROUP BY
+        city
       ORDER BY city DESC
 
   sink:

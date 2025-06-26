@@ -23,7 +23,7 @@ make setup-dev
 
 3. Validate config against test data:
 ```
-docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-flow:latest dev invoke /tmp/conf/config/examples/basic.agg.yml /tmp/conf/fixtures/simple.json
+docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow turbolytics/sql-flow:latest dev invoke /tmp/conf/config/examples/basic.agg.mem.yml /tmp/conf/fixtures/simple.json
 
 ['{"city":"New York","city_count":28672}', '{"city":"Baltimore","city_count":28672}']
 ```

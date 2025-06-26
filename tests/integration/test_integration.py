@@ -158,7 +158,7 @@ def test_basic_agg_mem(bootstrap_server):
     print(stats)
 
     messages = read_all_kafka_messages(bootstrap_server, out_topic)
-    assert 1000 == len(messages)
+    assert 5 == len(messages)
 
 
 def test_basic_agg_mem_ignore_invalid(bootstrap_server):
