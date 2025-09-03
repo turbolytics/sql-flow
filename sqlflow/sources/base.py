@@ -6,12 +6,23 @@ from typing import Iterator
 logger = logging.getLogger(__name__)
 
 class Message:
-    def __init__(self, value: bytes):
+    def __init__(self, value: bytes, topic: str | None, partition: int | None, offset: int | None):
         self._value = value
+        self._topic = topic
+        self._partition = partition
+        self._offset = offset
 
     def value(self) -> bytes:
         return self._value
 
+    def topic(self) -> str | None:
+        return self._topic
+
+    def partition(self) -> int | None:
+        return self._partition
+
+    def offset(self) -> int | None:
+        return self._offset
 
 class Source(ABC):
     """

@@ -204,7 +204,12 @@ class SQLFlow:
 
             try:
                 msgObj = msg.value().decode()
-                self.handler.write(msgObj)
+                self.handler.write(
+                    msgObj, 
+                    offset=msg.offset(), 
+                    partition=msg.partition(), 
+                    topic=msg.topic()
+                )
             except Exception as e:
                 self._stats.num_errors += 1
                 error_counter.add(

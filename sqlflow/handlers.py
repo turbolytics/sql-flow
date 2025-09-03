@@ -101,8 +101,14 @@ class InferredMemBatch(Handler):
         self.rows = []
         return self
 
-    def write(self, bs):
+    def write(self, bs, offset=None, partition=None, topic=None):
         o = self.deserializer.decode(bs)
+        if offset is not None:
+            o['kafka_offset'] = offset
+        if partition is not None:
+            o['kafka_partition'] = partition
+        if topic is not None:
+            o['kafka_topic'] = topic
         self.rows.append(o)
 
     def invoke(self) -> Optional[pa.Table]:
