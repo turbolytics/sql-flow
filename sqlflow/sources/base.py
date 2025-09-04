@@ -6,7 +6,7 @@ from typing import Iterator
 logger = logging.getLogger(__name__)
 
 class Message:
-    def __init__(self, value: bytes, topic: str | None, partition: int | None, offset: int | None):
+    def __init__(self, value: bytes, topic: str | None = None, partition: int | None = None, offset: int | None = None):
         self._value = value
         self._topic = topic
         self._partition = partition
