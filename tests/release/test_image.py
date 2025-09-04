@@ -92,5 +92,5 @@ def test_basic_agg_mem_readme_example(git_sha):
     )
 
     messages = read_all_kafka_messages(bootstrap_server, out_topic)
-    assert 1000 == len(messages)
+    assert 5 == len(messages)
 

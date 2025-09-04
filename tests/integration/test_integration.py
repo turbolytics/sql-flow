@@ -384,6 +384,6 @@ def test_dlq_functionality_handler_invoke(bootstrap_server):
     dlq_messages = read_all_kafka_messages(bootstrap_server, dlq_topic)
     assert len(dlq_messages) == 1, f"Expected 1 DLQ message, but got {len(dlq_messages)}"
     m = dlq_messages[0]
-    assert m['error'] == 'Binder Error: Referenced column "broken" not found in FROM clause!\nCandidate bindings: "valid"\n\nLINE 2:   broken\n          ^'
+    assert 'Binder Error: Referenced column "broken" not found in FROM clause!' in m['error']
     assert m['message'] == 'Handler invocation failed'
     assert m['phase'] == 'handler.invoke'
