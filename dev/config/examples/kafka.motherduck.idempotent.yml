@@ -1,0 +1,83 @@
+commands:
+  - name: attach to motherduck
+    sql: |
+      ATTACH 'md:my_db'
+
+  - name: create events table
+    sql: |
+      CREATE TABLE IF NOT EXISTS my_db.events (
+        ip VARCHAR,
+        event VARCHAR,
+        properties_city VARCHAR,
+        properties_country VARCHAR,
+        timestamp TIMESTAMP,
+        type VARCHAR,
+        userId VARCHAR
+      )
+
+  - name: create events metadata table
+    sql: |
+      CREATE TABLE IF NOT EXISTS my_db.events_metadata (
+        partition INTEGER,
+        "offset" BIGINT,
+        topic VARCHAR,
+        updated_at TIMESTAMP DEFAULT now(),
+        PRIMARY KEY (topic, partition)
+      )
+pipeline:
+  name: kafka-motherduck-sink
+  description: "Sinks data from kafka to motherduck"
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(100000) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: motherduck-sink
+      auto_offset_reset: earliest
+      topics:
+        - "input-user-clicks-motherduck"
+
+  handler:
+    type: "handlers.InferredMemBatch"
+    sql: |
+      BEGIN TRANSACTION;
+      
+      CREATE OR REPLACE TEMPORARY TABLE filtered_batch AS
+      SELECT b.*
+      FROM batch b
+      LEFT JOIN my_db.events_metadata em 
+          ON b.kafka_topic = em.topic 
+          AND b.kafka_partition = em.partition
+      WHERE em."offset" IS NULL  
+          OR b.kafka_offset > em."offset";
+                    
+      INSERT INTO my_db.events
+      SELECT
+        ip,
+        event,
+        properties ->> 'city' AS properties_city,
+        properties ->> 'country' AS properties_country,
+        CAST(timestamp AS TIMESTAMP) AS timestamp,
+        type,
+        userId
+      FROM filtered_batch;
+
+      INSERT INTO my_db.events_metadata 
+        (partition, "offset", topic)
+      SELECT
+          kafka_partition AS partition,
+          MAX(kafka_offset) AS "offset",
+          kafka_topic AS topic,
+      FROM filtered_batch
+      WHERE kafka_offset IS NOT NULL
+      GROUP BY kafka_partition, kafka_topic
+      ON CONFLICT (topic, partition) 
+      DO UPDATE SET 
+          "offset" = EXCLUDED."offset",
+          updated_at = now();
+                    
+      COMMIT;
+
+  sink:
+    type: noop

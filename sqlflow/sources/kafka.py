@@ -35,7 +35,10 @@ class KafkaSource(Source):
             if msg is None:
                 yield None
             elif not msg.error():
-                yield Message(msg.value())
+                yield Message(value=msg.value(),
+                              topic=msg.topic(),
+                              partition=msg.partition(),
+                              offset=msg.offset())
             elif msg.error().code() == KafkaError._PARTITION_EOF:
                 logger.warning(
                     '%% %s [%d] reached end at offset %d'.format(
