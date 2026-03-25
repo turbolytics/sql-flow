@@ -1,201 +1,185 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/buger/jsonparser"
 	"go.uber.org/zap"
-	"runtime/debug"
-	"sync"
+	"strconv"
+	"time"
+	"unsafe"
 )
 
 type StructuredBatchHandler struct {
-	mu    sync.Mutex
-	batch []arrow.Record
+	rawBatch [][]byte
 
-	alloc  *memory.GoAllocator
-	conn   adbc.Connection
-	stmt   adbc.Statement
-	logger *zap.Logger
-	schema *arrow.Schema
-	sql    string
+	alloc      *memory.GoAllocator
+	conn       adbc.Connection
+	truncStmt  adbc.Statement
+	ingestStmt adbc.Statement
+	queryStmt  adbc.Statement
+	logger     *zap.Logger
+	schema     *arrow.Schema
+	sql        string
 
-	tableName string
+	// Pre-computed field names for jsonparser extraction
+	fieldNames []string
+	tableName  string
 }
 
 func (h *StructuredBatchHandler) Init(ctx context.Context) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.batch = nil
+	h.rawBatch = h.rawBatch[:0]
 
-	// Execute truncate table statement
-	if err := h.stmt.SetSqlQuery(fmt.Sprintf("TRUNCATE TABLE %s;", h.tableName)); err != nil {
-		return err
-	}
-	if _, err := h.stmt.ExecuteUpdate(ctx); err != nil {
+	if _, err := h.truncStmt.ExecuteUpdate(ctx); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (h *StructuredBatchHandler) Write(r []byte) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.rawBatch = append(h.rawBatch, r)
+	return nil
+}
 
-	record, _, err := array.RecordFromJSON(
-		h.alloc,
-		h.schema,
-		bytes.NewReader(r),
-		array.WithMultipleDocs(),
-	)
-	if err != nil {
-		return err
+// unsafeString converts bytes to string without allocation.
+func unsafeString(b []byte) string {
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// appendJSONValue extracts a JSON value and appends it to the corresponding Arrow builder.
+func appendJSONValue(builder array.Builder, fieldType arrow.DataType, data []byte, key string) error {
+	val, dataType, _, err := jsonparser.Get(data, key)
+	if err != nil || dataType == jsonparser.NotExist {
+		builder.AppendNull()
+		return nil
 	}
 
-	h.batch = append(h.batch, record)
+	switch fieldType.(type) {
+	case *arrow.StringType:
+		builder.(*array.StringBuilder).Append(unsafeString(val))
+
+	case *arrow.Int32Type:
+		n, err := strconv.ParseInt(unsafeString(val), 10, 32)
+		if err != nil {
+			builder.AppendNull()
+			return nil
+		}
+		builder.(*array.Int32Builder).Append(int32(n))
+
+	case *arrow.Int64Type:
+		n, err := strconv.ParseInt(unsafeString(val), 10, 64)
+		if err != nil {
+			builder.AppendNull()
+			return nil
+		}
+		builder.(*array.Int64Builder).Append(n)
+
+	case *arrow.Float64Type:
+		f, err := strconv.ParseFloat(unsafeString(val), 64)
+		if err != nil {
+			builder.AppendNull()
+			return nil
+		}
+		builder.(*array.Float64Builder).Append(f)
+
+	case *arrow.StructType:
+		st := fieldType.(*arrow.StructType)
+		sb := builder.(*array.StructBuilder)
+		sb.Append(true)
+		for i, subField := range st.Fields() {
+			if err := appendJSONValue(sb.FieldBuilder(i), subField.Type, val, subField.Name); err != nil {
+				return err
+			}
+		}
+
+	default:
+		return fmt.Errorf("unsupported arrow type: %s", fieldType)
+	}
 	return nil
 }
 
 func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error) {
-	var records []arrow.Record
-	defer func() {
-		if r := recover(); r != nil {
-			// Log the panic details for debugging
-			h.logger.Error(
-				"Panic occurred in Invoke: %v\n",
-				zap.Error(r.(error)),
-			)
+	raw := h.rawBatch
+	h.rawBatch = h.rawBatch[:0]
 
-			for _, rec := range records {
-				bs, _ := rec.MarshalJSON()
-				h.logger.Debug("record", zap.String("record", string(bs)))
-			}
-
-			for _, rec := range h.batch {
-				bs, _ := rec.MarshalJSON()
-				h.logger.Debug("batch_record", zap.String("record", string(bs)))
-			}
-			debug.PrintStack() // Print the stack trace for more context
-		}
-	}()
-
-	h.mu.Lock()
-	batch := h.batch
-	h.batch = nil
-	h.mu.Unlock()
-
-	defer func() {
-		for _, rec := range records {
-			rec.Release()
-		}
-	}()
-
-	// Merge records into one for ingestion
-	recordReader, err := array.NewRecordReader(h.schema, batch)
-	if err != nil {
-		return nil, err
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("no records to invoke")
 	}
-	defer recordReader.Release()
 
-	var allRecords []arrow.Record
-	for recordReader.Next() {
-		rec := recordReader.Record()
-		rec.Retain()
-		allRecords = append(allRecords, rec)
+	t0 := time.Now()
+
+	// Create builders for each column
+	builders := make([]array.Builder, h.schema.NumFields())
+	for i, f := range h.schema.Fields() {
+		builders[i] = array.NewBuilder(h.alloc, f.Type)
+		builders[i].Reserve(len(raw))
 	}
-	defer func() {
-		for _, rec := range allRecords {
-			rec.Release()
-		}
-	}()
 
-	var allColumns []arrow.Array
-	var totalRows int64
-
-	// Collect columns and count total rows
-	for _, rec := range allRecords {
-		for i := 0; i < int(rec.NumCols()); i++ {
-			if len(allColumns) <= i {
-				allColumns = append(allColumns, rec.Column(i))
-			} else {
-				concatenated, _ := array.Concatenate([]arrow.Array{allColumns[i], rec.Column(i)}, h.alloc)
-				allColumns[i].Release()
-				allColumns[i] = concatenated
+	// Schema-aware JSON extraction: only extract fields matching the schema
+	fields := h.schema.Fields()
+	for _, msg := range raw {
+		for i, f := range fields {
+			if err := appendJSONValue(builders[i], f.Type, msg, f.Name); err != nil {
+				for _, b := range builders {
+					b.Release()
+				}
+				return nil, fmt.Errorf("json extract error for field %q: %w", f.Name, err)
 			}
 		}
-		totalRows += rec.NumRows()
-	}
-	defer func() {
-		for _, col := range allColumns {
-			col.Release()
-		}
-	}()
-
-	// Build the combined record
-	combined := array.NewRecord(h.schema, allColumns, totalRows)
-	defer combined.Release()
-
-	stmt, err := h.conn.NewStatement()
-	if err != nil {
-		return nil, fmt.Errorf("new statement error: %v", err)
-	}
-	defer stmt.Close()
-
-	// Use append mode if schema is known, otherwise create
-	if h.schema == nil {
-		if err := stmt.SetOption(adbc.OptionKeyIngestMode, adbc.OptionValueIngestModeCreate); err != nil {
-			return nil, fmt.Errorf("set option ingest mode create error: %v", err)
-		}
-	} else {
-		if err := stmt.SetOption(adbc.OptionKeyIngestMode, adbc.OptionValueIngestModeAppend); err != nil {
-			return nil, fmt.Errorf("set option ingest mode append error: %v", err)
-		}
 	}
 
-	if err := stmt.SetOption(adbc.OptionKeyIngestTargetTable, h.tableName); err != nil {
-		return nil, fmt.Errorf("set option target table error: %v", err)
+	// Build arrays and create record
+	arrays := make([]arrow.Array, len(builders))
+	for i, b := range builders {
+		arrays[i] = b.NewArray()
 	}
 
-	if err := stmt.Bind(ctx, combined); err != nil {
+	combined := array.NewRecord(h.schema, arrays, int64(len(raw)))
+	for _, a := range arrays {
+		a.Release()
+	}
+
+	t1 := time.Now()
+
+	// Zero-copy Arrow ingest into DuckDB via ADBC
+	if err := h.ingestStmt.Bind(ctx, combined); err != nil {
+		combined.Release()
 		return nil, fmt.Errorf("statement binding arrow record error: %v", err)
 	}
-
-	if _, err := stmt.ExecuteUpdate(ctx); err != nil {
+	if _, err := h.ingestStmt.ExecuteUpdate(ctx); err != nil {
+		combined.Release()
 		return nil, fmt.Errorf("execute update error: %w", err)
 	}
+	combined.Release()
 
-	// Query results back using your stored SQL
-	queryStmt, err := h.conn.NewStatement()
-	if err != nil {
-		return nil, fmt.Errorf("new query statement error: %v", err)
-	}
-	defer queryStmt.Close()
+	t2 := time.Now()
 
-	if err := queryStmt.SetSqlQuery(h.sql); err != nil {
-		return nil, fmt.Errorf("set query error: %v", err)
-	}
+	// Query results back using the user's SQL
+	reader, _, err := h.queryStmt.ExecuteQuery(ctx)
 
-	reader, _, err := queryStmt.ExecuteQuery(ctx)
+	t3 := time.Now()
+	h.logger.Debug("invoke timing",
+		zap.Duration("json_parse", t1.Sub(t0)),
+		zap.Duration("ingest", t2.Sub(t1)),
+		zap.Duration("query", t3.Sub(t2)),
+		zap.Duration("total", t3.Sub(t0)),
+		zap.Int("batch_size", len(raw)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("query execution error: %v", err)
 	}
 	defer reader.Release()
 
+	var records []arrow.Record
 	for reader.Next() {
 		rec := reader.Record()
 		rec.Retain()
 		records = append(records, rec)
 	}
-
-	// Clean up batch
-	for _, rec := range h.batch {
-		rec.Release()
-	}
-	h.batch = nil
 
 	result := array.NewTableFromRecords(reader.Schema(), records)
 	result.Retain()
@@ -225,19 +209,53 @@ func NewStructuredBatchHandler(
 
 	pool := memory.NewGoAllocator()
 
-	stmt, err := conn.NewStatement()
+	// Pre-create truncate statement
+	truncStmt, err := conn.NewStatement()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("new truncate statement: %w", err)
+	}
+	if err := truncStmt.SetSqlQuery(fmt.Sprintf("TRUNCATE TABLE %s;", tableName)); err != nil {
+		return nil, fmt.Errorf("set truncate query: %w", err)
+	}
+
+	// Pre-create ingest statement with options set once
+	ingestStmt, err := conn.NewStatement()
+	if err != nil {
+		return nil, fmt.Errorf("new ingest statement: %w", err)
+	}
+	if err := ingestStmt.SetOption(adbc.OptionKeyIngestMode, adbc.OptionValueIngestModeAppend); err != nil {
+		return nil, fmt.Errorf("set ingest mode: %w", err)
+	}
+	if err := ingestStmt.SetOption(adbc.OptionKeyIngestTargetTable, tableName); err != nil {
+		return nil, fmt.Errorf("set ingest target table: %w", err)
+	}
+
+	// Pre-create query statement with SQL set once
+	queryStmt, err := conn.NewStatement()
+	if err != nil {
+		return nil, fmt.Errorf("new query statement: %w", err)
+	}
+	if err := queryStmt.SetSqlQuery(sql); err != nil {
+		return nil, fmt.Errorf("set query sql: %w", err)
+	}
+
+	// Pre-compute field names
+	fieldNames := make([]string, schema.NumFields())
+	for i, f := range schema.Fields() {
+		fieldNames[i] = f.Name
 	}
 
 	s := &StructuredBatchHandler{
-		alloc:     pool,
-		conn:      conn,
-		stmt:      stmt,
-		schema:    schema,
-		sql:       sql,
-		tableName: tableName,
-		logger:    zap.NewNop(),
+		alloc:      pool,
+		conn:       conn,
+		truncStmt:  truncStmt,
+		ingestStmt: ingestStmt,
+		queryStmt:  queryStmt,
+		schema:     schema,
+		sql:        sql,
+		tableName:  tableName,
+		fieldNames: fieldNames,
+		logger:     zap.NewNop(),
 	}
 
 	for _, opt := range opts {

@@ -2,10 +2,10 @@ package sources
 
 import (
 	"fmt"
-	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/turbolytics/turbine/internal/config"
 	"github.com/turbolytics/turbine/internal/core"
 	tkafka "github.com/turbolytics/turbine/internal/kafka"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 )
 
@@ -18,18 +18,30 @@ func New(c config.Source, l *zap.Logger) (core.Source, error) {
 			zap.String("group.id", c.Kafka.GroupID),
 			zap.String("auto.offset.reset", c.Kafka.AutoOffsetReset),
 		)
-		consumer, _ := kafka.NewConsumer(&kafka.ConfigMap{
-			"bootstrap.servers":  "localhost:9092",
-			"group.id":           c.Kafka.GroupID,
-			"auto.offset.reset":  c.Kafka.AutoOffsetReset,
-			"enable.auto.commit": false,
-			"fetch.wait.max.ms":  10,
-		})
-		k, err := tkafka.NewSource(
-			consumer,
-			c.Kafka.Topics,
-			tkafka.WithLogger(l),
+		brokers := []string{"localhost:9092"}
+		if len(c.Kafka.Brokers) > 0 {
+			brokers = c.Kafka.Brokers
+		}
+
+		resetOffset := kgo.NewOffset().AtStart()
+		if c.Kafka.AutoOffsetReset == "latest" {
+			resetOffset = kgo.NewOffset().AtEnd()
+		}
+
+		client, err := kgo.NewClient(
+			kgo.SeedBrokers(brokers...),
+			kgo.ConsumerGroup(c.Kafka.GroupID),
+			kgo.ConsumeTopics(c.Kafka.Topics...),
+			kgo.ConsumeResetOffset(resetOffset),
+			kgo.DisableAutoCommit(),
+			kgo.FetchMaxPartitionBytes(10<<20),    // 10MB per partition
+			kgo.FetchMaxBytes(100<<20),            // 100MB total per broker
 		)
+		if err != nil {
+			return nil, fmt.Errorf("kafka client: %w", err)
+		}
+
+		k, err := tkafka.NewSource(client, tkafka.WithLogger(l))
 		return k, err
 
 	default:

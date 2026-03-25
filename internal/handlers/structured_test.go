@@ -2,126 +2,156 @@ package handlers
 
 import (
 	"context"
-	"database/sql"
+	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/marcboeker/go-duckdb"
-	_ "github.com/marcboeker/go-duckdb"
 	"github.com/zeebo/assert"
 	"testing"
 )
 
-func TestArrowGetSchema(t *testing.T) {
-	connector, err := duckdb.NewConnector(":memory:", nil)
-	assert.NoError(t, err)
-	defer func() {
-		err := connector.Close()
-		assert.NoError(t, err)
-	}()
-
-	db := sql.OpenDB(connector)
-	defer func() {
-		err := db.Close()
-		assert.NoError(t, err)
-	}()
-
-	// Create a table with 5 columns
-	createStmt := `
-	CREATE TABLE users (
-		id INTEGER,
-		name TEXT,
-		email TEXT,
-		age INTEGER,
-		created_at TIMESTAMP
-	);
-	`
-
-	_, err = db.Exec(createStmt)
+func newTestADBCConn(t *testing.T) (adbc.Connection, func()) {
+	t.Helper()
+	var drv drivermgr.Driver
+	db, err := drv.NewDatabase(map[string]string{
+		"driver":     "/opt/homebrew/lib/libduckdb.dylib",
+		"entrypoint": "duckdb_adbc_init",
+	})
 	assert.NoError(t, err)
 
-	conn, err := connector.Connect(context.Background())
-	assert.NoError(t, err)
-	defer func() {
-		err := conn.Close()
-		assert.NoError(t, err)
-	}()
-
-	arr, err := duckdb.NewArrowFromConn(conn)
+	conn, err := db.Open(context.Background())
 	assert.NoError(t, err)
 
-	rdr, err := arr.QueryContext(
-		context.Background(),
-		"select * from users",
-	)
-	assert.NoError(t, err)
-
-	schema := rdr.Schema()
-	assert.Equal(t, 5, len(schema.Fields()))
+	return conn, func() { conn.Close() }
 }
 
-func TestStructuredBatchHandler_SelectCount(t *testing.T) {
-	connector, err := duckdb.NewConnector(":memory:", nil)
+func createTable(t *testing.T, conn adbc.Connection, ddl string) {
+	t.Helper()
+	stmt, err := conn.NewStatement()
 	assert.NoError(t, err)
-	defer func() {
-		err := connector.Close()
-		assert.NoError(t, err)
-	}()
+	defer stmt.Close()
 
-	db := sql.OpenDB(connector)
-	defer func() {
-		err := db.Close()
-		assert.NoError(t, err)
-	}()
-
-	// Create a table with 5 columns
-	createStmt := `
-	CREATE TABLE users (
-		id INTEGER,
-		name TEXT,
-		email TEXT,
-		age INTEGER,
-		created_at TIMESTAMP
-	);
-	`
-
-	_, err = db.Exec(createStmt)
+	assert.NoError(t, stmt.SetSqlQuery(ddl))
+	_, err = stmt.ExecuteUpdate(context.Background())
 	assert.NoError(t, err)
+}
 
-	conn, err := connector.Connect(context.Background())
-	assert.NoError(t, err)
-	defer func() {
-		err := conn.Close()
-		assert.NoError(t, err)
-	}()
+func TestStructuredBatchHandler_SingleRecord(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
 
-	arr, err := duckdb.NewArrowFromConn(conn)
-	assert.NoError(t, err)
+	createTable(t, conn, `CREATE TABLE users (id INTEGER, name TEXT);`)
 
 	schema := arrow.NewSchema(
 		[]arrow.Field{
 			{Name: "id", Type: arrow.PrimitiveTypes.Int32},
 			{Name: "name", Type: arrow.BinaryTypes.String},
-			{Name: "email", Type: arrow.BinaryTypes.String},
-			{Name: "age", Type: arrow.PrimitiveTypes.Int32},
-			{Name: "created_at", Type: arrow.FixedWidthTypes.Timestamp_ms},
-		},
-		nil)
+		}, nil)
 
-	h, err := NewStructuredBatchHandler(
-		arr,
-		"SELECT * FROM users",
-		"users",
-		schema,
-	)
+	h, err := NewStructuredBatchHandler(conn, "SELECT * FROM users", "users", schema)
 	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
 
-	err = h.Init(context.Background())
-	assert.NoError(t, err)
+	assert.NoError(t, h.Write([]byte(`{"id": 1, "name": "alice"}`)))
 
-	err = h.Write([]byte(`{"id": 1, "name": "test name", "email": "test email", "age": 77, "created_at": "2025-04-10 15:00:00"}`))
+	res, err := h.Invoke(context.Background())
 	assert.NoError(t, err)
+	assert.Equal(t, int64(1), res.NumRows())
+	res.Release()
+}
+
+func TestStructuredBatchHandler_MultipleRecords(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE events (event TEXT, city TEXT);`)
+
+	schema := arrow.NewSchema(
+		[]arrow.Field{
+			{Name: "event", Type: arrow.BinaryTypes.String},
+			{Name: "city", Type: arrow.BinaryTypes.String},
+		}, nil)
+
+	h, err := NewStructuredBatchHandler(conn, "SELECT city, COUNT(*) as cnt FROM events GROUP BY city ORDER BY city", "events", schema)
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	messages := []string{
+		`{"event": "click", "city": "NYC"}`,
+		`{"event": "view", "city": "NYC"}`,
+		`{"event": "click", "city": "SF"}`,
+		`{"event": "view", "city": "LA"}`,
+		`{"event": "click", "city": "SF"}`,
+	}
+	for _, msg := range messages {
+		assert.NoError(t, h.Write([]byte(msg)))
+	}
 
 	res, err := h.Invoke(context.Background())
 	assert.NoError(t, err)
 
-	assert.Equal(t, 1, res.NumRows())
+	// 3 distinct cities: LA, NYC, SF
+	assert.Equal(t, int64(3), res.NumRows())
+	res.Release()
+}
+
+func TestStructuredBatchHandler_NestedStruct(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE source (event STRING, properties STRUCT(city TEXT));`)
+
+	schema := arrow.NewSchema(
+		[]arrow.Field{
+			{Name: "event", Type: arrow.BinaryTypes.String},
+			{Name: "properties", Type: arrow.StructOf(
+				arrow.Field{Name: "city", Type: arrow.BinaryTypes.String},
+			)},
+		}, nil)
+
+	h, err := NewStructuredBatchHandler(conn, "SELECT properties.city as city, COUNT(*) as cnt FROM source GROUP BY properties.city ORDER BY city", "source", schema)
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	// JSON with extra fields that should be ignored (only event + properties needed)
+	messages := []string{
+		`{"ip": "1.2.3.4", "event": "click", "properties": {"city": "NYC", "country": "US"}, "timestamp": "2024-01-01", "type": "track", "userId": "abc"}`,
+		`{"ip": "5.6.7.8", "event": "view", "properties": {"city": "SF", "country": "US"}, "timestamp": "2024-01-01", "type": "track", "userId": "def"}`,
+		`{"ip": "9.0.1.2", "event": "click", "properties": {"city": "NYC", "country": "US"}, "timestamp": "2024-01-01", "type": "track", "userId": "ghi"}`,
+	}
+	for _, msg := range messages {
+		assert.NoError(t, h.Write([]byte(msg)))
+	}
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	// 2 distinct cities: NYC, SF
+	assert.Equal(t, int64(2), res.NumRows())
+	res.Release()
+}
+
+func TestStructuredBatchHandler_LargeBatch(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE items (id INTEGER, name TEXT);`)
+
+	schema := arrow.NewSchema(
+		[]arrow.Field{
+			{Name: "id", Type: arrow.PrimitiveTypes.Int32},
+			{Name: "name", Type: arrow.BinaryTypes.String},
+		}, nil)
+
+	h, err := NewStructuredBatchHandler(conn, "SELECT COUNT(*) as cnt FROM items", "items", schema)
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	// Write 500 records to simulate a real batch
+	for i := 0; i < 500; i++ {
+		assert.NoError(t, h.Write([]byte(`{"id": 1, "name": "test"}`)))
+	}
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), res.NumRows())
+	res.Release()
 }

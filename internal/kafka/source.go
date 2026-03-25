@@ -1,34 +1,22 @@
 package kafka
 
 import (
-	"errors"
-	"fmt"
-	"github.com/confluentinc/confluent-kafka-go/kafka"
-	"github.com/turbolytics/turbine/internal/core"
+	"context"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 	"sync"
 	"time"
 )
 
-type Message struct {
-	value []byte
-}
-
-func (m Message) Value() []byte {
-	return m.value
-}
-
 type Source struct {
-	consumer    *kafka.Consumer
-	topics      []string
-	readTimeout time.Duration
-	streamChan  chan core.Message
-	closeOnce   sync.Once
+	client        *kgo.Client
+	readTimeout   time.Duration
+	channelBuffer int
+	streamChan    chan [][]byte
+	done          chan struct{}
+	closeOnce     sync.Once
 
 	logger *zap.Logger
-
-	sync.Mutex
-	lastMessage *kafka.Message
 }
 
 type Option func(*Source)
@@ -46,12 +34,17 @@ func WithLogger(logger *zap.Logger) Option {
 	}
 }
 
-func NewSource(consumer *kafka.Consumer, topics []string, opts ...Option) (*Source, error) {
+func WithChannelBuffer(size int) Option {
+	return func(s *Source) {
+		s.channelBuffer = size
+	}
+}
+
+func NewSource(client *kgo.Client, opts ...Option) (*Source, error) {
 	s := &Source{
-		consumer:    consumer,
-		topics:      topics,
-		readTimeout: time.Second * 5,
-		streamChan:  make(chan core.Message),
+		client:        client,
+		readTimeout:   5 * time.Second,
+		channelBuffer: 100,
 
 		logger: zap.NewNop(),
 	}
@@ -60,96 +53,71 @@ func NewSource(consumer *kafka.Consumer, topics []string, opts ...Option) (*Sour
 		opt(s)
 	}
 
+	s.streamChan = make(chan [][]byte, s.channelBuffer)
+	s.done = make(chan struct{})
+
 	return s, nil
 }
 
-func (k *Source) SetLastMessage(msg *kafka.Message) {
-	k.Lock()
-	defer k.Unlock()
-	k.lastMessage = msg
-}
-
-func (k *Source) LastMessage() *kafka.Message {
-	k.Lock()
-	defer k.Unlock()
-	return k.lastMessage
-}
-
 func (k *Source) Start() error {
-	k.logger.Info("starting consumer", zap.String("topics", fmt.Sprintf("%v", k.topics)))
-	return k.consumer.SubscribeTopics(k.topics, nil)
+	k.logger.Info("starting franz-go consumer")
+	return nil
 }
 
 func (k *Source) Close() error {
-	k.logger.Info("closing consumer for topics: \n", zap.String("topics", fmt.Sprintf("%v", k.topics)))
+	k.logger.Info("closing franz-go consumer")
 	k.closeOnce.Do(func() {
-		k.logger.Error("closing consumer in do once")
-		close(k.streamChan)
+		close(k.done)
 	})
-	return k.consumer.Close()
+	k.client.Close()
+	return nil
 }
 
 func (k *Source) Commit() error {
-	msg := k.LastMessage()
-	if msg == nil {
-		k.logger.Warn("no last message to commit")
-		return nil
-	}
-
-	_, err := k.consumer.CommitMessage(msg)
-	if err != nil {
+	if err := k.client.CommitUncommittedOffsets(context.Background()); err != nil {
 		k.logger.Error("failed to commit offsets", zap.Error(err))
-		var kafkaErr kafka.Error
-		if errors.As(err, &kafkaErr) && kafkaErr.Code() == kafka.ErrNoOffset {
-			// Handle ErrNoOffset specifically
-			fmt.Printf("No offset found for topic %s, ignoring commit error\n", k.topics)
-			return nil
-		}
+		return err
 	}
-
-	return err
+	return nil
 }
 
-func (k *Source) Stream() <-chan core.Message {
-	k.logger.Info("starting stream")
+func (k *Source) Stream() <-chan [][]byte {
+	k.logger.Info("starting stream",
+		zap.Int("channel_buffer", k.channelBuffer),
+	)
+
 	go func() {
+		defer close(k.streamChan)
+
 		for {
-			select {
-			/*
-				case <-k.stopChan:
-					k.logger.Info("stopping stream")
-					k.closeOnce.Do(func() {
-						close(k.streamChan)
-					})
-					return
+			fetches := k.client.PollFetches(context.Background())
+			if fetches.IsClientClosed() {
+				return
+			}
 
-			*/
-			default:
-				ev := k.consumer.Poll(int(k.readTimeout.Milliseconds()))
-				if ev == nil {
-					continue
-				}
-
-				switch msg := ev.(type) {
-				case *kafka.Message:
-					k.SetLastMessage(msg)
-					k.streamChan <- &Message{value: msg.Value}
-				case kafka.PartitionEOF:
-					k.logger.Info("%s reached end at offset %v\n",
-						zap.String("topic", fmt.Sprintf("%v", k.topics)),
-						zap.String("message", fmt.Sprintf("%v", msg)),
+			if errs := fetches.Errors(); len(errs) > 0 {
+				for _, e := range errs {
+					k.logger.Error("fetch error",
+						zap.String("topic", e.Topic),
+						zap.Int32("partition", e.Partition),
+						zap.Error(e.Err),
 					)
-				case kafka.Error:
-					if msg.Code() == kafka.ErrPartitionEOF {
-						k.logger.Info("%s reached end at offset\n",
-							zap.String("topic", fmt.Sprintf("%v", k.topics)),
-						)
-					} else {
-						k.logger.Error("Kafka error: %v\n", zap.String("error", msg.Error()))
-					}
-				default:
-					// Ignore other types
 				}
+			}
+
+			batch := make([][]byte, 0, fetches.NumRecords())
+			fetches.EachRecord(func(r *kgo.Record) {
+				batch = append(batch, r.Value)
+			})
+
+			if len(batch) == 0 {
+				continue
+			}
+
+			select {
+			case k.streamChan <- batch:
+			case <-k.done:
+				return
 			}
 		}
 	}()

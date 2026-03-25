@@ -4,8 +4,9 @@ import (
 	"context"
 	"github.com/apache/arrow-go/v18/arrow"
 	"go.uber.org/zap"
-	"log"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/metric"
@@ -13,7 +14,7 @@ import (
 
 type Source interface {
 	Start() error
-	Stream() <-chan Message
+	Stream() <-chan [][]byte
 	Commit() error
 	Close() error
 }
@@ -24,10 +25,6 @@ type Sink interface {
 	Batch() (arrow.Table, error)
 }
 
-type Message interface {
-	Value() []byte
-}
-
 type Handler interface {
 	Init(ctx context.Context) error
 	Write(msg []byte) error
@@ -35,42 +32,30 @@ type Handler interface {
 }
 
 type Stats struct {
-	mu sync.Mutex
-
-	numMessagesConsumed      int
+	numMessagesConsumed      atomic.Int64
 	StartTime                time.Time
 	NumErrors                int
-	TotalThroughputPerSecond float64
+	totalThroughputPerSecond atomic.Uint64 // stored as float64 bits
 }
 
 func (s *Stats) SetThroughput(throughput float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.TotalThroughputPerSecond = throughput
+	s.totalThroughputPerSecond.Store(math.Float64bits(throughput))
 }
 
 func (s *Stats) GetThroughput() float64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.TotalThroughputPerSecond
+	return math.Float64frombits(s.totalThroughputPerSecond.Load())
 }
 
-func (s *Stats) SetNumMessagesConsumed(num int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.numMessagesConsumed = num
+func (s *Stats) SetNumMessagesConsumed(num int64) {
+	s.numMessagesConsumed.Store(num)
 }
 
-func (s *Stats) MessagesConsumed() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.numMessagesConsumed
+func (s *Stats) MessagesConsumed() int64 {
+	return s.numMessagesConsumed.Load()
 }
 
-func (s *Stats) IncrementMessagesConsumed() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.numMessagesConsumed++
+func (s *Stats) AddMessagesConsumed(n int64) {
+	s.numMessagesConsumed.Add(n)
 }
 
 type ErrorPolicy int
@@ -162,7 +147,7 @@ func (t *Turbine) StatusLoop(ctx context.Context) error {
 }
 
 func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, err error) {
-	log.Println("consumer loop starting")
+	t.logger.Info("consumer loop starting")
 
 	if err := t.source.Start(); err != nil {
 		return nil, err
@@ -186,44 +171,49 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 	}
 
 	numBatchMessages := 0
+	totalConsumed := int64(0)
+	hitMax := false
 
 	stream := t.source.Stream()
 
-	for t.running {
-		// t.logger.Debug("top of loop", zap.Bool("running", t.running))
-		select {
-		case <-ctx.Done():
-			t.logger.Warn("context done, stopping consumer loop")
-			t.running = false
+	for t.running && !hitMax {
+		// Receive a batch of raw messages from the source
+		msgBatch, ok := <-stream
+		if !ok {
+			t.logger.Warn("stream channel closed")
 			break
-		case msg, ok := <-stream:
-			if !ok {
-				t.logger.Warn("stream channel closed")
-				t.running = false
-				break
-			}
+		}
 
-			if msg == nil {
-				t.logger.Debug("received nil message")
-				continue
-			}
-
-			t.stats.IncrementMessagesConsumed()
-
-			if err := t.handler.Write(msg.Value()); err != nil {
+		for _, raw := range msgBatch {
+			if err := t.handler.Write(raw); err != nil {
 				t.stats.NumErrors++
 				t.logger.Error("error writing message", zap.Error(err))
 				return nil, err
 			}
 
 			numBatchMessages++
-			if maxMsgs > 0 && t.stats.MessagesConsumed() >= maxMsgs {
+			totalConsumed++
+
+			if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
+				t.stats.SetNumMessagesConsumed(totalConsumed)
 				t.logger.Info("max messages consumed, stopping consumer loop")
-				t.running = false
+				hitMax = true
 				break
 			}
 
 			if numBatchMessages == t.batchSize {
+				t.stats.AddMessagesConsumed(int64(numBatchMessages))
+
+				// Check for cancellation at batch boundaries
+				select {
+				case <-ctx.Done():
+					t.logger.Warn("context done, stopping consumer loop")
+					t.running = false
+					t.logThroughput()
+					return t.stats, nil
+				default:
+				}
+
 				t.lock.Lock()
 				batch, err := t.handler.Invoke(ctx)
 				t.lock.Unlock()
@@ -250,6 +240,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 					t.logger.Error("error committing source", zap.Error(err))
 					return nil, err
 				}
+
 				batch.Release()
 
 				if err := t.handler.Init(ctx); err != nil {
@@ -268,16 +259,18 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 }
 
 func (t *Turbine) logThroughput() {
+	consumed := t.stats.MessagesConsumed()
 	if duration := time.Since(t.stats.StartTime).Seconds(); duration > 0 {
-		t.stats.SetThroughput(float64(t.stats.MessagesConsumed()) / duration)
+		t.stats.SetThroughput(float64(consumed) / duration)
 	} else {
 		t.stats.SetThroughput(0)
 	}
 
-	if t.stats.TotalThroughputPerSecond > 0 {
+	throughput := t.stats.GetThroughput()
+	if throughput > 0 {
 		t.logger.Info("throughput",
-			zap.Int("messages_consumed", t.stats.MessagesConsumed()),
-			zap.Float64("total_throughput_per_second", t.stats.GetThroughput()),
+			zap.Int64("messages_consumed", consumed),
+			zap.Float64("total_throughput_per_second", throughput),
 		)
 	} else {
 		t.logger.Info("no messages consumed, throughput is zero")
@@ -285,13 +278,10 @@ func (t *Turbine) logThroughput() {
 }
 
 func (t *Turbine) flush(batch arrow.Table) error {
-	start := time.Now()
 	if err := t.sink.Flush(); err != nil {
 		t.stats.NumErrors++
-		rows, _ := t.sink.Batch()
-		log.Printf("flush error: %v, rows: %+v", err, rows)
+		t.logger.Error("flush error", zap.Error(err))
 		return err
 	}
-	log.Printf("flushed sink with %d rows in %v", batch.NumRows(), time.Since(start))
 	return nil
 }

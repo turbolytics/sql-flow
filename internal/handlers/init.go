@@ -12,26 +12,23 @@ import (
 func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
 	switch c.Type {
 	case "handlers.StructuredBatch":
-		// Create a statement to fetch the schema
+		// Derive the Arrow schema from the DuckDB table definition
 		stmt, err := conn.NewStatement()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create statement: %w", err)
 		}
 		defer stmt.Close()
 
-		// Set the query to fetch the schema
 		if err := stmt.SetSqlQuery(fmt.Sprintf("SELECT * FROM %s LIMIT 0", c.Table)); err != nil {
 			return nil, fmt.Errorf("failed to set SQL query: %w", err)
 		}
 
-		// Execute the query to get the schema
 		reader, _, err := stmt.ExecuteQuery(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute query: %w", err)
 		}
 		defer reader.Release()
 
-		// Create the StructuredBatchHandler
 		h, err := NewStructuredBatchHandler(
 			conn,
 			c.SQL,

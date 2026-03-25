@@ -40,6 +40,10 @@ start-backing-services:
 stop-backing-services:
 	docker-compose -f dev/kafka-single.yml down --remove-orphans
 
+.PHONY: benchmark
+benchmark:
+	./scripts/benchmark.sh $(NUM_MESSAGES) $(BATCH_SIZE)
+
 .PHONY: docker-image
 docker-image:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \

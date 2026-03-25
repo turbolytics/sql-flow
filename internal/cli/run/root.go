@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"net/http"
 	_ "net/http/pprof"
+	"runtime"
 	"sync"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 
 func NewCommand() *cobra.Command {
 	var configPath string
+	var maxMsgs int
+	var enablePprof bool
 
 	var cmd = &cobra.Command{
 		Use:   "run",
@@ -29,13 +32,17 @@ func NewCommand() *cobra.Command {
 			defer logger.Sync()
 			l := logger.Named("turbine.run")
 
-			// Start pprof server
-			go func() {
-				l.Info("starting pprof server on :6060")
-				if err := http.ListenAndServe(":6060", nil); err != nil {
-					l.Error("failed to start pprof server", zap.Error(err))
-				}
-			}()
+			if enablePprof {
+				runtime.SetBlockProfileRate(1)
+				runtime.SetMutexProfileFraction(1)
+
+				go func() {
+					l.Info("starting pprof server on :6060")
+					if err := http.ListenAndServe(":6060", nil); err != nil {
+						l.Error("failed to start pprof server", zap.Error(err))
+					}
+				}()
+			}
 
 			conf, err := config.Load(configPath, map[string]string{})
 			if err != nil {
@@ -109,7 +116,7 @@ func NewCommand() *cobra.Command {
 				}
 			}()
 
-			_, err = turbine.ConsumeLoop(context.Background(), 0)
+			_, err = turbine.ConsumeLoop(context.Background(), maxMsgs)
 			if err != nil {
 				l.Error("failed to consume loop", zap.Error(err))
 				return err
@@ -120,6 +127,8 @@ func NewCommand() *cobra.Command {
 
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to turbine config file (required)")
 	cmd.MarkFlagRequired("config")
+	cmd.Flags().IntVar(&maxMsgs, "max-msgs", 0, "Maximum number of messages to consume (0 = unlimited)")
+	cmd.Flags().BoolVar(&enablePprof, "pprof", false, "Enable pprof profiling server on :6060")
 
 	return cmd
 }
