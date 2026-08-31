@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,7 +72,12 @@ func Load(path string, overrides map[string]string) (*Conf, error) {
 	}
 
 	var conf Conf
-	if err := yaml.Unmarshal(rendered, &conf); err != nil {
+	// Decoded strictly: the config schema sets additionalProperties: false, so
+	// an unrecognized key is a typo the user wants to hear about rather than a
+	// setting silently dropped.
+	dec := yaml.NewDecoder(bytes.NewReader(rendered))
+	dec.KnownFields(true)
+	if err := dec.Decode(&conf); err != nil {
 		return nil, fmt.Errorf("parsing YAML failed: %w", err)
 	}
 	return &conf, nil

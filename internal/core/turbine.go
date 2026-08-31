@@ -214,10 +214,41 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		t.logger.Debug("consume loop wait totals", zap.Duration("recv_wait", totalRecvWait))
 	}()
 
+	// A batch that never reaches batchSize still has to reach the sink, or a
+	// low-traffic topic — and any push source between deliveries — stalls
+	// indefinitely.
+	var flushC <-chan time.Time
+	if t.flushInterval > 0 {
+		flushTicker := time.NewTicker(t.flushInterval)
+		defer flushTicker.Stop()
+		flushC = flushTicker.C
+	}
+
 	for t.running && !hitMax {
 		// Receive a batch of raw messages from the source
 		r0 := time.Now()
-		msgBatch, ok := <-stream
+
+		var (
+			msgBatch [][]byte
+			ok       bool
+		)
+		select {
+		case msgBatch, ok = <-stream:
+		case <-flushC:
+			if numBatchMessages > 0 {
+				if err := t.processBatch(ctx, numBatchMessages); err != nil {
+					return nil, err
+				}
+				numBatchMessages = 0
+			}
+			continue
+		case <-ctx.Done():
+			t.logger.Warn("context done, stopping consumer loop")
+			t.running = false
+			t.logThroughput()
+			return t.stats, nil
+		}
+
 		readLatency := time.Since(r0)
 		totalRecvWait += readLatency
 		if !ok {

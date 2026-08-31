@@ -144,3 +144,30 @@ pipeline:
 	assert.Equal(t, "sha256", conf.Pipeline.Source.Webhook.HMAC.SigKey)
 	assert.Equal(t, "shhh", conf.Pipeline.Source.Webhook.HMAC.Secret)
 }
+
+// An unrecognized key is a typo, not a setting to drop silently: the config
+// schema sets additionalProperties: false.
+func TestLoad_RejectsUnknownKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+
+	body := `
+pipeline:
+  batch_size: 10
+  bath_size: 10
+  source:
+    type: kafka
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT * FROM batch
+  sink:
+    type: console
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path, nil)
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "bath_size"))
+}

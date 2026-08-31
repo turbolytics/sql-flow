@@ -145,13 +145,19 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to create metrics: %w", err)
 			}
 
+			// Matches the Python engine's default when the key is absent.
+			flushInterval := 30 * time.Second
+			if conf.Pipeline.FlushIntervalSeconds > 0 {
+				flushInterval = time.Duration(conf.Pipeline.FlushIntervalSeconds) * time.Second
+			}
+
 			lock := &sync.Mutex{}
 			turbine := core.NewTurbine(
 				src,
 				handler,
 				sink,
 				conf.Pipeline.BatchSize,
-				time.Duration(conf.Pipeline.FlushIntervalSeconds)*time.Second,
+				flushInterval,
 				lock,
 				errorPolicies,
 				core.WithTurbineLogger(l),

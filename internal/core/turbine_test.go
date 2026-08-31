@@ -286,6 +286,65 @@ func TestConsumeLoop_IgnorePolicyContinuesAfterInvokeError(t *testing.T) {
 	assert.Equal(t, 1, stats.NumErrors)
 }
 
+// blockingSource delivers a batch and then holds the stream open, standing in
+// for a low-traffic topic or a push source between deliveries.
+type blockingSource struct {
+	batch   [][]byte
+	ch      chan [][]byte
+	release chan struct{}
+}
+
+func (s *blockingSource) Start() error { return nil }
+
+func (s *blockingSource) Stream() <-chan [][]byte {
+	s.ch = make(chan [][]byte)
+	s.release = make(chan struct{})
+	go func() {
+		s.ch <- s.batch
+		<-s.release
+		close(s.ch)
+	}()
+	return s.ch
+}
+
+func (s *blockingSource) Commit() error { return nil }
+func (s *blockingSource) Close() error  { return nil }
+
+// A batch that never reaches batch_size must still be flushed once the flush
+// interval elapses, otherwise a low-traffic topic stalls forever.
+func TestConsumeLoop_FlushesPartialBatchOnFlushInterval(t *testing.T) {
+	src := &blockingSource{batch: messages(10)}
+	sink := &fakeSink{}
+
+	tb := NewTurbine(src, &fakeHandler{}, sink, 1000, 50*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{})
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = tb.ConsumeLoop(context.Background(), 0)
+		close(done)
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		sink.mu.Lock()
+		rows := sink.rows
+		sink.mu.Unlock()
+		if rows == 10 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("partial batch never flushed, sink saw %d rows", rows)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	close(src.release)
+	<-done
+}
+
 func TestConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {
 	src := &fakeSource{batches: [][][]byte{messages(500), messages(500), messages(250)}}
 	sink := &fakeSink{}
