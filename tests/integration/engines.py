@@ -30,6 +30,26 @@ class EngineStats:
     num_errors: int = 0
 
 
+def assert_all_messages_accounted_for(stats, num_published, rows, count_field):
+    """Assert no input message was silently dropped.
+
+    Consuming N messages is not evidence of processing them: a sink can drop
+    rows, a batch can fail after its offsets commit, and a final partial batch
+    can be lost at shutdown. These pipelines aggregate, so the row count alone
+    cannot show completeness -- the per-group counts have to add back up to
+    the number of messages published.
+    """
+    assert stats.num_messages_consumed == num_published, (
+        f'consumed {stats.num_messages_consumed}, published {num_published}'
+    )
+
+    total = sum(r[count_field] for r in rows)
+    assert total == num_published, (
+        f'output accounts for {total} messages, published {num_published} '
+        f'({num_published - total} unaccounted for across {len(rows)} rows)'
+    )
+
+
 def engine():
     return os.environ.get('SQLFLOW_ENGINE', 'python')
 

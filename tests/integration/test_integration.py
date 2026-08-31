@@ -17,7 +17,10 @@ from testcontainers.kafka import KafkaContainer
 from sqlflow.fixtures import KafkaFaker
 from sqlflow import settings
 from sqlflow.kafka import delete_topics, delete_consumer_groups, read_all_kafka_messages
-from tests.integration.engines import run_pipeline
+from tests.integration.engines import (
+    run_pipeline,
+    assert_all_messages_accounted_for,
+)
 
 
 @pytest.fixture(scope="module")
@@ -156,6 +159,11 @@ def test_basic_agg_mem(bootstrap_server):
 
     messages = read_all_kafka_messages(bootstrap_server, out_topic)
     assert 5 == len(messages)
+
+    # The 5 rows are one per city; their counts must add back up to every
+    # message published.
+    assert_all_messages_accounted_for(
+        stats, num_messages, messages, 'city_count')
 
 
 def test_basic_agg_mem_ignore_invalid(bootstrap_server):

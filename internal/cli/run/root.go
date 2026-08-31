@@ -89,7 +89,7 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to create source: %w", err)
 			}
 
-			sink, err := sinks.New(conf.Pipeline.Sink)
+			sink, err := sinks.New(conf.Pipeline.Sink, conn)
 			if err != nil {
 				return fmt.Errorf("failed to create sink: %w", err)
 			}

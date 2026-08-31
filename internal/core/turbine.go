@@ -202,15 +202,12 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			totalConsumed++
 
 			if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
-				t.stats.SetNumMessagesConsumed(totalConsumed)
 				t.logger.Info("max messages consumed, stopping consumer loop")
 				hitMax = true
 				break
 			}
 
 			if numBatchMessages == t.batchSize {
-				t.stats.AddMessagesConsumed(int64(numBatchMessages))
-
 				// Check for cancellation at batch boundaries
 				select {
 				case <-ctx.Done():
@@ -221,65 +218,90 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				default:
 				}
 
-				b0 := time.Now()
-
-				t.lock.Lock()
-				batch, err := t.handler.Invoke(ctx)
-				t.lock.Unlock()
-
-				b1 := time.Now()
-
-				if err != nil {
-					t.stats.NumErrors++
-					t.logger.Error("error invoking handler", zap.Error(err))
+				if err := t.processBatch(ctx, numBatchMessages); err != nil {
 					return nil, err
 				}
-
-				if err := t.sink.WriteTable(batch); err != nil {
-					t.stats.NumErrors++
-					t.logger.Error("error writing batch to sink", zap.Error(err))
-					return nil, err
-				}
-
-				if err := t.flush(batch); err != nil {
-					t.stats.NumErrors++
-					t.logger.Error("error flushing sink", zap.Error(err))
-					return nil, err
-				}
-
-				b2 := time.Now()
-
-				if err := t.source.Commit(); err != nil {
-					t.logger.Error("error committing source", zap.Error(err))
-					return nil, err
-				}
-
-				b3 := time.Now()
-
-				batch.Release()
-
-				if err := t.handler.Init(ctx); err != nil {
-					t.stats.NumErrors++
-					t.logger.Error("error reinitializing handler", zap.Error(err))
-					return nil, err
-				}
-
-				b4 := time.Now()
-				t.logger.Debug("batch timing",
-					zap.Duration("invoke", b1.Sub(b0)),
-					zap.Duration("sink", b2.Sub(b1)),
-					zap.Duration("commit", b3.Sub(b2)),
-					zap.Duration("init", b4.Sub(b3)),
-					zap.Duration("total", b4.Sub(b0)),
-				)
-
 				numBatchMessages = 0
 			}
 		}
 	}
 
+	// Whatever is buffered when the loop ends — because --max-msgs was
+	// reached or the source ended — still has to reach the sink, otherwise
+	// messages counted as consumed are silently dropped.
+	if numBatchMessages > 0 {
+		if err := t.processBatch(ctx, numBatchMessages); err != nil {
+			return nil, err
+		}
+	}
+
 	t.logThroughput()
 	return t.stats, nil
+}
+
+// processBatch invokes the handler on the buffered messages, writes the
+// result to the sink, commits the source, and resets the handler for the
+// next batch.
+func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error {
+	t.stats.AddMessagesConsumed(int64(numBatchMessages))
+
+	b0 := time.Now()
+
+	t.lock.Lock()
+	batch, err := t.handler.Invoke(ctx)
+	t.lock.Unlock()
+
+	b1 := time.Now()
+
+	if err != nil {
+		t.stats.NumErrors++
+		t.logger.Error("error invoking handler", zap.Error(err))
+		return err
+	}
+
+	if err := t.sink.WriteTable(batch); err != nil {
+		t.stats.NumErrors++
+		t.logger.Error("error writing batch to sink", zap.Error(err))
+		batch.Release()
+		return err
+	}
+
+	if err := t.flush(batch); err != nil {
+		t.stats.NumErrors++
+		t.logger.Error("error flushing sink", zap.Error(err))
+		batch.Release()
+		return err
+	}
+
+	b2 := time.Now()
+
+	// Committed only after the sink has flushed, so a crash replays the
+	// batch rather than losing it.
+	if err := t.source.Commit(); err != nil {
+		t.logger.Error("error committing source", zap.Error(err))
+		batch.Release()
+		return err
+	}
+
+	b3 := time.Now()
+
+	batch.Release()
+
+	if err := t.handler.Init(ctx); err != nil {
+		t.stats.NumErrors++
+		t.logger.Error("error reinitializing handler", zap.Error(err))
+		return err
+	}
+
+	b4 := time.Now()
+	t.logger.Debug("batch timing",
+		zap.Duration("invoke", b1.Sub(b0)),
+		zap.Duration("sink", b2.Sub(b1)),
+		zap.Duration("commit", b3.Sub(b2)),
+		zap.Duration("init", b4.Sub(b3)),
+		zap.Duration("total", b4.Sub(b0)),
+	)
+	return nil
 }
 
 func (t *Turbine) logThroughput() {
