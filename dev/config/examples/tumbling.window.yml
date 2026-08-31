@@ -48,7 +48,7 @@ pipeline:
       INSERT INTO agg_cities_count
       BY NAME
       SELECT 
-        date_trunc('hour', CAST(timestamp as TIMESTAMP)) as bucket,
+        date_trunc('hour', CAST(timestamp as TIMESTAMPTZ)) as bucket,
         properties.city as city,
         count(*) as count
       FROM batch

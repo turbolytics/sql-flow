@@ -270,9 +270,15 @@ def test_enrichment(bootstrap_server):
     assert len(messages) == 1000, f"Expected 1000 messages, but got {len(messages)}"
 
 
-@unittest.skip
+# The Python engine's managed-table threads are never stopped
+# (pipeline.handle_managed_tables starts them and nothing joins them), so this
+# test leaves a manager polling and a consumer in group 'test', which starves
+# the DLQ tests that share that group. Skipped for the Python engine; the Go
+# engine stops its managers on shutdown and is covered end to end.
+@unittest.skipIf(os.environ.get('SQLFLOW_ENGINE', 'python') == 'python',
+                 'python manager threads outlive the test')
 def test_mem_persistence_window_tumbling(bootstrap_server):
-    num_messages = 500000
+    num_messages = 2000
     topic = 'mem-persistence-tumbling-window'
     admin_client = AdminClient({'bootstrap.servers': bootstrap_server})
     fs = admin_client.delete_topics([topic], operation_timeout=30)
@@ -299,7 +305,11 @@ def test_mem_persistence_window_tumbling(bootstrap_server):
         max_msgs=num_messages,
     )
     assert stats.num_messages_consumed == num_messages
-    print(stats)
+
+    # The window manager publishes each closed window; between them they must
+    # account for every message published.
+    messages = read_all_kafka_messages(bootstrap_server, 'output-tumbling-window-1')
+    assert_all_messages_accounted_for(stats, num_messages, messages, 'count')
 
 def test_dlq_functionality_handler_write(bootstrap_server):
     num_messages = 1
