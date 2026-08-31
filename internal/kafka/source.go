@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"github.com/turbolytics/turbine/internal/core"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 	"sync"
@@ -12,7 +13,7 @@ type Source struct {
 	client        *kgo.Client
 	readTimeout   time.Duration
 	channelBuffer int
-	streamChan    chan [][]byte
+	streamChan    chan []core.Message
 	done          chan struct{}
 	closeOnce     sync.Once
 
@@ -53,7 +54,7 @@ func NewSource(client *kgo.Client, opts ...Option) (*Source, error) {
 		opt(s)
 	}
 
-	s.streamChan = make(chan [][]byte, s.channelBuffer)
+	s.streamChan = make(chan []core.Message, s.channelBuffer)
 	s.done = make(chan struct{})
 
 	return s, nil
@@ -81,7 +82,7 @@ func (k *Source) Commit() error {
 	return nil
 }
 
-func (k *Source) Stream() <-chan [][]byte {
+func (k *Source) Stream() <-chan []core.Message {
 	k.logger.Info("starting stream",
 		zap.Int("channel_buffer", k.channelBuffer),
 	)
@@ -123,9 +124,14 @@ func (k *Source) Stream() <-chan [][]byte {
 				}
 			}
 
-			batch := make([][]byte, 0, fetches.NumRecords())
+			batch := make([]core.Message, 0, fetches.NumRecords())
 			fetches.EachRecord(func(r *kgo.Record) {
-				batch = append(batch, r.Value)
+				batch = append(batch, core.Message{
+					Value:     r.Value,
+					Topic:     r.Topic,
+					Partition: r.Partition,
+					Offset:    r.Offset,
+				})
 			})
 
 			if len(batch) == 0 {

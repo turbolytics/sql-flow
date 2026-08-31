@@ -17,11 +17,32 @@ import (
 	"go.uber.org/zap"
 )
 
+// Message is one record from a source, with whatever provenance the source
+// knows about it. Only Kafka populates the metadata fields.
+type Message struct {
+	Value     []byte
+	Topic     string
+	Partition int32
+	Offset    int64
+}
+
+// HasMetadata reports whether the source supplied provenance for this message.
+// Topic is the discriminator: a Kafka record always has one, and a source that
+// has none leaves it empty.
+func (m Message) HasMetadata() bool { return m.Topic != "" }
+
 type Source interface {
 	Start() error
-	Stream() <-chan [][]byte
+	Stream() <-chan []Message
 	Commit() error
 	Close() error
+}
+
+// MetadataWriter is implemented by handlers that can use a message's source
+// metadata. Handlers that only need the payload implement Handler alone and
+// the consume loop hands them the value.
+type MetadataWriter interface {
+	WriteMessage(msg Message) error
 }
 
 type Sink interface {
@@ -229,7 +250,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		r0 := time.Now()
 
 		var (
-			msgBatch [][]byte
+			msgBatch []Message
 			ok       bool
 		)
 		select {
@@ -259,11 +280,11 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		t.metrics.MessageCount.Add(ctx, int64(len(msgBatch)))
 
 		for _, raw := range msgBatch {
-			if err := t.handler.Write(raw); err != nil {
+			if err := t.writeMessage(raw); err != nil {
 				t.stats.NumErrors++
 				t.logger.Error("error writing message", zap.Error(err))
 
-				if err := t.applyErrorPolicy(err, phaseHandlerWrite, string(raw)); err != nil {
+				if err := t.applyErrorPolicy(err, phaseHandlerWrite, string(raw.Value)); err != nil {
 					return nil, err
 				}
 				// The message is dropped from the batch, but it was still
@@ -319,6 +340,15 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 
 	t.logThroughput()
 	return t.stats, nil
+}
+
+// writeMessage hands the message to the handler, with its source metadata if
+// the handler can use it.
+func (t *Turbine) writeMessage(msg Message) error {
+	if w, ok := t.handler.(MetadataWriter); ok {
+		return w.WriteMessage(msg)
+	}
+	return t.handler.Write(msg.Value)
 }
 
 // applyErrorPolicy decides what happens to a failed message or batch. It

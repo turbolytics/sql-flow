@@ -11,6 +11,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/buger/jsonparser"
+	"github.com/turbolytics/turbine/internal/core"
 	"go.uber.org/zap"
 )
 
@@ -30,6 +31,9 @@ const batchTableName = "batch"
 // batch rather than being silently nulled.
 type InferredMemBatchHandler struct {
 	rawBatch [][]byte
+	// Parallel to rawBatch, populated only when the source supplies
+	// provenance; empty for sources that do not.
+	metadata []core.Message
 
 	alloc      *memory.GoAllocator
 	conn       adbc.Connection
@@ -79,6 +83,7 @@ func InferredMemBatchWithLogger(l *zap.Logger) InferredMemBatchHandlerOption {
 
 func (h *InferredMemBatchHandler) Init(ctx context.Context) error {
 	h.rawBatch = h.rawBatch[:0]
+	h.metadata = h.metadata[:0]
 	return h.dropBatchTable(ctx)
 }
 
@@ -106,6 +111,22 @@ func (h *InferredMemBatchHandler) Write(r []byte) error {
 	return nil
 }
 
+// WriteMessage buffers a message along with its source metadata, which Invoke
+// exposes as kafka_topic / kafka_partition / kafka_offset columns.
+func (h *InferredMemBatchHandler) WriteMessage(msg core.Message) error {
+	if err := h.Write(msg.Value); err != nil {
+		return err
+	}
+	if msg.HasMetadata() {
+		// Kept positionally against rawBatch, which Write just appended to.
+		for len(h.metadata) < len(h.rawBatch)-1 {
+			h.metadata = append(h.metadata, core.Message{})
+		}
+		h.metadata = append(h.metadata, msg)
+	}
+	return nil
+}
+
 func truncate(b []byte, n int) string {
 	if len(b) <= n {
 		return string(b)
@@ -116,6 +137,8 @@ func truncate(b []byte, n int) string {
 func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, error) {
 	raw := h.rawBatch
 	h.rawBatch = h.rawBatch[:0]
+	meta := h.metadata
+	h.metadata = h.metadata[:0]
 
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("no records to invoke")
@@ -125,8 +148,9 @@ func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, erro
 	if err != nil {
 		return nil, fmt.Errorf("schema inference: %w", err)
 	}
+	schema = withMetadataFields(schema, len(meta) > 0)
 
-	record, err := buildRecord(h.alloc, schema, raw)
+	record, err := buildRecord(h.alloc, schema, raw, meta)
 	if err != nil {
 		return nil, fmt.Errorf("build record: %w", err)
 	}
@@ -325,7 +349,26 @@ func promoteType(current, next arrow.DataType) (arrow.DataType, error) {
 
 // buildRecord extracts each message directly into Arrow builders with
 // jsonparser, the same zero-copy path StructuredBatch uses.
-func buildRecord(alloc memory.Allocator, schema *arrow.Schema, msgs [][]byte) (arrow.Record, error) {
+// withMetadataFields appends the Kafka provenance columns the Python engine
+// injects into each row, so handler SQL can reference them.
+func withMetadataFields(schema *arrow.Schema, withMetadata bool) *arrow.Schema {
+	if !withMetadata {
+		return schema
+	}
+	fields := append([]arrow.Field{}, schema.Fields()...)
+	fields = append(fields,
+		arrow.Field{Name: "kafka_topic", Type: arrow.BinaryTypes.String, Nullable: true},
+		arrow.Field{Name: "kafka_partition", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		arrow.Field{Name: "kafka_offset", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+	)
+	return arrow.NewSchema(fields, nil)
+}
+
+func isMetadataField(name string) bool {
+	return name == "kafka_topic" || name == "kafka_partition" || name == "kafka_offset"
+}
+
+func buildRecord(alloc memory.Allocator, schema *arrow.Schema, msgs [][]byte, meta []core.Message) (arrow.Record, error) {
 	builders := make([]array.Builder, schema.NumFields())
 	for i, f := range schema.Fields() {
 		builders[i] = array.NewBuilder(alloc, f.Type)
@@ -338,8 +381,12 @@ func buildRecord(alloc memory.Allocator, schema *arrow.Schema, msgs [][]byte) (a
 	}()
 
 	fields := schema.Fields()
-	for _, msg := range msgs {
+	for row, msg := range msgs {
 		for i, f := range fields {
+			if isMetadataField(f.Name) {
+				appendMetadataValue(builders[i], f.Name, meta, row)
+				continue
+			}
 			if err := appendJSONValue(builders[i], f.Type, msg, f.Name); err != nil {
 				return nil, fmt.Errorf("field %q: %w", f.Name, err)
 			}
@@ -357,4 +404,22 @@ func buildRecord(alloc memory.Allocator, schema *arrow.Schema, msgs [][]byte) (a
 	}()
 
 	return array.NewRecord(schema, arrays, int64(len(msgs))), nil
+}
+
+// appendMetadataValue fills a provenance column, leaving it null for any row
+// whose source did not supply metadata.
+func appendMetadataValue(b array.Builder, name string, meta []core.Message, row int) {
+	if row >= len(meta) || !meta[row].HasMetadata() {
+		b.AppendNull()
+		return
+	}
+
+	switch name {
+	case "kafka_topic":
+		b.(*array.StringBuilder).Append(meta[row].Topic)
+	case "kafka_partition":
+		b.(*array.Int32Builder).Append(meta[row].Partition)
+	case "kafka_offset":
+		b.(*array.Int64Builder).Append(meta[row].Offset)
+	}
 }

@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/turbine/internal/core"
 	"sync"
 	"time"
 
@@ -29,7 +30,7 @@ type Source struct {
 	reconnectDelay    time.Duration
 	maxReconnectDelay time.Duration
 
-	streamChan chan [][]byte
+	streamChan chan []core.Message
 	done       chan struct{}
 	closeOnce  sync.Once
 
@@ -101,7 +102,7 @@ func NewSource(uri string, opts ...Option) (*Source, error) {
 		opt(s)
 	}
 
-	s.streamChan = make(chan [][]byte, s.channelBuffer)
+	s.streamChan = make(chan []core.Message, s.channelBuffer)
 
 	return s, nil
 }
@@ -114,7 +115,7 @@ func (s *Source) Start() error {
 	return s.dial()
 }
 
-func (s *Source) Stream() <-chan [][]byte {
+func (s *Source) Stream() <-chan []core.Message {
 	go func() {
 		defer close(s.streamChan)
 
@@ -135,7 +136,7 @@ func (s *Source) Stream() <-chan [][]byte {
 			}
 
 			select {
-			case s.streamChan <- [][]byte{data}:
+			case s.streamChan <- []core.Message{{Value: data}}:
 			case <-s.done:
 				return
 			}

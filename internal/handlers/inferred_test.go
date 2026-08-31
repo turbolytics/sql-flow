@@ -6,6 +6,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/turbine/internal/core"
 	"github.com/zeebo/assert"
 )
 
@@ -222,4 +223,48 @@ func TestInferredMemBatchHandler_InsertIntoManagedTable(t *testing.T) {
 	}
 	// Two distinct cities were aggregated into the managed table.
 	assert.Equal(t, int64(2), rows)
+}
+
+// The Kafka source can supply per-message metadata, which the Python engine
+// injects as kafka_topic / kafka_partition / kafka_offset columns. The
+// idempotent MotherDuck pattern reads them to skip already-ingested offsets.
+func TestInferredMemBatchHandler_InjectsKafkaMetadata(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT city, kafka_topic, kafka_partition, kafka_offset FROM batch ORDER BY kafka_offset")
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	assert.NoError(t, h.WriteMessage(core.Message{
+		Value: []byte(`{"city": "NYC"}`), Topic: "events", Partition: 2, Offset: 100,
+	}))
+	assert.NoError(t, h.WriteMessage(core.Message{
+		Value: []byte(`{"city": "SF"}`), Topic: "events", Partition: 2, Offset: 101,
+	}))
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	defer res.Release()
+
+	assert.Equal(t, int64(2), res.NumRows())
+	assert.Equal(t, "events", res.Column(1).Data().Chunk(0).(*array.String).Value(0))
+	assert.Equal(t, int32(2), res.Column(2).Data().Chunk(0).(*array.Int32).Value(0))
+	assert.Equal(t, int64(100), res.Column(3).Data().Chunk(0).(*array.Int64).Value(0))
+	assert.Equal(t, int64(101), res.Column(3).Data().Chunk(0).(*array.Int64).Value(1))
+}
+
+// Without metadata the columns must not appear, so a plain config is unchanged.
+func TestInferredMemBatchHandler_NoMetadataColumnsWithoutSource(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT * FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{`{"city": "NYC"}`})
+	defer res.Release()
+
+	assert.Equal(t, 1, res.Schema().NumFields())
 }

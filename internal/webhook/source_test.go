@@ -143,7 +143,7 @@ func TestSource_DeliversBodyToStream(t *testing.T) {
 	select {
 	case batch := <-s.Stream():
 		assert.Equal(t, 1, len(batch))
-		assert.Equal(t, string(body), string(batch[0]))
+		assert.Equal(t, string(body), string(batch[0].Value))
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the message")
 	}
@@ -177,7 +177,7 @@ func TestSource_BackpressureHoldsSecondRequest(t *testing.T) {
 	}
 
 	batch := <-s.Stream()
-	assert.Equal(t, "first", string(batch[0]))
+	assert.Equal(t, "first", string(batch[0].Value))
 
 	select {
 	case code := <-second:
@@ -187,7 +187,7 @@ func TestSource_BackpressureHoldsSecondRequest(t *testing.T) {
 	}
 
 	batch = <-s.Stream()
-	assert.Equal(t, "second", string(batch[0]))
+	assert.Equal(t, "second", string(batch[0].Value))
 }
 
 func TestSource_CloseReleasesBlockedRequest(t *testing.T) {
@@ -250,7 +250,7 @@ func TestSource_StartServesOnItsOwnListener(t *testing.T) {
 
 	select {
 	case batch := <-s.Stream():
-		assert.Equal(t, string(body), string(batch[0]))
+		assert.Equal(t, string(body), string(batch[0].Value))
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the message")
 	}

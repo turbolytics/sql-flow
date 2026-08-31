@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"github.com/turbolytics/turbine/internal/core"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +53,7 @@ func wsURL(srv *httptest.Server) string {
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
 }
 
-func recv(t *testing.T, stream <-chan [][]byte) []byte {
+func recv(t *testing.T, stream <-chan []core.Message) []byte {
 	t.Helper()
 
 	select {
@@ -61,7 +62,7 @@ func recv(t *testing.T, stream <-chan [][]byte) []byte {
 			t.Fatal("stream closed before a message arrived")
 		}
 		assert.Equal(t, 1, len(batch))
-		return batch[0]
+		return batch[0].Value
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for a message")
 		return nil

@@ -61,7 +61,7 @@ func NewCommand() *cobra.Command {
 			for batch := range stream {
 				for _, raw := range batch {
 					totalMessages++
-					fmt.Printf("Message: %s\n", string(raw))
+					fmt.Printf("Message: %s\n", string(raw.Value))
 				}
 				if err := src.Commit(); err != nil {
 					l.Error("failed to commit message", zap.Error(err))

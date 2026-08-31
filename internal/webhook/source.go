@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/turbolytics/turbine/internal/core"
 	"io"
 	"net"
 	"net/http"
@@ -33,7 +34,7 @@ type Source struct {
 	hmac       *HMAC
 	server     *http.Server
 	listener   net.Listener
-	streamChan chan [][]byte
+	streamChan chan []core.Message
 	done       chan struct{}
 	closeOnce  sync.Once
 	// mu guards closed against in-flight handlers: a request holds it for
@@ -72,7 +73,7 @@ func NewSource(opts ...Option) (*Source, error) {
 		// A queue of one, as in the Python source: a delivery is accepted
 		// while the pipeline works on the previous one, and the next sender
 		// waits rather than having its event dropped.
-		streamChan: make(chan [][]byte, 1),
+		streamChan: make(chan []core.Message, 1),
 		done:       make(chan struct{}),
 
 		logger: zap.NewNop(),
@@ -127,7 +128,7 @@ func (s *Source) Start() error {
 	return nil
 }
 
-func (s *Source) Stream() <-chan [][]byte {
+func (s *Source) Stream() <-chan []core.Message {
 	return s.streamChan
 }
 
@@ -184,7 +185,7 @@ func (s *Source) receiveEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	case s.streamChan <- [][]byte{body}:
+	case s.streamChan <- []core.Message{{Value: body}}:
 		writeJSON(w, http.StatusOK, `{"status":"received"}`)
 	case <-s.done:
 		writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)

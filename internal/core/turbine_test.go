@@ -15,15 +15,15 @@ import (
 )
 
 type fakeSource struct {
-	batches [][][]byte
-	ch      chan [][]byte
+	batches [][]Message
+	ch      chan []Message
 	commits int
 }
 
 func (f *fakeSource) Start() error { return nil }
 
-func (f *fakeSource) Stream() <-chan [][]byte {
-	f.ch = make(chan [][]byte, len(f.batches))
+func (f *fakeSource) Stream() <-chan []Message {
+	f.ch = make(chan []Message, len(f.batches))
 	for _, b := range f.batches {
 		f.ch <- b
 	}
@@ -87,10 +87,10 @@ func newTestTurbine(src Source, h Handler, sink Sink, batchSize int) *Turbine {
 	return NewTurbine(src, h, sink, batchSize, time.Second, &sync.Mutex{}, PipelineErrorPolicies{})
 }
 
-func messages(n int) [][]byte {
-	msgs := make([][]byte, n)
+func messages(n int) []Message {
+	msgs := make([]Message, n)
 	for i := range msgs {
-		msgs[i] = []byte(`{"a": 1}`)
+		msgs[i] = Message{Value: []byte(`{"a": 1}`)}
 	}
 	return msgs
 }
@@ -98,7 +98,7 @@ func messages(n int) [][]byte {
 // Reaching --max-msgs must not cost the batch in flight: every message the
 // pipeline reports as consumed has to reach the sink.
 func TestConsumeLoop_FlushesFinalBatchWhenMaxMsgsReached(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{messages(1000)}}
+	src := &fakeSource{batches: [][]Message{messages(1000)}}
 	sink := &fakeSink{}
 
 	tb := newTestTurbine(src, &fakeHandler{}, sink, 1000)
@@ -113,7 +113,7 @@ func TestConsumeLoop_FlushesFinalBatchWhenMaxMsgsReached(t *testing.T) {
 // A batch that is still partial when the source ends must also be written,
 // otherwise the tail of a finite stream is silently dropped.
 func TestConsumeLoop_FlushesPartialBatchWhenStreamEnds(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{messages(250)}}
+	src := &fakeSource{batches: [][]Message{messages(250)}}
 	sink := &fakeSink{}
 
 	tb := newTestTurbine(src, &fakeHandler{}, sink, 1000)
@@ -183,13 +183,13 @@ func (s *recordingSink) Flush() error {
 
 func (s *recordingSink) Batch() (arrow.Table, error) { return nil, nil }
 
-func mixedMessages(bad string, good int) [][]byte {
-	msgs := [][]byte{[]byte(bad)}
+func mixedMessages(bad string, good int) []Message {
+	msgs := []Message{{Value: []byte(bad)}}
 	return append(msgs, messages(good)...)
 }
 
 func TestConsumeLoop_RaisePolicyStopsOnWriteError(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{mixedMessages("bad", 4)}}
+	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
 	h := &failingHandler{failWriteOn: "bad"}
 
 	tb := newTestTurbine(src, h, &fakeSink{}, 5)
@@ -198,7 +198,7 @@ func TestConsumeLoop_RaisePolicyStopsOnWriteError(t *testing.T) {
 }
 
 func TestConsumeLoop_IgnorePolicySkipsBadMessage(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{mixedMessages("bad", 4)}}
+	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
 	h := &failingHandler{failWriteOn: "bad"}
 	sink := &fakeSink{}
 
@@ -218,7 +218,7 @@ func TestConsumeLoop_IgnorePolicySkipsBadMessage(t *testing.T) {
 // Python engine counts it, and --max-msgs has to account for it too or a
 // stream of bad messages never terminates.
 func TestConsumeLoop_CountsRejectedMessagesAsConsumed(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{mixedMessages("bad", 4)}}
+	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
 	h := &failingHandler{failWriteOn: "bad"}
 
 	tb := NewTurbine(src, h, &fakeSink{}, 4, time.Second, &sync.Mutex{},
@@ -232,7 +232,7 @@ func TestConsumeLoop_CountsRejectedMessagesAsConsumed(t *testing.T) {
 }
 
 func TestConsumeLoop_DLQPolicyRoutesWriteError(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{mixedMessages("bad", 4)}}
+	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
 	h := &failingHandler{failWriteOn: "bad"}
 	sink := &fakeSink{}
 	dlq := &recordingSink{}
@@ -253,7 +253,7 @@ func TestConsumeLoop_DLQPolicyRoutesWriteError(t *testing.T) {
 }
 
 func TestConsumeLoop_DLQPolicyRoutesInvokeError(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{messages(4)}}
+	src := &fakeSource{batches: [][]Message{messages(4)}}
 	h := &failingHandler{failInvokeOn: true}
 	sink := &fakeSink{}
 	dlq := &recordingSink{}
@@ -273,7 +273,7 @@ func TestConsumeLoop_DLQPolicyRoutesInvokeError(t *testing.T) {
 }
 
 func TestConsumeLoop_IgnorePolicyContinuesAfterInvokeError(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{messages(4)}}
+	src := &fakeSource{batches: [][]Message{messages(4)}}
 	h := &failingHandler{failInvokeOn: true}
 	sink := &fakeSink{}
 
@@ -289,15 +289,15 @@ func TestConsumeLoop_IgnorePolicyContinuesAfterInvokeError(t *testing.T) {
 // blockingSource delivers a batch and then holds the stream open, standing in
 // for a low-traffic topic or a push source between deliveries.
 type blockingSource struct {
-	batch   [][]byte
-	ch      chan [][]byte
+	batch   []Message
+	ch      chan []Message
 	release chan struct{}
 }
 
 func (s *blockingSource) Start() error { return nil }
 
-func (s *blockingSource) Stream() <-chan [][]byte {
-	s.ch = make(chan [][]byte)
+func (s *blockingSource) Stream() <-chan []Message {
+	s.ch = make(chan []Message)
 	s.release = make(chan struct{})
 	go func() {
 		s.ch <- s.batch
@@ -346,7 +346,7 @@ func TestConsumeLoop_FlushesPartialBatchOnFlushInterval(t *testing.T) {
 }
 
 func TestConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {
-	src := &fakeSource{batches: [][][]byte{messages(500), messages(500), messages(250)}}
+	src := &fakeSource{batches: [][]Message{messages(500), messages(500), messages(250)}}
 	sink := &fakeSink{}
 
 	tb := newTestTurbine(src, &fakeHandler{}, sink, 100)
