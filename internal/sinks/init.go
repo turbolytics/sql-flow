@@ -1,6 +1,7 @@
 package sinks
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -46,6 +47,12 @@ func New(sink config.Sink, conn adbc.Connection) (core.Sink, error) {
 			return nil, fmt.Errorf("sink: sqlcommand sink requires a sqlcommand block")
 		}
 		return NewSQLCommandSink(conn, sink.SQLCommand.SQL, sink.SQLCommand.Substitutions)
+
+	case "iceberg":
+		if sink.Iceberg == nil {
+			return nil, fmt.Errorf("sink: iceberg sink requires an iceberg block")
+		}
+		return NewIcebergSink(context.Background(), sink.Iceberg.CatalogName, sink.Iceberg.TableName)
 
 	default:
 		return nil, fmt.Errorf("sink: %q not supported", sink.Type)
