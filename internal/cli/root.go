@@ -21,14 +21,17 @@ func NewRootCommand() *cobra.Command {
 
 	cmd.AddCommand(run.NewCommand())
 	cmd.AddCommand(tail.NewCommand())
+	cmd.AddCommand(newConfigCommand())
+	cmd.AddCommand(newDevCommand())
 
 	return cmd
 }
 
 func Execute() {
 	cmd := NewRootCommand()
+	// cobra has already reported the error on stderr by this point; printing
+	// it again here would duplicate every message.
 	if err := cmd.Execute(); err != nil {
-		fmt.Println(err)
 		os.Exit(1)
 	}
 }

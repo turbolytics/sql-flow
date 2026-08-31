@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/apache/arrow-adbc/go/adbc"
-	"github.com/apache/arrow-adbc/go/adbc/drivermgr" // Import the driver manager
 	"github.com/spf13/cobra"
+	"github.com/turbolytics/turbine/internal/duckdb"
 	"github.com/turbolytics/turbine/internal/handlers"
 	"github.com/turbolytics/turbine/internal/managers"
 	"github.com/turbolytics/turbine/internal/sinks"
@@ -86,22 +86,9 @@ func NewCommand() *cobra.Command {
 			}
 
 			// Initialize ADBC connection using driver manager
-			duckdbLib := os.Getenv("SQLFLOW_DUCKDB_LIB")
-			if duckdbLib == "" {
-				duckdbLib = "/opt/homebrew/lib/libduckdb.dylib"
-			}
-			var drv drivermgr.Driver
-			db, err := drv.NewDatabase(map[string]string{
-				"driver":     duckdbLib,
-				"entrypoint": "duckdb_adbc_init",
-			})
+			conn, err := duckdb.Open(context.Background())
 			if err != nil {
-				return fmt.Errorf("failed to initialize DuckDB driver: %w", err)
-			}
-
-			conn, err := db.Open(context.Background())
-			if err != nil {
-				return fmt.Errorf("failed to open DuckDB connection: %w", err)
+				return err
 			}
 			defer func() {
 				if err := conn.Close(); err != nil {

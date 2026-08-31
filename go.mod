@@ -11,6 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/nikolalohinski/gonja/v2 v2.9.0
 	github.com/prometheus/client_golang v1.24.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.1
 	github.com/spf13/cobra v1.10.2
 	github.com/twmb/franz-go v1.20.7
 	github.com/zeebo/assert v1.3.0
