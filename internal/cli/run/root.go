@@ -105,6 +105,10 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to initialize tables: %w", err)
 			}
 
+			if err := core.InitUDFs(conf); err != nil {
+				return err
+			}
+
 			src, err := sources.New(
 				conf.Pipeline.Source,
 				logger,

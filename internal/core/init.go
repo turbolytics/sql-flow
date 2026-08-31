@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"strings"
+
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/turbine/internal/config"
 	"go.uber.org/zap"
@@ -11,6 +14,32 @@ var logger *zap.Logger
 
 func init() {
 	logger, _ = zap.NewDevelopment()
+}
+
+// InitUDFs reports that a config declares UDFs, which turbine does not
+// support. The Python engine registers arbitrary Python callables through
+// conn.create_function; Go has no equivalent, and rather than inventing a
+// plugin mechanism, user-defined functions are left to DuckDB itself (a
+// macro, an extension, or an ATTACHed database that defines them).
+//
+// This is an error rather than a silent skip: ignoring the block would defer
+// the failure to an unhelpful binder error when the handler SQL calls the
+// function.
+func InitUDFs(c *config.Conf) error {
+	if len(c.UDFs) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(c.UDFs))
+	for _, udf := range c.UDFs {
+		names = append(names, udf.FunctionName)
+	}
+
+	return fmt.Errorf(
+		"udfs are not supported: %s. Define them in DuckDB instead "+
+			"(a macro or extension, or ATTACH a database that provides them)",
+		strings.Join(names, ", "),
+	)
 }
 
 // InitTables creates the tables that live across the pipeline's lifetime,

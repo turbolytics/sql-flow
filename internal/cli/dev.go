@@ -91,6 +91,10 @@ func devInvoke(
 		return nil, fmt.Errorf("failed to initialize tables: %w", err)
 	}
 
+	if err := core.InitUDFs(conf); err != nil {
+		return nil, err
+	}
+
 	handler, err := handlers.New(conn, conf.Pipeline.Handler, zap.NewNop())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
