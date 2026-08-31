@@ -2,7 +2,7 @@
 # from the top-level Dockerfile; the two are independent.
 #
 # Build with `make turbine-image`, which supplies the build args below.
-ARG GO_IMAGE=golang:1.24-bookworm
+ARG GO_IMAGE=golang:1.25-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 
 FROM ${GO_IMAGE} AS builder

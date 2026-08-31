@@ -11,7 +11,7 @@ BATCH_SIZE="${2:-5000}"
 TOPIC="benchmark-input"
 CONFIG="dev/config/examples/benchmark.structured.mem.yml"
 NETWORK="dev_default"
-GO_IMAGE="golang:1.24-bookworm"
+GO_IMAGE="golang:1.25-bookworm"
 RUN_IMAGE="debian:bookworm-slim"
 
 echo "=== Turbine Go Benchmark (in-network) ==="

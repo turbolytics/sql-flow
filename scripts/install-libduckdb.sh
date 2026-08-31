@@ -30,6 +30,13 @@ if [ -f "$DEST" ]; then
     exit 0
 fi
 
+for tool in curl unzip; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "install-libduckdb: $tool is required but not installed" >&2
+        exit 1
+    fi
+done
+
 echo "--- Downloading libduckdb $DUCKDB_VERSION (linux-$DUCKDB_ARCH) -> $DEST ---"
 mkdir -p "$DEST_DIR"
 
