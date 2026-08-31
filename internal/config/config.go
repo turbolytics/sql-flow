@@ -121,13 +121,23 @@ type Handler struct {
 	Table              string `yaml:"table,omitempty"`
 }
 
+// OnError configures what happens to a message or batch that fails.
+// The dlq block is a full sink definition, used when policy is DLQ.
+type OnError struct {
+	Policy string `yaml:"policy"`
+	DLQ    *Sink  `yaml:"dlq,omitempty"`
+}
+
 // Pipeline
 type Pipeline struct {
-	Source               Source  `yaml:"source"`
-	Handler              Handler `yaml:"handler"`
-	Sink                 Sink    `yaml:"sink"`
-	BatchSize            int     `yaml:"batch_size,omitempty"`
-	FlushIntervalSeconds int     `yaml:"flush_interval_seconds,omitempty"`
+	Name                 string   `yaml:"name,omitempty"`
+	Description          string   `yaml:"description,omitempty"`
+	Source               Source   `yaml:"source"`
+	Handler              Handler  `yaml:"handler"`
+	Sink                 Sink     `yaml:"sink"`
+	BatchSize            int      `yaml:"batch_size,omitempty"`
+	FlushIntervalSeconds int      `yaml:"flush_interval_seconds,omitempty"`
+	OnError              *OnError `yaml:"on_error,omitempty"`
 }
 
 // Conf

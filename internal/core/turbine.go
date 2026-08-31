@@ -2,14 +2,18 @@ package core
 
 import (
 	"context"
-	"github.com/apache/arrow-go/v18/arrow"
-	"go.uber.org/zap"
+	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	"go.opentelemetry.io/otel/metric"
+	"go.uber.org/zap"
 )
 
 type Source interface {
@@ -63,11 +67,34 @@ type ErrorPolicy int
 const (
 	PolicyRaise ErrorPolicy = iota
 	PolicyIgnore
+	PolicyDLQ
 )
 
-type PipelineErrorPolicies struct {
-	Source ErrorPolicy
+// ParseErrorPolicy resolves the configured policy name. Matching the Python
+// engine, the name is case-insensitive and an empty value means RAISE.
+func ParseErrorPolicy(s string) (ErrorPolicy, error) {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "", "RAISE":
+		return PolicyRaise, nil
+	case "IGNORE":
+		return PolicyIgnore, nil
+	case "DLQ":
+		return PolicyDLQ, nil
+	default:
+		return PolicyRaise, fmt.Errorf("unsupported error policy: %q", s)
+	}
 }
+
+type PipelineErrorPolicies struct {
+	Policy  ErrorPolicy
+	DLQSink Sink
+}
+
+// Error phases, as reported on DLQ records.
+const (
+	phaseHandlerWrite  = "handler.write"
+	phaseHandlerInvoke = "handler.invoke"
+)
 
 type Turbine struct {
 	source        Source
@@ -195,11 +222,26 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			if err := t.handler.Write(raw); err != nil {
 				t.stats.NumErrors++
 				t.logger.Error("error writing message", zap.Error(err))
-				return nil, err
+
+				if err := t.applyErrorPolicy(err, phaseHandlerWrite, string(raw)); err != nil {
+					return nil, err
+				}
+				// The message is dropped from the batch, but it was still
+				// consumed from the source: it counts toward the reported
+				// total and toward --max-msgs, as in the Python engine.
+				totalConsumed++
+				t.stats.SetNumMessagesConsumed(totalConsumed)
+				if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
+					t.logger.Info("max messages consumed, stopping consumer loop")
+					hitMax = true
+					break
+				}
+				continue
 			}
 
 			numBatchMessages++
 			totalConsumed++
+			t.stats.SetNumMessagesConsumed(totalConsumed)
 
 			if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
 				t.logger.Info("max messages consumed, stopping consumer loop")
@@ -239,12 +281,62 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 	return t.stats, nil
 }
 
+// applyErrorPolicy decides what happens to a failed message or batch. It
+// returns a non-nil error only when the pipeline should stop.
+func (t *Turbine) applyErrorPolicy(cause error, phase, message string) error {
+	switch t.errorPolicy.Policy {
+	case PolicyIgnore:
+		return nil
+
+	case PolicyDLQ:
+		if t.errorPolicy.DLQSink == nil {
+			return fmt.Errorf("error policy is DLQ but no dlq sink is configured: %w", cause)
+		}
+		if err := t.writeDLQ(cause, phase, message); err != nil {
+			t.logger.Error("error writing to dlq", zap.Error(err))
+			return err
+		}
+		return nil
+
+	default:
+		return cause
+	}
+}
+
+// writeDLQ records one failed message or batch, in the same shape the Python
+// engine produces: error, message, phase and timestamp.
+func (t *Turbine) writeDLQ(cause error, phase, message string) error {
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "error", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "message", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "phase", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "timestamp", Type: arrow.BinaryTypes.String, Nullable: true},
+	}, nil)
+
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	defer b.Release()
+
+	b.Field(0).(*array.StringBuilder).Append(cause.Error())
+	b.Field(1).(*array.StringBuilder).Append(message)
+	b.Field(2).(*array.StringBuilder).Append(phase)
+	b.Field(3).(*array.StringBuilder).Append(time.Now().UTC().Format(time.RFC3339Nano))
+
+	rec := b.NewRecord()
+	defer rec.Release()
+
+	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer table.Release()
+
+	if err := t.errorPolicy.DLQSink.WriteTable(table); err != nil {
+		return err
+	}
+	return t.errorPolicy.DLQSink.Flush()
+}
+
 // processBatch invokes the handler on the buffered messages, writes the
 // result to the sink, commits the source, and resets the handler for the
 // next batch.
 func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error {
-	t.stats.AddMessagesConsumed(int64(numBatchMessages))
-
 	b0 := time.Now()
 
 	t.lock.Lock()
@@ -256,20 +348,31 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	if err != nil {
 		t.stats.NumErrors++
 		t.logger.Error("error invoking handler", zap.Error(err))
-		return err
+
+		if policyErr := t.applyErrorPolicy(err, phaseHandlerInvoke, "Handler invocation failed"); policyErr != nil {
+			return policyErr
+		}
+		// The batch yielded no table, so there is nothing to write; the
+		// source is still committed so the failed batch is not replayed
+		// forever.
+		batch = nil
 	}
 
-	if err := t.sink.WriteTable(batch); err != nil {
-		t.stats.NumErrors++
-		t.logger.Error("error writing batch to sink", zap.Error(err))
-		batch.Release()
-		return err
+	if batch != nil {
+		if err := t.sink.WriteTable(batch); err != nil {
+			t.stats.NumErrors++
+			t.logger.Error("error writing batch to sink", zap.Error(err))
+			batch.Release()
+			return err
+		}
 	}
 
 	if err := t.flush(batch); err != nil {
 		t.stats.NumErrors++
 		t.logger.Error("error flushing sink", zap.Error(err))
-		batch.Release()
+		if batch != nil {
+			batch.Release()
+		}
 		return err
 	}
 
@@ -279,13 +382,17 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	// batch rather than losing it.
 	if err := t.source.Commit(); err != nil {
 		t.logger.Error("error committing source", zap.Error(err))
-		batch.Release()
+		if batch != nil {
+			batch.Release()
+		}
 		return err
 	}
 
 	b3 := time.Now()
 
-	batch.Release()
+	if batch != nil {
+		batch.Release()
+	}
 
 	if err := t.handler.Init(ctx); err != nil {
 		t.stats.NumErrors++

@@ -339,9 +339,12 @@ def test_dlq_functionality_handler_write(bootstrap_server):
     dlq_messages = read_all_kafka_messages(bootstrap_server, dlq_topic)
     assert len(dlq_messages) == 1, f"Expected 1 DLQ message, but got {len(dlq_messages)}"
     m = dlq_messages[0]
-    assert m['error'] == 'Expecting property name enclosed in double quotes: line 1 column 2 (char 1)'
+    # The wording of a JSON parse failure is engine-specific; that it is
+    # reported, and against which message and phase, is not.
+    assert m['error']
     assert m['message'] == '{!invalidJSON!'
     assert m['phase'] == 'handler.write'
+    assert m['timestamp']
 
 def test_dlq_functionality_handler_invoke(bootstrap_server):
     num_messages = 1

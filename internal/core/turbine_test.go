@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -121,6 +123,167 @@ func TestConsumeLoop_FlushesPartialBatchWhenStreamEnds(t *testing.T) {
 	assert.Equal(t, int64(250), stats.MessagesConsumed())
 	assert.Equal(t, int64(250), sink.rows)
 	assert.Equal(t, 1, sink.flushes)
+}
+
+// failingHandler fails on the nominated phase, mirroring a message that
+// cannot be parsed (write) or SQL that cannot bind (invoke).
+type failingHandler struct {
+	fakeHandler
+	failWriteOn  string
+	failInvokeOn bool
+}
+
+func (h *failingHandler) Write(msg []byte) error {
+	if h.failWriteOn != "" && string(msg) == h.failWriteOn {
+		return errors.New("invalid json")
+	}
+	return h.fakeHandler.Write(msg)
+}
+
+func (h *failingHandler) Invoke(ctx context.Context) (arrow.Table, error) {
+	if h.failInvokeOn {
+		return nil, errors.New(`Binder Error: Referenced column "broken" not found`)
+	}
+	return h.fakeHandler.Invoke(ctx)
+}
+
+// recordingSink captures the rows written to it, so DLQ contents can be
+// inspected.
+type recordingSink struct {
+	mu      sync.Mutex
+	rows    []map[string]string
+	flushes int
+}
+
+func (s *recordingSink) WriteTable(batch arrow.Table) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	reader := array.NewTableReader(batch, 0)
+	defer reader.Release()
+	for reader.Next() {
+		rec := reader.Record()
+		for i := int64(0); i < rec.NumRows(); i++ {
+			row := map[string]string{}
+			for c := 0; c < int(rec.NumCols()); c++ {
+				row[rec.ColumnName(c)] = rec.Column(c).ValueStr(int(i))
+			}
+			s.rows = append(s.rows, row)
+		}
+	}
+	return nil
+}
+
+func (s *recordingSink) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushes++
+	return nil
+}
+
+func (s *recordingSink) Batch() (arrow.Table, error) { return nil, nil }
+
+func mixedMessages(bad string, good int) [][]byte {
+	msgs := [][]byte{[]byte(bad)}
+	return append(msgs, messages(good)...)
+}
+
+func TestConsumeLoop_RaisePolicyStopsOnWriteError(t *testing.T) {
+	src := &fakeSource{batches: [][][]byte{mixedMessages("bad", 4)}}
+	h := &failingHandler{failWriteOn: "bad"}
+
+	tb := newTestTurbine(src, h, &fakeSink{}, 5)
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.Error(t, err)
+}
+
+func TestConsumeLoop_IgnorePolicySkipsBadMessage(t *testing.T) {
+	src := &fakeSource{batches: [][][]byte{mixedMessages("bad", 4)}}
+	h := &failingHandler{failWriteOn: "bad"}
+	sink := &fakeSink{}
+
+	tb := NewTurbine(src, h, sink, 4, time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyIgnore})
+
+	stats, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	// The 4 good messages are processed; the bad one is skipped but counted
+	// as an error.
+	assert.Equal(t, int64(4), sink.rows)
+	assert.Equal(t, 1, stats.NumErrors)
+}
+
+// A message the handler rejects was still consumed from the source. The
+// Python engine counts it, and --max-msgs has to account for it too or a
+// stream of bad messages never terminates.
+func TestConsumeLoop_CountsRejectedMessagesAsConsumed(t *testing.T) {
+	src := &fakeSource{batches: [][][]byte{mixedMessages("bad", 4)}}
+	h := &failingHandler{failWriteOn: "bad"}
+
+	tb := NewTurbine(src, h, &fakeSink{}, 4, time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyIgnore})
+
+	stats, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, int64(5), stats.MessagesConsumed())
+	assert.Equal(t, 1, stats.NumErrors)
+}
+
+func TestConsumeLoop_DLQPolicyRoutesWriteError(t *testing.T) {
+	src := &fakeSource{batches: [][][]byte{mixedMessages("bad", 4)}}
+	h := &failingHandler{failWriteOn: "bad"}
+	sink := &fakeSink{}
+	dlq := &recordingSink{}
+
+	tb := NewTurbine(src, h, sink, 4, time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyDLQ, DLQSink: dlq})
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, int64(4), sink.rows)
+	assert.Equal(t, 1, len(dlq.rows))
+	assert.Equal(t, "handler.write", dlq.rows[0]["phase"])
+	assert.Equal(t, "bad", dlq.rows[0]["message"])
+	assert.That(t, dlq.rows[0]["error"] != "")
+	assert.That(t, dlq.rows[0]["timestamp"] != "")
+	assert.That(t, dlq.flushes > 0)
+}
+
+func TestConsumeLoop_DLQPolicyRoutesInvokeError(t *testing.T) {
+	src := &fakeSource{batches: [][][]byte{messages(4)}}
+	h := &failingHandler{failInvokeOn: true}
+	sink := &fakeSink{}
+	dlq := &recordingSink{}
+
+	tb := NewTurbine(src, h, sink, 4, time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyDLQ, DLQSink: dlq})
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	// The batch produced no table, so nothing reaches the main sink.
+	assert.Equal(t, int64(0), sink.rows)
+	assert.Equal(t, 1, len(dlq.rows))
+	assert.Equal(t, "handler.invoke", dlq.rows[0]["phase"])
+	assert.Equal(t, "Handler invocation failed", dlq.rows[0]["message"])
+	assert.That(t, strings.Contains(dlq.rows[0]["error"], "Binder Error"))
+}
+
+func TestConsumeLoop_IgnorePolicyContinuesAfterInvokeError(t *testing.T) {
+	src := &fakeSource{batches: [][][]byte{messages(4)}}
+	h := &failingHandler{failInvokeOn: true}
+	sink := &fakeSink{}
+
+	tb := NewTurbine(src, h, sink, 4, time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyIgnore})
+
+	stats, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), sink.rows)
+	assert.Equal(t, 1, stats.NumErrors)
 }
 
 func TestConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {

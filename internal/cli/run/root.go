@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr" // Import the driver manager
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/turbine/internal/handlers"
@@ -20,6 +21,36 @@ import (
 	"github.com/turbolytics/turbine/internal/config"
 	"github.com/turbolytics/turbine/internal/core"
 )
+
+// newErrorPolicies resolves pipeline.on_error, building the DLQ sink when the
+// policy calls for one.
+func newErrorPolicies(conf *config.Conf, conn adbc.Connection) (core.PipelineErrorPolicies, error) {
+	var policies core.PipelineErrorPolicies
+
+	onError := conf.Pipeline.OnError
+	if onError == nil {
+		return policies, nil
+	}
+
+	policy, err := core.ParseErrorPolicy(onError.Policy)
+	if err != nil {
+		return policies, err
+	}
+	policies.Policy = policy
+
+	if policy == core.PolicyDLQ {
+		if onError.DLQ == nil {
+			return policies, fmt.Errorf("pipeline.on_error: policy DLQ requires a dlq sink")
+		}
+		dlqSink, err := sinks.New(*onError.DLQ, conn)
+		if err != nil {
+			return policies, fmt.Errorf("pipeline.on_error dlq: %w", err)
+		}
+		policies.DLQSink = dlqSink
+	}
+
+	return policies, nil
+}
 
 func NewCommand() *cobra.Command {
 	var configPath string
@@ -103,6 +134,11 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to create handler: %w", err)
 			}
 
+			errorPolicies, err := newErrorPolicies(conf, conn)
+			if err != nil {
+				return err
+			}
+
 			lock := &sync.Mutex{}
 			turbine := core.NewTurbine(
 				src,
@@ -111,9 +147,7 @@ func NewCommand() *cobra.Command {
 				conf.Pipeline.BatchSize,
 				time.Duration(conf.Pipeline.FlushIntervalSeconds)*time.Second,
 				lock,
-				core.PipelineErrorPolicies{
-					// Source: conf.Pipeline.Source.Error.Policy,
-				},
+				errorPolicies,
 				core.WithTurbineLogger(l),
 			)
 
