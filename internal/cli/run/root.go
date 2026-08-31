@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr" // Import the driver manager
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ func NewCommand() *cobra.Command {
 	var configPath string
 	var maxMsgs int
 	var enablePprof bool
+	var statsJSONPath string
 
 	var cmd = &cobra.Command{
 		Use:   "run",
@@ -121,10 +123,23 @@ func NewCommand() *cobra.Command {
 				}
 			}()
 
-			_, err = turbine.ConsumeLoop(context.Background(), maxMsgs)
+			stats, err := turbine.ConsumeLoop(context.Background(), maxMsgs)
 			if err != nil {
 				l.Error("failed to consume loop", zap.Error(err))
 				return err
+			}
+
+			if statsJSONPath != "" {
+				out, err := json.Marshal(map[string]int64{
+					"messages_consumed": stats.MessagesConsumed(),
+					"num_errors":        int64(stats.NumErrors),
+				})
+				if err != nil {
+					return fmt.Errorf("failed to marshal stats: %w", err)
+				}
+				if err := os.WriteFile(statsJSONPath, out, 0o644); err != nil {
+					return fmt.Errorf("failed to write stats file: %w", err)
+				}
 			}
 			return nil
 		},
@@ -134,6 +149,7 @@ func NewCommand() *cobra.Command {
 	cmd.MarkFlagRequired("config")
 	cmd.Flags().IntVar(&maxMsgs, "max-msgs", 0, "Maximum number of messages to consume (0 = unlimited)")
 	cmd.Flags().BoolVar(&enablePprof, "pprof", false, "Enable pprof profiling server on :6060")
+	cmd.Flags().StringVar(&statsJSONPath, "stats-json", "", "Write final run stats as JSON to this path")
 
 	return cmd
 }

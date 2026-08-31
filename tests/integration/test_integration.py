@@ -14,11 +14,10 @@ from pyiceberg.schema import Schema
 from pyiceberg.types import NestedField, TimestampType, StringType
 from testcontainers.kafka import KafkaContainer
 
-from sqlflow.config import new_from_path
 from sqlflow.fixtures import KafkaFaker
 from sqlflow import settings
 from sqlflow.kafka import delete_topics, delete_consumer_groups, read_all_kafka_messages
-from sqlflow.lifecycle import start
+from tests.integration.engines import run_pipeline
 
 
 @pytest.fixture(scope="module")
@@ -78,15 +77,15 @@ def test_kafka_mem_iceberg(bootstrap_server):
     )
     kf.publish()
 
-    conf = new_from_path(
-        path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.mem.iceberg.yml'),
+    stats = run_pipeline(
+        config_path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.mem.iceberg.yml'),
         setting_overrides={
             'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
             'catalog_name': catalog_name,
             'table_name': table_name,
         },
+        max_msgs=num_messages,
     )
-    stats = start(conf, max_msgs=num_messages)
 
     iceberg_table.refresh()
     read_table = iceberg_table.scan().to_arrow()
@@ -108,16 +107,15 @@ def test_local_parquet_sink(bootstrap_server):
     kf.publish()
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        conf = new_from_path(
-            path=os.path.join(settings.CONF_DIR, 'examples', 'local.parquet.sink.yml'),
+        stats = run_pipeline(
+            config_path=os.path.join(settings.CONF_DIR, 'examples', 'local.parquet.sink.yml'),
             setting_overrides={
                 'kafka_brokers': bootstrap_server,
                 'sink_base_path': temp_dir,
                 'batch_size': 1000,
             },
+            max_msgs=num_messages,
         )
-
-        stats = start(conf, max_msgs=num_messages)
         assert stats.num_messages_consumed == num_messages
 
         files = os.listdir(temp_dir)
@@ -146,14 +144,13 @@ def test_basic_agg_mem(bootstrap_server):
     )
     kf.publish()
 
-    conf = new_from_path(
-        path=os.path.join(settings.CONF_DIR, 'examples', 'basic.agg.mem.yml'),
+    stats = run_pipeline(
+        config_path=os.path.join(settings.CONF_DIR, 'examples', 'basic.agg.mem.yml'),
         setting_overrides={
             'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
         },
+        max_msgs=num_messages,
     )
-
-    stats = start(conf, max_msgs=num_messages)
     assert stats.num_messages_consumed == num_messages
     print(stats)
 
@@ -186,8 +183,8 @@ def test_basic_agg_mem_ignore_invalid(bootstrap_server):
 
     producer.flush()
 
-    conf = new_from_path(
-        path=os.path.join(settings.CONF_DIR, 'examples', 'basic.agg.mem.yml'),
+    stats = run_pipeline(
+        config_path=os.path.join(settings.CONF_DIR, 'examples', 'basic.agg.mem.yml'),
         setting_overrides={
             'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
             'SQLFLOW_SOURCE_ERROR_POLICY': 'ignore',
@@ -195,9 +192,8 @@ def test_basic_agg_mem_ignore_invalid(bootstrap_server):
             'SQLFLOW_OUTPUT_TOPIC': out_topic,
             'SQLFLOW_BATCH_SIZE': 1,
         },
+        max_msgs=num_messages,
     )
-
-    stats = start(conf, max_msgs=num_messages)
     assert stats.num_messages_consumed == num_messages
     print(stats)
 
@@ -221,15 +217,14 @@ def test_csv_mem_join(bootstrap_server):
     )
     kf.publish()
 
-    conf = new_from_path(
-        path=os.path.join(settings.CONF_DIR, 'examples', 'csv.mem.join.yml'),
+    stats = run_pipeline(
+        config_path=os.path.join(settings.CONF_DIR, 'examples', 'csv.mem.join.yml'),
         setting_overrides={
             'kafka_brokers': bootstrap_server,
             'STATIC_ROOT': settings.DEV_DIR,
         },
+        max_msgs=num_messages,
     )
-
-    stats = start(conf, max_msgs=num_messages)
     assert stats.num_messages_consumed == num_messages
     print(stats)
     messages = read_all_kafka_messages(bootstrap_server, out_topic)
@@ -253,14 +248,13 @@ def test_enrichment(bootstrap_server):
     )
     kf.publish()
 
-    conf = new_from_path(
-        path=os.path.join(settings.CONF_DIR, 'examples', 'enrich.yml'),
+    stats = run_pipeline(
+        config_path=os.path.join(settings.CONF_DIR, 'examples', 'enrich.yml'),
         setting_overrides={
             'kafka_brokers': bootstrap_server,
         },
+        max_msgs=num_messages,
     )
-
-    stats = start(conf, max_msgs=num_messages)
     assert stats.num_messages_consumed == num_messages
     print(stats)
 
@@ -288,15 +282,14 @@ def test_mem_persistence_window_tumbling(bootstrap_server):
     kf.publish()
 
     # run sql flow providing the kafka bootstrap server
-    conf = new_from_path(
-        path=os.path.join(settings.CONF_DIR, 'examples', 'tumbling.window.yml'),
+    stats = run_pipeline(
+        config_path=os.path.join(settings.CONF_DIR, 'examples', 'tumbling.window.yml'),
         setting_overrides={
             'kafka_brokers': bootstrap_server,
             'topic': topic,
         },
+        max_msgs=num_messages,
     )
-
-    stats = start(conf, max_msgs=num_messages)
     assert stats.num_messages_consumed == num_messages
     print(stats)
 
@@ -319,9 +312,9 @@ def test_dlq_functionality_handler_write(bootstrap_server):
     producer.produce(in_topic, value=b'{!invalidJSON!')
     producer.flush()
 
-    # Configure pipeline with DLQ enabled
-    conf = new_from_path(
-        path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.dlq.yml'),
+    # Configure pipeline with DLQ enabled, then run it
+    stats = run_pipeline(
+        config_path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.dlq.yml'),
         setting_overrides={
             'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
             'SQLFLOW_INPUT_TOPIC': in_topic,
@@ -329,10 +322,8 @@ def test_dlq_functionality_handler_write(bootstrap_server):
             'SQLFLOW_SOURCE_ERROR_POLICY': 'dlq',
             'SQLFLOW_BATCH_SIZE': 1,
         },
+        max_msgs=num_messages,
     )
-
-    # Run the pipeline
-    stats = start(conf, max_msgs=num_messages)
     assert stats.num_messages_consumed == 1
     assert stats.num_errors == 1
 
@@ -363,9 +354,9 @@ def test_dlq_functionality_handler_invoke(bootstrap_server):
     producer.produce(in_topic, value=b'{"valid": "json"}')
     producer.flush()
 
-    # Configure pipeline with DLQ enabled
-    conf = new_from_path(
-        path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.dlq.yml'),
+    # Configure pipeline with DLQ enabled, then run it
+    stats = run_pipeline(
+        config_path=os.path.join(settings.CONF_DIR, 'examples', 'kafka.dlq.yml'),
         setting_overrides={
             'SQLFLOW_KAFKA_BROKERS': bootstrap_server,
             'SQLFLOW_INPUT_TOPIC': in_topic,
@@ -373,10 +364,8 @@ def test_dlq_functionality_handler_invoke(bootstrap_server):
             'SQLFLOW_SOURCE_ERROR_POLICY': 'dlq',
             'SQLFLOW_BATCH_SIZE': 1,
         },
+        max_msgs=num_messages,
     )
-
-    # Run the pipeline
-    stats = start(conf, max_msgs=num_messages)
     assert stats.num_messages_consumed == 1
     assert stats.num_errors == 1
 
