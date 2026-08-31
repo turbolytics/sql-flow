@@ -8,16 +8,16 @@ commands:
       );
 
 pipeline:
-  batch_size: {{ SQLFLOW_BATCH_SIZE|default:500 }}
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1) }}
 
   source:
     type: kafka
     kafka:
-      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default:'localhost:9092' }}]
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
       group_id: test
       auto_offset_reset: earliest
       topics:
-        - "input-structured-mem-2"
+        - "input-structured-mem"
 
   handler:
     type: "handlers.StructuredBatch"
@@ -26,9 +26,8 @@ pipeline:
     sql: |
       SELECT 
         properties.city as city,
-        COUNT(*) as count 
+        1 as city_count
       FROM source 
-      GROUP BY properties.city;
 
   sink:
     type: console

@@ -2,30 +2,44 @@ package config
 
 import (
 	"fmt"
-	"github.com/flosch/pongo2/v6"
-	"gopkg.in/yaml.v3"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/nikolalohinski/gonja/v2"
+	"github.com/nikolalohinski/gonja/v2/exec"
+	"gopkg.in/yaml.v3"
 )
 
+// settingsVars mirrors sqlflow.settings.VARS: values the Python engine seeds
+// the template context with, overridable by their SQLFLOW_-prefixed env var.
+func settingsVars() map[string]any {
+	staticRoot := os.Getenv("SQLFLOW_STATIC_ROOT")
+	if staticRoot == "" {
+		staticRoot = filepath.Join("/tmp", "sqlflow", "static")
+	}
+
+	cacheDir := os.Getenv("SQLFLOW_SQL_RESULTS_CACHE_DIR")
+	if cacheDir == "" {
+		cacheDir = filepath.Join("/tmp", "sqlflow", "resultscache")
+	}
+
+	return map[string]any{
+		"STATIC_ROOT":           staticRoot,
+		"SQL_RESULTS_CACHE_DIR": cacheDir,
+	}
+}
+
+// RenderTemplate renders a config through Jinja2, the templating the config
+// spec is written in: every SQLFLOW_-prefixed environment variable is in
+// scope, plus the settings vars, plus explicit overrides.
 func RenderTemplate(path string, overrides map[string]string) ([]byte, error) {
-	/*
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-	*/
+	tmpl, err := gonja.FromFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("parsing template failed: %w", err)
+	}
 
-	tmpl := pongo2.Must(pongo2.FromFile(path))
-
-	/*
-		tmpl, err := template.New("config").Parse(string(raw))
-		if err != nil {
-			return nil, err
-		}
-	*/
-
-	vars := pongo2.Context{}
+	vars := settingsVars()
 	for _, v := range os.Environ() {
 		parts := strings.SplitN(v, "=", 2)
 		if len(parts) == 2 && strings.HasPrefix(parts[0], "SQLFLOW_") {
@@ -36,12 +50,12 @@ func RenderTemplate(path string, overrides map[string]string) ([]byte, error) {
 		vars[k] = v
 	}
 
-	out, err := tmpl.Execute(vars)
+	out, err := tmpl.ExecuteToBytes(exec.NewContext(vars))
 	if err != nil {
 		return nil, fmt.Errorf("rendering template failed: %w", err)
 	}
 
-	return []byte(out), nil
+	return out, nil
 }
 
 func Load(path string, overrides map[string]string) (*Conf, error) {

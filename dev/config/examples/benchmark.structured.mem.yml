@@ -7,16 +7,16 @@ commands:
       );
 
 pipeline:
-  batch_size: {{ SQLFLOW_BATCH_SIZE|default:500 }}
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(500) }}
 
   source:
     type: kafka
     kafka:
-      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default:'localhost:9092' }}]
-      group_id: {{ SQLFLOW_GROUP_ID|default:'benchmark' }}
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('benchmark') }}
       auto_offset_reset: earliest
       topics:
-        - "{{ SQLFLOW_TOPIC|default:'benchmark-input' }}"
+        - "{{ SQLFLOW_TOPIC|default('benchmark-input') }}"
 
   handler:
     type: "handlers.StructuredBatch"
