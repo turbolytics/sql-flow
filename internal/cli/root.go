@@ -19,10 +19,16 @@ func NewRootCommand() *cobra.Command {
 		},
 	}
 
+	// Setting Version gives cobra a --version flag for free; the template makes
+	// it print exactly what the version subcommand does.
+	cmd.Version = Version
+	cmd.SetVersionTemplate(versionString())
+
 	cmd.AddCommand(run.NewCommand())
 	cmd.AddCommand(tail.NewCommand())
 	cmd.AddCommand(newConfigCommand())
 	cmd.AddCommand(newDevCommand())
+	cmd.AddCommand(newVersionCommand())
 
 	return cmd
 }

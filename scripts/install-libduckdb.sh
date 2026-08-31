@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Downloads the pinned libduckdb shared library for linux. turbine never links
+# against DuckDB: the ADBC driver manager dlopens the library at runtime, so
+# every place that runs turbine on linux -- the container image, the in-network
+# benchmark and CI -- needs its own copy. All of them call this script so the
+# version lives in exactly one place, the DUCKDB_VERSION file.
+#
+# Usage: install-libduckdb.sh [dest-dir] [filename]
+
+DEST_DIR="${1:-bin}"
+FILENAME="${2:-libduckdb.so}"
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DUCKDB_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/DUCKDB_VERSION")"
+
+case "$(uname -m)" in
+    x86_64)        DUCKDB_ARCH="amd64" ;;
+    aarch64|arm64) DUCKDB_ARCH="arm64" ;;
+    *)
+        echo "install-libduckdb: unsupported architecture $(uname -m)" >&2
+        exit 1
+        ;;
+esac
+
+DEST="$DEST_DIR/$FILENAME"
+if [ -f "$DEST" ]; then
+    echo "libduckdb $DUCKDB_VERSION already present at $DEST"
+    exit 0
+fi
+
+echo "--- Downloading libduckdb $DUCKDB_VERSION (linux-$DUCKDB_ARCH) -> $DEST ---"
+mkdir -p "$DEST_DIR"
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+curl -fL -o "$TMP_DIR/libduckdb.zip" \
+    "https://github.com/duckdb/duckdb/releases/download/$DUCKDB_VERSION/libduckdb-linux-$DUCKDB_ARCH.zip"
+unzip -o -j -d "$TMP_DIR" "$TMP_DIR/libduckdb.zip" libduckdb.so
+mv "$TMP_DIR/libduckdb.so" "$DEST"
+
+echo "Installed $DEST"

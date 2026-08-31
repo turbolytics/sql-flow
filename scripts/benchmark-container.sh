@@ -11,14 +11,8 @@ BATCH_SIZE="${2:-5000}"
 TOPIC="benchmark-input"
 CONFIG="dev/config/examples/benchmark.structured.mem.yml"
 NETWORK="dev_default"
-DUCKDB_VERSION="v1.5.2"
 GO_IMAGE="golang:1.24-bookworm"
 RUN_IMAGE="debian:bookworm-slim"
-
-case "$(uname -m)" in
-    x86_64) DUCKDB_ARCH="amd64" ;;
-    *)      DUCKDB_ARCH="arm64" ;;
-esac
 
 echo "=== Turbine Go Benchmark (in-network) ==="
 echo "Messages:   $NUM_MESSAGES"
@@ -42,19 +36,13 @@ docker run --rm \
     -v "$PWD":/src \
     -v "$(go env GOMODCACHE)":/gomod \
     -e GOMODCACHE=/gomod -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false \
+    -e GOTOOLCHAIN=auto \
     -w /src "$GO_IMAGE" \
     go build -o bin/turbine-linux ./cmd/turbine/
 echo "Built bin/turbine-linux"
 
 # 3. Fetch libduckdb.so for linux (cached in bin/)
-if [ ! -f bin/libduckdb-linux.so ]; then
-    echo "--- Downloading libduckdb $DUCKDB_VERSION (linux-$DUCKDB_ARCH) ---"
-    curl -fL -o bin/libduckdb-linux.zip \
-        "https://github.com/duckdb/duckdb/releases/download/$DUCKDB_VERSION/libduckdb-linux-$DUCKDB_ARCH.zip"
-    unzip -o -j -d bin bin/libduckdb-linux.zip libduckdb.so
-    mv bin/libduckdb.so bin/libduckdb-linux.so
-    rm bin/libduckdb-linux.zip
-fi
+./scripts/install-libduckdb.sh bin libduckdb-linux.so
 
 # 4. Publish test messages
 echo "--- Publishing $NUM_MESSAGES messages to topic '$TOPIC' ---"

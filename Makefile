@@ -1,3 +1,15 @@
+# --- turbine (Go engine) -----------------------------------------------------
+# DUCKDB_VERSION is pinned in one place, the file of the same name, and read
+# from there by the container build, the benchmark script and CI.
+DUCKDB_VERSION := $(shell tr -d '[:space:]' < DUCKDB_VERSION)
+GIT_COMMIT := $(shell git rev-parse --short HEAD)
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+TURBINE_IMAGE ?= turbolytics/turbine:$(VERSION)
+
+GO_MODULE := github.com/turbolytics/turbine
+GO_LDFLAGS := -X $(GO_MODULE)/internal/cli.Version=$(VERSION) \
+	-X $(GO_MODULE)/internal/cli.Commit=$(GIT_COMMIT)
+
 .PHONY: install-tools
 install-tools:
 	@echo "Installing tools..."
@@ -49,6 +61,38 @@ benchmark:
 .PHONY: benchmark-container
 benchmark-container:
 	./scripts/benchmark-container.sh $(NUM_MESSAGES) $(BATCH_SIZE)
+
+# turbine needs cgo for the ADBC driver manager, so CGO_ENABLED is never off.
+.PHONY: turbine
+turbine:
+	CGO_ENABLED=1 go build -ldflags "$(GO_LDFLAGS)" -o bin/turbine ./cmd/turbine/
+
+# The build reads DUCKDB_VERSION itself; the label records which DuckDB ended up
+# in the image so it can be read back off a pulled tag.
+.PHONY: turbine-image
+turbine-image:
+	docker build -f Dockerfile.turbine \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(GIT_COMMIT) \
+		--label org.opencontainers.image.version=$(VERSION) \
+		--label org.opencontainers.image.revision=$(GIT_COMMIT) \
+		--label io.turbolytics.duckdb.version=$(DUCKDB_VERSION) \
+		-t $(TURBINE_IMAGE) .
+
+# Fetches the pinned libduckdb for linux into bin/; only useful for linux hosts
+# and containers, macOS development uses the Homebrew install.
+.PHONY: libduckdb
+libduckdb:
+	./scripts/install-libduckdb.sh bin
+
+# The checks CI runs against the Go engine. Kafka-backed integration tests are
+# deliberately excluded; these are unit tests only.
+.PHONY: test-go
+test-go:
+	go build ./...
+	go vet ./...
+	@test -z "$$(gofmt -l internal/ cmd/)" || { echo "gofmt needed:"; gofmt -l internal/ cmd/; exit 1; }
+	go test ./internal/...
 
 .PHONY: docker-image
 docker-image:
