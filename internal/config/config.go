@@ -128,11 +128,26 @@ type WebsocketSource struct {
 	URI string `yaml:"uri"`
 }
 
+// WebhookHMAC configures signature validation of incoming webhook bodies.
+// SigKey names the digest the signature header is prefixed with, e.g.
+// "sha256" for GitHub's "X-Hub-Signature-256: sha256=<hex>".
+type WebhookHMAC struct {
+	Header string `yaml:"header"`
+	SigKey string `yaml:"sig_key"`
+	Secret string `yaml:"secret"`
+}
+
+type WebhookSource struct {
+	SignatureType string       `yaml:"signature_type,omitempty"`
+	HMAC          *WebhookHMAC `yaml:"hmac,omitempty"`
+}
+
 // Source
 type Source struct {
 	Type      string           `yaml:"type"`
 	Kafka     *KafkaSource     `yaml:"kafka,omitempty"`
 	Websocket *WebsocketSource `yaml:"websocket,omitempty"`
+	Webhook   *WebhookSource   `yaml:"webhook,omitempty"`
 	Error     *Error           `yaml:"error,omitempty"`
 }
 
