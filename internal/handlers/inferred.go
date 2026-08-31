@@ -24,7 +24,7 @@ const batchTableName = "batch"
 // infers the Arrow schema from the messages themselves, rather than
 // requiring a pre-declared table.
 type InferredMemBatchHandler struct {
-	rawBatch [][]byte
+	rows []map[string]any
 
 	alloc      *memory.GoAllocator
 	conn       adbc.Connection
@@ -73,7 +73,7 @@ func InferredMemBatchWithLogger(l *zap.Logger) InferredMemBatchHandlerOption {
 }
 
 func (h *InferredMemBatchHandler) Init(ctx context.Context) error {
-	h.rawBatch = h.rawBatch[:0]
+	h.rows = h.rows[:0]
 	return h.dropBatchTable(ctx)
 }
 
@@ -92,13 +92,15 @@ func (h *InferredMemBatchHandler) dropBatchTable(ctx context.Context) error {
 }
 
 func (h *InferredMemBatchHandler) Write(r []byte) error {
-	// Decoding here (rather than at Invoke) surfaces malformed JSON as a
+	// Decoded here rather than at Invoke so malformed JSON surfaces as a
 	// per-message write error, which is what the error policies key off.
-	var probe any
-	if err := decodeJSON(r, &probe); err != nil {
+	// The decoded row is kept so Invoke does not parse the batch a second
+	// time.
+	var row map[string]any
+	if err := decodeJSON(r, &row); err != nil {
 		return fmt.Errorf("invalid json: %w", err)
 	}
-	h.rawBatch = append(h.rawBatch, r)
+	h.rows = append(h.rows, row)
 	return nil
 }
 
@@ -111,20 +113,11 @@ func decodeJSON(data []byte, v any) error {
 }
 
 func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, error) {
-	raw := h.rawBatch
-	h.rawBatch = h.rawBatch[:0]
+	rows := h.rows
+	h.rows = h.rows[:0]
 
-	if len(raw) == 0 {
+	if len(rows) == 0 {
 		return nil, fmt.Errorf("no records to invoke")
-	}
-
-	rows := make([]map[string]any, 0, len(raw))
-	for _, msg := range raw {
-		var row map[string]any
-		if err := decodeJSON(msg, &row); err != nil {
-			return nil, fmt.Errorf("invalid json: %w", err)
-		}
-		rows = append(rows, row)
 	}
 
 	schema, err := inferSchema(rows)

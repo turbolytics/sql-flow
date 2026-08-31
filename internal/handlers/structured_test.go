@@ -12,6 +12,16 @@ import (
 
 func newTestADBCConn(t *testing.T) (adbc.Connection, func()) {
 	t.Helper()
+	return newADBCConn(t)
+}
+
+func newBenchADBCConn(b *testing.B) (adbc.Connection, func()) {
+	b.Helper()
+	return newADBCConn(b)
+}
+
+func newADBCConn(tb testing.TB) (adbc.Connection, func()) {
+	tb.Helper()
 	lib := os.Getenv("SQLFLOW_DUCKDB_LIB")
 	if lib == "" {
 		lib = "/opt/homebrew/lib/libduckdb.dylib"
@@ -21,10 +31,14 @@ func newTestADBCConn(t *testing.T) (adbc.Connection, func()) {
 		"driver":     lib,
 		"entrypoint": "duckdb_adbc_init",
 	})
-	assert.NoError(t, err)
+	if err != nil {
+		tb.Fatal(err)
+	}
 
 	conn, err := db.Open(context.Background())
-	assert.NoError(t, err)
+	if err != nil {
+		tb.Fatal(err)
+	}
 
 	return conn, func() { conn.Close() }
 }
