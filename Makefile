@@ -44,6 +44,12 @@ stop-backing-services:
 benchmark:
 	./scripts/benchmark.sh $(NUM_MESSAGES) $(BATCH_SIZE)
 
+# Runs turbine inside the docker network to avoid Docker Desktop's slow
+# host->container port-forwarding (which caps fetches at ~10-15MB/s)
+.PHONY: benchmark-container
+benchmark-container:
+	./scripts/benchmark-container.sh $(NUM_MESSAGES) $(BATCH_SIZE)
+
 .PHONY: docker-image
 docker-image:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \

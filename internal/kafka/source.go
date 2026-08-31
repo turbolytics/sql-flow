@@ -89,11 +89,29 @@ func (k *Source) Stream() <-chan [][]byte {
 	go func() {
 		defer close(k.streamChan)
 
+		var pollCount int
+		var totalPoll, totalSend time.Duration
+		defer func() {
+			k.logger.Debug("poll loop totals",
+				zap.Int("polls", pollCount),
+				zap.Duration("total_poll_wait", totalPoll),
+				zap.Duration("total_send_wait", totalSend),
+			)
+		}()
+
 		for {
+			p0 := time.Now()
 			fetches := k.client.PollFetches(context.Background())
+			pollDur := time.Since(p0)
+			totalPoll += pollDur
+			pollCount++
 			if fetches.IsClientClosed() {
 				return
 			}
+			k.logger.Debug("poll fetch",
+				zap.Duration("poll", pollDur),
+				zap.Int("records", fetches.NumRecords()),
+			)
 
 			if errs := fetches.Errors(); len(errs) > 0 {
 				for _, e := range errs {
@@ -114,8 +132,10 @@ func (k *Source) Stream() <-chan [][]byte {
 				continue
 			}
 
+			s0 := time.Now()
 			select {
 			case k.streamChan <- batch:
+				totalSend += time.Since(s0)
 			case <-k.done:
 				return
 			}

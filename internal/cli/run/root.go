@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -50,9 +51,13 @@ func NewCommand() *cobra.Command {
 			}
 
 			// Initialize ADBC connection using driver manager
+			duckdbLib := os.Getenv("SQLFLOW_DUCKDB_LIB")
+			if duckdbLib == "" {
+				duckdbLib = "/opt/homebrew/lib/libduckdb.dylib"
+			}
 			var drv drivermgr.Driver
 			db, err := drv.NewDatabase(map[string]string{
-				"driver":     "/opt/homebrew/lib/libduckdb.dylib",
+				"driver":     duckdbLib,
 				"entrypoint": "duckdb_adbc_init",
 			})
 			if err != nil {
