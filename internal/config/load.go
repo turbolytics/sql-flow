@@ -34,6 +34,12 @@ func settingsVars() map[string]any {
 // spec is written in: every SQLFLOW_-prefixed environment variable is in
 // scope, plus the settings vars, plus explicit overrides.
 func RenderTemplate(path string, overrides map[string]string) ([]byte, error) {
+	// Checked up front: the template loader reports a missing file as a stat
+	// error against its parent directory, which reads as an unrelated failure.
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("config file not found: %s", path)
+	}
+
 	tmpl, err := gonja.FromFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("parsing template failed: %w", err)
