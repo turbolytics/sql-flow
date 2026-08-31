@@ -8,6 +8,7 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr" // Import the driver manager
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/turbine/internal/handlers"
+	"github.com/turbolytics/turbine/internal/managers"
 	"github.com/turbolytics/turbine/internal/sinks"
 	"github.com/turbolytics/turbine/internal/sources"
 	"go.uber.org/zap"
@@ -113,6 +114,10 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to initialize commands: %w", err)
 			}
 
+			if err := core.InitTables(conn, conf); err != nil {
+				return fmt.Errorf("failed to initialize tables: %w", err)
+			}
+
 			src, err := sources.New(
 				conf.Pipeline.Source,
 				logger,
@@ -161,6 +166,30 @@ func NewCommand() *cobra.Command {
 				core.WithTurbineLogger(l),
 				core.WithMetrics(pipelineMetrics),
 			)
+
+			managedTables, err := buildManagedTables(conf, conn, lock, l)
+			if err != nil {
+				return err
+			}
+
+			// Managers run for the lifetime of the pipeline. Cancelling their
+			// context makes each publish one final time before returning, so
+			// windows that close during shutdown are not stranded.
+			managerCtx, stopManagers := context.WithCancel(context.Background())
+			var managerWG sync.WaitGroup
+			for _, m := range managedTables {
+				managerWG.Add(1)
+				go func(m *managers.Tumbling) {
+					defer managerWG.Done()
+					if err := m.Start(managerCtx); err != nil {
+						l.Error("table manager stopped", zap.Error(err))
+					}
+				}(m)
+			}
+			defer func() {
+				stopManagers()
+				managerWG.Wait()
+			}()
 
 			go func() {
 				if err := turbine.StatusLoop(context.Background()); err != nil {

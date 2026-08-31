@@ -183,3 +183,43 @@ func TestInferredMemBatchHandler_SingleRecord(t *testing.T) {
 	assert.Equal(t, 2, res.Schema().NumFields())
 	res.Release()
 }
+
+// A handler SQL statement may be an INSERT that populates a managed table
+// rather than a SELECT that returns rows, as the tumbling window config does.
+func TestInferredMemBatchHandler_InsertIntoManagedTable(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE agg (city VARCHAR, count INT);`)
+
+	h, err := NewInferredMemBatchHandler(conn,
+		`INSERT INTO agg BY NAME SELECT properties.city as city, COUNT(*) as count FROM batch GROUP BY properties.city`)
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{
+		`{"properties": {"city": "NYC"}}`,
+		`{"properties": {"city": "NYC"}}`,
+		`{"properties": {"city": "SF"}}`,
+	})
+	if res != nil {
+		res.Release()
+	}
+
+	stmt, err := conn.NewStatement()
+	assert.NoError(t, err)
+	defer stmt.Close()
+	assert.NoError(t, stmt.SetSqlQuery("SELECT COUNT(*) FROM agg"))
+	reader, _, err := stmt.ExecuteQuery(context.Background())
+	assert.NoError(t, err)
+	defer reader.Release()
+
+	var rows int64 = -1
+	for reader.Next() {
+		rec := reader.Record()
+		if rec.NumRows() > 0 {
+			rows = rec.Column(0).(*array.Int64).Value(0)
+		}
+	}
+	// Two distinct cities were aggregated into the managed table.
+	assert.Equal(t, int64(2), rows)
+}
