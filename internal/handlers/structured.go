@@ -62,6 +62,17 @@ func appendJSONValue(builder array.Builder, fieldType arrow.DataType, data []byt
 	case *arrow.StringType:
 		builder.(*array.StringBuilder).Append(unsafeString(val))
 
+	case *arrow.BooleanType:
+		b, err := strconv.ParseBool(unsafeString(val))
+		if err != nil {
+			builder.AppendNull()
+			return nil
+		}
+		builder.(*array.BooleanBuilder).Append(b)
+
+	case *arrow.NullType:
+		builder.AppendNull()
+
 	case *arrow.Int32Type:
 		n, err := strconv.ParseInt(unsafeString(val), 10, 32)
 		if err != nil {

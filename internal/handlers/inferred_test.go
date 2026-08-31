@@ -63,7 +63,30 @@ func TestInferredMemBatchHandler_InfersNumericAndBoolTypes(t *testing.T) {
 	assert.Equal(t, int64(1), numActive)
 }
 
-func TestInferredMemBatchHandler_FieldMissingFromSomeRows(t *testing.T) {
+// The Python engine builds the batch with pyarrow.Table.from_pylist, which
+// takes the column set from the first row. These tests hold the Go handler to
+// the same contract.
+
+func TestInferredMemBatchHandler_ColumnsComeFromFirstRow(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT * FROM batch")
+	assert.NoError(t, err)
+
+	// "city" appears only in the second row, so it is not a column.
+	res := invokeRows(t, h, []string{
+		`{"event": "a"}`,
+		`{"event": "b", "city": "NYC"}`,
+	})
+	defer res.Release()
+
+	assert.Equal(t, int64(2), res.NumRows())
+	assert.Equal(t, 1, res.Schema().NumFields())
+	assert.Equal(t, "event", res.Schema().Field(0).Name)
+}
+
+func TestInferredMemBatchHandler_FieldMissingFromLaterRowIsNull(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -72,12 +95,46 @@ func TestInferredMemBatchHandler_FieldMissingFromSomeRows(t *testing.T) {
 	assert.NoError(t, err)
 
 	res := invokeRows(t, h, []string{
-		`{"event": "a"}`,
-		`{"event": "b", "city": "NYC"}`,
+		`{"event": "a", "city": "NYC"}`,
+		`{"event": "b"}`,
 	})
 	defer res.Release()
 
-	assert.Equal(t, int64(1), res.NumRows())
+	withCity := res.Column(0).Data().Chunk(0).(*array.Int64).Value(0)
+	total := res.Column(1).Data().Chunk(0).(*array.Int64).Value(0)
+	assert.Equal(t, int64(1), withCity)
+	assert.Equal(t, int64(2), total)
+}
+
+func TestInferredMemBatchHandler_PromotesIntToFloat(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT SUM(x) as total FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{`{"x": 1}`, `{"x": 2.5}`})
+	defer res.Release()
+
+	total := res.Column(0).Data().Chunk(0).(*array.Float64).Value(0)
+	assert.Equal(t, 3.5, total)
+}
+
+func TestInferredMemBatchHandler_ConflictingTypesError(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT * FROM batch")
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	// pyarrow raises ArrowInvalid here; the batch must fail rather than
+	// silently null the value, so the error policy can route it.
+	assert.NoError(t, h.Write([]byte(`{"x": 1}`)))
+	assert.NoError(t, h.Write([]byte(`{"x": "hello"}`)))
+
+	_, err = h.Invoke(context.Background())
+	assert.Error(t, err)
 }
 
 func TestInferredMemBatchHandler_InvalidJSONIsWriteError(t *testing.T) {

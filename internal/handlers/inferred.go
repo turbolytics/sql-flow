@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/buger/jsonparser"
 	"go.uber.org/zap"
 )
 
@@ -23,8 +23,13 @@ const batchTableName = "batch"
 // InferredMemBatchHandler buffers a batch of JSON messages in memory and
 // infers the Arrow schema from the messages themselves, rather than
 // requiring a pre-declared table.
+//
+// Schema inference follows pyarrow.Table.from_pylist, which the Python engine
+// uses: the column set and their order come from the first message, types are
+// promoted across the batch, and a value that cannot be promoted fails the
+// batch rather than being silently nulled.
 type InferredMemBatchHandler struct {
-	rows []map[string]any
+	rawBatch [][]byte
 
 	alloc      *memory.GoAllocator
 	conn       adbc.Connection
@@ -73,7 +78,7 @@ func InferredMemBatchWithLogger(l *zap.Logger) InferredMemBatchHandlerOption {
 }
 
 func (h *InferredMemBatchHandler) Init(ctx context.Context) error {
-	h.rows = h.rows[:0]
+	h.rawBatch = h.rawBatch[:0]
 	return h.dropBatchTable(ctx)
 }
 
@@ -92,40 +97,36 @@ func (h *InferredMemBatchHandler) dropBatchTable(ctx context.Context) error {
 }
 
 func (h *InferredMemBatchHandler) Write(r []byte) error {
-	// Decoded here rather than at Invoke so malformed JSON surfaces as a
+	// Validated here rather than at Invoke so malformed JSON surfaces as a
 	// per-message write error, which is what the error policies key off.
-	// The decoded row is kept so Invoke does not parse the batch a second
-	// time.
-	var row map[string]any
-	if err := decodeJSON(r, &row); err != nil {
-		return fmt.Errorf("invalid json: %w", err)
+	if !json.Valid(r) {
+		return fmt.Errorf("invalid json: %q", truncate(r, 64))
 	}
-	h.rows = append(h.rows, row)
+	h.rawBatch = append(h.rawBatch, r)
 	return nil
 }
 
-// decodeJSON decodes with UseNumber so integers stay distinguishable from
-// floats during schema inference.
-func decodeJSON(data []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	return dec.Decode(v)
+func truncate(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "..."
 }
 
 func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, error) {
-	rows := h.rows
-	h.rows = h.rows[:0]
+	raw := h.rawBatch
+	h.rawBatch = h.rawBatch[:0]
 
-	if len(rows) == 0 {
+	if len(raw) == 0 {
 		return nil, fmt.Errorf("no records to invoke")
 	}
 
-	schema, err := inferSchema(rows)
+	schema, err := inferSchema(raw)
 	if err != nil {
 		return nil, fmt.Errorf("schema inference: %w", err)
 	}
 
-	record, err := buildRecord(h.alloc, schema, rows)
+	record, err := buildRecord(h.alloc, schema, raw)
 	if err != nil {
 		return nil, fmt.Errorf("build record: %w", err)
 	}
@@ -175,174 +176,185 @@ func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, erro
 	return result, nil
 }
 
-// sortedKeys gives field ordering a deterministic basis. Go maps lose the
-// document's key order, so field order is alphabetical rather than
-// first-seen-in-JSON as in the Python engine; SQL referencing columns by
-// name is unaffected.
-func sortedKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// inferSchema derives the batch schema from raw JSON messages. Column names
+// and order come from the first message; types are promoted over the rest of
+// the batch.
+func inferSchema(msgs [][]byte) (*arrow.Schema, error) {
+	fields, err := inferFields(msgs[0])
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(keys)
-	return keys
+
+	for _, msg := range msgs[1:] {
+		if err := promoteFields(fields, msg); err != nil {
+			return nil, err
+		}
+	}
+
+	arrowFields := make([]arrow.Field, len(fields))
+	for i, f := range fields {
+		arrowFields[i] = f.arrowField()
+	}
+	return arrow.NewSchema(arrowFields, nil), nil
 }
 
-// inferSchema derives an Arrow schema from decoded JSON rows, mirroring
-// pyarrow.Table.from_pylist: fields appear in first-seen order and a field's
-// type comes from the first non-null value seen for it.
-func inferSchema(rows []map[string]any) (*arrow.Schema, error) {
-	var names []string
-	types := map[string]arrow.DataType{}
-
-	for _, row := range rows {
-		for _, k := range sortedKeys(row) {
-			if _, seen := types[k]; !seen {
-				names = append(names, k)
-				types[k] = nil
-			}
-			if types[k] == nil {
-				dt, err := inferType(row[k])
-				if err != nil {
-					return nil, fmt.Errorf("field %q: %w", k, err)
-				}
-				types[k] = dt
-			}
-		}
-	}
-
-	fields := make([]arrow.Field, 0, len(names))
-	for _, name := range names {
-		dt := types[name]
-		if dt == nil {
-			// Every value was null; pyarrow yields a null column.
-			dt = arrow.Null
-		}
-		fields = append(fields, arrow.Field{Name: name, Type: dt, Nullable: true})
-	}
-
-	return arrow.NewSchema(fields, nil), nil
+// inferredField is a column discovered in the first message. Struct columns
+// carry their own children, discovered the same way.
+type inferredField struct {
+	name     string
+	dataType arrow.DataType
+	children []*inferredField
 }
 
-// inferType maps a decoded JSON value to an Arrow type. A nil value yields a
-// nil type, meaning "not yet known" — a later row may supply one.
-func inferType(v any) (arrow.DataType, error) {
-	switch t := v.(type) {
-	case nil:
-		return nil, nil
-	case bool:
-		return arrow.FixedWidthTypes.Boolean, nil
-	case string:
-		return arrow.BinaryTypes.String, nil
-	case json.Number:
-		if _, err := t.Int64(); err == nil {
-			return arrow.PrimitiveTypes.Int64, nil
+func (f *inferredField) arrowField() arrow.Field {
+	if len(f.children) > 0 {
+		subFields := make([]arrow.Field, len(f.children))
+		for i, c := range f.children {
+			subFields[i] = c.arrowField()
 		}
-		return arrow.PrimitiveTypes.Float64, nil
-	case map[string]any:
-		var subFields []arrow.Field
-		for _, k := range sortedKeys(t) {
-			dt, err := inferType(t[k])
+		return arrow.Field{Name: f.name, Type: arrow.StructOf(subFields...), Nullable: true}
+	}
+	return arrow.Field{Name: f.name, Type: f.dataType, Nullable: true}
+}
+
+func inferFields(msg []byte) ([]*inferredField, error) {
+	var fields []*inferredField
+	err := jsonparser.ObjectEach(msg, func(key, value []byte, vt jsonparser.ValueType, _ int) error {
+		f := &inferredField{name: string(key)}
+		switch vt {
+		case jsonparser.Object:
+			children, err := inferFields(value)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if dt == nil {
-				dt = arrow.Null
+			if len(children) == 0 {
+				// An empty object has no inferable struct type.
+				f.dataType = arrow.Null
 			}
-			subFields = append(subFields, arrow.Field{Name: k, Type: dt, Nullable: true})
+			f.children = children
+		default:
+			dt, err := jsonValueType(value, vt)
+			if err != nil {
+				return fmt.Errorf("field %q: %w", key, err)
+			}
+			f.dataType = dt
 		}
-		return arrow.StructOf(subFields...), nil
+		fields = append(fields, f)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return fields, nil
+}
+
+// promoteFields widens the inferred types to accommodate one more message.
+func promoteFields(fields []*inferredField, msg []byte) error {
+	for _, f := range fields {
+		value, vt, _, err := jsonparser.Get(msg, f.name)
+		if err != nil || vt == jsonparser.NotExist || vt == jsonparser.Null {
+			continue
+		}
+
+		if len(f.children) > 0 {
+			if vt != jsonparser.Object {
+				return fmt.Errorf("field %q: cannot mix struct and non-struct values", f.name)
+			}
+			if err := promoteFields(f.children, value); err != nil {
+				return err
+			}
+			continue
+		}
+
+		dt, err := jsonValueType(value, vt)
+		if err != nil {
+			return fmt.Errorf("field %q: %w", f.name, err)
+		}
+
+		promoted, err := promoteType(f.dataType, dt)
+		if err != nil {
+			return fmt.Errorf("field %q: %w", f.name, err)
+		}
+		f.dataType = promoted
+	}
+	return nil
+}
+
+func jsonValueType(value []byte, vt jsonparser.ValueType) (arrow.DataType, error) {
+	switch vt {
+	case jsonparser.String:
+		return arrow.BinaryTypes.String, nil
+	case jsonparser.Boolean:
+		return arrow.FixedWidthTypes.Boolean, nil
+	case jsonparser.Null:
+		return arrow.Null, nil
+	case jsonparser.Number:
+		if bytes.ContainsAny(value, ".eE") {
+			return arrow.PrimitiveTypes.Float64, nil
+		}
+		return arrow.PrimitiveTypes.Int64, nil
+	case jsonparser.Object:
+		return nil, fmt.Errorf("cannot mix struct and non-struct values")
+	case jsonparser.Array:
+		return nil, fmt.Errorf("unsupported json array value")
 	default:
-		return nil, fmt.Errorf("unsupported json value of type %T", v)
+		return nil, fmt.Errorf("unsupported json value")
 	}
 }
 
-func buildRecord(alloc memory.Allocator, schema *arrow.Schema, rows []map[string]any) (arrow.Record, error) {
-	builder := array.NewRecordBuilder(alloc, schema)
-	defer builder.Release()
+// promoteType widens two observed types to one that holds both, mirroring
+// pyarrow: ints widen to floats, a null-typed column takes the other type,
+// and anything else conflicting is an error.
+func promoteType(current, next arrow.DataType) (arrow.DataType, error) {
+	if current == nil || arrow.TypeEqual(current, arrow.Null) {
+		return next, nil
+	}
+	if arrow.TypeEqual(next, arrow.Null) || arrow.TypeEqual(current, next) {
+		return current, nil
+	}
 
-	for _, row := range rows {
-		for i, f := range schema.Fields() {
-			if err := appendValue(builder.Field(i), f.Type, row[f.Name]); err != nil {
+	isInt := func(dt arrow.DataType) bool { return arrow.TypeEqual(dt, arrow.PrimitiveTypes.Int64) }
+	isFloat := func(dt arrow.DataType) bool { return arrow.TypeEqual(dt, arrow.PrimitiveTypes.Float64) }
+
+	if (isInt(current) && isFloat(next)) || (isFloat(current) && isInt(next)) {
+		return arrow.PrimitiveTypes.Float64, nil
+	}
+
+	return nil, fmt.Errorf("cannot convert %s value to %s", next, current)
+}
+
+// buildRecord extracts each message directly into Arrow builders with
+// jsonparser, the same zero-copy path StructuredBatch uses.
+func buildRecord(alloc memory.Allocator, schema *arrow.Schema, msgs [][]byte) (arrow.Record, error) {
+	builders := make([]array.Builder, schema.NumFields())
+	for i, f := range schema.Fields() {
+		builders[i] = array.NewBuilder(alloc, f.Type)
+		builders[i].Reserve(len(msgs))
+	}
+	defer func() {
+		for _, b := range builders {
+			b.Release()
+		}
+	}()
+
+	fields := schema.Fields()
+	for _, msg := range msgs {
+		for i, f := range fields {
+			if err := appendJSONValue(builders[i], f.Type, msg, f.Name); err != nil {
 				return nil, fmt.Errorf("field %q: %w", f.Name, err)
 			}
 		}
 	}
 
-	return builder.NewRecord(), nil
-}
-
-func appendValue(b array.Builder, dt arrow.DataType, v any) error {
-	if v == nil {
-		b.AppendNull()
-		return nil
+	arrays := make([]arrow.Array, len(builders))
+	for i, b := range builders {
+		arrays[i] = b.NewArray()
 	}
+	defer func() {
+		for _, a := range arrays {
+			a.Release()
+		}
+	}()
 
-	switch dt.(type) {
-	case *arrow.BooleanType:
-		val, ok := v.(bool)
-		if !ok {
-			b.AppendNull()
-			return nil
-		}
-		b.(*array.BooleanBuilder).Append(val)
-
-	case *arrow.StringType:
-		switch val := v.(type) {
-		case string:
-			b.(*array.StringBuilder).Append(val)
-		default:
-			// A field typed as string by an earlier row: keep the row by
-			// rendering the value rather than failing the whole batch.
-			b.(*array.StringBuilder).Append(fmt.Sprintf("%v", val))
-		}
-
-	case *arrow.Int64Type:
-		num, ok := v.(json.Number)
-		if !ok {
-			b.AppendNull()
-			return nil
-		}
-		n, err := num.Int64()
-		if err != nil {
-			b.AppendNull()
-			return nil
-		}
-		b.(*array.Int64Builder).Append(n)
-
-	case *arrow.Float64Type:
-		num, ok := v.(json.Number)
-		if !ok {
-			b.AppendNull()
-			return nil
-		}
-		f, err := num.Float64()
-		if err != nil {
-			b.AppendNull()
-			return nil
-		}
-		b.(*array.Float64Builder).Append(f)
-
-	case *arrow.StructType:
-		st := dt.(*arrow.StructType)
-		sb := b.(*array.StructBuilder)
-		obj, ok := v.(map[string]any)
-		if !ok {
-			sb.AppendNull()
-			return nil
-		}
-		sb.Append(true)
-		for i, sf := range st.Fields() {
-			if err := appendValue(sb.FieldBuilder(i), sf.Type, obj[sf.Name]); err != nil {
-				return err
-			}
-		}
-
-	case *arrow.NullType:
-		b.AppendNull()
-
-	default:
-		return fmt.Errorf("unsupported arrow type: %s", dt)
-	}
-	return nil
+	return array.NewRecord(schema, arrays, int64(len(msgs))), nil
 }
