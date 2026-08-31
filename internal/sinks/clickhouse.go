@@ -157,6 +157,13 @@ func (s *ClickhouseSink) Flush() error {
 		}
 	}()
 
+	// A handler whose query matched nothing yields an empty, column-less
+	// table; there is no INSERT to build from it.
+	tables = withRows(tables)
+	if len(tables) == 0 {
+		return nil
+	}
+
 	schema := tables[0].Schema()
 	for _, t := range tables[1:] {
 		if !t.Schema().Equal(schema) {
@@ -193,6 +200,18 @@ func (s *ClickhouseSink) insertStatement(schema *arrow.Schema) string {
 		cols[i] = "`" + strings.ReplaceAll(f.Name, "`", "``") + "`"
 	}
 	return fmt.Sprintf("INSERT INTO %s (%s)", s.table, strings.Join(cols, ", "))
+}
+
+// withRows drops the tables that would contribute nothing to the insert. The
+// returned tables are still owned by the caller.
+func withRows(tables []arrow.Table) []arrow.Table {
+	kept := tables[:0:0]
+	for _, t := range tables {
+		if t.NumRows() > 0 && t.NumCols() > 0 {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 func appendTables(batch driver.Batch, tables []arrow.Table) error {

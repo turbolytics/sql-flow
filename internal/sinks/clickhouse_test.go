@@ -156,6 +156,19 @@ func TestClickhouseSink_InsertsRows(t *testing.T) {
 	assert.Equal(t, uint64(2), clickhouseRowCount(t, s))
 }
 
+// A handler whose query matched no rows yields an empty, column-less table.
+// Flushing it must be a no-op: the column list would otherwise be empty and
+// the INSERT malformed.
+func TestClickhouseSink_EmptyTableIsNoop(t *testing.T) {
+	s := newLiveClickhouseSink(t, "")
+
+	table := array.NewTable(arrow.NewSchema(nil, nil), nil, 0)
+	defer table.Release()
+
+	assert.NoError(t, s.WriteTable(table))
+	assert.NoError(t, s.Flush())
+}
+
 func TestClickhouseSink_NullsBecomeDefaults(t *testing.T) {
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		user_id UInt64,
