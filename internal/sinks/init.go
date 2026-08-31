@@ -40,7 +40,7 @@ func New(sink config.Sink, conn adbc.Connection) (core.Sink, error) {
 		if sink.Kafka == nil {
 			return nil, fmt.Errorf("sink: kafka sink requires a kafka block")
 		}
-		return NewKafkaSink(sink.Kafka.Brokers, sink.Kafka.Topic)
+		return NewKafkaSink(*sink.Kafka)
 
 	case "sqlcommand":
 		if sink.SQLCommand == nil {

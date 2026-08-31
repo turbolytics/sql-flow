@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/turbolytics/turbine/internal/config"
+	tkafka "github.com/turbolytics/turbine/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -20,23 +22,32 @@ type KafkaSink struct {
 	errs  []error
 }
 
-func NewKafkaSink(brokers []string, topic string) (*KafkaSink, error) {
-	if topic == "" {
+func NewKafkaSink(conf config.KafkaSink) (*KafkaSink, error) {
+	if conf.Topic == "" {
 		return nil, fmt.Errorf("kafka sink: topic is required")
 	}
+	brokers := conf.Brokers
 	if len(brokers) == 0 {
 		brokers = []string{"localhost:9092"}
 	}
 
-	client, err := kgo.NewClient(
+	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.AllowAutoTopicCreation(),
-	)
+	}
+
+	securityOpts, err := tkafka.SecurityOptions(conf.SecurityProtocol, conf.SSL, conf.SASL)
+	if err != nil {
+		return nil, fmt.Errorf("kafka sink security: %w", err)
+	}
+	opts = append(opts, securityOpts...)
+
+	client, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka sink client: %w", err)
 	}
 
-	return &KafkaSink{client: client, topic: topic}, nil
+	return &KafkaSink{client: client, topic: conf.Topic}, nil
 }
 
 func (s *KafkaSink) WriteTable(batch arrow.Table) error {

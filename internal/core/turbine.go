@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
@@ -107,21 +108,22 @@ type Turbine struct {
 	stats         *Stats
 	errorPolicy   PipelineErrorPolicies
 
-	logger *zap.Logger
-
-	// Metrics
-	messageCounter         metric.Int64Counter
-	errorCounter           metric.Int64Counter
-	sourceReadLatency      metric.Float64Histogram
-	sinkFlushLatency       metric.Float64Histogram
-	sinkFlushNumRows       metric.Float64ObservableGauge
-	sinkFlushCount         metric.Int64Counter
-	batchProcessingLatency metric.Float64Histogram
+	logger  *zap.Logger
+	metrics *Metrics
 }
 
 func WithTurbineLogger(l *zap.Logger) TurbineOption {
 	return func(t *Turbine) {
 		t.logger = l
+	}
+}
+
+// WithMetrics records pipeline instruments through the given provider.
+func WithMetrics(m *Metrics) TurbineOption {
+	return func(t *Turbine) {
+		if m != nil {
+			t.metrics = m
+		}
 	}
 }
 
@@ -152,6 +154,10 @@ func NewTurbine(
 
 		logger: zap.NewNop(),
 	}
+
+	// Instruments that record nothing until a provider is supplied, so the
+	// pipeline never has to nil-check them.
+	t.metrics, _ = NewMetrics(nil)
 
 	for _, opt := range opts {
 		opt(t)
@@ -212,11 +218,14 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// Receive a batch of raw messages from the source
 		r0 := time.Now()
 		msgBatch, ok := <-stream
-		totalRecvWait += time.Since(r0)
+		readLatency := time.Since(r0)
+		totalRecvWait += readLatency
 		if !ok {
 			t.logger.Warn("stream channel closed")
 			break
 		}
+		t.metrics.SourceReadLatency.Record(ctx, readLatency.Seconds())
+		t.metrics.MessageCount.Add(ctx, int64(len(msgBatch)))
 
 		for _, raw := range msgBatch {
 			if err := t.handler.Write(raw); err != nil {
@@ -284,6 +293,9 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 // applyErrorPolicy decides what happens to a failed message or batch. It
 // returns a non-nil error only when the pipeline should stop.
 func (t *Turbine) applyErrorPolicy(cause error, phase, message string) error {
+	t.metrics.ErrorCount.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("phase", phase)))
+
 	switch t.errorPolicy.Policy {
 	case PolicyIgnore:
 		return nil
@@ -378,6 +390,12 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 
 	b2 := time.Now()
 
+	t.metrics.SinkFlushLatency.Record(ctx, b2.Sub(b1).Seconds())
+	t.metrics.SinkFlushCount.Add(ctx, 1)
+	if batch != nil {
+		t.metrics.SinkFlushNumRows.Record(ctx, batch.NumRows())
+	}
+
 	// Committed only after the sink has flushed, so a crash replays the
 	// batch rather than losing it.
 	if err := t.source.Commit(); err != nil {
@@ -401,6 +419,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	}
 
 	b4 := time.Now()
+	t.metrics.BatchProcessingLatency.Record(ctx, b4.Sub(b0).Seconds())
 	t.logger.Debug("batch timing",
 		zap.Duration("invoke", b1.Sub(b0)),
 		zap.Duration("sink", b2.Sub(b1)),

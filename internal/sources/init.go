@@ -28,15 +28,27 @@ func New(c config.Source, l *zap.Logger) (core.Source, error) {
 			resetOffset = kgo.NewOffset().AtEnd()
 		}
 
-		client, err := kgo.NewClient(
+		opts := []kgo.Opt{
 			kgo.SeedBrokers(brokers...),
 			kgo.ConsumerGroup(c.Kafka.GroupID),
 			kgo.ConsumeTopics(c.Kafka.Topics...),
 			kgo.ConsumeResetOffset(resetOffset),
 			kgo.DisableAutoCommit(),
-			kgo.FetchMaxPartitionBytes(10<<20),    // 10MB per partition
-			kgo.FetchMaxBytes(100<<20),            // 100MB total per broker
+			kgo.FetchMaxPartitionBytes(10 << 20), // 10MB per partition
+			kgo.FetchMaxBytes(100 << 20),         // 100MB total per broker
+		}
+
+		securityOpts, err := tkafka.SecurityOptions(
+			c.Kafka.SecurityProtocol,
+			c.Kafka.SSL,
+			c.Kafka.SASL,
 		)
+		if err != nil {
+			return nil, fmt.Errorf("kafka source security: %w", err)
+		}
+		opts = append(opts, securityOpts...)
+
+		client, err := kgo.NewClient(opts...)
 		if err != nil {
 			return nil, fmt.Errorf("kafka client: %w", err)
 		}

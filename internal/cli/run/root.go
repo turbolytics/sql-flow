@@ -57,6 +57,7 @@ func NewCommand() *cobra.Command {
 	var maxMsgs int
 	var enablePprof bool
 	var statsJSONPath string
+	var metricsExporter string
 
 	var cmd = &cobra.Command{
 		Use:   "run",
@@ -139,6 +140,15 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 
+			meterProvider, err := newMeterProvider(metricsExporter, l)
+			if err != nil {
+				return err
+			}
+			pipelineMetrics, err := core.NewMetrics(meterProvider)
+			if err != nil {
+				return fmt.Errorf("failed to create metrics: %w", err)
+			}
+
 			lock := &sync.Mutex{}
 			turbine := core.NewTurbine(
 				src,
@@ -149,6 +159,7 @@ func NewCommand() *cobra.Command {
 				lock,
 				errorPolicies,
 				core.WithTurbineLogger(l),
+				core.WithMetrics(pipelineMetrics),
 			)
 
 			go func() {
@@ -184,6 +195,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().IntVar(&maxMsgs, "max-msgs", 0, "Maximum number of messages to consume (0 = unlimited)")
 	cmd.Flags().BoolVar(&enablePprof, "pprof", false, "Enable pprof profiling server on :6060")
 	cmd.Flags().StringVar(&statsJSONPath, "stats-json", "", "Write final run stats as JSON to this path")
+	cmd.Flags().StringVar(&metricsExporter, "metrics", "", "Metrics exporter to enable (prometheus); serves /metrics on :8000")
 
 	return cmd
 }

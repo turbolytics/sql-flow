@@ -23,9 +23,28 @@ type IcebergSink struct {
 	TableName   string `yaml:"table_name"`
 }
 
+// KafkaSSL configures TLS material for a Kafka connection.
+type KafkaSSL struct {
+	CALocation                      string `yaml:"ca_location,omitempty"`
+	CertificateLocation             string `yaml:"certificate_location,omitempty"`
+	KeyLocation                     string `yaml:"key_location,omitempty"`
+	KeyPassword                     string `yaml:"key_password,omitempty"`
+	EndpointIdentificationAlgorithm string `yaml:"endpoint_identification_algorithm,omitempty"`
+}
+
+// KafkaSASL configures SASL authentication for a Kafka connection.
+type KafkaSASL struct {
+	Mechanism string `yaml:"mechanism"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+}
+
 type KafkaSink struct {
-	Brokers []string `yaml:"brokers"`
-	Topic   string   `yaml:"topic"`
+	Brokers          []string   `yaml:"brokers"`
+	Topic            string     `yaml:"topic"`
+	SecurityProtocol string     `yaml:"security_protocol,omitempty"`
+	SSL              *KafkaSSL  `yaml:"ssl,omitempty"`
+	SASL             *KafkaSASL `yaml:"sasl,omitempty"`
 }
 
 type ConsoleSink struct{}
@@ -99,6 +118,10 @@ type KafkaSource struct {
 	GroupID         string   `yaml:"group_id"`
 	AutoOffsetReset string   `yaml:"auto_offset_reset"`
 	Topics          []string `yaml:"topics"`
+
+	SecurityProtocol string     `yaml:"security_protocol,omitempty"`
+	SSL              *KafkaSSL  `yaml:"ssl,omitempty"`
+	SASL             *KafkaSASL `yaml:"sasl,omitempty"`
 }
 
 type WebsocketSource struct {
