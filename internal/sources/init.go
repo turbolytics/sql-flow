@@ -5,6 +5,8 @@ import (
 	"github.com/turbolytics/turbine/internal/config"
 	"github.com/turbolytics/turbine/internal/core"
 	tkafka "github.com/turbolytics/turbine/internal/kafka"
+	"github.com/turbolytics/turbine/internal/webhook"
+	"github.com/turbolytics/turbine/internal/websocket"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 )
@@ -55,6 +57,32 @@ func New(c config.Source, l *zap.Logger) (core.Source, error) {
 
 		k, err := tkafka.NewSource(client, tkafka.WithLogger(l))
 		return k, err
+
+	case "websocket":
+		if c.Websocket == nil {
+			return nil, fmt.Errorf("websocket source: missing websocket configuration")
+		}
+		l.Info("initializing websocket source", zap.String("uri", c.Websocket.URI))
+
+		return websocket.NewSource(c.Websocket.URI, websocket.WithLogger(l))
+
+	case "webhook":
+		opts := []webhook.Option{webhook.WithLogger(l)}
+		// Only a configured signature type turns validation on, so a webhook
+		// block that carries an hmac stanza but no signature_type accepts
+		// unvalidated bodies, as in the Python engine.
+		if c.Webhook != nil && c.Webhook.SignatureType == "hmac" && c.Webhook.HMAC != nil {
+			l.Info("initializing webhook hmac validation",
+				zap.String("header", c.Webhook.HMAC.Header),
+			)
+			opts = append(opts, webhook.WithHMAC(&webhook.HMAC{
+				Header: c.Webhook.HMAC.Header,
+				SigKey: c.Webhook.HMAC.SigKey,
+				Secret: c.Webhook.HMAC.Secret,
+			}))
+		}
+
+		return webhook.NewSource(opts...)
 
 	default:
 		return nil, fmt.Errorf("source: %q not supported", c.Type)

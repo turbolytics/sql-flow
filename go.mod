@@ -7,6 +7,7 @@ require (
 	github.com/apache/arrow-go/v18 v18.6.0
 	github.com/apache/iceberg-go v0.6.0
 	github.com/buger/jsonparser v1.1.2
+	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/nikolalohinski/gonja/v2 v2.9.0
 	github.com/prometheus/client_golang v1.24.1

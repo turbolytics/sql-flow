@@ -108,3 +108,39 @@ func TestLoad_AllExampleConfigs(t *testing.T) {
 		})
 	}
 }
+
+// The webhook block's keys are the Python engine's, see the WebhookSource and
+// HMACConfig dataclasses in sqlflow/config.py.
+func TestLoad_WebhookSourceKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "webhook.yml")
+	body := `
+pipeline:
+  source:
+    type: webhook
+    webhook:
+      signature_type: 'hmac'
+      hmac:
+        header: 'X-Hub-Signature-256'
+        sig_key: 'sha256'
+        secret: 'shhh'
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: SELECT 1
+  sink:
+    type: noop
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conf, err := Load(path, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, "webhook", conf.Pipeline.Source.Type)
+	assert.NotNil(t, conf.Pipeline.Source.Webhook)
+	assert.Equal(t, "hmac", conf.Pipeline.Source.Webhook.SignatureType)
+	assert.NotNil(t, conf.Pipeline.Source.Webhook.HMAC)
+	assert.Equal(t, "X-Hub-Signature-256", conf.Pipeline.Source.Webhook.HMAC.Header)
+	assert.Equal(t, "sha256", conf.Pipeline.Source.Webhook.HMAC.SigKey)
+	assert.Equal(t, "shhh", conf.Pipeline.Source.Webhook.HMAC.Secret)
+}
