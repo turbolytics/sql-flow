@@ -121,7 +121,7 @@ class InferredMemBatch(Handler):
             res = self.conn.execute(
                 self.sql,
             )
-        except duckdb.duckdb.BinderException as e:
+        except duckdb.BinderException as e:
             logger.error(
                 'could not execute sql: {}'.format(self.sql),
             )
@@ -164,9 +164,9 @@ class StructuredBatch(Handler):
             res = self.conn.execute(
                 'INSERT INTO {} (SELECT * FROM batch)'.format(self.table),
             )
-        except duckdb.duckdb.BinderException as e:
+        except duckdb.BinderException as e:
             # TODO disambiguate between validation vs execution errors
-            # duckdb.duckdb.ConversionException
+            # duckdb.ConversionException
             logger.error(
                 'could not execute sql: {}'.format(self.sql),
             )
@@ -176,7 +176,7 @@ class StructuredBatch(Handler):
             res = self.conn.execute(
                 self.sql,
             )
-        except duckdb.duckdb.BinderException as e:
+        except duckdb.BinderException as e:
             logger.error(
                 'could not execute sql: {}'.format(self.sql),
             )
