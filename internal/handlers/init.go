@@ -40,6 +40,18 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 			return nil, fmt.Errorf("failed to create StructuredBatchHandler: %w", err)
 		}
 		return h, nil
+
+	case "handlers.InferredMemBatch":
+		h, err := NewInferredMemBatchHandler(
+			conn,
+			c.SQL,
+			InferredMemBatchWithLogger(l),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create InferredMemBatchHandler: %w", err)
+		}
+		return h, nil
+
 	default:
 		return nil, fmt.Errorf(`handler: %q not supported`, c.Type)
 	}

@@ -6,14 +6,19 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/zeebo/assert"
+	"os"
 	"testing"
 )
 
 func newTestADBCConn(t *testing.T) (adbc.Connection, func()) {
 	t.Helper()
+	lib := os.Getenv("SQLFLOW_DUCKDB_LIB")
+	if lib == "" {
+		lib = "/opt/homebrew/lib/libduckdb.dylib"
+	}
 	var drv drivermgr.Driver
 	db, err := drv.NewDatabase(map[string]string{
-		"driver":     "/opt/homebrew/lib/libduckdb.dylib",
+		"driver":     lib,
 		"entrypoint": "duckdb_adbc_init",
 	})
 	assert.NoError(t, err)
