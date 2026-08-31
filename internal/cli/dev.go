@@ -80,10 +80,15 @@ func devInvoke(
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Commands run before the handler is built: a StructuredBatch handler
-	// derives its schema from a table these commands may create.
+	// Commands and tables are created before the handler is built: a
+	// StructuredBatch handler derives its schema from a table they create,
+	// and handler SQL may insert into a managed table.
 	if err := core.InitCommands(conn, conf); err != nil {
 		return nil, fmt.Errorf("failed to initialize commands: %w", err)
+	}
+
+	if err := core.InitTables(conn, conf); err != nil {
+		return nil, fmt.Errorf("failed to initialize tables: %w", err)
 	}
 
 	handler, err := handlers.New(conn, conf.Pipeline.Handler, zap.NewNop())
