@@ -99,6 +99,11 @@ func devInvoke(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
+	// Disk-backed handlers stage batch files under the results cache dir and
+	// only remove them on close.
+	if closer, ok := handler.(io.Closer); ok {
+		defer closer.Close()
+	}
 
 	if err := handler.Init(ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize handler: %w", err)

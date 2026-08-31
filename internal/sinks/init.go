@@ -48,6 +48,12 @@ func New(sink config.Sink, conn adbc.Connection) (core.Sink, error) {
 		}
 		return NewSQLCommandSink(conn, sink.SQLCommand.SQL, sink.SQLCommand.Substitutions)
 
+	case "clickhouse":
+		if sink.Clickhouse == nil {
+			return nil, fmt.Errorf("sink: clickhouse sink requires a clickhouse block")
+		}
+		return NewClickhouseSink(*sink.Clickhouse)
+
 	case "iceberg":
 		if sink.Iceberg == nil {
 			return nil, fmt.Errorf("sink: iceberg sink requires an iceberg block")

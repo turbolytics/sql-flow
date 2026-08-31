@@ -52,6 +52,23 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 		}
 		return h, nil
 
+	case "handlers.InferredDiskBatch":
+		cacheDir := c.SQLResultsCacheDir
+		if cacheDir == "" {
+			cacheDir = config.SQLResultsCacheDir()
+		}
+
+		h, err := NewInferredDiskBatchHandler(
+			conn,
+			c.SQL,
+			cacheDir,
+			InferredDiskBatchWithLogger(l),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create InferredDiskBatchHandler: %w", err)
+		}
+		return h, nil
+
 	default:
 		return nil, fmt.Errorf(`handler: %q not supported`, c.Type)
 	}

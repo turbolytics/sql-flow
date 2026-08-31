@@ -12,6 +12,7 @@ import (
 	"github.com/turbolytics/turbine/internal/sinks"
 	"github.com/turbolytics/turbine/internal/sources"
 	"go.uber.org/zap"
+	"io"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -129,6 +130,15 @@ func NewCommand() *cobra.Command {
 			)
 			if err != nil {
 				return fmt.Errorf("failed to create handler: %w", err)
+			}
+			// Disk-backed handlers stage batch files under the results cache
+			// dir and only remove them on close.
+			if closer, ok := handler.(io.Closer); ok {
+				defer func() {
+					if err := closer.Close(); err != nil {
+						l.Error("failed to close handler", zap.Error(err))
+					}
+				}()
 			}
 
 			errorPolicies, err := newErrorPolicies(conf, conn)

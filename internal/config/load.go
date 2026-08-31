@@ -12,6 +12,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// SQLResultsCacheDir mirrors sqlflow.settings.SQL_RESULTS_CACHE_DIR: where
+// disk-backed handlers stage their batch and result files. It is the fallback
+// for a handler that does not declare sql_results_cache_dir.
+func SQLResultsCacheDir() string {
+	if dir := os.Getenv("SQLFLOW_SQL_RESULTS_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join("/tmp", "sqlflow", "resultscache")
+}
+
 // settingsVars mirrors sqlflow.settings.VARS: values the Python engine seeds
 // the template context with, overridable by their SQLFLOW_-prefixed env var.
 func settingsVars() map[string]any {
@@ -20,14 +30,9 @@ func settingsVars() map[string]any {
 		staticRoot = filepath.Join("/tmp", "sqlflow", "static")
 	}
 
-	cacheDir := os.Getenv("SQLFLOW_SQL_RESULTS_CACHE_DIR")
-	if cacheDir == "" {
-		cacheDir = filepath.Join("/tmp", "sqlflow", "resultscache")
-	}
-
 	return map[string]any{
 		"STATIC_ROOT":           staticRoot,
-		"SQL_RESULTS_CACHE_DIR": cacheDir,
+		"SQL_RESULTS_CACHE_DIR": SQLResultsCacheDir(),
 	}
 }
 
