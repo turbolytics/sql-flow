@@ -60,6 +60,37 @@ func TestDevInvoke_InferredMemBatch(t *testing.T) {
 `, out.String())
 }
 
+// TestDevInvoke_BlueskyFirehose runs a shipped bluesky config end to end.
+// Every firehose record carries JSON arrays -- langs, facets, embed.images --
+// and none of the other invoke tests has an array anywhere in its fixture,
+// which is how "unsupported json array value" reached a release.
+func TestDevInvoke_BlueskyFirehose(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	var out bytes.Buffer
+	table, err := devInvoke(
+		context.Background(),
+		conn,
+		"../../dev/config/examples/bluesky/bluesky.raw.stdout.yml",
+		"../../dev/fixtures/bluesky.jsonl",
+		&out,
+	)
+	assert.NoError(t, err)
+	defer table.Release()
+
+	assert.Equal(t, int64(3), table.NumRows())
+
+	// The arrays survive as lists, nested arbitrarily deep, rather than
+	// collapsing to a string or failing the batch.
+	rows := out.String()
+	assert.That(t, strings.Contains(rows, `"langs":["en","ja"]`))
+	assert.That(t, strings.Contains(rows, `"tag":"alpha"`))
+	assert.That(t, strings.Contains(rows, `"aspectRatio":{"height":1068,"width":1068}`))
+	// A message with no langs of its own yields an empty list, not a failure.
+	assert.That(t, strings.Contains(rows, `"langs":[]`))
+}
+
 // TestDevInvoke_StructuredBatch covers the path where the handler's table is
 // created by a config command, which must run before the handler is built.
 func TestDevInvoke_StructuredBatch(t *testing.T) {

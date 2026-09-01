@@ -1,6 +1,7 @@
 package config
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,20 @@ func TestRenderTemplate_SettingsVarsHonorEnvOverrides(t *testing.T) {
 // Every shipped config must render and parse, so a config written for the
 // Python engine runs on turbine unmodified.
 func TestLoad_AllExampleConfigs(t *testing.T) {
-	examples, err := filepath.Glob("../../dev/config/examples/*.yml")
+	// Walked rather than globbed: a plain *.yml glob is not recursive, so it
+	// silently skipped every config under examples/bluesky/ -- the shipped
+	// configs least like the others, and the ones this test most needed to
+	// cover.
+	var examples []string
+	err := filepath.WalkDir("../../dev/config/examples", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && filepath.Ext(path) == ".yml" {
+			examples = append(examples, path)
+		}
+		return nil
+	})
 	assert.NoError(t, err)
 	assert.That(t, len(examples) > 0)
 

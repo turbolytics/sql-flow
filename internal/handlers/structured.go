@@ -57,7 +57,12 @@ func appendJSONValue(builder array.Builder, fieldType arrow.DataType, data []byt
 		builder.AppendNull()
 		return nil
 	}
+	return appendValue(builder, fieldType, val, dataType)
+}
 
+// appendValue appends an already-extracted JSON value. List elements arrive
+// this way: ArrayEach hands over the item itself, with no key to look up.
+func appendValue(builder array.Builder, fieldType arrow.DataType, val []byte, dataType jsonparser.ValueType) error {
 	switch fieldType.(type) {
 	case *arrow.StringType:
 		builder.(*array.StringBuilder).Append(unsafeString(val))
@@ -105,6 +110,31 @@ func appendJSONValue(builder array.Builder, fieldType arrow.DataType, data []byt
 			if err := appendJSONValue(sb.FieldBuilder(i), subField.Type, val, subField.Name); err != nil {
 				return err
 			}
+		}
+
+	case *arrow.ListType:
+		lt := fieldType.(*arrow.ListType)
+		lb := builder.(*array.ListBuilder)
+		if dataType != jsonparser.Array {
+			lb.AppendNull()
+			return nil
+		}
+		// Append(true) opens the list; every value appended to the child
+		// builder until the next Append belongs to this row's list.
+		lb.Append(true)
+		elem := lt.Elem()
+		vb := lb.ValueBuilder()
+		var cbErr error
+		if _, err := jsonparser.ArrayEach(val, func(item []byte, ivt jsonparser.ValueType, _ int, _ error) {
+			if cbErr != nil {
+				return
+			}
+			cbErr = appendValue(vb, elem, item, ivt)
+		}); err != nil {
+			return err
+		}
+		if cbErr != nil {
+			return cbErr
 		}
 
 	default:

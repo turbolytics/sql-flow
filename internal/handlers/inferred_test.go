@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -285,6 +286,157 @@ func TestInferredMemBatchHandler_EmptyBatchIsNoOp(t *testing.T) {
 	res, err := h.Invoke(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, res)
+}
+
+// JSON arrays become Arrow lists, as pyarrow.Table.from_pylist produces them.
+// Every Bluesky post record carries at least one -- langs, facets, or
+// embed.images -- so a firehose config cannot run without these.
+
+func TestInferredMemBatchHandler_InfersListOfStrings(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT CAST(SUM(len(langs)) AS BIGINT) as total FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{
+		`{"langs": ["en", "ja"]}`,
+		`{"langs": ["fr"]}`,
+	})
+	defer res.Release()
+
+	total := res.Column(0).Data().Chunk(0).(*array.Int64).Value(0)
+	assert.Equal(t, int64(3), total)
+}
+
+func TestInferredMemBatchHandler_InfersListOfStructs(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	// The Bluesky facets shape: a list of structs, each holding a nested
+	// struct and a list of structs of its own.
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT facets[1].index.byteStart as start, facets[1].features[1].tag as tag FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{
+		`{"facets": [{"features": [{"tag": "pits"}], "index": {"byteStart": 15, "byteEnd": 20}}]}`,
+	})
+	defer res.Release()
+
+	assert.Equal(t, int64(15), res.Column(0).Data().Chunk(0).(*array.Int64).Value(0))
+	assert.Equal(t, "pits", res.Column(1).Data().Chunk(0).(*array.String).Value(0))
+}
+
+func TestInferredMemBatchHandler_InfersListInsideStruct(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	// Bluesky nests the arrays several structs deep, under commit.record.
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT commit.record.langs[1] as lang FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{
+		`{"commit": {"record": {"langs": ["en", "ja"]}}}`,
+	})
+	defer res.Release()
+
+	assert.Equal(t, "en", res.Column(0).Data().Chunk(0).(*array.String).Value(0))
+}
+
+func TestInferredMemBatchHandler_PromotesListElementTypeAcrossBatch(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT SUM(list_sum(x)) as total FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{`{"x": [1, 2]}`, `{"x": [2.5]}`})
+	defer res.Release()
+
+	assert.Equal(t, 5.5, res.Column(0).Data().Chunk(0).(*array.Float64).Value(0))
+}
+
+// An empty array in the first message carries no element type. pyarrow yields
+// list<item: null>; a later message that has elements must widen it rather
+// than fail the batch.
+func TestInferredMemBatchHandler_EmptyListTakesTypeFromLaterMessage(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT CAST(SUM(len(langs)) AS BIGINT) as total FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{`{"langs": []}`, `{"langs": ["en"]}`})
+	defer res.Release()
+
+	assert.Equal(t, int64(1), res.Column(0).Data().Chunk(0).(*array.Int64).Value(0))
+}
+
+func TestInferredMemBatchHandler_EmptyListInEveryMessage(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT CAST(SUM(len(langs)) AS BIGINT) as total FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{`{"langs": []}`, `{"langs": []}`})
+	defer res.Release()
+
+	assert.Equal(t, int64(0), res.Column(0).Data().Chunk(0).(*array.Int64).Value(0))
+}
+
+// A message missing the array leaves a null list, not an empty one, matching
+// the null a missing scalar produces.
+func TestInferredMemBatchHandler_MissingListIsNull(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT COUNT(langs) as present, COUNT(*) as total FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{`{"langs": ["en"]}`, `{"other": 1}`})
+	defer res.Release()
+
+	assert.Equal(t, int64(1), res.Column(0).Data().Chunk(0).(*array.Int64).Value(0))
+	assert.Equal(t, int64(2), res.Column(1).Data().Chunk(0).(*array.Int64).Value(0))
+}
+
+func TestInferredMemBatchHandler_InfersNestedLists(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT m[1][2] as v FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{`{"m": [[1, 2], [3]]}`})
+	defer res.Release()
+
+	assert.Equal(t, int64(2), res.Column(0).Data().Chunk(0).(*array.Int64).Value(0))
+}
+
+// A list whose elements cannot be reconciled must fail the batch, the same way
+// a conflicting scalar column does, rather than silently nulling the value.
+func TestInferredMemBatchHandler_ConflictingListElementTypesError(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT * FROM batch")
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	assert.NoError(t, h.Write([]byte(`{"x": [1]}`)))
+	assert.NoError(t, h.Write([]byte(`{"x": ["hello"]}`)))
+
+	_, err = h.Invoke(context.Background())
+	assert.Error(t, err)
+	// Specifically a type conflict, not "arrays are unsupported".
+	assert.That(t, strings.Contains(err.Error(), "cannot convert"))
 }
 
 // The batch that follows an empty one must still work.
