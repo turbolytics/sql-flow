@@ -17,7 +17,7 @@ This repository ships **two** implementations of SQLFlow:
 |---|---|---|
 | Entry point | `sqlflow` binary (`cmd/sqlflow/`) | `python cmd/sql-flow.py` |
 | Source tree | `internal/` | `sqlflow/` |
-| Docker image | built from `Dockerfile.sqlflow` | `turbolytics/sql-flow` |
+| Docker image | built from `Dockerfile` | built from `Dockerfile.python` |
 | Throughput | ~927k msgs/sec | low tens of thousands msgs/sec |
 | Status | **v1, the engine to use for new pipelines** | maintained, feature-complete |
 
@@ -810,7 +810,7 @@ The original Python implementation still lives in this repository under
 `sqlflow/`, is still maintained, and is still the engine behind the published
 tutorials at [sql-flow.com](https://sql-flow.com).
 
-- Docker image: `turbolytics/sql-flow` (built from the top-level `Dockerfile`)
+- Docker image: built from `Dockerfile.python` (`make docker-image`, tagged `python-<sha>`)
 - Entry point: `python cmd/sql-flow.py`
 - Tutorials: [sql-flow.com/docs/category/tutorials](https://sql-flow.com/docs/category/tutorials)
 
