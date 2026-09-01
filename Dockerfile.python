@@ -1,0 +1,19 @@
+# The legacy Python engine image, tagged turbolytics/sql-flow:python-<sha> by
+# `make docker-image`. The v1 Go engine is the top-level Dockerfile.
+FROM python:3.11-bullseye
+WORKDIR /app
+
+COPY requirements.txt .
+# install dependencies
+RUN pip install -r requirements.txt
+
+# copy to python slim site packages
+COPY cmd ./cmd
+COPY sqlflow ./sqlflow
+COPY setup.py .
+RUN python setup.py install
+
+# Add /app/plugins to the Python path
+ENV PYTHONPATH="/app/plugins:${PYTHONPATH}"
+
+ENTRYPOINT [ "python", "cmd/sql-flow.py" ]

@@ -1,17 +1,60 @@
-FROM python:3.11-bullseye
+# The sqlflow image: the v1 Go engine. `docker build .` gets you this; the
+# legacy Python engine's image lives in Dockerfile.python.
+#
+# Build with `make sqlflow-image`, which supplies the build args below.
+ARG GO_IMAGE=golang:1.25-bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
+
+FROM ${GO_IMAGE} AS builder
+
+# go.mod asks for a newer Go than the builder image ships, and the official Go
+# images pin GOTOOLCHAIN=local; auto lets the build fetch the toolchain go.mod
+# requires instead of failing.
+ENV GOTOOLCHAIN=auto
+# The source is copied in without its .git, so stamping VCS info would fail.
+ENV GOFLAGS=-buildvcs=false
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+
+WORKDIR /src
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# libduckdb is dlopened by the ADBC driver manager at runtime rather than linked
+# against, so it is fetched here and copied into the runtime image as-is. The
+# version comes from DUCKDB_VERSION, the single place it is pinned.
+COPY DUCKDB_VERSION ./DUCKDB_VERSION
+COPY scripts/install-libduckdb.sh ./scripts/install-libduckdb.sh
+RUN ./scripts/install-libduckdb.sh /out/duckdb
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+
+# CGO_ENABLED=1 is required: the ADBC driver manager reaches libduckdb through
+# cgo, so a static pure-Go build cannot talk to DuckDB at all.
+RUN CGO_ENABLED=1 go build \
+    -ldflags "-X github.com/turbolytics/sql-flow/internal/cli.Version=${VERSION} -X github.com/turbolytics/sql-flow/internal/cli.Commit=${COMMIT}" \
+    -o /out/sqlflow ./cmd/sqlflow/
+
+FROM ${RUNTIME_IMAGE}
+
+# ca-certificates for TLS to Kafka/S3/MotherDuck; libduckdb.so needs libstdc++,
+# which bookworm-slim already carries.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /out/sqlflow /usr/local/bin/sqlflow
+COPY --from=builder /out/duckdb/libduckdb.so /usr/local/lib/libduckdb.so
+
+ENV SQLFLOW_DUCKDB_LIB=/usr/local/lib/libduckdb.so
+
 WORKDIR /app
 
-COPY requirements.txt .
-# install dependencies
-RUN pip install -r requirements.txt
-
-# copy to python slim site packages
-COPY cmd ./cmd
-COPY sqlflow ./sqlflow
-COPY setup.py .
-RUN python setup.py install
-
-# Add /app/plugins to the Python path
-ENV PYTHONPATH="/app/plugins:${PYTHONPATH}"
-
-ENTRYPOINT [ "python", "cmd/sql-flow.py" ]
+ENTRYPOINT ["/usr/local/bin/sqlflow"]

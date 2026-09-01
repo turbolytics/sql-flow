@@ -97,7 +97,7 @@ release-binaries:
 # in the image so it can be read back off a pulled tag.
 .PHONY: sqlflow-image
 sqlflow-image:
-	docker build -f Dockerfile.sqlflow \
+	docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(GIT_COMMIT) \
 		--label org.opencontainers.image.version=$(VERSION) \
@@ -128,10 +128,10 @@ test-go:
 .PHONY: docker-image
 docker-image:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build --platform linux/amd64 -t turbolytics/sql-flow:python-$$GIT_HASH .
+	docker build --platform linux/amd64 -f Dockerfile.python -t turbolytics/sql-flow:python-$$GIT_HASH .
 
 .PHONY: docker-image-multiarch
 docker-image-multiarch:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build --platform linux/arm64 -t turbolytics/sql-flow:python-$$GIT_HASH .
+	docker build --platform linux/arm64 -f Dockerfile.python -t turbolytics/sql-flow:python-$$GIT_HASH .
 	# docker buildx build --platform linux/arm64,linux/amd64 -t turbolytics/sql-flow:python-multiarch-$$GIT_HASH --push .
