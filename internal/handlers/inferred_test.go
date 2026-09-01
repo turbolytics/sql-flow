@@ -493,6 +493,91 @@ func TestInferredMemBatchHandler_DecodesEscapesInNestedValues(t *testing.T) {
 	assert.Equal(t, "c\td", res.Column(1).Data().Chunk(0).(*array.String).Value(0))
 }
 
+// pyarrow unions a struct's fields across every row, so a key that appears
+// only in a later message still becomes a field. Taking struct children from
+// the first message alone drops data silently, and makes the column set depend
+// on which message happens to arrive first in a batch.
+
+func TestInferredMemBatchHandler_UnionsNestedStructFieldsAcrossMessages(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT p.a AS a, p.b AS b FROM batch ORDER BY a")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{
+		`{"p": {"a": 1}}`,
+		`{"p": {"a": 2, "b": "x"}}`,
+	})
+	defer res.Release()
+
+	assert.Equal(t, int64(2), res.NumRows())
+	b := res.Column(1).Data().Chunk(0).(*array.String)
+	// The first message had no "b", so its row is null rather than absent.
+	assert.That(t, b.IsNull(0))
+	assert.Equal(t, "x", b.Value(1))
+}
+
+// The Bluesky shape that made this non-deterministic on a live stream: whether
+// commit.record.langs exists depended on the first message in the batch.
+func TestInferredMemBatchHandler_UnionsDeeplyNestedStructFields(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT commit.record.langs[1] AS lang FROM batch WHERE commit.record.langs IS NOT NULL")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{
+		`{"commit": {"record": {"createdAt": "t0"}}}`,
+		`{"commit": {"record": {"createdAt": "t1", "langs": ["en"]}}}`,
+	})
+	defer res.Release()
+
+	assert.Equal(t, int64(1), res.NumRows())
+	assert.Equal(t, "en", res.Column(0).Data().Chunk(0).(*array.String).Value(0))
+}
+
+// A struct arriving later must not lose its own nested shape.
+func TestInferredMemBatchHandler_UnionsStructValuedFieldAddedLater(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT p.inner.deep AS deep FROM batch WHERE p.inner.deep IS NOT NULL")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{
+		`{"p": {"a": 1}}`,
+		`{"p": {"a": 2, "inner": {"deep": 42}}}`,
+	})
+	defer res.Release()
+
+	assert.Equal(t, int64(1), res.NumRows())
+	assert.Equal(t, int64(42), res.Column(0).Data().Chunk(0).(*array.Int64).Value(0))
+}
+
+// Unioning nested fields must not leak to the top level: pyarrow takes the
+// column set from the first row there, and TestInferredMemBatchHandler_
+// ColumnsComeFromFirstRow holds that contract. This covers the same rule one
+// level down from a struct, where the first message defines the column but a
+// later one adds a sibling *column*, not a sibling field.
+func TestInferredMemBatchHandler_TopLevelColumnsStillComeFromFirstRow(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT * FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{
+		`{"p": {"a": 1}}`,
+		`{"p": {"a": 2}, "extra": "ignored"}`,
+	})
+	defer res.Release()
+
+	assert.Equal(t, 1, res.Schema().NumFields())
+	assert.Equal(t, "p", res.Schema().Field(0).Name)
+}
+
 // The batch that follows an empty one must still work.
 func TestInferredMemBatchHandler_BatchAfterEmptyBatch(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)

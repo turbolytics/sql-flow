@@ -404,7 +404,14 @@ func findChild(fields []*inferredField, name string) *inferredField {
 	return nil
 }
 
-// promoteFields widens the inferred types to accommodate one more message.
+// promoteFields widens the inferred fields to accommodate one more message.
+//
+// Only the fields discovered in the first message are visited, so the
+// top-level column set still comes from that message, as pyarrow's does. Each
+// one is merged rather than merely type-promoted, so a struct gains children a
+// later message introduces: pyarrow infers a struct's fields from every row,
+// and taking them from the first message alone dropped the rest silently --
+// which also made the column set depend on which message arrived first.
 func promoteFields(fields []*inferredField, msg []byte) error {
 	for _, f := range fields {
 		value, vt, _, err := jsonparser.Get(msg, f.name)
@@ -412,40 +419,14 @@ func promoteFields(fields []*inferredField, msg []byte) error {
 			continue
 		}
 
-		if f.elem != nil {
-			if vt != jsonparser.Array {
-				return fmt.Errorf("field %q: cannot mix array and non-array values", f.name)
-			}
-			elem, err := inferArrayElem(value)
-			if err != nil {
-				return fmt.Errorf("field %q: %w", f.name, err)
-			}
-			if err := mergeInto(f.elem, elem); err != nil {
-				return fmt.Errorf("field %q: %w", f.name, err)
-			}
-			continue
-		}
-
-		if len(f.children) > 0 {
-			if vt != jsonparser.Object {
-				return fmt.Errorf("field %q: cannot mix struct and non-struct values", f.name)
-			}
-			if err := promoteFields(f.children, value); err != nil {
-				return err
-			}
-			continue
-		}
-
-		dt, err := jsonValueType(value, vt)
+		next, err := inferValue(f.name, value, vt)
 		if err != nil {
+			// inferValue already names the field it failed on.
+			return err
+		}
+		if err := mergeInto(f, next); err != nil {
 			return fmt.Errorf("field %q: %w", f.name, err)
 		}
-
-		promoted, err := promoteType(f.dataType, dt)
-		if err != nil {
-			return fmt.Errorf("field %q: %w", f.name, err)
-		}
-		f.dataType = promoted
 	}
 	return nil
 }
