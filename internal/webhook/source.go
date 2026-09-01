@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
 
@@ -43,7 +44,9 @@ type Source struct {
 	mu     sync.RWMutex
 	closed bool
 
-	logger *zap.Logger
+	logger        *zap.Logger
+	meterProvider metric.MeterProvider
+	metrics       *Metrics
 }
 
 type Option func(*Source)
@@ -67,6 +70,14 @@ func WithAddr(addr string) Option {
 	}
 }
 
+// WithMeterProvider records request metrics against the given provider. A nil
+// provider leaves the source recording nothing.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(s *Source) {
+		s.meterProvider = mp
+	}
+}
+
 func NewSource(opts ...Option) (*Source, error) {
 	s := &Source{
 		addr: defaultAddr,
@@ -83,6 +94,12 @@ func NewSource(opts ...Option) (*Source, error) {
 		opt(s)
 	}
 
+	m, err := NewMetrics(s.meterProvider)
+	if err != nil {
+		return nil, err
+	}
+	s.metrics = m
+
 	return s, nil
 }
 
@@ -97,7 +114,9 @@ func (s *Source) HMACConfig() *HMAC {
 func (s *Source) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /events", s.receiveEvents)
-	return mux
+	// Wrapped rather than applied per route, so unrouted requests are counted
+	// as they are by the Python middleware.
+	return s.metrics.middleware(mux)
 }
 
 // Addr reports the bound address, which only differs from the configured one

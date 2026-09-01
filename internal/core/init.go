@@ -7,13 +7,16 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/turbine/internal/config"
+	"github.com/turbolytics/turbine/internal/logging"
 	"go.uber.org/zap"
 )
 
 var logger *zap.Logger
 
 func init() {
-	logger, _ = zap.NewDevelopment()
+	// A bad SQLFLOW_LOG_LEVEL is reported by the command that builds its own
+	// logger; here it only falls back to the default level.
+	logger, _ = logging.New()
 }
 
 // InitUDFs reports that a config declares UDFs, which turbine does not

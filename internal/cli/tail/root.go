@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/turbine/internal/config"
+	"github.com/turbolytics/turbine/internal/logging"
 	"github.com/turbolytics/turbine/internal/sources"
 	"go.uber.org/zap"
 	"time"
@@ -16,16 +17,20 @@ func NewCommand() *cobra.Command {
 		Use:   "tail",
 		Short: "Tail a stream of data",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			logger, _ := zap.NewDevelopment()
+			logger, levelErr := logging.New()
 			defer logger.Sync()
 			l := logger.Named("turbine.tail")
+			if levelErr != nil {
+				return levelErr
+			}
 
 			conf, err := config.Load(configPath, map[string]string{})
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
-			src, err := sources.New(conf.Pipeline.Source, logger)
+			// tail exposes no metrics exporter, so the source records nothing.
+			src, err := sources.New(conf.Pipeline.Source, logger, nil)
 			if err != nil {
 				return fmt.Errorf("failed to create source: %w", err)
 			}
