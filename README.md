@@ -804,6 +804,47 @@ Windows is not a target.
 The resulting binaries are dynamically linked and dlopen libduckdb; they are not
 standalone. See [Installation](#installation).
 
+# Publishing the release image
+
+`make sqlflow-image` builds for the host architecture only, which is fine for
+local testing and wrong for publishing. Releases go out through
+`make release-image`, which builds `linux/amd64` and `linux/arm64` and pushes
+both under one manifest:
+
+```
+git tag -a v1.0.1 -m "..." && git push origin v1.0.1
+make test-image        # release tests against the image
+make release-image     # multi-arch build + push
+make release-image-verify
+```
+
+Tag first: `VERSION` comes from `git describe`, so an untagged `main` yields
+`v1.0.0-1-gac977e2` rather than a release version. The target refuses to run on
+a dirty tree or an untagged `HEAD` for that reason.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RELEASE_PLATFORMS` | `linux/amd64,linux/arm64` | Architectures to build |
+| `RELEASE_LATEST` | `1` | Also tag `latest`; set `0` when re-publishing an older tag |
+| `RELEASE_OUTPUT` | `--push` | Set `--output=type=cacheonly` for a dry run that publishes nothing |
+| `SQLFLOW_IMAGE` | `turbolytics/sql-flow:$(VERSION)` | Full image reference |
+
+The foreign architecture builds under QEMU emulation, so expect the `amd64`
+`go build` to take several minutes on an arm64 host — `CGO_ENABLED=1` is
+required for the ADBC driver manager, which rules out cross-compiling. Each
+platform fetches its own libduckdb, because `scripts/install-libduckdb.sh`
+branches on `uname -m` and sees the target architecture.
+
+> **Why this target exists:** `v1.0.0` was published by hand from a mac with a
+> plain `docker build`, so it went out **arm64-only** and did not run on amd64
+> at all. `docker tag` + `docker push` has the same failure mode — it flattens a
+> manifest list down to one architecture. To point an existing tag at another
+> release, copy the manifest instead:
+> `docker buildx imagetools create -t turbolytics/sql-flow:latest turbolytics/sql-flow:v1.0.1`.
+
+`make docker-image` builds the legacy Python engine and must not be used to
+publish a bare version tag; see [The Python engine](#the-python-engine).
+
 # The Python engine
 
 The original Python implementation still lives in this repository under
