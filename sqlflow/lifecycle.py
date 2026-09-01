@@ -66,15 +66,17 @@ def start(conf, conn=None, lock=None, max_msgs=None):
     if lock is None:
         lock = threading.Lock()
 
+    init_commands(conn, conf.commands)
+    init_tables(conn, conf.tables)
+    init_udfs(conn, conf.udfs)
+
+    # The StructuredBatch handler snapshots its table's schema at construction,
+    # so commands/tables must exist first -- the same order invoke() uses.
     h = handlers.new_handler_from_conf(
         conf.pipeline.handler,
         conn,
     )
     h.init()
-
-    init_commands(conn, conf.commands)
-    init_tables(conn, conf.tables)
-    init_udfs(conn, conf.udfs)
 
     managed_tables = build_managed_tables(
         conn,

@@ -55,7 +55,7 @@ class InferredDiskBatch(Handler):
         self._f = f
         return self
 
-    def write(self, bs):
+    def write(self, bs, offset=None, partition=None, topic=None):
         self._f.write(bs)
         self._f.write('\n')
 
@@ -150,7 +150,9 @@ class StructuredBatch(Handler):
         self.rows = []
         return self
 
-    def write(self, bs):
+    # Kafka metadata is accepted but not injected: the table schema is fixed,
+    # so extra columns would fail the INSERT.
+    def write(self, bs, offset=None, partition=None, topic=None):
         o = self.deserializer.decode(bs)
         self.rows.append(o)
 
