@@ -4,7 +4,7 @@
 DUCKDB_VERSION := $(shell tr -d '[:space:]' < DUCKDB_VERSION)
 GIT_COMMIT := $(shell git rev-parse --short HEAD)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-SQLFLOW_IMAGE ?= turbolytics/sqlflow:$(VERSION)
+SQLFLOW_IMAGE ?= turbolytics/sql-flow:$(VERSION)
 DIST_DIR ?= dist
 
 GO_MODULE := github.com/turbolytics/sql-flow
@@ -32,16 +32,21 @@ test-unit:
 		--ignore=tests/release \
 		tests
 
+# Functional tests against the shipped container image: entrypoint, CLI
+# surface, baked-in libduckdb, and a real pipeline through Kafka. Runs against
+# the Go engine's image, which is what v1 publishes; point SQLFLOW_IMAGE at
+# another tag to test that one instead.
 .PHONY: test-image
-test-image: docker-image
-	pytest tests/release
+test-image: sqlflow-image
+	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) pytest tests/release
 
 .PHONY: test-integration
 test-integration:
 	PYICEBERG_HOME=$(shell pwd)/tests/config/ pytest tests/integration
 
 .PHONY: test-release
-test-release: docker-image
+test-release: sqlflow-image
+	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 	TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
 	pytest tests/release
 
@@ -115,13 +120,18 @@ test-go:
 	@test -z "$$(gofmt -l internal/ cmd/)" || { echo "gofmt needed:"; gofmt -l internal/ cmd/; exit 1; }
 	go test ./internal/...
 
+# The legacy Python engine image. It shares the turbolytics/sql-flow repository
+# with `make sqlflow-image` above, which is deliberate -- one image, one
+# entrypoint, one config spec -- but it means a tag published from here serves
+# the Python engine. As of v1 the Go engine is what that name should mean, so
+# publish from sqlflow-image and keep this for reproducing old tags only.
 .PHONY: docker-image
 docker-image:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build --platform linux/amd64 -t turbolytics/sql-flow:$$GIT_HASH .
+	docker build --platform linux/amd64 -t turbolytics/sql-flow:python-$$GIT_HASH .
 
 .PHONY: docker-image-multiarch
 docker-image-multiarch:
 	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build --platform linux/arm64 -t turbolytics/sql-flow:$$GIT_HASH .
-	# docker buildx build --platform linux/arm64,linux/amd64 -t turbolytics/sql-flow:multiarch-$$GIT_HASH --push .
+	docker build --platform linux/arm64 -t turbolytics/sql-flow:python-$$GIT_HASH .
+	# docker buildx build --platform linux/arm64,linux/amd64 -t turbolytics/sql-flow:python-multiarch-$$GIT_HASH --push .

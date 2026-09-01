@@ -96,9 +96,9 @@ docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --t
 
 You just ran SQLFlow against a stream of Kafka data!
 
-> **Note the flag.** sqlflow takes its config as `-c/--config`, not as a
-> positional argument, and the message cap is `--max-msgs` (the Python engine
-> uses `run <config> --max-msgs-to-process`). See
+> **Either spelling works.** The config can be passed positionally
+> (`run pipeline.yml`, as the Python engine takes it) or as `-c/--config`, and
+> the message cap is `--max-msgs` or `--max-msgs-to-process`. See
 > [CLI differences](#cli-differences).
 
 # Installation
@@ -127,7 +127,7 @@ Then run a pipeline with your config and cache mounted in:
 docker run \
   -v $(pwd)/dev:/tmp/conf \
   -v /tmp/sqlflow:/tmp/sqlflow \
-  turbolytics/sqlflow:<tag> \
+  turbolytics/sql-flow:<tag> \
   dev invoke /tmp/conf/config/examples/basic.agg.mem.yml /tmp/conf/fixtures/simple.json
 ```
 
@@ -240,13 +240,15 @@ sqlflow [command]
 Runs the pipeline: consume, batch, execute SQL, sink, commit offsets.
 
 ```
+sqlflow run <config> [flags]
 sqlflow run -c <config> [flags]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `-c`, `--config` | *(required)* | Path to the config file |
+| `-c`, `--config` | *(required)* | Path to the config file, unless given positionally |
 | `--max-msgs` | `0` | Stop after N messages; `0` is unlimited |
+| `--max-msgs-to-process` | `0` | Alias for `--max-msgs`, as the Python engine spells it |
 | `--metrics` | *(off)* | Metrics exporter. Only `prometheus` is supported; serves `/metrics` on `:8000` |
 | `--stats-json` | *(off)* | Write final run stats as JSON to this path |
 | `--pprof` | `false` | Serve pprof on `:6060`, and enable block/mutex profiling |
@@ -694,15 +696,28 @@ Error: udfs are not supported: parse_domain. Define them in DuckDB instead
 
 ### CLI differences
 
+The entrypoint is a drop-in replacement: every way the Python engine can be
+invoked works unchanged, so swapping the image under an existing command line
+does not break it. `run` accepts the config positionally *or* as `-c`, and
+either spelling of the message cap:
+
+```
+sqlflow run pipeline.yml --max-msgs-to-process=1000    # Python's spelling
+sqlflow run -c pipeline.yml --max-msgs=1000            # equivalent
+```
+
+Passing both forms with different values is an error rather than a silent
+preference. What sqlflow adds on top:
+
 | | Python | sqlflow |
 |---|---|---|
-| Run | `run <config>` (positional) | `run -c <config>` (flag) |
-| Message cap | `--max-msgs-to-process` | `--max-msgs` |
-| HTTP SQL debug | `--with-http-debug` | not implemented |
 | Tail a source | — | `tail -c <config>` |
 | Version | — | `version` |
 | Run stats | — | `--stats-json` |
 | Profiling | — | `--pprof` |
+
+`make test-image` runs the functional suite in `tests/release/` against the
+built image, using the Python engine's own invocation to prove the swap.
 
 ### Behavioural notes
 

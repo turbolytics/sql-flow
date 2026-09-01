@@ -63,15 +63,32 @@ func NewCommand() *cobra.Command {
 	var metricsExporter string
 	var withHTTPDebug bool
 
+	var maxMsgsToProcess int
+
 	var cmd = &cobra.Command{
-		Use:   "run",
+		Use:   "run [config]",
 		Short: "Run sqlflow against a stream of data",
+		// Zero args for the -c form, one for the Python engine's positional
+		// form. See resolveConfigPath.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger, levelErr := logging.New()
 			defer logger.Sync()
 			l := logger.Named("sqlflow.run")
 			if levelErr != nil {
 				return levelErr
+			}
+
+			configPath, err := resolveConfigPath(configPath, args)
+			if err != nil {
+				cmd.SilenceUsage = false
+				return err
+			}
+
+			maxMsgs, err := resolveMaxMsgs(maxMsgs, maxMsgsToProcess)
+			if err != nil {
+				cmd.SilenceUsage = false
+				return err
 			}
 
 			if enablePprof {
@@ -239,9 +256,11 @@ func NewCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to sqlflow config file (required)")
-	cmd.MarkFlagRequired("config")
+	// Deliberately not MarkFlagRequired: the config may instead arrive as the
+	// positional argument the Python engine takes.
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to sqlflow config file (or pass it positionally)")
 	cmd.Flags().IntVar(&maxMsgs, "max-msgs", 0, "Maximum number of messages to consume (0 = unlimited)")
+	cmd.Flags().IntVar(&maxMsgsToProcess, "max-msgs-to-process", 0, "Alias for --max-msgs, as spelled by the Python engine")
 	cmd.Flags().BoolVar(&enablePprof, "pprof", false, "Enable pprof profiling server on :6060")
 	cmd.Flags().StringVar(&statsJSONPath, "stats-json", "", "Write final run stats as JSON to this path")
 	cmd.Flags().StringVar(&metricsExporter, "metrics", "", "Metrics exporter to enable (prometheus); serves /metrics on :8000")

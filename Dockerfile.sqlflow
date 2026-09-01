@@ -39,7 +39,7 @@ COPY internal ./internal
 # CGO_ENABLED=1 is required: the ADBC driver manager reaches libduckdb through
 # cgo, so a static pure-Go build cannot talk to DuckDB at all.
 RUN CGO_ENABLED=1 go build \
-    -ldflags "-X github.com/turbolytics/sqlflow/internal/cli.Version=${VERSION} -X github.com/turbolytics/sqlflow/internal/cli.Commit=${COMMIT}" \
+    -ldflags "-X github.com/turbolytics/sql-flow/internal/cli.Version=${VERSION} -X github.com/turbolytics/sql-flow/internal/cli.Commit=${COMMIT}" \
     -o /out/sqlflow ./cmd/sqlflow/
 
 FROM ${RUNTIME_IMAGE}
