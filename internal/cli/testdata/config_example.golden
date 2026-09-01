@@ -62,7 +62,7 @@ pipeline:
   flush_interval_seconds: <integer>
   # Configuration for the data source.
   source:
-    type: kafka | websocket
+    type: kafka | websocket | webhook
     kafka:
       brokers:
         - <array>
@@ -83,6 +83,12 @@ pipeline:
         password: <string>
     websocket:
       uri: <string>
+    webhook:
+      signature_type: hmac
+      hmac:
+        header: <string>
+        sig_key: <string>
+        secret: <string>
   handler:
     type: handlers.InferredDiskBatch | handlers.InferredMemBatch | handlers.StructuredBatch
     sql: <string>
