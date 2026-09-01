@@ -1,0 +1,100 @@
+"""Engine seam for the functional test suite.
+
+The integration tests assert on externally observable pipeline effects
+(output topics, parquet files, iceberg tables), so they can run against
+any engine implementing the sqlflow config spec. Select the engine with:
+
+    SQLFLOW_ENGINE=python   (default) in-process Python sqlflow
+    SQLFLOW_ENGINE=turbine  Go engine, invoked as a subprocess
+
+For turbine, the config template is rendered here (Jinja2, same context
+as the Python engine) and handed to the binary as plain YAML, so the
+suite exercises the engine surface independently of the template layer.
+The binary path comes from SQLFLOW_BIN (default: ./bin/sqlflow).
+"""
+import json
+import os
+import subprocess
+import tempfile
+from dataclasses import dataclass
+
+import yaml
+
+from sqlflow.config import render_config, new_from_path
+from sqlflow.lifecycle import start
+
+
+@dataclass
+class EngineStats:
+    num_messages_consumed: int = 0
+    num_errors: int = 0
+
+
+def assert_all_messages_accounted_for(stats, num_published, rows, count_field):
+    """Assert no input message was silently dropped.
+
+    Consuming N messages is not evidence of processing them: a sink can drop
+    rows, a batch can fail after its offsets commit, and a final partial batch
+    can be lost at shutdown. These pipelines aggregate, so the row count alone
+    cannot show completeness -- the per-group counts have to add back up to
+    the number of messages published.
+    """
+    assert stats.num_messages_consumed == num_published, (
+        f'consumed {stats.num_messages_consumed}, published {num_published}'
+    )
+
+    total = sum(r[count_field] for r in rows)
+    assert total == num_published, (
+        f'output accounts for {total} messages, published {num_published} '
+        f'({num_published - total} unaccounted for across {len(rows)} rows)'
+    )
+
+
+def engine():
+    return os.environ.get('SQLFLOW_ENGINE', 'python')
+
+
+def run_pipeline(config_path, setting_overrides=None, max_msgs=None):
+    """Run a pipeline to completion and return its stats."""
+    setting_overrides = setting_overrides or {}
+    if engine() == 'turbine':
+        return _run_turbine(config_path, setting_overrides, max_msgs)
+
+    conf = new_from_path(config_path, setting_overrides)
+    return start(conf, max_msgs=max_msgs)
+
+
+def _run_turbine(config_path, setting_overrides, max_msgs):
+    conf_dict = render_config(config_path, setting_overrides)
+
+    binary = os.environ.get(
+        'SQLFLOW_BIN',
+        os.path.join(os.getcwd(), 'bin', 'sqlflow'),
+    )
+
+    with tempfile.NamedTemporaryFile(
+            'w', suffix='.yml', prefix='turbine-conf-', delete=False) as f:
+        yaml.safe_dump(conf_dict, f)
+        rendered_path = f.name
+
+    stats_path = rendered_path + '.stats.json'
+
+    cmd = [binary, 'run', '-c', rendered_path, '--stats-json', stats_path]
+    if max_msgs is not None:
+        cmd += ['--max-msgs', str(max_msgs)]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f'turbine exited {proc.returncode}\n'
+            f'--- stdout ---\n{proc.stdout}\n'
+            f'--- stderr ---\n{proc.stderr}'
+        )
+
+    with open(stats_path) as f:
+        data = json.load(f)
+
+    return EngineStats(
+        num_messages_consumed=data.get('messages_consumed', 0),
+        num_errors=data.get('num_errors', 0),
+    )

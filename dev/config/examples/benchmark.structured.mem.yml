@@ -1,0 +1,32 @@
+commands:
+  - name: create source buffer table
+    sql: |
+      CREATE TABLE source (
+            event STRING,
+            properties STRUCT(city TEXT),
+      );
+
+pipeline:
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(500) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('benchmark') }}
+      auto_offset_reset: earliest
+      topics:
+        - "{{ SQLFLOW_TOPIC|default('benchmark-input') }}"
+
+  handler:
+    type: "handlers.StructuredBatch"
+    table: source
+    sql: |
+      SELECT
+        properties.city as city,
+        COUNT(*) as count
+      FROM source
+      GROUP BY properties.city;
+
+  sink:
+    type: noop

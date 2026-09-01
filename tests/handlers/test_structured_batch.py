@@ -51,7 +51,7 @@ class TestStructuredBatch(unittest.TestCase):
 
         conn.execute("CREATE TABLE test_table (id INT, name VARCHAR)")
         h.write(b'{"id": "invalid_id", "name": "Alice"}')
-        with self.assertRaises(duckdb.duckdb.ConversionException):
+        with self.assertRaises(duckdb.ConversionException):
             h.invoke()
 
     def test_invalid_sql_on_invoke_parser_exception(self):
@@ -67,7 +67,7 @@ class TestStructuredBatch(unittest.TestCase):
         conn.execute("CREATE TABLE test_table (id INT, name VARCHAR)")
 
         h.write(b'{"id": 1, "name": "Alice"}')
-        with self.assertRaises(duckdb.duckdb.ParserException):
+        with self.assertRaises(duckdb.ParserException):
             h.invoke()
 
     def test_invalid_sql_on_invoke_unknown_table_catalog_exception(self):
@@ -83,7 +83,7 @@ class TestStructuredBatch(unittest.TestCase):
         conn.execute("CREATE TABLE test_table (id INT, name VARCHAR)")
 
         h.write(b'{"id": 1, "name": "Alice"}')
-        with self.assertRaises(duckdb.duckdb.CatalogException):
+        with self.assertRaises(duckdb.CatalogException):
             h.invoke()
 
     def test_no_results_returned_on_invoke(self):

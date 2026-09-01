@@ -27,3 +27,44 @@ jobs:
       - name: Test Integration
         run: |
           make test-integration
+
+  # The Go engine (sqlflow). Unit tests only: anything that needs a Kafka broker
+  # stays out of CI and runs from the dev stack.
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    env:
+      # Some tests open DuckDB through ADBC, which dlopens the library named
+      # here rather than linking against it.
+      SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
+      # go.mod requires a newer Go than the version set up below, so the
+      # toolchain it asks for is fetched on demand.
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install libduckdb
+        run: ./scripts/install-libduckdb.sh bin
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Gofmt
+        run: |
+          unformatted=$(gofmt -l internal/ cmd/)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Test Unit
+        run: go test ./internal/...

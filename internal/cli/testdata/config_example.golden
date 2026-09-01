@@ -1,0 +1,161 @@
+# List of SQL commands to execute before processing the pipeline.
+commands:
+  -
+    # Name of the command for reference.
+    name: <string>
+    # SQL statements to execute.
+    sql: <string>
+# Predefined SQL tables used in the pipeline.
+tables:
+  # List of tables with their SQL definitions and management configurations.
+  sql:
+    -
+      name: <string>
+      sql: <string>
+      manager:
+        tumbling_window:
+          collect_closed_windows_sql: <string>
+          delete_closed_windows_sql: <string>
+          poll_interval_seconds: <integer>
+        sink:
+          # Sink identifier.
+          type: kafka | noop | iceberg | console | sqlcommand | clickhouse
+          # Format settings (e.g., for Parquet).
+          format:
+            type: parquet
+          # Kafka-specific sink configuration.
+          kafka:
+            # List of Kafka brokers.
+            brokers:
+              - <array>
+            # Target Kafka topic.
+            topic: <string>
+          # SQL-command sink configuration.
+          sqlcommand:
+            sql: <string>
+            substitutions:
+              -
+                var: <string>
+                type: uuid4
+          # Iceberg-specific sink configuration.
+          iceberg:
+            catalog_name: <string>
+            table_name: <string>
+          # ClickHouse-specific sink configuration.
+          clickhouse:
+            dsn: <string>
+            table: <string>
+          # Console output sink configuration.
+          console:
+# List of User-Defined Functions (UDFs) to be used in SQL queries.
+udfs:
+  -
+    function_name: <string>
+    import_path: <string>
+# Main pipeline configuration.
+pipeline:
+  # Name of the pipeline.
+  name: <string>
+  # Description of the pipeline.
+  description: <string>
+  batch_size: <integer>
+  flush_interval_seconds: <integer>
+  # Configuration for the data source.
+  source:
+    type: kafka | websocket | webhook
+    kafka:
+      brokers:
+        - <array>
+      group_id: <string>
+      auto_offset_reset: earliest | latest
+      topics:
+        - <array>
+      security_protocol: SASL_SSL | SSL | SASL_PLAINTEXT | PLAINTEXT
+      ssl:
+        ca_location: <string>
+        key_location: <string>
+        certificate_location: <string>
+        key_password: <string>
+        endpoint_identification_algorithm: <string>
+      sasl:
+        mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
+        username: <string>
+        password: <string>
+    websocket:
+      uri: <string>
+    webhook:
+      signature_type: hmac
+      hmac:
+        header: <string>
+        sig_key: <string>
+        secret: <string>
+  handler:
+    type: handlers.InferredDiskBatch | handlers.InferredMemBatch | handlers.StructuredBatch
+    sql: <string>
+    sql_results_cache_dir: <string>
+    table: <string>
+  sink:
+    # Sink identifier.
+    type: kafka | noop | iceberg | console | sqlcommand | clickhouse
+    # Format settings (e.g., for Parquet).
+    format:
+      type: parquet
+    # Kafka-specific sink configuration.
+    kafka:
+      # List of Kafka brokers.
+      brokers:
+        - <array>
+      # Target Kafka topic.
+      topic: <string>
+    # SQL-command sink configuration.
+    sqlcommand:
+      sql: <string>
+      substitutions:
+        -
+          var: <string>
+          type: uuid4
+    # Iceberg-specific sink configuration.
+    iceberg:
+      catalog_name: <string>
+      table_name: <string>
+    # ClickHouse-specific sink configuration.
+    clickhouse:
+      dsn: <string>
+      table: <string>
+    # Console output sink configuration.
+    console:
+  # Global error handling strategy for the pipeline.
+  on_error:
+    # Defines how errors should be handled.
+    policy: RAISE | IGNORE | DLQ
+    # Dead-letter queue configuration. Failed messages will be routed to this sink.
+    dlq:
+      # Sink identifier.
+      type: kafka | noop | iceberg | console | sqlcommand | clickhouse
+      # Format settings (e.g., for Parquet).
+      format:
+        type: parquet
+      # Kafka-specific sink configuration.
+      kafka:
+        # List of Kafka brokers.
+        brokers:
+          - <array>
+        # Target Kafka topic.
+        topic: <string>
+      # SQL-command sink configuration.
+      sqlcommand:
+        sql: <string>
+        substitutions:
+          -
+            var: <string>
+            type: uuid4
+      # Iceberg-specific sink configuration.
+      iceberg:
+        catalog_name: <string>
+        table_name: <string>
+      # ClickHouse-specific sink configuration.
+      clickhouse:
+        dsn: <string>
+        table: <string>
+      # Console output sink configuration.
+      console:

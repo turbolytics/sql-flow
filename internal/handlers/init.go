@@ -1,0 +1,75 @@
+package handlers
+
+import (
+	"context"
+	"fmt"
+	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
+	"go.uber.org/zap"
+)
+
+func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
+	switch c.Type {
+	case "handlers.StructuredBatch":
+		// Derive the Arrow schema from the DuckDB table definition
+		stmt, err := conn.NewStatement()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create statement: %w", err)
+		}
+		defer stmt.Close()
+
+		if err := stmt.SetSqlQuery(fmt.Sprintf("SELECT * FROM %s LIMIT 0", c.Table)); err != nil {
+			return nil, fmt.Errorf("failed to set SQL query: %w", err)
+		}
+
+		reader, _, err := stmt.ExecuteQuery(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("failed to execute query: %w", err)
+		}
+		defer reader.Release()
+
+		h, err := NewStructuredBatchHandler(
+			conn,
+			c.SQL,
+			c.Table,
+			reader.Schema(),
+			StructuredBatchWithLogger(l),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create StructuredBatchHandler: %w", err)
+		}
+		return h, nil
+
+	case "handlers.InferredMemBatch":
+		h, err := NewInferredMemBatchHandler(
+			conn,
+			c.SQL,
+			InferredMemBatchWithLogger(l),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create InferredMemBatchHandler: %w", err)
+		}
+		return h, nil
+
+	case "handlers.InferredDiskBatch":
+		cacheDir := c.SQLResultsCacheDir
+		if cacheDir == "" {
+			cacheDir = config.SQLResultsCacheDir()
+		}
+
+		h, err := NewInferredDiskBatchHandler(
+			conn,
+			c.SQL,
+			cacheDir,
+			InferredDiskBatchWithLogger(l),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create InferredDiskBatchHandler: %w", err)
+		}
+		return h, nil
+
+	default:
+		return nil, fmt.Errorf(`handler: %q not supported`, c.Type)
+	}
+}
