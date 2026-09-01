@@ -227,46 +227,56 @@ func inferSchema(msgs [][]byte) (*arrow.Schema, error) {
 	return arrow.NewSchema(arrowFields, nil), nil
 }
 
+// listElemName is the name arrow.ListOf gives a list's element field, and the
+// name pyarrow uses, so the two engines produce identically-shaped lists.
+const listElemName = "item"
+
 // inferredField is a column discovered in the first message. Struct columns
-// carry their own children, discovered the same way.
+// carry their own children, discovered the same way; list columns carry the
+// single field their elements unify to.
 type inferredField struct {
 	name     string
 	dataType arrow.DataType
 	children []*inferredField
+	// Non-nil when the field is a JSON array. A list column has no children
+	// of its own; the element carries any struct shape.
+	elem *inferredField
 }
 
 func (f *inferredField) arrowField() arrow.Field {
-	if len(f.children) > 0 {
+	return arrow.Field{Name: f.name, Type: f.arrowType(), Nullable: true}
+}
+
+func (f *inferredField) arrowType() arrow.DataType {
+	switch {
+	case f.elem != nil:
+		return arrow.ListOf(f.elem.arrowType())
+	case len(f.children) > 0:
 		subFields := make([]arrow.Field, len(f.children))
 		for i, c := range f.children {
 			subFields[i] = c.arrowField()
 		}
-		return arrow.Field{Name: f.name, Type: arrow.StructOf(subFields...), Nullable: true}
+		return arrow.StructOf(subFields...)
+	default:
+		return f.dataType
 	}
-	return arrow.Field{Name: f.name, Type: f.dataType, Nullable: true}
+}
+
+// hasNoShape reports a field that carries no type yet: a JSON null, or an
+// empty object or array. Merging one with a typed field takes the other type.
+func (f *inferredField) hasNoShape() bool {
+	if f.elem != nil || len(f.children) > 0 {
+		return false
+	}
+	return f.dataType == nil || arrow.TypeEqual(f.dataType, arrow.Null)
 }
 
 func inferFields(msg []byte) ([]*inferredField, error) {
 	var fields []*inferredField
 	err := jsonparser.ObjectEach(msg, func(key, value []byte, vt jsonparser.ValueType, _ int) error {
-		f := &inferredField{name: string(key)}
-		switch vt {
-		case jsonparser.Object:
-			children, err := inferFields(value)
-			if err != nil {
-				return err
-			}
-			if len(children) == 0 {
-				// An empty object has no inferable struct type.
-				f.dataType = arrow.Null
-			}
-			f.children = children
-		default:
-			dt, err := jsonValueType(value, vt)
-			if err != nil {
-				return fmt.Errorf("field %q: %w", key, err)
-			}
-			f.dataType = dt
+		f, err := inferValue(string(key), value, vt)
+		if err != nil {
+			return err
 		}
 		fields = append(fields, f)
 		return nil
@@ -277,11 +287,142 @@ func inferFields(msg []byte) ([]*inferredField, error) {
 	return fields, nil
 }
 
+// inferValue derives one field from one JSON value, recursing through objects
+// and arrays alike.
+func inferValue(name string, value []byte, vt jsonparser.ValueType) (*inferredField, error) {
+	f := &inferredField{name: name}
+	switch vt {
+	case jsonparser.Object:
+		children, err := inferFields(value)
+		if err != nil {
+			return nil, err
+		}
+		if len(children) == 0 {
+			// An empty object has no inferable struct type.
+			f.dataType = arrow.Null
+		}
+		f.children = children
+	case jsonparser.Array:
+		elem, err := inferArrayElem(value)
+		if err != nil {
+			return nil, fmt.Errorf("field %q: %w", name, err)
+		}
+		f.elem = elem
+	default:
+		dt, err := jsonValueType(value, vt)
+		if err != nil {
+			return nil, fmt.Errorf("field %q: %w", name, err)
+		}
+		f.dataType = dt
+	}
+	return f, nil
+}
+
+// inferArrayElem unifies every item of one JSON array into a single element
+// type. An empty array yields a null element, which a later array widens --
+// pyarrow gives list<item: null> for a column that is empty in every row.
+func inferArrayElem(arr []byte) (*inferredField, error) {
+	elem := &inferredField{name: listElemName, dataType: arrow.Null}
+
+	var cbErr error
+	if _, err := jsonparser.ArrayEach(arr, func(value []byte, vt jsonparser.ValueType, _ int, _ error) {
+		if cbErr != nil {
+			return
+		}
+		item, err := inferValue(listElemName, value, vt)
+		if err != nil {
+			cbErr = err
+			return
+		}
+		cbErr = mergeInto(elem, item)
+	}); err != nil {
+		return nil, err
+	}
+	return elem, cbErr
+}
+
+// mergeInto widens dst so it also holds src. Unlike promoteFields, which keeps
+// the column set of the first message, this unions struct fields: pyarrow
+// infers a list's element struct from every item, not just the first, so an
+// optional key on a later element still becomes a field.
+func mergeInto(dst, src *inferredField) error {
+	if src == nil || src.hasNoShape() {
+		return nil
+	}
+	if dst.hasNoShape() {
+		dst.dataType = src.dataType
+		dst.children = src.children
+		dst.elem = src.elem
+		return nil
+	}
+
+	switch {
+	case dst.elem != nil:
+		if src.elem == nil {
+			return fmt.Errorf("cannot mix array and non-array values")
+		}
+		return mergeInto(dst.elem, src.elem)
+
+	case len(dst.children) > 0:
+		if len(src.children) == 0 {
+			return fmt.Errorf("cannot mix struct and non-struct values")
+		}
+		for _, sc := range src.children {
+			dc := findChild(dst.children, sc.name)
+			if dc == nil {
+				dst.children = append(dst.children, sc)
+				continue
+			}
+			if err := mergeInto(dc, sc); err != nil {
+				return fmt.Errorf("field %q: %w", sc.name, err)
+			}
+		}
+		return nil
+
+	default:
+		if src.elem != nil {
+			return fmt.Errorf("cannot mix array and non-array values")
+		}
+		if len(src.children) > 0 {
+			return fmt.Errorf("cannot mix struct and non-struct values")
+		}
+		promoted, err := promoteType(dst.dataType, src.dataType)
+		if err != nil {
+			return err
+		}
+		dst.dataType = promoted
+		return nil
+	}
+}
+
+func findChild(fields []*inferredField, name string) *inferredField {
+	for _, f := range fields {
+		if f.name == name {
+			return f
+		}
+	}
+	return nil
+}
+
 // promoteFields widens the inferred types to accommodate one more message.
 func promoteFields(fields []*inferredField, msg []byte) error {
 	for _, f := range fields {
 		value, vt, _, err := jsonparser.Get(msg, f.name)
 		if err != nil || vt == jsonparser.NotExist || vt == jsonparser.Null {
+			continue
+		}
+
+		if f.elem != nil {
+			if vt != jsonparser.Array {
+				return fmt.Errorf("field %q: cannot mix array and non-array values", f.name)
+			}
+			elem, err := inferArrayElem(value)
+			if err != nil {
+				return fmt.Errorf("field %q: %w", f.name, err)
+			}
+			if err := mergeInto(f.elem, elem); err != nil {
+				return fmt.Errorf("field %q: %w", f.name, err)
+			}
 			continue
 		}
 
@@ -325,7 +466,9 @@ func jsonValueType(value []byte, vt jsonparser.ValueType) (arrow.DataType, error
 	case jsonparser.Object:
 		return nil, fmt.Errorf("cannot mix struct and non-struct values")
 	case jsonparser.Array:
-		return nil, fmt.Errorf("unsupported json array value")
+		// Arrays are handled by inferValue/inferArrayElem; reaching here means
+		// an array turned up where an earlier message had a scalar.
+		return nil, fmt.Errorf("cannot mix array and non-array values")
 	default:
 		return nil, fmt.Errorf("unsupported json value")
 	}
