@@ -8,10 +8,13 @@ import (
 	"github.com/turbolytics/turbine/internal/webhook"
 	"github.com/turbolytics/turbine/internal/websocket"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
 
-func New(c config.Source, l *zap.Logger) (core.Source, error) {
+// New builds the configured source. A nil meter provider leaves sources that
+// record metrics recording nothing.
+func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error) {
 	switch c.Type {
 	case "kafka":
 		l.Info(
@@ -67,7 +70,10 @@ func New(c config.Source, l *zap.Logger) (core.Source, error) {
 		return websocket.NewSource(c.Websocket.URI, websocket.WithLogger(l))
 
 	case "webhook":
-		opts := []webhook.Option{webhook.WithLogger(l)}
+		opts := []webhook.Option{
+			webhook.WithLogger(l),
+			webhook.WithMeterProvider(mp),
+		}
 		// Only a configured signature type turns validation on, so a webhook
 		// block that carries an hmac stanza but no signature_type accepts
 		// unvalidated bodies, as in the Python engine.

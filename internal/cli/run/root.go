@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/turbine/internal/duckdb"
 	"github.com/turbolytics/turbine/internal/handlers"
+	"github.com/turbolytics/turbine/internal/logging"
 	"github.com/turbolytics/turbine/internal/managers"
 	"github.com/turbolytics/turbine/internal/sinks"
 	"github.com/turbolytics/turbine/internal/sources"
@@ -60,14 +61,18 @@ func NewCommand() *cobra.Command {
 	var enablePprof bool
 	var statsJSONPath string
 	var metricsExporter string
+	var withHTTPDebug bool
 
 	var cmd = &cobra.Command{
 		Use:   "run",
 		Short: "Run turbine against a stream of data",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			logger, _ := zap.NewDevelopment()
+			logger, levelErr := logging.New()
 			defer logger.Sync()
 			l := logger.Named("turbine.run")
+			if levelErr != nil {
+				return levelErr
+			}
 
 			if enablePprof {
 				runtime.SetBlockProfileRate(1)
@@ -110,9 +115,27 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 
+			// Shared with everything that touches the connection: the pipeline,
+			// the table managers and the debug API.
+			lock := &sync.Mutex{}
+
+			if withHTTPDebug {
+				startDebugServer(conn, lock, l)
+			}
+
+			meterProvider, err := newMeterProvider(metricsExporter, l)
+			if err != nil {
+				return err
+			}
+			pipelineMetrics, err := core.NewMetrics(meterProvider)
+			if err != nil {
+				return fmt.Errorf("failed to create metrics: %w", err)
+			}
+
 			src, err := sources.New(
 				conf.Pipeline.Source,
 				logger,
+				meterProvider,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to create source: %w", err)
@@ -146,22 +169,12 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 
-			meterProvider, err := newMeterProvider(metricsExporter, l)
-			if err != nil {
-				return err
-			}
-			pipelineMetrics, err := core.NewMetrics(meterProvider)
-			if err != nil {
-				return fmt.Errorf("failed to create metrics: %w", err)
-			}
-
 			// Matches the Python engine's default when the key is absent.
 			flushInterval := 30 * time.Second
 			if conf.Pipeline.FlushIntervalSeconds > 0 {
 				flushInterval = time.Duration(conf.Pipeline.FlushIntervalSeconds) * time.Second
 			}
 
-			lock := &sync.Mutex{}
 			turbine := core.NewTurbine(
 				src,
 				handler,
@@ -232,6 +245,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&enablePprof, "pprof", false, "Enable pprof profiling server on :6060")
 	cmd.Flags().StringVar(&statsJSONPath, "stats-json", "", "Write final run stats as JSON to this path")
 	cmd.Flags().StringVar(&metricsExporter, "metrics", "", "Metrics exporter to enable (prometheus); serves /metrics on :8000")
+	cmd.Flags().BoolVar(&withHTTPDebug, "with-http-debug", false, "Serve GET /debug?sql=... against the live DuckDB connection on "+debugAddr)
 
 	return cmd
 }
