@@ -180,14 +180,18 @@ func TestInferredDiskBatchHandler_RejectsInvalidJSON(t *testing.T) {
 	assert.Error(t, h.Write([]byte(`{"event": `)))
 }
 
-func TestInferredDiskBatchHandler_EmptyBatchErrors(t *testing.T) {
+// An empty batch is a no-op rather than an error: the pipeline counts a
+// message it consumed even when the handler rejected it, so a batch of
+// entirely malformed messages reaches Invoke with nothing buffered.
+func TestInferredDiskBatchHandler_EmptyBatchIsNoOp(t *testing.T) {
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
 	assert.NoError(t, h.Init(ctx))
 
-	_, err := h.Invoke(ctx)
-	assert.Error(t, err)
+	res, err := h.Invoke(ctx)
+	assert.NoError(t, err)
+	assert.Nil(t, res)
 }
 
 // A query matching no rows is a normal outcome, not an error: COPY writes an

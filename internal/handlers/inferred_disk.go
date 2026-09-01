@@ -129,8 +129,10 @@ func (h *InferredDiskBatchHandler) Invoke(ctx context.Context) (arrow.Table, err
 		return nil, err
 	}
 
+	// An empty batch is a no-op, not an error. See the note on
+	// InferredMemBatchHandler.Invoke.
 	if h.numWrote == 0 {
-		return nil, fmt.Errorf("no records to invoke")
+		return nil, nil
 	}
 
 	// Dropped whatever the outcome, matching the Python finally block: a

@@ -44,6 +44,12 @@ func (h *fakeHandler) Init(ctx context.Context) error { h.buffered = 0; return n
 func (h *fakeHandler) Write(msg []byte) error         { h.buffered++; return nil }
 
 func (h *fakeHandler) Invoke(ctx context.Context) (arrow.Table, error) {
+	// The real handlers return a nil table for an empty batch rather than an
+	// error or an empty one; the fake has to agree or it hides that path.
+	if h.buffered == 0 {
+		return nil, nil
+	}
+
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: "n", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
 	}, nil)
@@ -355,4 +361,24 @@ func TestConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {
 
 	assert.Equal(t, int64(1250), stats.MessagesConsumed())
 	assert.Equal(t, int64(1250), sink.rows)
+}
+
+// A batch whose messages were all rejected still reaches the handler, because
+// a rejected message was consumed and is counted. The handler has nothing
+// buffered, which is a batch with no rows -- not a second error on top of the
+// per-message ones the policy already handled.
+func TestConsumeLoop_BatchOfOnlyBadMessagesIsNotAHandlerError(t *testing.T) {
+	src := &fakeSource{batches: [][]Message{{{Value: []byte("bad")}, {Value: []byte("bad")}}}}
+	h := &failingHandler{failWriteOn: "bad"}
+	sink := &fakeSink{}
+
+	tb := NewTurbine(src, h, sink, 2, time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyIgnore})
+
+	stats, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, int64(0), sink.rows)
+	// Two rejected messages, and no extra error from invoking an empty batch.
+	assert.Equal(t, 2, stats.NumErrors)
 }

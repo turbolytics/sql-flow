@@ -268,3 +268,39 @@ func TestInferredMemBatchHandler_NoMetadataColumnsWithoutSource(t *testing.T) {
 
 	assert.Equal(t, 1, res.Schema().NumFields())
 }
+
+// A batch can reach Invoke with nothing buffered: the pipeline counts a
+// message it consumed even when the handler rejected it, so a batch whose
+// messages were all malformed JSON arrives here empty. That is not an error,
+// it is a batch with no rows -- and erroring turns an IGNORE policy into a
+// stream of spurious handler failures.
+func TestInferredMemBatchHandler_EmptyBatchIsNoOp(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT * FROM batch")
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	assert.Nil(t, res)
+}
+
+// The batch that follows an empty one must still work.
+func TestInferredMemBatchHandler_BatchAfterEmptyBatch(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT city FROM batch")
+	assert.NoError(t, err)
+
+	assert.NoError(t, h.Init(context.Background()))
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	assert.Nil(t, res)
+
+	res = invokeRows(t, h, []string{`{"city": "NYC"}`})
+	defer res.Release()
+	assert.Equal(t, int64(1), res.NumRows())
+}

@@ -140,8 +140,13 @@ func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, erro
 	meta := h.metadata
 	h.metadata = h.metadata[:0]
 
+	// An empty batch is a no-op, not an error. The pipeline counts a message
+	// it consumed even when the handler rejected it, so a batch whose
+	// messages were all malformed arrives here with nothing buffered; there
+	// is simply no table to produce. A nil table is what the caller already
+	// handles for a failed invoke.
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("no records to invoke")
+		return nil, nil
 	}
 
 	schema, err := inferSchema(raw)

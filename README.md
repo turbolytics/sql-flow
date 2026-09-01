@@ -621,6 +621,7 @@ message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 | Variable | Purpose |
 |---|---|
 | `SQLFLOW_DUCKDB_LIB` | Path to `libduckdb`. Defaults per-OS as described in [Installation](#installation) |
+| `SQLFLOW_LOG_LEVEL` | Log level, default `INFO`. Accepts Python's names too (`WARNING`, `CRITICAL`, `NOTSET`) |
 | `SQLFLOW_SQL_RESULTS_CACHE_DIR` | Staging dir for `InferredDiskBatch`, default `/tmp/sqlflow/resultscache` |
 | `SQLFLOW_STATIC_ROOT` | `STATIC_ROOT` template variable, default `/tmp/sqlflow/static` |
 | `PYICEBERG_HOME`, `PYICEBERG_CATALOG__*` | Iceberg catalog resolution, same as pyiceberg |
@@ -705,8 +706,20 @@ Error: udfs are not supported: parse_domain. Define them in DuckDB instead
 
 ### Behavioural notes
 
-- **`StructuredBatch`** `TRUNCATE`s its table every batch and errors on an empty
-  batch; the Python engine does neither.
+- **`StructuredBatch`** `TRUNCATE`s its table every batch; the Python engine
+  does not.
+- **An empty batch produces no output rather than an error.** A batch is
+  legitimately empty when a fixture is empty or every message in it was
+  rejected, so all three handlers return no table and the sink is not called.
+  The Python engine still raises `InvalidInputException` here.
+- **A missing field and an explicit `null` are the same value.** Both read as
+  SQL `NULL`, so they aggregate into one group. This follows
+  `pyarrow.Table.from_pylist`, which the Python engine uses; there is no way
+  to tell the two apart downstream.
+- **Columns come from the first message in the batch only.** A field that is
+  absent from the first message is dropped from the whole batch, even where
+  later messages have it — again matching `from_pylist`. Batches whose shape
+  varies want `StructuredBatch` and a declared table.
 - **DuckDB version**: the Python engine pins DuckDB 1.3.1; turbine loads
   whatever `libduckdb` you install (`DUCKDB_VERSION` pins 1.5.x for the image
   and benchmarks). "Same SQL, same result" is not guaranteed across that gap
@@ -717,7 +730,9 @@ Error: udfs are not supported: parse_domain. Define them in DuckDB instead
 - **`source.error.policy`** is parsed but unused. Use `pipeline.on_error`.
 - **Templating** uses gonja v2 (Jinja2 for Go) rather than Jinja2 itself.
   All 24 example configs render identically, asserted by a test.
-- **Log level** is not configurable yet.
+- **Log format** differs: the Python engine emits
+  `%(asctime)s [%(levelname)s] %(message)s`, turbine emits zap's console
+  format. The level itself is shared via `SQLFLOW_LOG_LEVEL`.
 
 # Building release binaries
 

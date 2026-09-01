@@ -153,3 +153,43 @@ func TestDevInvoke_ReportsMissingFixture(t *testing.T) {
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "fixture"))
 }
+
+// An empty fixture is the degenerate unit test, and `dev invoke` is where
+// users meet it first. It must report no rows rather than crash on the nil
+// table an empty batch produces.
+func TestDevInvoke_EmptyFixture(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	fixture := filepath.Join(t.TempDir(), "empty.jsonl")
+	assert.NoError(t, os.WriteFile(fixture, nil, 0o644))
+
+	var out bytes.Buffer
+	table, err := devInvoke(
+		context.Background(),
+		conn,
+		"../../dev/config/examples/basic.agg.mem.yml",
+		fixture,
+		&out,
+	)
+	assert.NoError(t, err)
+	assert.Nil(t, table)
+	assert.Equal(t, "", out.String())
+}
+
+// A fixture of nothing but blank lines reaches the handler with no messages
+// by the same route.
+func TestDevInvoke_FixtureOfOnlyBlankLines(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	fixture := filepath.Join(t.TempDir(), "blank.jsonl")
+	assert.NoError(t, os.WriteFile(fixture, []byte("\n\n   \n"), 0o644))
+
+	var out bytes.Buffer
+	table, err := devInvoke(context.Background(), conn,
+		"../../dev/config/examples/basic.agg.mem.yml", fixture, &out)
+	assert.NoError(t, err)
+	assert.Nil(t, table)
+	assert.Equal(t, "", out.String())
+}

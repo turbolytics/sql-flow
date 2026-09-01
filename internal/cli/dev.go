@@ -53,7 +53,10 @@ func newDevInvokeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer table.Release()
+			// An empty fixture produces no table.
+			if table != nil {
+				table.Release()
+			}
 
 			return nil
 		},
@@ -116,6 +119,12 @@ func devInvoke(
 	table, err := handler.Invoke(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to invoke handler: %w", err)
+	}
+
+	// An empty fixture yields no table at all. Printing nothing is the
+	// honest result; there are no rows and no schema to render.
+	if table == nil {
+		return nil, nil
 	}
 
 	sink := sinks.NewConsoleSinkTo(out)

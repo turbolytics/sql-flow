@@ -12,6 +12,12 @@ import (
 func tableRowsAsJSON(table arrow.Table) ([][]byte, error) {
 	var rows [][]byte
 
+	// An empty batch yields no table. Every sink funnels through here, so
+	// one check keeps a nil out of arrow's reader, which dereferences it.
+	if table == nil {
+		return nil, nil
+	}
+
 	reader := array.NewTableReader(table, 0)
 	defer reader.Release()
 

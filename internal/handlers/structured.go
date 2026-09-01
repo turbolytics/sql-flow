@@ -117,8 +117,10 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 	raw := h.rawBatch
 	h.rawBatch = h.rawBatch[:0]
 
+	// An empty batch is a no-op, not an error. See the note on
+	// InferredMemBatchHandler.Invoke.
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("no records to invoke")
+		return nil, nil
 	}
 
 	t0 := time.Now()
