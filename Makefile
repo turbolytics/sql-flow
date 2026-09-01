@@ -105,6 +105,62 @@ sqlflow-image:
 		--label io.turbolytics.duckdb.version=$(DUCKDB_VERSION) \
 		-t $(SQLFLOW_IMAGE) .
 
+# Publishes the Go engine's image. This is the ONLY target that pushes, and it
+# builds the root Dockerfile, never Dockerfile.python -- a bare version tag on
+# turbolytics/sql-flow means the Go engine as of v1.
+#
+# Multi-arch is the point of the target existing. v1.0.0 was published by hand
+# from a mac with a plain `docker build`, which produces a single-arch image, so
+# it went out arm64-only and could not run on amd64 at all. buildx runs the
+# whole Dockerfile once per platform against a platform-matching golang image;
+# install-libduckdb.sh branches on `uname -m`, so each arch fetches its own
+# libduckdb without any change here. CGO_ENABLED=1 rules out cross-compiling, so
+# the foreign arch builds under emulation -- expect the amd64 `go build` to take
+# several minutes on an arm64 host.
+#
+# Run `make test-image` before releasing; the guards below only cover release
+# integrity, not correctness.
+RELEASE_PLATFORMS ?= linux/amd64,linux/arm64
+BUILDX_BUILDER ?= sqlflow-release
+# Set RELEASE_LATEST=0 when re-publishing an older tag, so it does not claim
+# `latest` from a newer release.
+RELEASE_LATEST ?= 1
+# Override with --output=type=cacheonly for a dry run that builds but publishes
+# nothing.
+RELEASE_OUTPUT ?= --push
+
+.PHONY: release-image
+release-image:
+	@test -z "$$(git status --porcelain)" || { \
+		echo "release-image: working tree is dirty, so $(VERSION) would not be reproducible" >&2; \
+		echo "               commit or stash, then re-run" >&2; exit 1; }
+	@git describe --exact-match --tags HEAD >/dev/null 2>&1 || { \
+		echo "release-image: HEAD is not tagged (VERSION=$(VERSION))" >&2; \
+		echo "               tag the release first: git tag -a vX.Y.Z -m ... && git push origin vX.Y.Z" >&2; \
+		exit 1; }
+	@docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1 || \
+		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container >/dev/null
+	docker buildx build \
+		--builder $(BUILDX_BUILDER) \
+		--platform $(RELEASE_PLATFORMS) \
+		-f Dockerfile \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(GIT_COMMIT) \
+		--label org.opencontainers.image.version=$(VERSION) \
+		--label org.opencontainers.image.revision=$(GIT_COMMIT) \
+		--label io.turbolytics.duckdb.version=$(DUCKDB_VERSION) \
+		-t $(SQLFLOW_IMAGE) \
+		$(if $(filter 1,$(RELEASE_LATEST)),-t turbolytics/sql-flow:latest) \
+		$(RELEASE_OUTPUT) .
+
+# Reads the platforms back off the registry, because a single-arch publish looks
+# identical to a good one locally.
+.PHONY: release-image-verify
+release-image-verify:
+	docker buildx imagetools inspect $(SQLFLOW_IMAGE) | grep -E 'Name:|Platform'
+	@$(if $(filter 1,$(RELEASE_LATEST)), \
+		docker buildx imagetools inspect turbolytics/sql-flow:latest | grep -E 'Name:|Platform')
+
 # Fetches the pinned libduckdb for linux into bin/; only useful for linux hosts
 # and containers, macOS development uses the Homebrew install.
 .PHONY: libduckdb
