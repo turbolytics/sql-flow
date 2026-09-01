@@ -251,7 +251,8 @@
               "type": "string",
               "enum": [
                 "kafka",
-                "websocket"
+                "websocket",
+                "webhook"
               ]
             },
             "kafka": {
@@ -352,6 +353,36 @@
               "required": [
                 "uri"
               ]
+            },
+            "webhook": {
+              "type": "object",
+              "properties": {
+                "signature_type": {
+                  "type": "string",
+                  "enum": [
+                    "hmac"
+                  ]
+                },
+                "hmac": {
+                  "type": "object",
+                  "properties": {
+                    "header": {
+                      "type": "string"
+                    },
+                    "sig_key": {
+                      "type": "string"
+                    },
+                    "secret": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "header",
+                    "sig_key",
+                    "secret"
+                  ]
+                }
+              }
             }
           },
           "required": [

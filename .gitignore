@@ -3,3 +3,8 @@ dev/volume/
 bin/
 dist/
 .claude/
+
+# duckdb/ducklake artifacts written by tests and examples
+*.ducklake
+*.ducklake.wal
+*.ducklake.files/

@@ -29,16 +29,14 @@ func TestConfigExample_MatchesPythonOutput(t *testing.T) {
 
 // TestConfigValidate_Examples validates the shipped example configs, mirroring
 // the Python suite, which asserts every example satisfies the schema.
+// Every shipped example must satisfy the schema. Checking a hand-picked few
+// lets the schema drift away from the configs it is supposed to describe --
+// that is how `type: webhook` came to be rejected by `config validate` while
+// `run` accepted it.
 func TestConfigValidate_Examples(t *testing.T) {
-	for _, name := range []string{
-		"basic.agg.mem.yml",
-		"basic.agg.yml",
-		"kafka.structured.mem.yml",
-		"tumbling.window.yml",
-	} {
-		t.Run(name, func(t *testing.T) {
-			err := validateConfig(filepath.Join("../../dev/config/examples", name))
-			assert.NoError(t, err)
+	for _, path := range exampleConfigs(t) {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			assert.NoError(t, validateConfig(path))
 		})
 	}
 }
