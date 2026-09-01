@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -251,6 +253,13 @@ func appendTables(batch driver.Batch, tables []arrow.Table) error {
 // appenders accept. A null becomes nil, which the driver stores as NULL in a
 // Nullable column and as the column's zero value otherwise.
 func arrowValue(arr arrow.Array, i int) (any, error) {
+	// Lists are handled ahead of the null check: ClickHouse's Array(T) is not
+	// nullable and defaults to the empty array, so a null list must append an
+	// empty slice rather than nil.
+	if l, ok := arr.(*array.List); ok {
+		return arrowListValue(l, i)
+	}
+
 	if arr.IsNull(i) {
 		return nil, nil
 	}
@@ -294,5 +303,79 @@ func arrowValue(arr arrow.Array, i int) (any, error) {
 		return a.Value(i).ToTime(), nil
 	default:
 		return nil, fmt.Errorf("unsupported arrow type %s", arr.DataType())
+	}
+}
+
+// arrowListValue converts one list cell into a Go slice for an Array(T)
+// column. The slice is typed from the Arrow element type rather than built as
+// []any, because the driver matches an Array column's element type against
+// the slice's own element type; an []any is rejected, and an empty list has
+// no element to infer a type from.
+func arrowListValue(l *array.List, row int) (any, error) {
+	values := l.ListValues()
+
+	var start, end int64
+	if !l.IsNull(row) {
+		start, end = l.ValueOffsets(row)
+	}
+
+	out := reflect.MakeSlice(goSliceType(l.DataType().(*arrow.ListType).Elem()), 0, int(end-start))
+	for i := start; i < end; i++ {
+		v, err := arrowValue(values, int(i))
+		if err != nil {
+			return nil, err
+		}
+		if v == nil {
+			out = reflect.Append(out, reflect.Zero(out.Type().Elem()))
+			continue
+		}
+		rv := reflect.ValueOf(v)
+		if !rv.Type().AssignableTo(out.Type().Elem()) {
+			return nil, fmt.Errorf("list element %s is not assignable to %s", rv.Type(), out.Type().Elem())
+		}
+		out = reflect.Append(out, rv)
+	}
+	return out.Interface(), nil
+}
+
+// goSliceType maps an Arrow element type to the Go slice type the driver
+// expects for Array(T), recursing so a nested list becomes [][]T.
+func goSliceType(elem arrow.DataType) reflect.Type {
+	return reflect.SliceOf(goElemType(elem))
+}
+
+func goElemType(dt arrow.DataType) reflect.Type {
+	switch t := dt.(type) {
+	case *arrow.ListType:
+		return goSliceType(t.Elem())
+	case *arrow.BooleanType:
+		return reflect.TypeOf(false)
+	case *arrow.Int8Type:
+		return reflect.TypeOf(int8(0))
+	case *arrow.Int16Type:
+		return reflect.TypeOf(int16(0))
+	case *arrow.Int32Type:
+		return reflect.TypeOf(int32(0))
+	case *arrow.Int64Type:
+		return reflect.TypeOf(int64(0))
+	case *arrow.Uint8Type:
+		return reflect.TypeOf(uint8(0))
+	case *arrow.Uint16Type:
+		return reflect.TypeOf(uint16(0))
+	case *arrow.Uint32Type:
+		return reflect.TypeOf(uint32(0))
+	case *arrow.Uint64Type:
+		return reflect.TypeOf(uint64(0))
+	case *arrow.Float32Type:
+		return reflect.TypeOf(float32(0))
+	case *arrow.Float64Type:
+		return reflect.TypeOf(float64(0))
+	case *arrow.TimestampType, *arrow.Date32Type, *arrow.Date64Type:
+		return reflect.TypeOf(time.Time{})
+	case *arrow.BinaryType, *arrow.LargeBinaryType:
+		return reflect.TypeOf([]byte(nil))
+	default:
+		// String and anything else the element switch renders as a string.
+		return reflect.TypeOf("")
 	}
 }
