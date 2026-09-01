@@ -66,7 +66,7 @@ benchmark:
 # host->container port-forwarding (which caps fetches at ~10-15MB/s)
 .PHONY: benchmark-container
 benchmark-container:
-	./scripts/benchmark-container.sh $(NUM_MESSAGES) $(BATCH_SIZE)
+	./scripts/benchmark-container.sh $(NUM_MESSAGES) $(BATCH_SIZE) $(CONFIG)
 
 # sqlflow needs cgo for the ADBC driver manager, so CGO_ENABLED is never off.
 .PHONY: sqlflow

@@ -8,15 +8,22 @@ set -euo pipefail
 
 NUM_MESSAGES="${1:-300000}"
 BATCH_SIZE="${2:-5000}"
-TOPIC="benchmark-input"
-CONFIG="dev/config/examples/benchmark.structured.mem.yml"
+# A fresh topic per run keeps runs hermetic. Reusing one accumulates a backlog
+# past --max-msgs, and the consumer prefetches into it: throughput and peak
+# memory then depend on how many benchmarks ran before this one.
+TOPIC="${BENCH_TOPIC:-benchmark-$(date +%s)}"
+# Third arg / CONFIG env selects the pipeline under test; the default is the
+# structured handler, the fastest path. benchmark.inferred.mem.yml measures
+# schema inference instead.
+CONFIG="${3:-${CONFIG:-dev/config/examples/benchmark.structured.mem.yml}}"
 NETWORK="dev_default"
 GO_IMAGE="golang:1.25-bookworm"
 RUN_IMAGE="debian:bookworm-slim"
 
-echo "=== Turbine Go Benchmark (in-network) ==="
+echo "=== sqlflow benchmark (in-network) ==="
 echo "Messages:   $NUM_MESSAGES"
 echo "Batch size: $BATCH_SIZE"
+echo "Config:     $CONFIG"
 echo ""
 
 # 1. Check Kafka is running
@@ -66,10 +73,46 @@ docker run --rm --network "$NETWORK" \
     -e SQLFLOW_TOPIC="$TOPIC" \
     -e SQLFLOW_BATCH_SIZE="$BATCH_SIZE" \
     "$RUN_IMAGE" \
-    /sqlflow run -c "/dev-config/${CONFIG#dev/}" --max-msgs="$NUM_MESSAGES" 2>&1 | tee /tmp/sqlflow-benchmark.log
+    sh -c '
+        # Two memory numbers, sampled at 100ms because memory.peak needs
+        # kernel 5.19+ (Docker Desktop LinuxKit is older):
+        #
+        #   peak_memory_bytes      cgroup memory.current -- everything the
+        #                          container is charged for, page cache and
+        #                          Go lazily-freed (MADV_FREE) pages
+        #                          included. The provisioning ceiling.
+        #   peak_anon_bytes        the anon line of memory.stat -- the
+        #                          process working set, comparable to RSS.
+        #                          The number that reflects the engine.
+        #
+        # Sampling is accurate for this workload: batch memory is a
+        # sustained plateau, not a spike.
+        cur=/sys/fs/cgroup/memory.current
+        stat=/sys/fs/cgroup/memory.stat
+        [ -r "$cur" ] || { cur=/sys/fs/cgroup/memory/memory.usage_in_bytes; stat=/sys/fs/cgroup/memory/memory.stat; }
+        ( while [ -r "$cur" ]; do cat "$cur"; sleep 0.1; done ) > /tmp/mem.samples 2>/dev/null &
+        s1=$!
+        ( while [ -r "$stat" ]; do awk "/^(anon|rss) /{print \$2}" "$stat"; sleep 0.1; done ) > /tmp/anon.samples 2>/dev/null &
+        s2=$!
+
+        /sqlflow run -c "$1" --max-msgs="$2"
+        ec=$?
+
+        kill "$s1" "$s2" 2>/dev/null
+        peak=""
+        [ -r /sys/fs/cgroup/memory.peak ] && peak=$(cat /sys/fs/cgroup/memory.peak)
+        [ -n "$peak" ] || peak=$(sort -n /tmp/mem.samples | tail -1)
+        [ -n "$peak" ] && echo "peak_memory_bytes: $peak ($((peak / 1048576)) MiB)"
+        anon=$(sort -n /tmp/anon.samples | tail -1)
+        [ -n "$anon" ] && echo "peak_anon_bytes: $anon ($((anon / 1048576)) MiB)"
+        exit $ec' \
+    sh "/dev-config/${CONFIG#dev/}" "$NUM_MESSAGES" 2>&1 | tee /tmp/sqlflow-benchmark.log
 
 echo ""
 echo "=== Benchmark Complete ==="
 echo ""
 echo "Final throughput:"
 grep "total_throughput_per_second" /tmp/sqlflow-benchmark.log | tail -1
+echo "Peak memory:"
+grep "peak_memory_bytes" /tmp/sqlflow-benchmark.log | tail -1
+grep "peak_anon_bytes" /tmp/sqlflow-benchmark.log | tail -1

@@ -18,7 +18,7 @@ This repository ships **two** implementations of SQLFlow:
 | Entry point | `sqlflow` binary (`cmd/sqlflow/`) | `python cmd/sql-flow.py` |
 | Source tree | `internal/` | `sqlflow/` |
 | Docker image | built from `Dockerfile.sqlflow` | `turbolytics/sql-flow` |
-| Throughput | ~793k msgs/sec | low tens of thousands msgs/sec |
+| Throughput | ~927k msgs/sec | low tens of thousands msgs/sec |
 | Status | **v1, the engine to use for new pipelines** | maintained, feature-complete |
 
 **sqlflow is a Go rewrite of the Python engine, and it reads the same configuration files.**
@@ -631,16 +631,38 @@ message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 
 # Benchmarks
 
-Measured on an M-series Mac, single Kafka partition, 300,000 messages of JSON
-aggregated into DuckDB, `batch_size=5000`:
+Measured with `make benchmark-container`: Apple M1 Pro (10 cores, 32 GB),
+Docker 20.10.13, DuckDB v1.5.2, Go 1.25.5, single-partition Kafka
+(`confluentinc/cp-kafka:7.3.2`), 300,000 JSON messages aggregated into DuckDB.
+Every run uses a fresh topic and consumer group, so runs are hermetic.
 
-| Handler | Throughput | Peak RSS |
-|---|---|---|
-| `handlers.StructuredBatch` | **~793,000 msgs/sec** | ~316 MB |
-| `handlers.InferredMemBatch` | **~261,000 msgs/sec** | ~316 MB |
+| Handler | `batch_size` | Throughput | Peak memory (container) | Peak working set |
+|---|---|---|---|---|
+| `handlers.StructuredBatch` | 500 | ~305k msgs/sec | 254 MiB | 167 MiB |
+| `handlers.StructuredBatch` | 2000 | ~685k msgs/sec | 255 MiB | 172 MiB |
+| `handlers.StructuredBatch` | 5000 | **~927k msgs/sec** | 240 MiB | 155 MiB |
+| `handlers.InferredMemBatch` | 500 | ~159k msgs/sec | 256 MiB | 171 MiB |
+| `handlers.InferredMemBatch` | 2000 | ~229k msgs/sec | 264 MiB | 181 MiB |
+| `handlers.InferredMemBatch` | 5000 | **~256k msgs/sec** | 255 MiB | 171 MiB |
 
-Throughput scales with batch size — at `batch_size=500` StructuredBatch does
-~269k msgs/sec, at `2000` ~551k msgs/sec.
+Two memory figures, both sampled from the container's cgroup by the benchmark
+script: **peak memory** is everything the container is charged for (page cache
+and lazily-freed pages included) — the provisioning ceiling; **peak working
+set** is anonymous memory, comparable to RSS — what the engine actually holds.
+Memory is flat across handlers and batch sizes at roughly a quarter GiB, so
+throughput scales with batch size without buying it with memory.
+
+To reproduce:
+
+```
+make start-backing-services
+make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000
+make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000 \
+    CONFIG=dev/config/examples/benchmark.inferred.mem.yml
+```
+
+The script prints the throughput and both memory figures at the end of each
+run.
 
 For comparison, the Python engine's published numbers on similar pipelines are
 in the tens of thousands of msgs/sec (see
