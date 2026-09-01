@@ -439,6 +439,60 @@ func TestInferredMemBatchHandler_ConflictingListElementTypesError(t *testing.T) 
 	assert.That(t, strings.Contains(err.Error(), "cannot convert"))
 }
 
+// jsonparser hands back the raw bytes between a string's quotes, so escape
+// sequences arrive undecoded: "a\nb" is a backslash and an n, not a newline.
+// The Python engine decodes with json.loads, and a sink that stores the raw
+// bytes silently corrupts the value rather than failing.
+func TestInferredMemBatchHandler_DecodesJSONStringEscapes(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{"newline", `{"v": "line one\nline two"}`, "line one\nline two"},
+		{"tab", `{"v": "a\tb"}`, "a\tb"},
+		{"quote", `{"v": "say \"hi\""}`, `say "hi"`},
+		{"backslash", `{"v": "back\\slash"}`, `back\slash`},
+		{"unicode escape", `{"v": "less \u003c than"}`, "less < than"},
+		{"surrogate pair", `{"v": "emoji \ud83d\ude00"}`, "emoji 😀"},
+		// Raw UTF-8 is not escaped and must survive the fast path untouched.
+		{"raw utf8", `{"v": "L'Œil 👁 café"}`, "L'Œil 👁 café"},
+		{"plain ascii", `{"v": "nothing to decode"}`, "nothing to decode"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, cleanup := newTestADBCConn(t)
+			defer cleanup()
+
+			h, err := NewInferredMemBatchHandler(conn, "SELECT v FROM batch")
+			assert.NoError(t, err)
+
+			res := invokeRows(t, h, []string{tc.msg})
+			defer res.Release()
+
+			got := res.Column(0).Data().Chunk(0).(*array.String).Value(0)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// The same decoding must apply wherever a string is built, not just at the top
+// level -- appendJSONValue is shared by struct fields and list elements.
+func TestInferredMemBatchHandler_DecodesEscapesInNestedValues(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT o.s AS nested, l[1] AS elem FROM batch")
+	assert.NoError(t, err)
+
+	res := invokeRows(t, h, []string{`{"o": {"s": "a\nb"}, "l": ["c\td"]}`})
+	defer res.Release()
+
+	assert.Equal(t, "a\nb", res.Column(0).Data().Chunk(0).(*array.String).Value(0))
+	assert.Equal(t, "c\td", res.Column(1).Data().Chunk(0).(*array.String).Value(0))
+}
+
 // The batch that follows an empty one must still work.
 func TestInferredMemBatchHandler_BatchAfterEmptyBatch(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)

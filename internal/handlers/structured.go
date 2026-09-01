@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -50,6 +51,26 @@ func unsafeString(b []byte) string {
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
+// jsonString decodes a JSON string value. jsonparser returns the raw bytes
+// between the quotes with escape sequences intact, so "a\nb" arrives as a
+// backslash and an n; storing that verbatim silently corrupts the value
+// rather than failing. The Python engine decodes with json.loads.
+//
+// A string containing no backslash -- the overwhelming majority -- needs no
+// decoding and keeps the zero-copy path.
+func jsonString(b []byte) string {
+	if bytes.IndexByte(b, '\\') < 0 {
+		return unsafeString(b)
+	}
+	s, err := jsonparser.ParseString(b)
+	if err != nil {
+		// Malformed escapes are not worth failing the batch over; the raw
+		// bytes are still closer to the source than an empty string.
+		return unsafeString(b)
+	}
+	return s
+}
+
 // appendJSONValue extracts a JSON value and appends it to the corresponding Arrow builder.
 func appendJSONValue(builder array.Builder, fieldType arrow.DataType, data []byte, key string) error {
 	val, dataType, _, err := jsonparser.Get(data, key)
@@ -65,7 +86,7 @@ func appendJSONValue(builder array.Builder, fieldType arrow.DataType, data []byt
 func appendValue(builder array.Builder, fieldType arrow.DataType, val []byte, dataType jsonparser.ValueType) error {
 	switch fieldType.(type) {
 	case *arrow.StringType:
-		builder.(*array.StringBuilder).Append(unsafeString(val))
+		builder.(*array.StringBuilder).Append(jsonString(val))
 
 	case *arrow.BooleanType:
 		b, err := strconv.ParseBool(unsafeString(val))
