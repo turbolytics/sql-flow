@@ -237,3 +237,119 @@ func clickhouseFixtureTable(t *testing.T) arrow.Table {
 	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
 	return table
 }
+
+// Arrow list columns must reach ClickHouse Array(T) columns. The inferred
+// handler turns any JSON array into a list, so this is reachable from an
+// ordinary config -- a Bluesky pipeline selecting commit.record.langs
+// produces exactly this shape.
+func TestClickhouseSink_InsertsArrays(t *testing.T) {
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
+		id UInt64,
+		langs Array(String),
+		counts Array(Int64)
+	) ENGINE = MergeTree() ORDER BY id`)
+
+	alloc := memory.NewGoAllocator()
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "langs", Type: arrow.ListOf(arrow.BinaryTypes.String)},
+		{Name: "counts", Type: arrow.ListOf(arrow.PrimitiveTypes.Int64)},
+	}, nil)
+
+	b := array.NewRecordBuilder(alloc, schema)
+	defer b.Release()
+
+	b.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2, 3}, nil)
+
+	lb := b.Field(1).(*array.ListBuilder)
+	sv := lb.ValueBuilder().(*array.StringBuilder)
+	lb.Append(true)
+	sv.AppendValues([]string{"en", "ja"}, nil)
+	lb.Append(true) // an empty array stays empty, not null
+	lb.AppendNull() // a null list becomes ClickHouse's empty-array default
+
+	cb := b.Field(2).(*array.ListBuilder)
+	iv := cb.ValueBuilder().(*array.Int64Builder)
+	cb.Append(true)
+	iv.AppendValues([]int64{7, 8, 9}, nil)
+	cb.Append(true)
+	iv.AppendValues([]int64{42}, nil)
+	cb.Append(true)
+
+	rec := b.NewRecord()
+	defer rec.Release()
+	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer table.Release()
+
+	assert.NoError(t, s.WriteTable(table))
+	assert.NoError(t, s.Flush())
+	assert.Equal(t, uint64(3), clickhouseRowCount(t, s))
+
+	ctx := context.Background()
+	var langs []string
+	row := s.conn.QueryRow(ctx, "SELECT langs FROM "+s.table+" WHERE id = 1")
+	assert.NoError(t, row.Scan(&langs))
+	assert.Equal(t, 2, len(langs))
+	assert.Equal(t, "en", langs[0])
+	assert.Equal(t, "ja", langs[1])
+
+	var counts []int64
+	row = s.conn.QueryRow(ctx, "SELECT counts FROM "+s.table+" WHERE id = 1")
+	assert.NoError(t, row.Scan(&counts))
+	assert.Equal(t, 3, len(counts))
+	assert.Equal(t, int64(9), counts[2])
+
+	// Empty and null lists both land as empty arrays.
+	var empty []string
+	row = s.conn.QueryRow(ctx, "SELECT langs FROM "+s.table+" WHERE id = 2")
+	assert.NoError(t, row.Scan(&empty))
+	assert.Equal(t, 0, len(empty))
+
+	var nulled []string
+	row = s.conn.QueryRow(ctx, "SELECT langs FROM "+s.table+" WHERE id = 3")
+	assert.NoError(t, row.Scan(&nulled))
+	assert.Equal(t, 0, len(nulled))
+}
+
+// A list of lists must reach Array(Array(T)), since the handler infers
+// nested lists from nested JSON arrays.
+func TestClickhouseSink_InsertsNestedArrays(t *testing.T) {
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
+		id UInt64,
+		matrix Array(Array(Int64))
+	) ENGINE = MergeTree() ORDER BY id`)
+
+	alloc := memory.NewGoAllocator()
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "matrix", Type: arrow.ListOf(arrow.ListOf(arrow.PrimitiveTypes.Int64))},
+	}, nil)
+
+	b := array.NewRecordBuilder(alloc, schema)
+	defer b.Release()
+
+	b.Field(0).(*array.Int64Builder).Append(1)
+	outer := b.Field(1).(*array.ListBuilder)
+	inner := outer.ValueBuilder().(*array.ListBuilder)
+	iv := inner.ValueBuilder().(*array.Int64Builder)
+	outer.Append(true)
+	inner.Append(true)
+	iv.AppendValues([]int64{1, 2}, nil)
+	inner.Append(true)
+	iv.AppendValues([]int64{3}, nil)
+
+	rec := b.NewRecord()
+	defer rec.Release()
+	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer table.Release()
+
+	assert.NoError(t, s.WriteTable(table))
+	assert.NoError(t, s.Flush())
+
+	var matrix [][]int64
+	row := s.conn.QueryRow(context.Background(), "SELECT matrix FROM "+s.table+" WHERE id = 1")
+	assert.NoError(t, row.Scan(&matrix))
+	assert.Equal(t, 2, len(matrix))
+	assert.Equal(t, 2, len(matrix[0]))
+	assert.Equal(t, int64(3), matrix[1][0])
+}
