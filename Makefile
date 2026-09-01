@@ -5,6 +5,7 @@ DUCKDB_VERSION := $(shell tr -d '[:space:]' < DUCKDB_VERSION)
 GIT_COMMIT := $(shell git rev-parse --short HEAD)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 TURBINE_IMAGE ?= turbolytics/turbine:$(VERSION)
+DIST_DIR ?= dist
 
 GO_MODULE := github.com/turbolytics/turbine
 GO_LDFLAGS := -X $(GO_MODULE)/internal/cli.Version=$(VERSION) \
@@ -66,6 +67,26 @@ benchmark-container:
 .PHONY: turbine
 turbine:
 	CGO_ENABLED=1 go build -ldflags "$(GO_LDFLAGS)" -o bin/turbine ./cmd/turbine/
+
+# Cross-compiled release binaries for linux/darwin x amd64/arm64.
+#
+# turbine CANNOT be cross-compiled the usual way. The ADBC driver manager is a
+# cgo package, so CGO_ENABLED=0 fails to compile outright ("undefined:
+# drivermgr.Driver") and CGO_ENABLED=1 needs a C toolchain for the target OS,
+# which `GOOS=linux go build` on a mac does not have. So: linux targets are
+# built inside a container for that platform, and the two darwin slices are
+# built natively with clang's -arch.
+#
+# A macOS host with docker produces all four. A LINUX HOST PRODUCES ONLY THE
+# TWO LINUX TARGETS -- darwin binaries would need a macOS SDK and an
+# osxcross-style toolchain, which is not shipped here. Unbuildable targets are
+# reported as skipped, not faked.
+#
+# The binaries dlopen libduckdb at runtime and are not standalone; see
+# scripts/install-libduckdb.sh.
+.PHONY: release-binaries
+release-binaries:
+	./scripts/release-binaries.sh $(DIST_DIR)
 
 # The build reads DUCKDB_VERSION itself; the label records which DuckDB ended up
 # in the image so it can be read back off a pulled tag.

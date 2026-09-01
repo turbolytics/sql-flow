@@ -1,4 +1,5 @@
 *.egg-info/
 dev/volume/
 bin/
+dist/
 .claude/
