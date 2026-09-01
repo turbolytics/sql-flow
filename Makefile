@@ -153,13 +153,12 @@ release-image:
 		$(if $(filter 1,$(RELEASE_LATEST)),-t turbolytics/sql-flow:latest) \
 		$(RELEASE_OUTPUT) .
 
-# Reads the platforms back off the registry, because a single-arch publish looks
-# identical to a good one locally.
+# Reads the registry back, because a single-arch publish looks identical to a
+# good one locally, and so does a `latest` still pointing at an older release.
 .PHONY: release-image-verify
 release-image-verify:
-	docker buildx imagetools inspect $(SQLFLOW_IMAGE) | grep -E 'Name:|Platform'
-	@$(if $(filter 1,$(RELEASE_LATEST)), \
-		docker buildx imagetools inspect turbolytics/sql-flow:latest | grep -E 'Name:|Platform')
+	./scripts/verify-release-image.sh $(SQLFLOW_IMAGE) \
+		$(if $(filter 1,$(RELEASE_LATEST)),turbolytics/sql-flow:latest)
 
 # Fetches the pinned libduckdb for linux into bin/; only useful for linux hosts
 # and containers, macOS development uses the Homebrew install.
