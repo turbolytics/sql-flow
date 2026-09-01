@@ -3,9 +3,9 @@ package tail
 import (
 	"fmt"
 	"github.com/spf13/cobra"
-	"github.com/turbolytics/turbine/internal/config"
-	"github.com/turbolytics/turbine/internal/logging"
-	"github.com/turbolytics/turbine/internal/sources"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/logging"
+	"github.com/turbolytics/sql-flow/internal/sources"
 	"go.uber.org/zap"
 	"time"
 )
@@ -19,7 +19,7 @@ func NewCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger, levelErr := logging.New()
 			defer logger.Sync()
-			l := logger.Named("turbine.tail")
+			l := logger.Named("sqlflow.tail")
 			if levelErr != nil {
 				return levelErr
 			}
@@ -80,7 +80,7 @@ func NewCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to turbine config file (required)")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to sqlflow config file (required)")
 	cmd.MarkFlagRequired("config")
 	return cmd
 

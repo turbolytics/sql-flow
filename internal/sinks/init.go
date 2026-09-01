@@ -6,8 +6,8 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/turbolytics/turbine/internal/config"
-	"github.com/turbolytics/turbine/internal/core"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
 )
 
 type NoopSink struct{}

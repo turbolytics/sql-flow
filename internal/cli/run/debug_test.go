@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
-	"github.com/turbolytics/turbine/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/zeebo/assert"
 )
 

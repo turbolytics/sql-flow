@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/turbolytics/turbine/internal/config"
-	"github.com/turbolytics/turbine/internal/webhook"
-	"github.com/turbolytics/turbine/internal/websocket"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/webhook"
+	"github.com/turbolytics/sql-flow/internal/websocket"
 	"github.com/zeebo/assert"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"

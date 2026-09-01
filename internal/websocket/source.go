@@ -3,7 +3,7 @@ package websocket
 import (
 	"context"
 	"fmt"
-	"github.com/turbolytics/turbine/internal/core"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"sync"
 	"time"
 

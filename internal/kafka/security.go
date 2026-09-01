@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/turbolytics/turbine/internal/config"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/sasl"
 	"github.com/twmb/franz-go/pkg/sasl/plain"

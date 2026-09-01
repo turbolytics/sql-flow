@@ -1,7 +1,7 @@
-# Image for the Go engine (turbine). The Python engine has its own image, built
+# Image for the Go engine (sqlflow). The Python engine has its own image, built
 # from the top-level Dockerfile; the two are independent.
 #
-# Build with `make turbine-image`, which supplies the build args below.
+# Build with `make sqlflow-image`, which supplies the build args below.
 ARG GO_IMAGE=golang:1.25-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 
@@ -39,8 +39,8 @@ COPY internal ./internal
 # CGO_ENABLED=1 is required: the ADBC driver manager reaches libduckdb through
 # cgo, so a static pure-Go build cannot talk to DuckDB at all.
 RUN CGO_ENABLED=1 go build \
-    -ldflags "-X github.com/turbolytics/turbine/internal/cli.Version=${VERSION} -X github.com/turbolytics/turbine/internal/cli.Commit=${COMMIT}" \
-    -o /out/turbine ./cmd/turbine/
+    -ldflags "-X github.com/turbolytics/sqlflow/internal/cli.Version=${VERSION} -X github.com/turbolytics/sqlflow/internal/cli.Commit=${COMMIT}" \
+    -o /out/sqlflow ./cmd/sqlflow/
 
 FROM ${RUNTIME_IMAGE}
 
@@ -50,11 +50,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /out/turbine /usr/local/bin/turbine
+COPY --from=builder /out/sqlflow /usr/local/bin/sqlflow
 COPY --from=builder /out/duckdb/libduckdb.so /usr/local/lib/libduckdb.so
 
 ENV SQLFLOW_DUCKDB_LIB=/usr/local/lib/libduckdb.so
 
 WORKDIR /app
 
-ENTRYPOINT ["/usr/local/bin/turbine"]
+ENTRYPOINT ["/usr/local/bin/sqlflow"]

@@ -13,7 +13,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/turbolytics/turbine/internal/config"
+	"github.com/turbolytics/sql-flow/internal/config"
 )
 
 // ClickhouseSink inserts result batches into a ClickHouse table.

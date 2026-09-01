@@ -6,7 +6,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/turbolytics/turbine/internal/core"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/zeebo/assert"
 )
 

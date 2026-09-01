@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"github.com/turbolytics/turbine/internal/core"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"io"
 	"net"
 	"net/http"

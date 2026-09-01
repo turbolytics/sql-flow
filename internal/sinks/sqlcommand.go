@@ -10,7 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/google/uuid"
-	"github.com/turbolytics/turbine/internal/config"
+	"github.com/turbolytics/sql-flow/internal/config"
 )
 
 // sinkBatchTable is the table the user's sink SQL selects from. The Python

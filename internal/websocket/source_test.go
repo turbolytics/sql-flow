@@ -1,7 +1,7 @@
 package websocket
 
 import (
-	"github.com/turbolytics/turbine/internal/core"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"net"
 	"net/http"
 	"net/http/httptest"

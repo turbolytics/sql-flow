@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/turbolytics/turbine/internal/config"
-	"github.com/turbolytics/turbine/internal/core"
-	"github.com/turbolytics/turbine/internal/duckdb"
-	"github.com/turbolytics/turbine/internal/handlers"
-	"github.com/turbolytics/turbine/internal/sinks"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/handlers"
+	"github.com/turbolytics/sql-flow/internal/sinks"
 	"go.uber.org/zap"
 )
 

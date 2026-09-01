@@ -3,7 +3,7 @@ package kafka
 import (
 	"testing"
 
-	"github.com/turbolytics/turbine/internal/config"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/zeebo/assert"
 )
 

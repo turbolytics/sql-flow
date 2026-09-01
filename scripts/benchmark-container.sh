@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Benchmarks turbine from INSIDE the docker network. Docker Desktop's
+# Benchmarks sqlflow from INSIDE the docker network. Docker Desktop's
 # host->container port-forwarding caps Kafka fetches at ~10-15MB/s, which
-# starves the pipeline and understates throughput ~10x. Running turbine on the
+# starves the pipeline and understates throughput ~10x. Running sqlflow on the
 # same docker network as the broker measures the engine, not the NAT.
 
 NUM_MESSAGES="${1:-300000}"
@@ -30,16 +30,16 @@ else
     echo "Kafka is running."
 fi
 
-# 2. Build turbine for linux inside a container (CGO for ADBC)
-echo "--- Building turbine (linux) ---"
+# 2. Build sqlflow for linux inside a container (CGO for ADBC)
+echo "--- Building sqlflow (linux) ---"
 docker run --rm \
     -v "$PWD":/src \
     -v "$(go env GOMODCACHE)":/gomod \
     -e GOMODCACHE=/gomod -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false \
     -e GOTOOLCHAIN=auto \
     -w /src "$GO_IMAGE" \
-    go build -o bin/turbine-linux ./cmd/turbine/
-echo "Built bin/turbine-linux"
+    go build -o bin/sqlflow-linux ./cmd/sqlflow/
+echo "Built bin/sqlflow-linux"
 
 # 3. Fetch libduckdb.so for linux (cached in bin/)
 ./scripts/install-libduckdb.sh bin libduckdb-linux.so
@@ -50,14 +50,14 @@ PYTHON="${SQLFLOW_PYTHON:-python3}"
 "$PYTHON" cmd/publish-test-data.py --num-messages="$NUM_MESSAGES" --topic="$TOPIC"
 echo "Publishing complete."
 
-# 5. Run turbine in-network with a unique consumer group so re-runs start fresh
+# 5. Run sqlflow in-network with a unique consumer group so re-runs start fresh
 GROUP_ID="benchmark-$(date +%s)"
 echo ""
-echo "--- Running turbine in-network (batch_size=$BATCH_SIZE, group=$GROUP_ID) ---"
+echo "--- Running sqlflow in-network (batch_size=$BATCH_SIZE, group=$GROUP_ID) ---"
 echo ""
 
 docker run --rm --network "$NETWORK" \
-    -v "$PWD/bin/turbine-linux":/turbine \
+    -v "$PWD/bin/sqlflow-linux":/sqlflow \
     -v "$PWD/bin/libduckdb-linux.so":/duckdb/libduckdb.so \
     -v "$PWD/dev":/dev-config \
     -e SQLFLOW_KAFKA_BROKERS=kafka1:19092 \
@@ -66,10 +66,10 @@ docker run --rm --network "$NETWORK" \
     -e SQLFLOW_TOPIC="$TOPIC" \
     -e SQLFLOW_BATCH_SIZE="$BATCH_SIZE" \
     "$RUN_IMAGE" \
-    /turbine run -c "/dev-config/${CONFIG#dev/}" --max-msgs="$NUM_MESSAGES" 2>&1 | tee /tmp/turbine-benchmark.log
+    /sqlflow run -c "/dev-config/${CONFIG#dev/}" --max-msgs="$NUM_MESSAGES" 2>&1 | tee /tmp/sqlflow-benchmark.log
 
 echo ""
 echo "=== Benchmark Complete ==="
 echo ""
 echo "Final throughput:"
-grep "total_throughput_per_second" /tmp/turbine-benchmark.log | tail -1
+grep "total_throughput_per_second" /tmp/sqlflow-benchmark.log | tail -1

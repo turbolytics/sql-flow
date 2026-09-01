@@ -1,4 +1,4 @@
-// Package logging builds the logger every turbine command uses, taking its
+// Package logging builds the logger every sqlflow command uses, taking its
 // level from SQLFLOW_LOG_LEVEL exactly as sqlflow.settings does.
 package logging
 

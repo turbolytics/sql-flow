@@ -61,6 +61,14 @@ def test_kafka_mem_iceberg(bootstrap_server):
 
     catalog.create_namespace("default")
 
+    # The Python engine builds this catalog in-process, but the Go engine runs
+    # as a subprocess and resolves the catalog by name the way pyiceberg does.
+    # Exporting it here keeps the test hermetic: without this it only passes on
+    # a machine whose ~/.pyiceberg.yaml happens to define this catalog.
+    env_prefix = f'PYICEBERG_CATALOG__{catalog_name.upper()}__'
+    os.environ[env_prefix + 'URI'] = f"sqlite:///{warehouse_path}/catalog.db"
+    os.environ[env_prefix + 'WAREHOUSE'] = f"file://{warehouse_path}"
+
     schema = Schema(
         NestedField(field_id=1, name="timestamp", field_type=TimestampType(), required=False),
         NestedField(field_id=2, name="city", field_type=StringType(), required=False),

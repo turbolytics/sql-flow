@@ -2,11 +2,11 @@ package sources
 
 import (
 	"fmt"
-	"github.com/turbolytics/turbine/internal/config"
-	"github.com/turbolytics/turbine/internal/core"
-	tkafka "github.com/turbolytics/turbine/internal/kafka"
-	"github.com/turbolytics/turbine/internal/webhook"
-	"github.com/turbolytics/turbine/internal/websocket"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
+	tkafka "github.com/turbolytics/sql-flow/internal/kafka"
+	"github.com/turbolytics/sql-flow/internal/webhook"
+	"github.com/turbolytics/sql-flow/internal/websocket"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"

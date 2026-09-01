@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/turbolytics/turbine/internal/cli"
+	"github.com/turbolytics/sql-flow/internal/cli"
 )
 
 func main() {

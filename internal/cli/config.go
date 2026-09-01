@@ -9,7 +9,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/spf13/cobra"
-	"github.com/turbolytics/turbine/internal/config"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,7 +24,7 @@ var configSchemaJSON []byte
 func newConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Inspect and validate turbine configuration",
+		Short: "Inspect and validate sqlflow configuration",
 	}
 
 	cmd.AddCommand(newConfigValidateCommand())

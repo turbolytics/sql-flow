@@ -1,13 +1,13 @@
-# --- turbine (Go engine) -----------------------------------------------------
+# --- sqlflow (Go engine) -----------------------------------------------------
 # DUCKDB_VERSION is pinned in one place, the file of the same name, and read
 # from there by the container build, the benchmark script and CI.
 DUCKDB_VERSION := $(shell tr -d '[:space:]' < DUCKDB_VERSION)
 GIT_COMMIT := $(shell git rev-parse --short HEAD)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-TURBINE_IMAGE ?= turbolytics/turbine:$(VERSION)
+SQLFLOW_IMAGE ?= turbolytics/sqlflow:$(VERSION)
 DIST_DIR ?= dist
 
-GO_MODULE := github.com/turbolytics/turbine
+GO_MODULE := github.com/turbolytics/sql-flow
 GO_LDFLAGS := -X $(GO_MODULE)/internal/cli.Version=$(VERSION) \
 	-X $(GO_MODULE)/internal/cli.Commit=$(GIT_COMMIT)
 
@@ -57,20 +57,20 @@ stop-backing-services:
 benchmark:
 	./scripts/benchmark.sh $(NUM_MESSAGES) $(BATCH_SIZE)
 
-# Runs turbine inside the docker network to avoid Docker Desktop's slow
+# Runs sqlflow inside the docker network to avoid Docker Desktop's slow
 # host->container port-forwarding (which caps fetches at ~10-15MB/s)
 .PHONY: benchmark-container
 benchmark-container:
 	./scripts/benchmark-container.sh $(NUM_MESSAGES) $(BATCH_SIZE)
 
-# turbine needs cgo for the ADBC driver manager, so CGO_ENABLED is never off.
-.PHONY: turbine
-turbine:
-	CGO_ENABLED=1 go build -ldflags "$(GO_LDFLAGS)" -o bin/turbine ./cmd/turbine/
+# sqlflow needs cgo for the ADBC driver manager, so CGO_ENABLED is never off.
+.PHONY: sqlflow
+sqlflow:
+	CGO_ENABLED=1 go build -ldflags "$(GO_LDFLAGS)" -o bin/sqlflow ./cmd/sqlflow/
 
 # Cross-compiled release binaries for linux/darwin x amd64/arm64.
 #
-# turbine CANNOT be cross-compiled the usual way. The ADBC driver manager is a
+# sqlflow CANNOT be cross-compiled the usual way. The ADBC driver manager is a
 # cgo package, so CGO_ENABLED=0 fails to compile outright ("undefined:
 # drivermgr.Driver") and CGO_ENABLED=1 needs a C toolchain for the target OS,
 # which `GOOS=linux go build` on a mac does not have. So: linux targets are
@@ -90,15 +90,15 @@ release-binaries:
 
 # The build reads DUCKDB_VERSION itself; the label records which DuckDB ended up
 # in the image so it can be read back off a pulled tag.
-.PHONY: turbine-image
-turbine-image:
-	docker build -f Dockerfile.turbine \
+.PHONY: sqlflow-image
+sqlflow-image:
+	docker build -f Dockerfile.sqlflow \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(GIT_COMMIT) \
 		--label org.opencontainers.image.version=$(VERSION) \
 		--label org.opencontainers.image.revision=$(GIT_COMMIT) \
 		--label io.turbolytics.duckdb.version=$(DUCKDB_VERSION) \
-		-t $(TURBINE_IMAGE) .
+		-t $(SQLFLOW_IMAGE) .
 
 # Fetches the pinned libduckdb for linux into bin/; only useful for linux hosts
 # and containers, macOS development uses the Homebrew install.

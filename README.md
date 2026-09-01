@@ -13,16 +13,16 @@ Key Features:
 
 This repository ships **two** implementations of SQLFlow:
 
-| | `turbine` (Go) | `sqlflow` (Python) |
+| | `sqlflow` (Go) | `sqlflow` (Python) |
 |---|---|---|
-| Entry point | `turbine` binary (`cmd/turbine/`) | `python cmd/sql-flow.py` |
+| Entry point | `sqlflow` binary (`cmd/sqlflow/`) | `python cmd/sql-flow.py` |
 | Source tree | `internal/` | `sqlflow/` |
-| Docker image | built from `Dockerfile.turbine` | `turbolytics/sql-flow` |
+| Docker image | built from `Dockerfile.sqlflow` | `turbolytics/sql-flow` |
 | Throughput | ~793k msgs/sec | low tens of thousands msgs/sec |
 | Status | **v1, the engine to use for new pipelines** | maintained, feature-complete |
 
-**turbine is a Go rewrite of the Python engine, and it reads the same configuration files.**
-A `sqlflow.yml` written for the Python engine is intended to run unmodified on turbine
+**sqlflow is a Go rewrite of the Python engine, and it reads the same configuration files.**
+A `sqlflow.yml` written for the Python engine is intended to run unmodified on sqlflow
 — same YAML spec, same Jinja2 templating, same JSON Schema, same DuckDB SQL.
 The [Differences from the Python engine](#differences-from-the-python-engine)
 section below lists every place that is not yet true.
@@ -38,11 +38,11 @@ Why the rewrite:
 
 # Quick Start (Getting Started in 5 Minutes)
 
-1. Get a turbine binary. The fastest path from a clone is to build one
+1. Get a sqlflow binary. The fastest path from a clone is to build one
    (see [Installation](#installation) for prebuilt binaries and Docker):
 
 ```
-make turbine
+make sqlflow
 ```
 
 2. Set up the local development environment:
@@ -55,7 +55,7 @@ make setup-dev
    the config's handler over a JSONL fixture and prints the result:
 
 ```
-./bin/turbine dev invoke dev/config/examples/basic.agg.mem.yml dev/fixtures/simple.json
+./bin/sqlflow dev invoke dev/config/examples/basic.agg.mem.yml dev/fixtures/simple.json
 
 {"city":"New York","city_count":28672}
 {"city":"Baltimore","city_count":28672}
@@ -79,10 +79,10 @@ python3 cmd/publish-test-data.py --num-messages=10000 --topic="input-simple-agg-
 docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-simple-agg-mem
 ```
 
-7. Run turbine against the stream:
+7. Run sqlflow against the stream:
 
 ```
-./bin/turbine run -c dev/config/examples/basic.agg.mem.yml --max-msgs=10000
+./bin/sqlflow run -c dev/config/examples/basic.agg.mem.yml --max-msgs=10000
 ```
 
 - Verify output in the Kafka consumer:
@@ -96,17 +96,17 @@ docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --t
 
 You just ran SQLFlow against a stream of Kafka data!
 
-> **Note the flag.** turbine takes its config as `-c/--config`, not as a
+> **Note the flag.** sqlflow takes its config as `-c/--config`, not as a
 > positional argument, and the message cap is `--max-msgs` (the Python engine
 > uses `run <config> --max-msgs-to-process`). See
 > [CLI differences](#cli-differences).
 
 # Installation
 
-turbine reaches DuckDB through the Arrow ADBC driver manager, which **dlopens
+sqlflow reaches DuckDB through the Arrow ADBC driver manager, which **dlopens
 `libduckdb` at runtime**. The binary is therefore not standalone: wherever you
 run it, that shared library has to be present. `SQLFLOW_DUCKDB_LIB` points at
-it; without that variable turbine looks in
+it; without that variable sqlflow looks in
 `/opt/homebrew/lib/libduckdb.dylib` on macOS and `/usr/local/lib/libduckdb.so`
 on Linux.
 
@@ -118,7 +118,7 @@ The image bakes in a matching `libduckdb.so` and sets `SQLFLOW_DUCKDB_LIB`, so
 nothing else is needed. Build it from the repo:
 
 ```
-make turbine-image
+make sqlflow-image
 ```
 
 Then run a pipeline with your config and cache mounted in:
@@ -127,11 +127,11 @@ Then run a pipeline with your config and cache mounted in:
 docker run \
   -v $(pwd)/dev:/tmp/conf \
   -v /tmp/sqlflow:/tmp/sqlflow \
-  turbolytics/turbine:<tag> \
+  turbolytics/sqlflow:<tag> \
   dev invoke /tmp/conf/config/examples/basic.agg.mem.yml /tmp/conf/fixtures/simple.json
 ```
 
-`make turbine-image` prints the tag it built; it is derived from `git describe`.
+`make sqlflow-image` prints the tag it built; it is derived from `git describe`.
 
 ### Prebuilt binary
 
@@ -139,10 +139,10 @@ Release binaries are published for linux and macOS on amd64 and arm64. Download
 the one matching your platform, then install a matching `libduckdb`:
 
 ```
-chmod +x turbine_<version>_<os>_<arch>
+chmod +x sqlflow_<version>_<os>_<arch>
 ./scripts/install-libduckdb.sh /usr/local/lib
 export SQLFLOW_DUCKDB_LIB=/usr/local/lib/libduckdb.so
-./turbine_<version>_<os>_<arch> version
+./sqlflow_<version>_<os>_<arch> version
 ```
 
 `scripts/install-libduckdb.sh` **always fetches the linux `libduckdb.so`**, for
@@ -168,15 +168,15 @@ Requires Go 1.25+, a C toolchain (cgo is mandatory), and libduckdb.
 ```
 # macOS
 brew install duckdb
-make turbine
+make sqlflow
 
 # linux
 ./scripts/install-libduckdb.sh /usr/local/lib
 export SQLFLOW_DUCKDB_LIB=/usr/local/lib/libduckdb.so
-make turbine
+make sqlflow
 ```
 
-The binary lands at `bin/turbine`.
+The binary lands at `bin/sqlflow`.
 
 # How SQLFlow Works
 
@@ -223,7 +223,7 @@ The file explicitly contains a `pipeline` configuration with a `source`, `handle
 # CLI Reference
 
 ```
-turbine [command]
+sqlflow [command]
 ```
 
 | Command | Purpose |
@@ -235,12 +235,12 @@ turbine [command]
 | `tail` | Print every message from a config's source |
 | `version` | Print version, commit and Go version |
 
-### `turbine run`
+### `sqlflow run`
 
 Runs the pipeline: consume, batch, execute SQL, sink, commit offsets.
 
 ```
-turbine run -c <config> [flags]
+sqlflow run -c <config> [flags]
 ```
 
 | Flag | Default | Description |
@@ -254,13 +254,13 @@ turbine run -c <config> [flags]
 `--stats-json` writes a small object, useful for CI assertions:
 
 ```
-$ turbine run -c dev/config/examples/benchmark.structured.mem.yml \
+$ sqlflow run -c dev/config/examples/benchmark.structured.mem.yml \
     --max-msgs=2000 --stats-json=/tmp/stats.json
 ...
 {"messages_consumed":2000,"num_errors":0}
 ```
 
-### `turbine dev invoke`
+### `sqlflow dev invoke`
 
 Runs the config's `commands`, `tables` and handler over a JSONL fixture and
 prints the resulting rows to stdout. The sink is deliberately **not** exercised,
@@ -268,42 +268,42 @@ so this is safe to run against a production config. This is the fastest way to
 iterate on SQL.
 
 ```
-turbine dev invoke <config> <fixture>
+sqlflow dev invoke <config> <fixture>
 ```
 
-### `turbine config validate`
+### `sqlflow config validate`
 
 Renders the config's Jinja2 template, then validates the result against the
 same JSON Schema the Python engine uses.
 
 ```
-$ turbine config validate dev/config/examples/basic.agg.mem.yml
+$ sqlflow config validate dev/config/examples/basic.agg.mem.yml
 dev/config/examples/basic.agg.mem.yml: valid
 ```
 
-### `turbine config example`
+### `sqlflow config example`
 
 Prints a fully commented YAML skeleton generated from the schema — every key,
 its description, and the accepted enum values.
 
 ```
-turbine config example
+sqlflow config example
 ```
 
-### `turbine tail`
+### `sqlflow tail`
 
 Connects a config's source and prints every message to stdout, with no handler
 or sink. Useful for confirming a source is configured correctly.
 
 ```
-turbine tail -c <config>
+sqlflow tail -c <config>
 ```
 
-### `turbine version`
+### `sqlflow version`
 
 ```
-$ turbine version
-turbine v1.0.0
+$ sqlflow version
+sqlflow v1.0.0
 commit: f36d970
 go:     go1.25.5
 ```
@@ -430,8 +430,8 @@ source:
 Responds 200 on accept, 400 for a missing signature, 403 for an invalid one.
 
 > **Known gotcha:** the JSON Schema shipped with both engines only enumerates
-> `kafka` and `websocket`, so `turbine config validate` **rejects** a webhook
-> config that `turbine run` accepts. This affects the Python engine identically.
+> `kafka` and `websocket`, so `sqlflow config validate` **rejects** a webhook
+> config that `sqlflow run` accepts. This affects the Python engine identically.
 
 ## Handlers
 
@@ -611,7 +611,7 @@ exported under the meter name `sqlflow`:
 | `sink_flush_num_rows` | gauge | rows |
 
 ```
-$ turbine run -c <config> --metrics=prometheus &
+$ sqlflow run -c <config> --metrics=prometheus &
 $ curl -s localhost:8000/metrics | grep message_count
 message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 ```
@@ -655,7 +655,7 @@ make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000
 **Docker Desktop's host→container port-forwarding caps Kafka fetches at roughly
 10-15 MB/s.** That starves the pipeline and understates throughput by about
 **10x** — you will measure the NAT, not the engine. `make benchmark-container`
-builds a linux turbine and runs it on the same docker network as the broker,
+builds a linux sqlflow and runs it on the same docker network as the broker,
 which is the only way to get a number that reflects the engine.
 
 `make benchmark` runs the same workload from the host. It is fine for a quick
@@ -663,20 +663,20 @@ smoke test, but do not quote its numbers.
 
 # Differences from the Python engine
 
-turbine targets drop-in compatibility, and the whole example config suite
+sqlflow targets drop-in compatibility, and the whole example config suite
 renders and parses under both engines. These are the places the two genuinely
 differ today.
 
 ### UDFs are not supported
 
-The Python engine supports Python UDFs via a `udfs:` block. **turbine drops
+The Python engine supports Python UDFs via a `udfs:` block. **sqlflow drops
 them by design.** They belong to DuckDB — write a macro, load an extension, or
 `ATTACH` a database that provides the function. A `udfs:` block is a hard error
 naming the functions, rather than a silent skip that would later surface as an
 opaque binder error:
 
 ```
-$ turbine dev invoke dev/config/examples/udf.yml dev/fixtures/udf.jsonl
+$ sqlflow dev invoke dev/config/examples/udf.yml dev/fixtures/udf.jsonl
 Error: udfs are not supported: parse_domain. Define them in DuckDB instead
 (a macro or extension, or ATTACH a database that provides them)
 ```
@@ -694,7 +694,7 @@ Error: udfs are not supported: parse_domain. Define them in DuckDB instead
 
 ### CLI differences
 
-| | Python | turbine |
+| | Python | sqlflow |
 |---|---|---|
 | Run | `run <config>` (positional) | `run -c <config>` (flag) |
 | Message cap | `--max-msgs-to-process` | `--max-msgs` |
@@ -720,18 +720,18 @@ Error: udfs are not supported: parse_domain. Define them in DuckDB instead
   absent from the first message is dropped from the whole batch, even where
   later messages have it — again matching `from_pylist`. Batches whose shape
   varies want `StructuredBatch` and a declared table.
-- **DuckDB version**: the Python engine pins DuckDB 1.3.1; turbine loads
+- **DuckDB version**: the Python engine pins DuckDB 1.3.1; sqlflow loads
   whatever `libduckdb` you install (`DUCKDB_VERSION` pins 1.5.x for the image
   and benchmarks). "Same SQL, same result" is not guaranteed across that gap
   yet.
-- **`dev invoke` output format**: turbine's console sink emits one JSON object
+- **`dev invoke` output format**: sqlflow's console sink emits one JSON object
   per line; the Python engine prints a Python list of dicts. Same rows, different
   rendering.
 - **`source.error.policy`** is parsed but unused. Use `pipeline.on_error`.
 - **Templating** uses gonja v2 (Jinja2 for Go) rather than Jinja2 itself.
   All 24 example configs render identically, asserted by a test.
 - **Log format** differs: the Python engine emits
-  `%(asctime)s [%(levelname)s] %(message)s`, turbine emits zap's console
+  `%(asctime)s [%(levelname)s] %(message)s`, sqlflow emits zap's console
   format. The level itself is shared via `SQLFLOW_LOG_LEVEL`.
 
 # Building release binaries
@@ -740,7 +740,7 @@ Error: udfs are not supported: parse_domain. Define them in DuckDB instead
 make release-binaries        # artifacts land in dist/
 ```
 
-turbine **cannot be cross-compiled the usual way**, and it is worth
+sqlflow **cannot be cross-compiled the usual way**, and it is worth
 understanding why before you try. The ADBC driver manager is a cgo package:
 
 - `CGO_ENABLED=0` does not merely produce a degraded binary, it **fails to
@@ -829,7 +829,7 @@ SQLFlow supports DuckDB over websocket. Running SQL against the [Bluesky firehos
 The following command starts a bluesky consumer and prints every post to stdout:
 
 ```
-./bin/turbine run -c dev/config/examples/bluesky/bluesky.raw.stdout.yml
+./bin/sqlflow run -c dev/config/examples/bluesky/bluesky.raw.stdout.yml
 ```
 
 ![output](https://github.com/user-attachments/assets/185c6453-debc-439a-a2b9-ed20fdc82851)
@@ -860,10 +860,10 @@ docker-compose -f dev/kafka-single.yml up -d
 python3 cmd/publish-test-data.py --num-messages=5000 --topic="input-kafka-mem-iceberg"
 ```
 
-- Run turbine, which reads from Kafka and writes to the iceberg table locally
+- Run sqlflow, which reads from Kafka and writes to the iceberg table locally
 ```
 PYICEBERG_HOME=$(pwd)/dev/config/iceberg \
-  ./bin/turbine run -c dev/config/examples/kafka.mem.iceberg.yml --max-msgs=5000
+  ./bin/sqlflow run -c dev/config/examples/kafka.mem.iceberg.yml --max-msgs=5000
 ```
 
 - Verify iceberg data was written by querying it with duckdb
@@ -880,7 +880,7 @@ $ duckdb -c "select count(*) from '/tmp/sqlflow/warehouse/default.db/city_events
 # Development
 
 ```
-make turbine        # build bin/turbine
+make sqlflow        # build bin/sqlflow
 make test-go        # build, vet, gofmt check, unit tests (Go engine)
 make test-unit      # Python engine unit tests
 make test-integration

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Downloads the pinned libduckdb shared library for linux. turbine never links
+# Downloads the pinned libduckdb shared library for linux. sqlflow never links
 # against DuckDB: the ADBC driver manager dlopens the library at runtime, so
-# every place that runs turbine on linux -- the container image, the in-network
+# every place that runs sqlflow on linux -- the container image, the in-network
 # benchmark and CI -- needs its own copy. All of them call this script so the
 # version lives in exactly one place, the DUCKDB_VERSION file.
 #

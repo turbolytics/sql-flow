@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/apache/arrow-adbc/go/adbc"
-	"github.com/turbolytics/turbine/internal/config"
-	"github.com/turbolytics/turbine/internal/core"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"go.uber.org/zap"
 )
 

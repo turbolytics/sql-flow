@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds the release binaries for turbine.
+# Builds the release binaries for sqlflow.
 #
 # WHY THIS IS NOT JUST `GOOS=... GOARCH=... go build`
 #
-# turbine reaches DuckDB through the ADBC driver manager, which is a cgo
+# sqlflow reaches DuckDB through the ADBC driver manager, which is a cgo
 # package. CGO_ENABLED=0 does not merely produce a slower binary, it does not
 # compile at all:
 #
@@ -42,14 +42,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 GO_IMAGE="${GO_IMAGE:-golang:1.25-bookworm}"
-GO_MODULE="github.com/turbolytics/turbine"
+GO_MODULE="github.com/turbolytics/sql-flow"
 VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 LDFLAGS="-X ${GO_MODULE}/internal/cli.Version=${VERSION} -X ${GO_MODULE}/internal/cli.Commit=${COMMIT}"
 
 mkdir -p "$DEST_DIR"
 
-echo "=== turbine release binaries ==="
+echo "=== sqlflow release binaries ==="
 echo "version: $VERSION"
 echo "commit:  $COMMIT"
 echo "host:    $(uname -s)/$(uname -m)"
@@ -68,7 +68,7 @@ skipped=()
 build_linux() {
     local arch="$1"
     local platform="linux/${arch}"
-    local out="turbine_${VERSION}_linux_${arch}"
+    local out="sqlflow_${VERSION}_linux_${arch}"
 
     if ! command -v docker >/dev/null 2>&1; then
         echo "SKIP $platform: docker is not installed"
@@ -88,7 +88,7 @@ build_linux() {
         -e GOFLAGS=-buildvcs=false \
         -e CGO_ENABLED=1 \
         -w /src "$GO_IMAGE" \
-        go build -ldflags "$LDFLAGS" -o "$DEST_DIR/$out" ./cmd/turbine/
+        go build -ldflags "$LDFLAGS" -o "$DEST_DIR/$out" ./cmd/sqlflow/
     then
         # Most often: no binfmt handler registered for the non-native arch.
         echo "SKIP $platform: container build failed (is binfmt/qemu set up for $arch?)"
@@ -102,7 +102,7 @@ build_linux() {
 # --- darwin targets: native, and clang's -arch for the other slice ---------
 build_darwin() {
     local arch="$1"
-    local out="turbine_${VERSION}_darwin_${arch}"
+    local out="sqlflow_${VERSION}_darwin_${arch}"
 
     if [ "$(uname -s)" != "Darwin" ]; then
         echo "SKIP darwin/$arch: needs a macOS host with the Xcode command line tools"
@@ -121,7 +121,7 @@ build_darwin() {
     CGO_ENABLED=1 GOOS=darwin GOARCH="$arch" \
         CGO_CFLAGS="-arch $clang_arch" \
         CGO_LDFLAGS="-arch $clang_arch" \
-        go build -ldflags "$LDFLAGS" -o "$DEST_DIR/$out" ./cmd/turbine/
+        go build -ldflags "$LDFLAGS" -o "$DEST_DIR/$out" ./cmd/sqlflow/
 
     built+=("$out")
 }

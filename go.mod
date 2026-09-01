@@ -1,4 +1,4 @@
-module github.com/turbolytics/turbine
+module github.com/turbolytics/sql-flow
 
 go 1.25.5
 

@@ -6,7 +6,7 @@ BATCH_SIZE="${2:-500}"
 PPROF="${3:-}"
 TOPIC="benchmark-input"
 CONFIG="dev/config/examples/benchmark.structured.mem.yml"
-BINARY="bin/turbine"
+BINARY="bin/sqlflow"
 
 echo "=== Turbine Go Benchmark ==="
 echo "Messages:   $NUM_MESSAGES"
@@ -24,9 +24,9 @@ else
     echo "Kafka is running."
 fi
 
-# 2. Build turbine
-echo "--- Building turbine ---"
-go build -o "$BINARY" ./cmd/turbine/
+# 2. Build sqlflow
+echo "--- Building sqlflow ---"
+go build -o "$BINARY" ./cmd/sqlflow/
 echo "Built $BINARY"
 
 # 3. Publish test messages
@@ -35,10 +35,10 @@ PYTHON="${SQLFLOW_PYTHON:-python3}"
 "$PYTHON" cmd/publish-test-data.py --num-messages="$NUM_MESSAGES" --topic="$TOPIC"
 echo "Publishing complete."
 
-# 4. Run turbine with a unique consumer group so re-runs start fresh
+# 4. Run sqlflow with a unique consumer group so re-runs start fresh
 GROUP_ID="benchmark-$(date +%s)"
 echo ""
-echo "--- Running turbine (batch_size=$BATCH_SIZE, group=$GROUP_ID) ---"
+echo "--- Running sqlflow (batch_size=$BATCH_SIZE, group=$GROUP_ID) ---"
 echo ""
 
 PPROF_FLAG=""
@@ -50,10 +50,10 @@ fi
 SQLFLOW_BATCH_SIZE="$BATCH_SIZE" \
 SQLFLOW_GROUP_ID="$GROUP_ID" \
 SQLFLOW_TOPIC="$TOPIC" \
-  "$BINARY" run -c "$CONFIG" --max-msgs="$NUM_MESSAGES" $PPROF_FLAG 2>&1 | tee /tmp/turbine-benchmark.log
+  "$BINARY" run -c "$CONFIG" --max-msgs="$NUM_MESSAGES" $PPROF_FLAG 2>&1 | tee /tmp/sqlflow-benchmark.log
 
 echo ""
 echo "=== Benchmark Complete ==="
 echo ""
 echo "Final throughput:"
-grep "throughput" /tmp/turbine-benchmark.log | tail -1
+grep "throughput" /tmp/sqlflow-benchmark.log | tail -1

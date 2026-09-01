@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
-	"github.com/turbolytics/turbine/internal/config"
-	"github.com/turbolytics/turbine/internal/managers"
-	"github.com/turbolytics/turbine/internal/sinks"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/managers"
+	"github.com/turbolytics/sql-flow/internal/sinks"
 	"go.uber.org/zap"
 )
 

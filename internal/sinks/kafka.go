@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/turbolytics/turbine/internal/config"
-	tkafka "github.com/turbolytics/turbine/internal/kafka"
+	"github.com/turbolytics/sql-flow/internal/config"
+	tkafka "github.com/turbolytics/sql-flow/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 

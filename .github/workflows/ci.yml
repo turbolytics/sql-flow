@@ -28,7 +28,7 @@ jobs:
         run: |
           make test-integration
 
-  # The Go engine (turbine). Unit tests only: anything that needs a Kafka broker
+  # The Go engine (sqlflow). Unit tests only: anything that needs a Kafka broker
   # stays out of CI and runs from the dev stack.
   go:
     name: Go

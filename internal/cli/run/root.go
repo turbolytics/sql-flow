@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/spf13/cobra"
-	"github.com/turbolytics/turbine/internal/duckdb"
-	"github.com/turbolytics/turbine/internal/handlers"
-	"github.com/turbolytics/turbine/internal/logging"
-	"github.com/turbolytics/turbine/internal/managers"
-	"github.com/turbolytics/turbine/internal/sinks"
-	"github.com/turbolytics/turbine/internal/sources"
+	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/handlers"
+	"github.com/turbolytics/sql-flow/internal/logging"
+	"github.com/turbolytics/sql-flow/internal/managers"
+	"github.com/turbolytics/sql-flow/internal/sinks"
+	"github.com/turbolytics/sql-flow/internal/sources"
 	"go.uber.org/zap"
 	"io"
 	"net/http"
@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/turbolytics/turbine/internal/config"
-	"github.com/turbolytics/turbine/internal/core"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
 )
 
 // newErrorPolicies resolves pipeline.on_error, building the DLQ sink when the
@@ -65,11 +65,11 @@ func NewCommand() *cobra.Command {
 
 	var cmd = &cobra.Command{
 		Use:   "run",
-		Short: "Run turbine against a stream of data",
+		Short: "Run sqlflow against a stream of data",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger, levelErr := logging.New()
 			defer logger.Sync()
-			l := logger.Named("turbine.run")
+			l := logger.Named("sqlflow.run")
 			if levelErr != nil {
 				return levelErr
 			}
@@ -239,7 +239,7 @@ func NewCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to turbine config file (required)")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to sqlflow config file (required)")
 	cmd.MarkFlagRequired("config")
 	cmd.Flags().IntVar(&maxMsgs, "max-msgs", 0, "Maximum number of messages to consume (0 = unlimited)")
 	cmd.Flags().BoolVar(&enablePprof, "pprof", false, "Enable pprof profiling server on :6060")

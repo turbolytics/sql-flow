@@ -1,14 +1,14 @@
 # Changelog
 
-## v1.0.0 — turbine, the Go engine
+## v1.0.0 — sqlflow, the Go engine
 
-SQLFlow now ships a second engine: **turbine**, a Go rewrite of the Python
+SQLFlow now ships a second engine: **sqlflow**, a Go rewrite of the Python
 stream processor that reads the same configuration files. A `sqlflow.yml`
-written for the Python engine is intended to run unmodified on turbine — same
+written for the Python engine is intended to run unmodified on sqlflow — same
 YAML spec, same Jinja2 templating, same JSON Schema, same DuckDB SQL.
 
 The Python engine (`sqlflow/`, `turbolytics/sql-flow`) is unchanged and still
-maintained. turbine is the recommended engine for new pipelines.
+maintained. sqlflow is the recommended engine for new pipelines.
 
 ### Why
 
@@ -62,9 +62,9 @@ maintained. turbine is the recommended engine for new pipelines.
   setting.
 
 **CLI and packaging**
-- `turbine run` (`--max-msgs`, `--metrics`, `--stats-json`, `--pprof`),
+- `sqlflow run` (`--max-msgs`, `--metrics`, `--stats-json`, `--pprof`),
   `dev invoke`, `config validate`, `config example`, `tail`, `version`.
-- `Dockerfile.turbine` — multi-stage, cgo, libduckdb baked in.
+- `Dockerfile.sqlflow` — multi-stage, cgo, libduckdb baked in.
 - `make release-binaries` — linux and darwin on amd64 and arm64.
 - DuckDB version pinned in one place, the `DUCKDB_VERSION` file.
 - `make benchmark-container`, which runs the benchmark inside the docker network
@@ -79,7 +79,7 @@ maintained. turbine is the recommended engine for new pipelines.
   handlers retain the caller's slice, so any fixture line larger than the read
   buffer produced corrupted rows.
 
-### Not supported in turbine
+### Not supported in sqlflow
 
 - **UDFs.** Dropped by decision — they belong to DuckDB (a macro, an extension,
   or an `ATTACH`ed database). A `udfs:` block is a hard error naming the

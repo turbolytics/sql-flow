@@ -10,7 +10,7 @@ any engine implementing the sqlflow config spec. Select the engine with:
 For turbine, the config template is rendered here (Jinja2, same context
 as the Python engine) and handed to the binary as plain YAML, so the
 suite exercises the engine surface independently of the template layer.
-The binary path comes from SQLFLOW_TURBINE_BIN (default: ./bin/turbine).
+The binary path comes from SQLFLOW_BIN (default: ./bin/sqlflow).
 """
 import json
 import os
@@ -68,8 +68,8 @@ def _run_turbine(config_path, setting_overrides, max_msgs):
     conf_dict = render_config(config_path, setting_overrides)
 
     binary = os.environ.get(
-        'SQLFLOW_TURBINE_BIN',
-        os.path.join(os.getcwd(), 'bin', 'turbine'),
+        'SQLFLOW_BIN',
+        os.path.join(os.getcwd(), 'bin', 'sqlflow'),
     )
 
     with tempfile.NamedTemporaryFile(
