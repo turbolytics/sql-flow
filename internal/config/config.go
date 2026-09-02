@@ -166,16 +166,25 @@ type OnError struct {
 	DLQ    *Sink  `yaml:"dlq,omitempty"`
 }
 
+// StateConf points the pipeline's DuckDB at a file, so tables the handler
+// writes -- window state above all -- survive a restart. Offsets are stored in
+// the same database, which is what makes state and offsets recoverable
+// together.
+type StateConf struct {
+	Path string `yaml:"path"`
+}
+
 // Pipeline
 type Pipeline struct {
-	Name                 string   `yaml:"name,omitempty"`
-	Description          string   `yaml:"description,omitempty"`
-	Source               Source   `yaml:"source"`
-	Handler              Handler  `yaml:"handler"`
-	Sink                 Sink     `yaml:"sink"`
-	BatchSize            int      `yaml:"batch_size,omitempty"`
-	FlushIntervalSeconds int      `yaml:"flush_interval_seconds,omitempty"`
-	OnError              *OnError `yaml:"on_error,omitempty"`
+	Name                 string     `yaml:"name,omitempty"`
+	Description          string     `yaml:"description,omitempty"`
+	Source               Source     `yaml:"source"`
+	Handler              Handler    `yaml:"handler"`
+	Sink                 Sink       `yaml:"sink"`
+	BatchSize            int        `yaml:"batch_size,omitempty"`
+	FlushIntervalSeconds int        `yaml:"flush_interval_seconds,omitempty"`
+	State                *StateConf `yaml:"state,omitempty"`
+	OnError              *OnError   `yaml:"on_error,omitempty"`
 }
 
 // Conf
