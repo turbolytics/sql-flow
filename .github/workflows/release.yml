@@ -62,3 +62,21 @@ jobs:
       # release; both are only visible from outside.
       - name: Verify published image
         run: make release-image-verify
+
+      # The manifest listing an architecture does not mean that binary runs.
+      # The build for the non-native arch happens under emulation and is never
+      # executed during the build, so this is the first time it runs at all.
+      - name: Verify each published architecture executes
+        run: |
+          set -e
+          for platform in linux/amd64 linux/arm64; do
+            echo "== $platform"
+            out=$(docker run --rm --platform "$platform" "$SQLFLOW_IMAGE" version)
+            echo "$out"
+            echo "$out" | grep -q "^sqlflow ${GITHUB_REF_NAME}$" || {
+              echo "expected 'sqlflow ${GITHUB_REF_NAME}' from $platform" >&2
+              exit 1
+            }
+          done
+        env:
+          SQLFLOW_IMAGE: turbolytics/sql-flow:${{ github.ref_name }}
