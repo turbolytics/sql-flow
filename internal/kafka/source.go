@@ -2,8 +2,11 @@ package kafka
 
 import (
 	"context"
+	"fmt"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"go.uber.org/zap"
 	"sync"
 	"time"
@@ -82,6 +85,50 @@ func (k *Source) Commit() error {
 	return nil
 }
 
+// CommitMarks commits exactly the positions the pipeline has finished with.
+//
+// Commit above commits everything this source has fetched, and the poll
+// goroutine fetches well ahead of the pipeline: after one 20,000-message
+// batch it had committed offset 70,086. A crash then lost the difference
+// with the consumer group showing no lag. Kafka commits the next offset to
+// read, so a mark at offset N commits N+1.
+func (k *Source) CommitMarks(marks map[string]map[int32]core.Mark) error {
+	offsets := make(map[string]map[int32]kgo.EpochOffset, len(marks))
+	for topic, parts := range marks {
+		offsets[topic] = make(map[int32]kgo.EpochOffset, len(parts))
+		for p, m := range parts {
+			offsets[topic][p] = kgo.EpochOffset{Epoch: m.LeaderEpoch, Offset: m.Offset + 1}
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), commitTimeout)
+	defer cancel()
+
+	var commitErr error
+	k.client.CommitOffsetsSync(ctx, offsets, func(_ *kgo.Client, _ *kmsg.OffsetCommitRequest, resp *kmsg.OffsetCommitResponse, err error) {
+		if err != nil {
+			commitErr = err
+			return
+		}
+		// The request can succeed while a partition inside it is refused.
+		for _, t := range resp.Topics {
+			for _, p := range t.Partitions {
+				if err := kerr.ErrorForCode(p.ErrorCode); err != nil {
+					commitErr = fmt.Errorf("commit %s[%d]: %w", t.Topic, p.Partition, err)
+					return
+				}
+			}
+		}
+	})
+	if commitErr != nil {
+		k.logger.Error("failed to commit offsets", zap.Error(commitErr))
+	}
+	return commitErr
+}
+
+// commitTimeout bounds a synchronous commit; the pipeline blocks on it.
+const commitTimeout = 30 * time.Second
+
 func (k *Source) Stream() <-chan []core.Message {
 	k.logger.Info("starting stream",
 		zap.Int("channel_buffer", k.channelBuffer),
@@ -127,10 +174,11 @@ func (k *Source) Stream() <-chan []core.Message {
 			batch := make([]core.Message, 0, fetches.NumRecords())
 			fetches.EachRecord(func(r *kgo.Record) {
 				batch = append(batch, core.Message{
-					Value:     r.Value,
-					Topic:     r.Topic,
-					Partition: r.Partition,
-					Offset:    r.Offset,
+					Value:       r.Value,
+					Topic:       r.Topic,
+					Partition:   r.Partition,
+					Offset:      r.Offset,
+					LeaderEpoch: r.LeaderEpoch,
 				})
 			})
 
