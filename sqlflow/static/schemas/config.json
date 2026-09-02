@@ -698,7 +698,9 @@
               "description": "File backing the pipeline's DuckDB database. Window state and Kafka offsets are stored here and committed together."
             }
           },
-          "required": ["path"],
+          "required": [
+            "path"
+          ],
           "additionalProperties": false
         }
       },

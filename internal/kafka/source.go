@@ -85,6 +85,41 @@ func (k *Source) Commit() error {
 	return nil
 }
 
+// SeekTo resumes consumption from positions recorded in the pipeline's state
+// database, so a restart picks up where the durable state left off rather
+// than wherever the consumer group happens to sit.
+//
+// It works by committing those positions to the group before consumption
+// starts, which is deliberate. kgo.SetOffsets cannot do this: it "sets only
+// partitions that were previously consumed, any extra partitions are
+// skipped", so calling it before the first poll silently does nothing. A
+// group's start position comes from its committed offsets, so writing ours
+// there is what actually moves it.
+//
+// This also settles what happens when Kafka and the state database disagree:
+// the state database wins, and Kafka is made to agree with it immediately.
+//
+// A stored mark names the last offset processed, so consumption resumes at
+// the next one -- the same +1 convention CommitMarks uses, which is why this
+// delegates to it.
+//
+// Empty marks are a no-op rather than a seek to zero. "Nothing recorded" and
+// "recorded position zero" are different facts: the first must leave
+// auto_offset_reset in charge, and seeking to zero would silently replay an
+// entire topic on a pipeline's first run against a fresh state file.
+func (k *Source) SeekTo(marks *core.Marks) error {
+	if marks == nil || marks.Empty() {
+		return nil
+	}
+
+	if err := k.CommitMarks(marks); err != nil {
+		return fmt.Errorf("seeking to stored offsets: %w", err)
+	}
+
+	k.logger.Info("resuming from stored offsets", zap.Int("partitions", marks.Len()))
+	return nil
+}
+
 // CommitMarks commits exactly the positions the pipeline has finished with.
 //
 // Commit above commits everything this source has fetched, and the poll

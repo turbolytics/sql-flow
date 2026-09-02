@@ -11,7 +11,7 @@ import (
 
 // offsetsTable is where a pipeline's Kafka positions live in DuckDB, next to
 // the state the offsets describe. Keeping both in one database is what lets a
-// later commit write them together in a single transaction: state and the
+// later commit writes them together in a single transaction: state and the
 // offset that produced it can never disagree after a crash.
 const offsetsTable = "sqlflow_offsets"
 
