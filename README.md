@@ -2,57 +2,23 @@
 
 [Quickstart](#quick-start-getting-started-in-5-minutes) | [Tutorials](https://sql-flow.com/docs/category/tutorials) | ![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/sql-flow) | [Documentation](https://sql-flow.com)
 
-SQLFlow is a high-performance stream processing engine that simplifies building data pipelines by enabling you to define them using just SQL. Think of SQLFlow as a lightweight, modern Flink.
+SQLFlow is a stream processing engine that lets you define pipelines with just SQL. It consumes a stream, runs DuckDB SQL over each batch, and writes the result out. Think of it as a lightweight, single-binary Flink.
 
-Key Features:
-- Process data from [Kafka](https://kafka.apache.org/), WebSockets, and webhooks.
-- Write outputs to Kafka topics, ClickHouse, Iceberg, or anything DuckDB can `COPY` to (PostgreSQL, S3, parquet, MotherDuck, DuckLake).
-- Built on [DuckDB](https://duckdb.org/) and [Apache Arrow](https://arrow.apache.org/) for high-speed processing.
-
-## Two engines, one config spec
-
-This repository ships **two** implementations of SQLFlow:
-
-| | `sqlflow` (Go) | `sqlflow` (Python) |
-|---|---|---|
-| Entry point | `sqlflow` binary (`cmd/sqlflow/`) | `python cmd/sql-flow.py` |
-| Source tree | `internal/` | `sqlflow/` |
-| Docker image | built from `Dockerfile` | built from `Dockerfile.python` |
-| Throughput | ~927k msgs/sec | low tens of thousands msgs/sec |
-| Status | **v1, the engine to use for new pipelines** | maintained, feature-complete |
-
-**sqlflow is a Go rewrite of the Python engine, and it reads the same configuration files.**
-A `sqlflow.yml` written for the Python engine is intended to run unmodified on sqlflow
-— same YAML spec, same Jinja2 templating, same JSON Schema, same DuckDB SQL.
-The [Differences from the Python engine](#differences-from-the-python-engine)
-section below lists every place that is not yet true.
-
-The Python engine is still here and still documented — see
-[The Python engine](#the-python-engine) at the end of this README.
-
-Why the rewrite:
-
-- Raw performance: ~20-60x the throughput of the Python engine on the same pipeline.
-- The ability to ship a single binary to edge / IoT hardware.
-- Ergonomics of background processing in Go vs Python.
+- Sources: [Kafka](https://kafka.apache.org/), WebSockets, webhooks.
+- Sinks: Kafka, ClickHouse, Iceberg, the console, or anything DuckDB can `COPY` to (PostgreSQL, S3, parquet, MotherDuck, DuckLake).
+- Built on [DuckDB](https://duckdb.org/) and [Apache Arrow](https://arrow.apache.org/): ~900k messages/sec on a laptop, in about a quarter GiB of memory.
+- One Go binary, one Docker image, one YAML file per pipeline. No cluster.
 
 # Quick Start (Getting Started in 5 Minutes)
 
-1. Get a sqlflow binary. The fastest path from a clone is to build one
-   (see [Installation](#installation) for prebuilt binaries and Docker):
+1. Build a binary (see [Installation](#installation) for prebuilt binaries and Docker):
 
 ```
 make sqlflow
 ```
 
-2. Set up the local development environment:
-
-```
-make setup-dev
-```
-
-3. Validate your pipeline against test data, without a broker. `dev invoke` runs
-   the config's handler over a JSONL fixture and prints the result:
+2. Validate a pipeline against test data, without a broker. `dev invoke` runs the
+   config's handler over a JSONL fixture and prints the result:
 
 ```
 ./bin/sqlflow dev invoke dev/config/examples/basic.agg.mem.yml dev/fixtures/simple.json
@@ -61,31 +27,33 @@ make setup-dev
 {"city":"Baltimore","city_count":28672}
 ```
 
-4. Start Kafka locally using docker:
+3. Start Kafka locally:
 
 ```
 docker-compose -f dev/kafka-single.yml up -d
 ```
 
-5. Publish test messages to Kafka:
+4. Publish test messages. The publisher is a Python script, so install its
+   dependencies once:
 
 ```
+pip install -r requirements.txt
 python3 cmd/publish-test-data.py --num-messages=10000 --topic="input-simple-agg-mem"
 ```
 
-6. Start a Kafka consumer from inside the docker-compose container, to verify SQLFlow output:
+5. Start a Kafka consumer to watch the output:
 
 ```
 docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --topic=output-simple-agg-mem
 ```
 
-7. Run sqlflow against the stream:
+6. Run the pipeline:
 
 ```
 ./bin/sqlflow run -c dev/config/examples/basic.agg.mem.yml --max-msgs=10000
 ```
 
-- Verify output in the Kafka consumer:
+The consumer prints one row per city:
 
 ```
 {"city":"San Fransisco","city_count":177}
@@ -94,44 +62,31 @@ docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --t
 {"city":"Baltimore","city_count":180}
 ```
 
-You just ran SQLFlow against a stream of Kafka data!
-
-> **Either spelling works.** The config can be passed positionally
-> (`run pipeline.yml`, as the Python engine takes it) or as `-c/--config`, and
-> the message cap is `--max-msgs` or `--max-msgs-to-process`. See
-> [CLI differences](#cli-differences).
-
 # Installation
 
 sqlflow reaches DuckDB through the Arrow ADBC driver manager, which **dlopens
-`libduckdb` at runtime**. The binary is therefore not standalone: wherever you
-run it, that shared library has to be present. `SQLFLOW_DUCKDB_LIB` points at
-it; without that variable sqlflow looks in
-`/opt/homebrew/lib/libduckdb.dylib` on macOS and `/usr/local/lib/libduckdb.so`
-on Linux.
+`libduckdb` at runtime**. The binary is not standalone: wherever you run it,
+that shared library has to be present. `SQLFLOW_DUCKDB_LIB` points at it;
+without that variable sqlflow looks in `/opt/homebrew/lib/libduckdb.dylib` on
+macOS and `/usr/local/lib/libduckdb.so` on Linux.
 
 The pinned DuckDB version lives in one place, the `DUCKDB_VERSION` file.
 
 ### Docker (no libduckdb setup)
 
-The image bakes in a matching `libduckdb.so` and sets `SQLFLOW_DUCKDB_LIB`, so
-nothing else is needed. Build it from the repo:
+The published image bakes in a matching `libduckdb.so` and sets
+`SQLFLOW_DUCKDB_LIB`, so nothing else is needed. Images are multi-arch
+(`linux/amd64`, `linux/arm64`):
 
 ```
-make sqlflow-image
-```
-
-Then run a pipeline with your config and cache mounted in:
-
-```
-docker run \
+docker run --rm \
   -v $(pwd)/dev:/tmp/conf \
-  -v /tmp/sqlflow:/tmp/sqlflow \
-  turbolytics/sql-flow:<tag> \
+  turbolytics/sql-flow:latest \
   dev invoke /tmp/conf/config/examples/basic.agg.mem.yml /tmp/conf/fixtures/simple.json
 ```
 
-`make sqlflow-image` prints the tag it built; it is derived from `git describe`.
+To build the image from the repo, `make sqlflow-image` — it prints the tag it
+built, derived from `git describe`.
 
 ### Prebuilt binary
 
@@ -146,20 +101,9 @@ export SQLFLOW_DUCKDB_LIB=/usr/local/lib/libduckdb.so
 ```
 
 `scripts/install-libduckdb.sh` **always fetches the linux `libduckdb.so`**, for
-the architecture it detects. It is for linux hosts and containers only — running
-it on a mac gets you a linux library that will not load.
-
-On macOS, `brew install duckdb` puts the library at the default path
-(`/opt/homebrew/lib/libduckdb.dylib`) and no environment variable is needed.
-
-To produce the release binaries yourself:
-
-```
-make release-binaries
-```
-
-This is **not** a plain `GOOS=... GOARCH=... go build`, and it cannot be —
-see [Building release binaries](#building-release-binaries).
+the architecture it detects. It is for linux hosts and containers only. On
+macOS, `brew install duckdb` puts the library at the default path and no
+environment variable is needed.
 
 ### From source
 
@@ -180,33 +124,23 @@ The binary lands at `bin/sqlflow`.
 
 # How SQLFlow Works
 
-SQLFlow embeds DuckDB and Apache Arrow for high performance. A pipeline has
-three parts:
+A pipeline has three parts:
 
 <img width="1189" alt="SQLFlow architecture" src="https://github.com/user-attachments/assets/1295e7eb-a0b8-4087-8aa4-cad75a0c8cfa" />
 
-**Input Source**
+**Source** — Kafka, a WebSocket, or webhooks, modelled as a stream of messages.
 
-SQLFlow ingests data from Kafka, WebSockets, and webhooks, modelling the input
-as a stream of messages.
+**Handler** — DuckDB SQL executed over a batch of that stream: filter,
+aggregate, enrich, or drop data.
 
-**Handler**
+**Sink** — where the SQL result goes: Kafka, ClickHouse, Iceberg, the console,
+or — through the `sqlcommand` sink — anywhere DuckDB can write.
 
-SQLFlow uses DuckDB and Apache Arrow to execute SQL against a batch of that
-stream. Handlers contain the stream processing logic: filter, aggregate, enrich
-or drop data.
-
-**Output Sink**
-
-SQLFlow writes the results of the SQL to Kafka, ClickHouse, Iceberg, the
-console, or — through the `sqlcommand` sink — anywhere DuckDB can write:
-PostgreSQL, S3, local parquet, MotherDuck, DuckLake.
-
-The following image shows an example SQLFlow configuration file:
+A config file names all three, plus optional `commands` run before the pipeline
+starts (attaching databases, creating tables) and optional `tables` the engine
+manages across the pipeline's lifetime:
 
 <img width="1256" alt="Example config" src="https://github.com/user-attachments/assets/3d7b8434-4f73-4a66-800b-5c1392c97d52" />
-
-The file explicitly contains a `pipeline` configuration with a `source`, `handler` and `sink` section. This configuration file also contains commands to be executed prior to the pipeline running. These commands support things like attaching databases to the pipeline execution context.
 
 ## SQLFlow Use-Cases
 
@@ -247,8 +181,7 @@ sqlflow run -c <config> [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `-c`, `--config` | *(required)* | Path to the config file, unless given positionally |
-| `--max-msgs` | `0` | Stop after N messages; `0` is unlimited |
-| `--max-msgs-to-process` | `0` | Alias for `--max-msgs`, as the Python engine spells it |
+| `--max-msgs` | `0` | Stop after N messages; `0` is unlimited. `--max-msgs-to-process` is an alias |
 | `--metrics` | *(off)* | Metrics exporter. Only `prometheus` is supported; serves `/metrics` on `:8000` |
 | `--stats-json` | *(off)* | Write final run stats as JSON to this path |
 | `--pprof` | `false` | Serve pprof on `:6060`, and enable block/mutex profiling |
@@ -265,9 +198,9 @@ $ sqlflow run -c dev/config/examples/benchmark.structured.mem.yml \
 ### `sqlflow dev invoke`
 
 Runs the config's `commands`, `tables` and handler over a JSONL fixture and
-prints the resulting rows to stdout. The sink is deliberately **not** exercised,
-so this is safe to run against a production config. This is the fastest way to
-iterate on SQL.
+prints the resulting rows to stdout, one JSON object per line. The sink is
+deliberately **not** exercised, so this is safe to run against a production
+config. This is the fastest way to iterate on SQL.
 
 ```
 sqlflow dev invoke <config> <fixture>
@@ -276,7 +209,7 @@ sqlflow dev invoke <config> <fixture>
 ### `sqlflow config validate`
 
 Renders the config's Jinja2 template, then validates the result against the
-same JSON Schema the Python engine uses.
+JSON Schema.
 
 ```
 $ sqlflow config validate dev/config/examples/basic.agg.mem.yml
@@ -287,10 +220,6 @@ dev/config/examples/basic.agg.mem.yml: valid
 
 Prints a fully commented YAML skeleton generated from the schema — every key,
 its description, and the accepted enum values.
-
-```
-sqlflow config example
-```
 
 ### `sqlflow tail`
 
@@ -305,8 +234,8 @@ sqlflow tail -c <config>
 
 ```
 $ sqlflow version
-sqlflow v1.0.0
-commit: f36d970
+sqlflow v1.0.4
+commit: 55c3129
 go:     go1.25.5
 ```
 
@@ -337,7 +266,7 @@ pipeline:   # required
   name:
   description:
   batch_size:              # required, >= 1
-  flush_interval_seconds:  # optional, default 30
+  flush_interval_seconds:  # optional; unset means only batch_size triggers a batch
   on_error:                # optional
   source:                  # required
   handler:                 # required
@@ -345,8 +274,9 @@ pipeline:   # required
 ```
 
 `batch_size` is how many messages accumulate before the handler runs.
-`flush_interval_seconds` bounds the wait: a partial batch is flushed anyway once
-the interval elapses, so a low-traffic topic still makes progress.
+`flush_interval_seconds` bounds the wait: once the interval elapses a partial
+batch is executed anyway, so a low-traffic topic still makes progress. When
+`--max-msgs` ends a run, the final partial batch is executed on exit.
 
 ## Sources
 
@@ -363,8 +293,11 @@ source:
       - input-topic
 ```
 
-Offsets are committed manually, after the batch has been handled and the sink
-has flushed.
+Offsets are committed after the batch has been handled and the sink has
+flushed, and only up to the last message the pipeline actually processed — not
+to wherever the consumer has read ahead to. Delivery is therefore
+**at-least-once**: a crash between a sink flush and its commit replays that
+batch on restart.
 
 **SASL / TLS.** Set `security_protocol` to one of `PLAINTEXT`, `SSL`,
 `SASL_PLAINTEXT`, `SASL_SSL`:
@@ -394,10 +327,9 @@ source:
 The same `security_protocol` / `ssl` / `sasl` block works on the Kafka **sink**.
 See [`kafka.sasl-tls.yml`](dev/config/examples/kafka.sasl-tls.yml).
 
-Two limits, both of which fail loudly rather than silently:
-`GSSAPI` is rejected, and an encrypted PEM key is rejected with instructions to
-convert it (`openssl pkcs8 -topk8 -nocrypt`). `key_password` only covers
-unencrypted PEMs.
+Two limits, both of which fail loudly rather than silently: `GSSAPI` is
+rejected, and an encrypted PEM key is rejected with instructions to convert it
+(`openssl pkcs8 -topk8 -nocrypt`). `key_password` only covers unencrypted PEMs.
 
 **Kafka metadata.** A Kafka source exposes `kafka_topic`, `kafka_partition` and
 `kafka_offset` to `InferredMemBatch` handler SQL, if the SQL selects them.
@@ -431,9 +363,9 @@ source:
 
 Responds 200 on accept, 400 for a missing signature, 403 for an invalid one.
 
-> **Known gotcha:** the JSON Schema shipped with both engines only enumerates
-> `kafka` and `websocket`, so `sqlflow config validate` **rejects** a webhook
-> config that `sqlflow run` accepts. This affects the Python engine identically.
+> **Known gotcha:** the JSON Schema only enumerates `kafka` and `websocket`, so
+> `sqlflow config validate` **rejects** a webhook config that `sqlflow run`
+> accepts.
 
 ## Handlers
 
@@ -446,8 +378,16 @@ All three handlers take `sql`. The batch is exposed to that SQL as a table.
 | `handlers.StructuredBatch` | the table named by `table` | Schema declared up front; fastest |
 
 **Inferred** handlers derive the Arrow schema from the messages themselves:
-columns come from the first message and types are promoted across the batch. A
-value that cannot be promoted fails the batch.
+
+- The **column set** comes from the first message in the batch. A top-level key
+  that first appears in a later message is not a column.
+- **Nested struct fields** are unioned across the whole batch: a key inside an
+  object that appears only in a later message still becomes a field, null in
+  the rows that lack it. Without this, whether a nested field existed would
+  depend on which message happened to arrive first.
+- **Types** are promoted across the batch (`int` widens to `double`), JSON
+  arrays become lists (of scalars, structs, or further lists), and JSON string
+  escapes are decoded. A value that cannot be promoted fails the batch.
 
 ```yaml
 handler:
@@ -464,7 +404,7 @@ must not share a cache directory.
 
 **StructuredBatch** takes a table you declared in `commands`, and parses
 directly into that schema. This is the fastest handler — no inference, and a
-zero-copy Arrow ingest:
+zero-copy Arrow ingest. The table is truncated at the start of every batch.
 
 ```yaml
 commands:
@@ -508,11 +448,12 @@ sink:
     topic: output-topic
     # security_protocol / ssl / sasl as per the Kafka source
 
-# clickhouse
+# clickhouse — the table must exist; columns are matched by name
 sink:
   type: clickhouse
   clickhouse:
-    dsn: clickhouse://default:@localhost:9000/default
+    dsn: clickhouse://default:@localhost:8123/default          # self-hosted, HTTP
+    # dsn: clickhouses://default:<pw>@<host>.clickhouse.cloud:8443/default   # Cloud, TLS
     table: events
 
 # iceberg — catalog resolved from .pyiceberg.yaml, exactly as pyiceberg does
@@ -523,9 +464,20 @@ sink:
     table_name: default.city_events
 ```
 
-**`sqlcommand`** is the general escape hatch, and it is how the Python engine
-implements its Postgres, S3, parquet, MotherDuck and DuckLake sinks. The batch
-is exposed to your SQL as the table `sqlflow_sink_batch`:
+**ClickHouse.** The DSN scheme picks the protocol: `clickhouse://` is HTTP on
+8123, `clickhouses://` is HTTP over TLS on 8443 (ClickHouse Cloud), `tcp://` /
+`natives://` the native protocol on 9000 / 9440. Scalars, `DateTime`,
+`Date`, `Enum`, `LowCardinality`, `Nullable` and `Array(T)` columns all map;
+`UUID`, `IPv4` and `Decimal` accept their textual form as a string. `Map` and
+`Tuple` are not supported. Measured throughput is ~50k rows/sec into a local
+ClickHouse from one process.
+
+**Iceberg.** SQL-backed catalogs only (`sqlite://`); a REST catalog is an
+error.
+
+**`sqlcommand`** is the general escape hatch: the batch is exposed to your SQL
+as the table `sqlflow_sink_batch`, and DuckDB does the writing. This is how to
+reach PostgreSQL, S3, local parquet, MotherDuck and DuckLake:
 
 ```yaml
 sink:
@@ -539,6 +491,8 @@ sink:
         TO '/tmp/sqlflow/out/$sqlflow_uuid.parquet'
       (FORMAT 'parquet');
 ```
+
+`sink.format.type: parquet` is parsed and ignored.
 
 ## Error policies
 
@@ -559,6 +513,7 @@ pipeline:
 `DLQ` without a `dlq` block is a startup error. DLQ records carry four string
 columns: `error`, `message`, `phase` (`handler.write` or `handler.invoke`) and
 `timestamp`. See [`kafka.dlq.yml`](dev/config/examples/kafka.dlq.yml).
+`source.error.policy` is parsed but unused; use `pipeline.on_error`.
 
 ## Tumbling windows
 
@@ -593,13 +548,14 @@ tables:
 
 Collect, write and flush happen before the delete, so a sink failure retries
 rather than dropping a window. One final poll runs on shutdown, so a window that
-closes during shutdown is not stranded. `tumbling_window` is currently the only
-manager type. See [`tumbling.window.yml`](dev/config/examples/tumbling.window.yml).
+closes during shutdown is not stranded. Windows close on wall-clock time as
+written in your `collect_closed_windows_sql`; there is no event-time
+watermarking. `tumbling_window` is currently the only manager type. See
+[`tumbling.window.yml`](dev/config/examples/tumbling.window.yml).
 
 ## Metrics
 
-`--metrics prometheus` serves `/metrics` on `:8000` (the same port the Python
-engine uses, so scrape configs and dashboards carry over). Seven instruments are
+`--metrics prometheus` serves `/metrics` on `:8000`. Seven instruments are
 exported under the meter name `sqlflow`:
 
 | Instrument | Type | Unit |
@@ -623,11 +579,24 @@ message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 | Variable | Purpose |
 |---|---|
 | `SQLFLOW_DUCKDB_LIB` | Path to `libduckdb`. Defaults per-OS as described in [Installation](#installation) |
-| `SQLFLOW_LOG_LEVEL` | Log level, default `INFO`. Accepts Python's names too (`WARNING`, `CRITICAL`, `NOTSET`) |
+| `SQLFLOW_LOG_LEVEL` | Log level, default `INFO` (`DEBUG`, `INFO`, `WARN`/`WARNING`, `ERROR`) |
 | `SQLFLOW_SQL_RESULTS_CACHE_DIR` | Staging dir for `InferredDiskBatch`, default `/tmp/sqlflow/resultscache` |
 | `SQLFLOW_STATIC_ROOT` | `STATIC_ROOT` template variable, default `/tmp/sqlflow/static` |
 | `PYICEBERG_HOME`, `PYICEBERG_CATALOG__*` | Iceberg catalog resolution, same as pyiceberg |
 | `SQLFLOW_*` | Anything else is injected into the config template context under its own name |
+
+## Behaviour notes
+
+- **An empty batch produces no output rather than an error.** A batch is
+  legitimately empty when a fixture is empty or every message in it was
+  rejected; the handlers return no table and the sink is not called.
+- **A missing field and an explicit `null` are the same value.** Both read as
+  SQL `NULL`, so they aggregate into one group.
+- **`StructuredBatch`** truncates its table at the start of every batch.
+- **DuckDB version.** The engine loads whatever `libduckdb` you install;
+  `DUCKDB_VERSION` pins what the image and benchmarks use.
+- **Templating** is gonja (Jinja2 for Go). Every example config renders under
+  it, asserted by a test.
 
 # Benchmarks
 
@@ -661,20 +630,7 @@ make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000 \
     CONFIG=dev/config/examples/benchmark.inferred.mem.yml
 ```
 
-The script prints the throughput and both memory figures at the end of each
-run.
-
-For comparison, the Python engine's published numbers on similar pipelines are
-in the tens of thousands of msgs/sec (see
-[The Python engine](#the-python-engine)).
-
 ## Benchmarks must run inside the docker network
-
-This matters more than any tuning flag:
-
-```
-make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000
-```
 
 **Docker Desktop's host→container port-forwarding caps Kafka fetches at roughly
 10-15 MB/s.** That starves the pipeline and understates throughput by about
@@ -684,92 +640,6 @@ which is the only way to get a number that reflects the engine.
 
 `make benchmark` runs the same workload from the host. It is fine for a quick
 smoke test, but do not quote its numbers.
-
-# Differences from the Python engine
-
-sqlflow targets drop-in compatibility, and the whole example config suite
-renders and parses under both engines. These are the places the two genuinely
-differ today.
-
-### UDFs are not supported
-
-The Python engine supports Python UDFs via a `udfs:` block. **sqlflow drops
-them by design.** They belong to DuckDB — write a macro, load an extension, or
-`ATTACH` a database that provides the function. A `udfs:` block is a hard error
-naming the functions, rather than a silent skip that would later surface as an
-opaque binder error:
-
-```
-$ sqlflow dev invoke dev/config/examples/udf.yml dev/fixtures/udf.jsonl
-Error: udfs are not supported: parse_domain. Define them in DuckDB instead
-(a macro or extension, or ATTACH a database that provides them)
-```
-
-### Sink and source gaps
-
-- **ClickHouse sink**: nested types, decimals and intervals are rejected with an
-  explicit unsupported-type error. Flat scalar schemas work.
-- **Webhook source**: the fragmented-message framing differs from the Python
-  implementation, and the webhook's own request metrics
-  (`webhook_requests_total`, `webhook_request_duration_seconds`) are not ported.
-  The seven pipeline instruments listed above are.
-- **Iceberg sink**: SQL-backed catalogs (`sqlite://`) only; REST catalogs error.
-- **`sink.format.type: parquet`** is parsed and ignored — on **both** engines.
-
-### CLI differences
-
-The entrypoint is a drop-in replacement: every way the Python engine can be
-invoked works unchanged, so swapping the image under an existing command line
-does not break it. `run` accepts the config positionally *or* as `-c`, and
-either spelling of the message cap:
-
-```
-sqlflow run pipeline.yml --max-msgs-to-process=1000    # Python's spelling
-sqlflow run -c pipeline.yml --max-msgs=1000            # equivalent
-```
-
-Passing both forms with different values is an error rather than a silent
-preference. What sqlflow adds on top:
-
-| | Python | sqlflow |
-|---|---|---|
-| Tail a source | — | `tail -c <config>` |
-| Version | — | `version` |
-| Run stats | — | `--stats-json` |
-| Profiling | — | `--pprof` |
-
-`make test-image` runs the functional suite in `tests/release/` against the
-built image, using the Python engine's own invocation to prove the swap.
-
-### Behavioural notes
-
-- **`StructuredBatch`** `TRUNCATE`s its table every batch; the Python engine
-  does not.
-- **An empty batch produces no output rather than an error.** A batch is
-  legitimately empty when a fixture is empty or every message in it was
-  rejected, so all three handlers return no table and the sink is not called.
-  The Python engine still raises `InvalidInputException` here.
-- **A missing field and an explicit `null` are the same value.** Both read as
-  SQL `NULL`, so they aggregate into one group. This follows
-  `pyarrow.Table.from_pylist`, which the Python engine uses; there is no way
-  to tell the two apart downstream.
-- **Columns come from the first message in the batch only.** A field that is
-  absent from the first message is dropped from the whole batch, even where
-  later messages have it — again matching `from_pylist`. Batches whose shape
-  varies want `StructuredBatch` and a declared table.
-- **DuckDB version**: the Python engine pins DuckDB 1.3.1; sqlflow loads
-  whatever `libduckdb` you install (`DUCKDB_VERSION` pins 1.5.x for the image
-  and benchmarks). "Same SQL, same result" is not guaranteed across that gap
-  yet.
-- **`dev invoke` output format**: sqlflow's console sink emits one JSON object
-  per line; the Python engine prints a Python list of dicts. Same rows, different
-  rendering.
-- **`source.error.policy`** is parsed but unused. Use `pipeline.on_error`.
-- **Templating** uses gonja v2 (Jinja2 for Go) rather than Jinja2 itself.
-  All 24 example configs render identically, asserted by a test.
-- **Log format** differs: the Python engine emits
-  `%(asctime)s [%(levelname)s] %(message)s`, sqlflow emits zap's console
-  format. The level itself is shared via `SQLFLOW_LOG_LEVEL`.
 
 # Building release binaries
 
@@ -812,14 +682,14 @@ local testing and wrong for publishing. Releases go out through
 both under one manifest:
 
 ```
-git tag -a v1.0.1 -m "..." && git push origin v1.0.1
-make test-image        # release tests against the image
-make release-image     # multi-arch build + push
+git tag -a v1.0.4 -m "..." && git push origin v1.0.4
+make test-image        # functional tests against the image
+make release-image     # multi-arch build + push, tags latest too
 make release-image-verify
 ```
 
 Tag first: `VERSION` comes from `git describe`, so an untagged `main` yields
-`v1.0.0-1-gac977e2` rather than a release version. The target refuses to run on
+`v1.0.3-1-gabc1234` rather than a release version. The target refuses to run on
 a dirty tree or an untagged `HEAD` for that reason.
 
 | Variable | Default | Purpose |
@@ -829,69 +699,28 @@ a dirty tree or an untagged `HEAD` for that reason.
 | `RELEASE_OUTPUT` | `--push` | Set `--output=type=cacheonly` for a dry run that publishes nothing |
 | `SQLFLOW_IMAGE` | `turbolytics/sql-flow:$(VERSION)` | Full image reference |
 
+`make release-image-verify` reads the registry back and runs the published
+image on each architecture: it fails unless the version tag carries both
+architectures, `latest` resolves to the identical manifest digest, and
+`sqlflow version` on each platform reports the tag. A single-arch publish, a
+`latest` left on an older release, or an emulated build that never actually
+ran all look fine locally and are only visible from outside.
+
 The foreign architecture builds under QEMU emulation, so expect the `amd64`
 `go build` to take several minutes on an arm64 host — `CGO_ENABLED=1` is
 required for the ADBC driver manager, which rules out cross-compiling. Each
 platform fetches its own libduckdb, because `scripts/install-libduckdb.sh`
 branches on `uname -m` and sees the target architecture.
 
+Publishing is a manual step from a workstation; CI builds and tests the image
+on every push but does not push to the registry.
+
 > **Why this target exists:** `v1.0.0` was published by hand from a mac with a
 > plain `docker build`, so it went out **arm64-only** and did not run on amd64
 > at all. `docker tag` + `docker push` has the same failure mode — it flattens a
 > manifest list down to one architecture. To point an existing tag at another
 > release, copy the manifest instead:
-> `docker buildx imagetools create -t turbolytics/sql-flow:latest turbolytics/sql-flow:v1.0.1`.
-
-`make docker-image` builds the legacy Python engine and must not be used to
-publish a bare version tag; see [The Python engine](#the-python-engine).
-
-# The Python engine
-
-The original Python implementation still lives in this repository under
-`sqlflow/`, is still maintained, and is still the engine behind the published
-tutorials at [sql-flow.com](https://sql-flow.com).
-
-- Docker image: built from `Dockerfile.python` (`make docker-image`, tagged `python-<sha>`)
-- Entry point: `python cmd/sql-flow.py`
-- Tutorials: [sql-flow.com/docs/category/tutorials](https://sql-flow.com/docs/category/tutorials)
-
-Install and run:
-
-```
-pip install -r requirements.txt
-pip install -r requirements.dev.txt
-
-$ python3 cmd/sql-flow.py dev invoke dev/config/examples/basic.agg.mem.yml dev/fixtures/simple.json
-[{'city': 'New York', 'city_count': 28672}, {'city': 'Baltimore', 'city_count': 28672}]
-
-$ python3 cmd/sql-flow.py run dev/config/examples/basic.agg.mem.yml --max-msgs-to-process=10000
-```
-
-Or via Docker:
-
-```
-docker run -v $(pwd)/dev:/tmp/conf -v /tmp/sqlflow:/tmp/sqlflow \
-  turbolytics/sql-flow:latest \
-  dev invoke /tmp/conf/config/examples/basic.agg.mem.yml /tmp/conf/fixtures/simple.json
-```
-
-### Python engine benchmarks
-
-[More information about benchmarks are available in the wiki](https://github.com/turbolytics/sql-flow/wiki/Benchmarks).
-
-| Name                      | Throughput        | Max RSS Memory | Peak Memory Usage |
-|---------------------------|-------------------|----------------|-------------------|
-| Simple Aggregation Memory | 45,000 msgs / sec | 230 MiB        | 130 MiB           |
-| Simple Aggregation Disk   | 36,000 msgs / sec | 256 MiB        | 102 MiB           |
-| Enrichment                | 13,000 msgs /sec  | 368 MiB        | 124 MiB           |
-| CSV Disk Join             | 11,500 msgs /sec  | 312 MiB        | 152 MiB           |
-| CSV Memory Join           | 33,200 msgs / sec | 300 MiB        | 107 MiB           |
-| In Memory Tumbling Window | 44,000 msgs / sec | 198 MiB        |  96 MiB           |
-
-### Python engine UDFs
-
-UDFs are a Python-engine-only feature; see
-[Differences from the Python engine](#differences-from-the-python-engine).
+> `docker buildx imagetools create -t turbolytics/sql-flow:latest turbolytics/sql-flow:v1.0.4`.
 
 # Examples
 
@@ -900,7 +729,7 @@ Every example config lives in [`dev/config/examples/`](dev/config/examples/).
 
 ### Consume Bluesky Firehose
 
-SQLFlow supports DuckDB over websocket. Running SQL against the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) is a simple configuration file:
+Running SQL against the [Bluesky firehose](https://docs.bsky.app/docs/advanced-guides/firehose) is a single configuration file:
 
 <img width="1280" alt="bluesky firehose config" src="https://github.com/user-attachments/assets/86a46875-3cfa-46d3-ab08-1457c29115d9" />
 
@@ -955,19 +784,48 @@ $ duckdb -c "select count(*) from '/tmp/sqlflow/warehouse/default.db/city_events
 └──────────────┘
 ```
 
+# Migrating from the Python engine
+
+SQLFlow began as a Python engine. It is **deprecated and no longer
+maintained**; v1 is the Go engine described above, and it reads the same
+configuration files. Move an existing pipeline by swapping the image or binary
+— the config, the templating and the DuckDB SQL carry over. What changes:
+
+- **UDFs are not supported.** The Python engine took Python UDFs via a `udfs:`
+  block. Define the function in DuckDB instead — a macro, an extension, or an
+  `ATTACH`ed database that provides it. A `udfs:` block is a hard error naming
+  the functions, rather than a silent skip that would later surface as an
+  opaque binder error.
+- **The command line is accepted as it was.** `run pipeline.yml
+  --max-msgs-to-process=N` works unchanged; `-c` and `--max-msgs` are the
+  native spellings.
+- **Console output** is one JSON object per line rather than a Python list of
+  dicts. Same rows, different rendering.
+- **An empty batch** produces no output; the Python engine raised.
+- **`StructuredBatch`** truncates its table every batch; the Python engine did
+  not.
+- **Log format** is zap's console format rather than Python logging's, and
+  `SQLFLOW_LOG_LEVEL` accepts Python's level names too.
+- **DuckDB** is whatever `libduckdb` you install (the image pins 1.5.x); the
+  Python engine pinned 1.3.1. "Same SQL, same result" is not guaranteed across
+  that gap.
+
+The Python source stays in the repository under `sqlflow/` for reference, with
+`Dockerfile.python` and `make docker-image` (tagged `python-<sha>`) to reproduce
+an old image. Do not publish a bare version tag from it. The Python test suite
+(`make test-unit`, `make test-integration`) is frozen with it.
+
 # Development
 
 ```
 make sqlflow        # build bin/sqlflow
-make test-go        # build, vet, gofmt check, unit tests (Go engine)
-make test-unit      # Python engine unit tests
-make test-integration
+make test-go        # build, vet, gofmt check, unit tests
+make test-image     # build the image and run tests/release against it
 ```
 
-`make test-go` is what CI runs against the Go engine. Kafka-backed integration
-tests are deliberately excluded from it.
-
-Backing services for local development:
+`make test-go` and `make test-image` are what CI runs on every push.
+Kafka-backed integration tests are deliberately excluded from `test-go`; they
+run from the dev stack. Backing services for local development:
 
 ```
 make start-backing-services
