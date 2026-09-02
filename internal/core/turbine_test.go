@@ -459,3 +459,187 @@ func TestConsumeLoop_MarksTrackEachPartition(t *testing.T) {
 	assert.Equal(t, int64(102), mark0.Offset)
 	assert.Equal(t, int64(501), mark1.Offset)
 }
+
+// --- Task 4: transactional batch -------------------------------------------
+
+// orderingSink records the calls made to it, so the sequence that makes state
+// and offsets atomic can be asserted rather than assumed.
+type orderingSink struct {
+	events *[]string
+	fail   bool
+}
+
+func (s *orderingSink) WriteTable(batch arrow.Table) error { return nil }
+
+func (s *orderingSink) Flush() error {
+	if s.fail {
+		*s.events = append(*s.events, "flush-failed")
+		return errors.New("sink unreachable")
+	}
+	*s.events = append(*s.events, "flush")
+	return nil
+}
+
+func (s *orderingSink) Batch() (arrow.Table, error) { return nil, nil }
+
+// fakeOffsetStore stands in for the DuckDB-backed store so the ordering test
+// needs no database.
+type fakeOffsetStore struct {
+	events *[]string
+	saved  []*Marks
+	fail   bool
+}
+
+func (s *fakeOffsetStore) Save(ctx context.Context, marks *Marks) error {
+	if s.fail {
+		*s.events = append(*s.events, "save-offsets-failed")
+		return errors.New("disk full")
+	}
+	*s.events = append(*s.events, "save-offsets")
+	copied := NewMarks()
+	marks.Each(func(topic string, partition int32, mk Mark) {
+		copied.Advance(topic, partition, mk)
+	})
+	s.saved = append(s.saved, copied)
+	return nil
+}
+
+// txConn records the transaction boundary calls.
+type txConn struct {
+	events *[]string
+	fail   bool
+}
+
+func (c *txConn) Commit(ctx context.Context) error {
+	if c.fail {
+		*c.events = append(*c.events, "commit-failed")
+		return errors.New("commit rejected")
+	}
+	*c.events = append(*c.events, "commit")
+	return nil
+}
+
+func (c *txConn) Rollback(ctx context.Context) error {
+	*c.events = append(*c.events, "rollback")
+	return nil
+}
+
+// The external sink must flush BEFORE the transaction commits. A crash
+// between them replays the batch -- a duplicate the sink can absorb -- rather
+// than committing offsets for rows the sink never received, which loses them
+// with the consumer group reporting no lag.
+func TestProcessBatch_FlushesSinkBeforeCommittingState(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, []string{"flush", "save-offsets", "commit"}, events)
+}
+
+// A sink failure must roll the transaction back, so the offsets on disk stay
+// where they were and the batch is replayed on restart.
+func TestProcessBatch_RollsBackWhenSinkFails(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events, fail: true}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.Error(t, err)
+	assert.Equal(t, []string{"flush-failed", "rollback"}, events)
+}
+
+// A failure saving offsets must roll back too: state written by the handler
+// in this transaction has to go with the offsets that describe it.
+func TestProcessBatch_RollsBackWhenOffsetSaveFails(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events, fail: true}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.Error(t, err)
+	assert.Equal(t, []string{"flush", "save-offsets-failed", "rollback"}, events)
+}
+
+// A commit failure is fatal to the batch and must not be followed by a Kafka
+// commit: the durable offsets did not move, so Kafka's must not either.
+func TestProcessBatch_CommitFailureDoesNotCommitSource(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events, fail: true}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.Error(t, err)
+	assert.Equal(t, []string{"flush", "save-offsets", "commit-failed", "rollback"}, events)
+	// Kafka must not have been told anything.
+	assert.Equal(t, 0, len(src.marks))
+}
+
+// The offsets handed to the store are the ones the pipeline processed, not
+// whatever the source has fetched ahead to.
+func TestProcessBatch_SavesTheProcessedOffsets(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, &txConn{events: &events}))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, 1, len(store.saved))
+	got, ok := store.saved[0].Get("events", 0)
+	assert.That(t, ok)
+	assert.Equal(t, int64(3), got.Offset)
+}
+
+// Without a state store the pipeline behaves exactly as before: no
+// transaction calls at all, and the source is still committed.
+func TestProcessBatch_NoStateStoreIsUnchanged(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+
+	tb := newTestTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, []string{"flush"}, events)
+	assert.Equal(t, 1, len(src.marks))
+}

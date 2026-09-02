@@ -17,6 +17,8 @@ type Metrics struct {
 	SinkFlushNumRows       metric.Int64Gauge
 	SinkFlushCount         metric.Int64Counter
 	BatchProcessingLatency metric.Float64Histogram
+	StateCommitLatency     metric.Float64Histogram
+	StateCommitCount       metric.Int64Counter
 	ConsumerLag            metric.Int64Gauge
 }
 
@@ -96,6 +98,22 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("messages"),
 	); err != nil {
 		return nil, fmt.Errorf("consumer_lag: %w", err)
+	}
+
+	if m.StateCommitLatency, err = meter.Float64Histogram(
+		"state_commit_latency",
+		metric.WithDescription("Latency of committing state and offsets together"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("state_commit_latency: %w", err)
+	}
+
+	if m.StateCommitCount, err = meter.Int64Counter(
+		"state_commit_count",
+		metric.WithDescription("Number of state transactions committed"),
+		metric.WithUnit("commits"),
+	); err != nil {
+		return nil, fmt.Errorf("state_commit_count: %w", err)
 	}
 
 	return &m, nil

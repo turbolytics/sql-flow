@@ -143,12 +143,31 @@ const (
 	phaseHandlerInvoke = "handler.invoke"
 )
 
+// offsetSaver writes positions into the pipeline's state database. It is an
+// interface so the ordering tests need no DuckDB; OffsetStore implements it.
+type offsetSaver interface {
+	Save(ctx context.Context, marks *Marks) error
+}
+
+// stateTx is the transaction boundary on the state database. ADBC connections
+// with autocommit disabled satisfy it.
+type stateTx interface {
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
+}
+
 type Turbine struct {
 	source        Source
 	sink          Sink
 	handler       Handler
 	batchSize     int
 	flushInterval time.Duration
+
+	// offsets and stateTx are set together, and only when the pipeline has a
+	// state database. Both nil means the historical behaviour: no transaction,
+	// and the source's own commit is the only durable record of progress.
+	offsets offsetSaver
+	stateTx stateTx
 
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
@@ -165,6 +184,16 @@ type Turbine struct {
 func WithTurbineLogger(l *zap.Logger) TurbineOption {
 	return func(t *Turbine) {
 		t.logger = l
+	}
+}
+
+// WithStateStore makes each batch transactional: the handler's writes to the
+// state database and the offsets that produced them commit together, so a
+// crash can never leave one without the other.
+func WithStateStore(offsets offsetSaver, tx stateTx) TurbineOption {
+	return func(t *Turbine) {
+		t.offsets = offsets
+		t.stateTx = tx
 	}
 }
 
@@ -478,6 +507,57 @@ func (t *Turbine) commitSource() error {
 	return t.source.Commit()
 }
 
+// rollbackState discards this batch's uncommitted state writes. Used on the
+// paths that fail before commitState is reached.
+func (t *Turbine) rollbackState(ctx context.Context) {
+	if t.stateTx == nil {
+		return
+	}
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	if err := t.stateTx.Rollback(ctx); err != nil {
+		t.logger.Error("rollback failed", zap.Error(err))
+	}
+}
+
+// commitState writes the processed offsets into the state database and commits
+// them together with whatever the handler wrote in this batch. Any failure
+// rolls the whole transaction back, leaving the durable offsets where they
+// were so the batch is replayed rather than lost.
+//
+// A pipeline with no state database does nothing here.
+func (t *Turbine) commitState(ctx context.Context) error {
+	if t.offsets == nil || t.stateTx == nil {
+		return nil
+	}
+
+	c0 := time.Now()
+
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	if err := t.offsets.Save(ctx, t.marks); err != nil {
+		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
+			t.logger.Error("rollback after failed offset save", zap.Error(rbErr))
+		}
+		return fmt.Errorf("saving offsets: %w", err)
+	}
+
+	if err := t.stateTx.Commit(ctx); err != nil {
+		// The commit itself failed, so the transaction is still open and
+		// still holds this batch's writes; roll it back explicitly rather
+		// than leaving them to leak into the next batch.
+		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
+			t.logger.Error("rollback after failed commit", zap.Error(rbErr))
+		}
+		return fmt.Errorf("committing state: %w", err)
+	}
+
+	t.metrics.StateCommitLatency.Record(ctx, time.Since(c0).Seconds())
+	t.metrics.StateCommitCount.Add(ctx, 1)
+	return nil
+}
+
 // processBatch invokes the handler on the buffered messages, writes the
 // result to the sink, commits the source, and resets the handler for the
 // next batch.
@@ -515,6 +595,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	if err := t.flush(batch); err != nil {
 		t.stats.NumErrors++
 		t.logger.Error("error flushing sink", zap.Error(err))
+		// The handler's writes are still uncommitted in the state
+		// transaction; discard them with the batch they belong to.
+		t.rollbackState(ctx)
 		if batch != nil {
 			batch.Release()
 		}
@@ -529,8 +612,25 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 		t.metrics.SinkFlushNumRows.Record(ctx, batch.NumRows())
 	}
 
+	// The state transaction closes after the sink has flushed and before the
+	// source is committed. That order is the guarantee: a crash between the
+	// flush and the commit replays the batch, so an external sink may see a
+	// duplicate -- recoverable -- while state and offsets stay consistent.
+	// Committing first would move the offsets past rows the sink never
+	// received, which loses them silently.
+	if err := t.commitState(ctx); err != nil {
+		t.stats.NumErrors++
+		t.logger.Error("error committing state", zap.Error(err))
+		if batch != nil {
+			batch.Release()
+		}
+		return err
+	}
+
 	// Committed only after the sink has flushed, so a crash replays the
-	// batch rather than losing it.
+	// batch rather than losing it. With a state database this is advisory:
+	// the durable position is the one in the state transaction above, and
+	// this keeps the consumer group's lag readable.
 	if err := t.commitSource(); err != nil {
 		t.logger.Error("error committing source", zap.Error(err))
 		if batch != nil {
