@@ -19,6 +19,8 @@ type Metrics struct {
 	BatchProcessingLatency metric.Float64Histogram
 	StateCommitLatency     metric.Float64Histogram
 	StateCommitCount       metric.Int64Counter
+	StateSizeBytes         metric.Int64Gauge
+	StateTableRows         metric.Int64Gauge
 	ConsumerLag            metric.Int64Gauge
 }
 
@@ -114,6 +116,22 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("commits"),
 	); err != nil {
 		return nil, fmt.Errorf("state_commit_count: %w", err)
+	}
+
+	if m.StateSizeBytes, err = meter.Int64Gauge(
+		"state_db_size_bytes",
+		metric.WithDescription("Size on disk of the pipeline's state database"),
+		metric.WithUnit("By"),
+	); err != nil {
+		return nil, fmt.Errorf("state_db_size_bytes: %w", err)
+	}
+
+	if m.StateTableRows, err = meter.Int64Gauge(
+		"state_table_rows",
+		metric.WithDescription("Rows in each managed state table"),
+		metric.WithUnit("rows"),
+	); err != nil {
+		return nil, fmt.Errorf("state_table_rows: %w", err)
 	}
 
 	return &m, nil
