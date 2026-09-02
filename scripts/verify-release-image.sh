@@ -74,4 +74,22 @@ if [ -n "$LATEST" ]; then
     echo "  -> matches $IMAGE"
 fi
 
+# The manifest listing an architecture does not mean that binary runs. The
+# non-native one is built under emulation and is never executed during the
+# build, so this is the first time it runs at all. The version it reports has
+# to be the image's tag, which also catches a stale layer shipping an older
+# binary under a new tag.
+tag="${IMAGE##*:}"
+for platform in $REQUIRED_PLATFORMS; do
+    # Pulled separately so the run's output is the binary's, not the pull's.
+    docker pull -q --platform "$platform" "$IMAGE" >/dev/null 2>&1 || true
+    out="$(docker run --rm --platform "$platform" "$IMAGE" version 2>&1)" ||
+        fail "$IMAGE does not run on $platform:
+$out"
+    echo "$out" | grep -q "^sqlflow ${tag}$" ||
+        fail "$IMAGE on $platform reports the wrong version; expected 'sqlflow ${tag}':
+$out"
+    echo "  runs on $platform: $(echo "$out" | head -1)"
+done
+
 echo "verify-release-image: OK"
