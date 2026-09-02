@@ -140,7 +140,7 @@ func NewCommand() *cobra.Command {
 				startDebugServer(conn, lock, l)
 			}
 
-			meterProvider, err := newMeterProvider(metricsExporter, l)
+			meterProvider, err := newMeterProvider(metricsExporter, l, nil)
 			if err != nil {
 				return err
 			}

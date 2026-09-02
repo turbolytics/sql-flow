@@ -169,6 +169,12 @@ type Turbine struct {
 	offsets offsetSaver
 	stateTx stateTx
 
+	// stateStats reads a snapshot of durable state for the gauges. It reads a
+	// connection dedicated to reading, never the one batches are written on,
+	// so a scrape cannot stall the pipeline. Nil when there is no state
+	// database.
+	stateStats func() (*StateStats, error)
+
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
 	marks       *Marks
@@ -194,6 +200,15 @@ func WithStateStore(offsets offsetSaver, tx stateTx) TurbineOption {
 	return func(t *Turbine) {
 		t.offsets = offsets
 		t.stateTx = tx
+	}
+}
+
+// WithStateStats supplies the snapshot function backing the state gauges. It
+// must read a connection dedicated to reading; passing the pipeline's writer
+// would let a scrape contend with batch processing.
+func WithStateStats(fn func() (*StateStats, error)) TurbineOption {
+	return func(t *Turbine) {
+		t.stateStats = fn
 	}
 }
 
@@ -253,9 +268,41 @@ func (t *Turbine) StatusLoop(ctx context.Context) error {
 		select {
 		case <-ticker.C:
 			t.logThroughput()
+			t.recordStateGauges(ctx)
 		case <-ctx.Done():
 			return nil
 		}
+	}
+}
+
+// recordStateGauges samples the state database for the size and row-count
+// gauges. It runs on StatusLoop's existing tick rather than its own ticker,
+// and reads the dedicated reader connection, so it neither adds a goroutine
+// nor competes with the writer.
+//
+// A pipeline with no state database records nothing at all rather than
+// reporting zero: an absent series and a genuinely empty state are different
+// facts, and a dashboard should be able to distinguish them.
+func (t *Turbine) recordStateGauges(ctx context.Context) {
+	if t.stateStats == nil {
+		return
+	}
+
+	stats, err := t.stateStats()
+	if err != nil {
+		// Never fatal: the pipeline keeps running and keeps serving its
+		// other metrics even when state cannot be read.
+		t.logger.Error("collecting state stats", zap.Error(err))
+		return
+	}
+	if stats == nil {
+		return
+	}
+
+	t.metrics.StateSizeBytes.Record(ctx, stats.SizeBytes)
+	for _, tbl := range stats.Tables {
+		t.metrics.StateTableRows.Record(ctx, tbl.Rows,
+			metric.WithAttributes(attribute.String("table", tbl.Name)))
 	}
 }
 

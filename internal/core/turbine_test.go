@@ -643,3 +643,43 @@ func TestProcessBatch_NoStateStoreIsUnchanged(t *testing.T) {
 	assert.Equal(t, []string{"flush"}, events)
 	assert.Equal(t, 1, len(src.marks))
 }
+
+// The state gauges are recorded on StatusLoop's existing tick, from the
+// dedicated reader connection -- not the pipeline's writer -- so a scrape can
+// never stall batch processing.
+func TestRecordStateGauges_ReportsSizeAndRows(t *testing.T) {
+	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
+
+	calls := 0
+	tb.stateStats = func() (*StateStats, error) {
+		calls++
+		return &StateStats{
+			Path:      "/state/state.db",
+			SizeBytes: 4096,
+			Tables:    []TableStat{{Name: "agg", Rows: 24}, {Name: "other", Rows: 7}},
+		}, nil
+	}
+
+	tb.recordStateGauges(context.Background())
+	assert.Equal(t, 1, calls)
+}
+
+// A pipeline with no state database records nothing rather than reporting
+// zero: an absent series and a genuinely empty state are different facts, and
+// a dashboard should be able to tell them apart.
+func TestRecordStateGauges_NoProviderRecordsNothing(t *testing.T) {
+	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
+	// stateStats is nil; this must not panic.
+	tb.recordStateGauges(context.Background())
+}
+
+// A failure collecting stats must not take the status loop down with it --
+// the pipeline keeps running and keeps serving its other metrics.
+func TestRecordStateGauges_SurvivesCollectionFailure(t *testing.T) {
+	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
+	tb.stateStats = func() (*StateStats, error) {
+		return nil, errors.New("state database unreadable")
+	}
+
+	tb.recordStateGauges(context.Background())
+}
