@@ -1,0 +1,58 @@
+# Measures what durable state costs.
+#
+# Identical to benchmark.inferred.mem.yml except the handler writes to a
+# managed table instead of returning rows. Set SQLFLOW_STATE_PATH to make
+# DuckDB file-backed and put every batch in a transaction. Leave it unset to
+# measure the same pipeline with state in memory. The difference is the cost
+# of the durability guarantee.
+tables:
+  sql:
+    - name: agg_city_count
+      sql: |
+        CREATE TABLE IF NOT EXISTS agg_city_count (
+          city VARCHAR,
+          count INT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS agg_city_count_idx
+          ON agg_city_count (city);
+
+      manager:
+        tumbling_window:
+          poll_interval_seconds: 3600
+          collect_closed_windows_sql: "SELECT city, count FROM agg_city_count WHERE false"
+          delete_closed_windows_sql: "DELETE FROM agg_city_count WHERE false"
+        sink:
+          type: noop
+
+pipeline:
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(500) }}
+
+{% if SQLFLOW_STATE_PATH %}
+  state:
+    path: {{ SQLFLOW_STATE_PATH }}
+{% endif %}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('benchmark-stateful') }}
+      auto_offset_reset: earliest
+      topics:
+        - "{{ SQLFLOW_TOPIC|default('benchmark-input') }}"
+
+  handler:
+    type: "handlers.InferredMemBatch"
+    sql: |
+      INSERT INTO agg_city_count
+      BY NAME
+      SELECT
+        properties.city as city,
+        COUNT(*) as count
+      FROM batch
+      GROUP BY properties.city
+      ON CONFLICT (city)
+      DO UPDATE SET count = count + EXCLUDED.count;
+
+  sink:
+    type: noop

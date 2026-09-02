@@ -621,6 +621,43 @@ set** is anonymous memory, comparable to RSS — what the engine actually holds.
 Memory is flat across handlers and batch sizes at roughly a quarter GiB, so
 throughput scales with batch size without buying it with memory.
 
+## What durable state costs
+
+Setting `pipeline.state.path` puts every batch in a DuckDB transaction. That
+transaction is one fsync per batch, so its cost per message falls as batches
+grow. Same pipeline, same 300,000 messages, state in memory against state on
+disk:
+
+| `batch_size` | State in memory | Durable state | Cost |
+|---|---|---|---|
+| 500 | ~95,600 msgs/sec | ~51,100 msgs/sec | 47% |
+| 2000 | ~184,600 msgs/sec | ~130,600 msgs/sec | 29% |
+| 5000 | ~201,600 msgs/sec | ~171,500 msgs/sec | 15% |
+
+Use a batch of at least 5000 for a stateful pipeline. Below 2000 the commit
+dominates and you pay for durability on every message instead of amortising it
+across a batch.
+
+Memory is unchanged: peak working set stayed within 191-218 MiB across every
+run above, with and without state. Durability costs throughput, not memory.
+
+`state_commit_latency` reports the per-batch commit time on the metrics
+endpoint, so you can see this cost on your own hardware rather than inferring
+it from the table.
+
+Reproduce both arms:
+
+```
+make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000 \
+    CONFIG=dev/config/examples/benchmark.stateful.mem.yml
+STATE_PATH=/tmp/bench-state.db make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000 \
+    CONFIG=dev/config/examples/benchmark.stateful.mem.yml
+```
+
+Delete the state file between runs. A second run resumes from the first run's
+offsets and consumes nothing, which reports a meaningless number rather than
+failing.
+
 To reproduce:
 
 ```

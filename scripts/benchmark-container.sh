@@ -16,6 +16,11 @@ TOPIC="${BENCH_TOPIC:-benchmark-$(date +%s)}"
 # structured handler, the fastest path. benchmark.inferred.mem.yml measures
 # schema inference instead.
 CONFIG="${3:-${CONFIG:-dev/config/examples/benchmark.structured.mem.yml}}"
+# STATE_PATH makes the pipeline's DuckDB file-backed, so every batch commits
+# state and offsets in one transaction. The path is container-local on
+# purpose: a bind mount on Docker Desktop measures the mount, the same way
+# host port-forwarding understates throughput ~10x.
+STATE_PATH="${STATE_PATH:-}"
 NETWORK="dev_default"
 GO_IMAGE="golang:1.25-bookworm"
 RUN_IMAGE="debian:bookworm-slim"
@@ -24,6 +29,7 @@ echo "=== sqlflow benchmark (in-network) ==="
 echo "Messages:   $NUM_MESSAGES"
 echo "Batch size: $BATCH_SIZE"
 echo "Config:     $CONFIG"
+echo "State:      ${STATE_PATH:-in-memory}"
 echo ""
 
 # 1. Check Kafka is running
@@ -60,7 +66,7 @@ echo "Publishing complete."
 # 5. Run sqlflow in-network with a unique consumer group so re-runs start fresh
 GROUP_ID="benchmark-$(date +%s)"
 echo ""
-echo "--- Running sqlflow in-network (batch_size=$BATCH_SIZE, group=$GROUP_ID) ---"
+echo "--- Running sqlflow in-network (batch_size=$BATCH_SIZE, group=$GROUP_ID, state=${STATE_PATH:-memory}) ---"
 echo ""
 
 docker run --rm --network "$NETWORK" \
@@ -72,6 +78,7 @@ docker run --rm --network "$NETWORK" \
     -e SQLFLOW_GROUP_ID="$GROUP_ID" \
     -e SQLFLOW_TOPIC="$TOPIC" \
     -e SQLFLOW_BATCH_SIZE="$BATCH_SIZE" \
+    -e SQLFLOW_STATE_PATH="$STATE_PATH" \
     "$RUN_IMAGE" \
     sh -c '
         # Two memory numbers, sampled at 100ms because memory.peak needs
