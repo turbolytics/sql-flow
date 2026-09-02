@@ -34,6 +34,38 @@ func (f *fakeSource) Stream() <-chan []Message {
 func (f *fakeSource) Commit() error { f.commits++; return nil }
 func (f *fakeSource) Close() error  { return nil }
 
+// markingSource is a fakeSource that can commit explicit positions, recording
+// the marks it was handed at each commit.
+type markingSource struct {
+	fakeSource
+	marks []map[string]map[int32]Mark
+}
+
+func (m *markingSource) CommitMarks(marks map[string]map[int32]Mark) error {
+	copied := map[string]map[int32]Mark{}
+	for topic, parts := range marks {
+		copied[topic] = map[int32]Mark{}
+		for p, mk := range parts {
+			copied[topic][p] = mk
+		}
+	}
+	m.marks = append(m.marks, copied)
+	return nil
+}
+
+// kafkaMessages fabricates n messages from one partition with consecutive
+// offsets, the way the Kafka source delivers them.
+func kafkaMessages(topic string, partition int32, from, n int) []Message {
+	out := make([]Message, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, Message{
+			Value: []byte(`{"a":1}`), Topic: topic, Partition: partition,
+			Offset: int64(from + i), LeaderEpoch: 7,
+		})
+	}
+	return out
+}
+
 // fakeHandler emits a table with one row per buffered message, so the sink
 // can be checked against the number of messages the source produced.
 type fakeHandler struct {
@@ -381,4 +413,43 @@ func TestConsumeLoop_BatchOfOnlyBadMessagesIsNotAHandlerError(t *testing.T) {
 	assert.Equal(t, int64(0), sink.rows)
 	// Two rejected messages, and no extra error from invoking an empty batch.
 	assert.Equal(t, 2, stats.NumErrors)
+}
+
+// The Kafka source polls ahead of the pipeline into a buffer, so "commit
+// everything fetched" commits messages the pipeline has not processed: after
+// one 20,000-message batch it had committed offset 70,086. A crash then loses
+// the difference with the consumer group showing no lag. The pipeline must
+// instead hand the source the exact position it has finished with.
+func TestConsumeLoop_CommitsOnlyProcessedMarks(t *testing.T) {
+	src := &markingSource{fakeSource: fakeSource{
+		// One fetch delivers 30 messages; batch_size is 20, so the first
+		// commit must name offset 19 and the final one 29 -- never 29 twice.
+		batches: [][]Message{kafkaMessages("events", 0, 0, 30)},
+	}}
+	tb := newTestTurbine(src, &fakeHandler{}, &fakeSink{}, 20)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, 2, len(src.marks))
+	assert.Equal(t, Mark{Offset: 19, LeaderEpoch: 7}, src.marks[0]["events"][0])
+	assert.Equal(t, Mark{Offset: 29, LeaderEpoch: 7}, src.marks[1]["events"][0])
+	// A source that can take marks must not also get the blanket commit.
+	assert.Equal(t, 0, src.commits)
+}
+
+func TestConsumeLoop_MarksTrackEachPartition(t *testing.T) {
+	p0 := kafkaMessages("events", 0, 100, 3)
+	p1 := kafkaMessages("events", 1, 500, 2)
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{{p0[0], p1[0], p0[1], p1[1], p0[2]}},
+	}}
+	tb := newTestTurbine(src, &fakeHandler{}, &fakeSink{}, 10)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, 1, len(src.marks))
+	assert.Equal(t, int64(102), src.marks[0]["events"][0].Offset)
+	assert.Equal(t, int64(501), src.marks[0]["events"][1].Offset)
 }

@@ -24,6 +24,27 @@ type Message struct {
 	Topic     string
 	Partition int32
 	Offset    int64
+	// LeaderEpoch is the Kafka leader epoch the record was read under. It is
+	// carried through so a commit can name it, which lets the broker detect
+	// log truncation. Only meaningful when HasMetadata is true; a source with
+	// no positions leaves it zero along with the rest.
+	LeaderEpoch int32
+}
+
+// Mark is the position of the last message the pipeline has finished with in
+// one partition: written to the handler, or dropped by an error policy.
+type Mark struct {
+	Offset      int64
+	LeaderEpoch int32
+}
+
+// MarkCommitter is implemented by sources that can commit an explicit
+// position. The pipeline prefers it to Commit, because a source that reads
+// ahead of the pipeline -- the Kafka source polls into a buffer -- has fetched
+// messages the pipeline has not processed, and committing "everything fetched"
+// commits those too. Marks are keyed by topic then partition.
+type MarkCommitter interface {
+	CommitMarks(marks map[string]map[int32]Mark) error
 }
 
 // HasMetadata reports whether the source supplied provenance for this message.
@@ -124,10 +145,14 @@ type Turbine struct {
 	handler       Handler
 	batchSize     int
 	flushInterval time.Duration
-	lock          *sync.Mutex
-	running       bool
-	stats         *Stats
-	errorPolicy   PipelineErrorPolicies
+
+	// marks is the last position finished with, per topic and partition; what
+	// commitSource hands a MarkCommitter.
+	marks       map[string]map[int32]Mark
+	lock        *sync.Mutex
+	running     bool
+	stats       *Stats
+	errorPolicy PipelineErrorPolicies
 
 	logger  *zap.Logger
 	metrics *Metrics
@@ -162,6 +187,7 @@ func NewTurbine(
 ) *Turbine {
 	t := &Turbine{
 		source:        source,
+		marks:         map[string]map[int32]Mark{},
 		sink:          sink,
 		handler:       handler,
 		batchSize:     batchSize,
@@ -289,7 +315,9 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				}
 				// The message is dropped from the batch, but it was still
 				// consumed from the source: it counts toward the reported
-				// total and toward --max-msgs, as in the Python engine.
+				// total and toward --max-msgs, as in the Python engine -- and
+				// its position is finished with, so it is safe to commit past.
+				t.mark(raw)
 				totalConsumed++
 				t.stats.SetNumMessagesConsumed(totalConsumed)
 				if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
@@ -300,6 +328,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				continue
 			}
 
+			t.mark(raw)
 			numBatchMessages++
 			totalConsumed++
 			t.stats.SetNumMessagesConsumed(totalConsumed)
@@ -406,6 +435,45 @@ func (t *Turbine) writeDLQ(cause error, phase, message string) error {
 	return t.errorPolicy.DLQSink.Flush()
 }
 
+// mark records that the pipeline has finished with a message -- written to
+// the handler or dropped by policy -- so a commit can name that position.
+// Messages without source metadata have no position to record.
+func (t *Turbine) mark(m Message) {
+	if !m.HasMetadata() {
+		return
+	}
+	parts, ok := t.marks[m.Topic]
+	if !ok {
+		parts = map[int32]Mark{}
+		t.marks[m.Topic] = parts
+	}
+	// Offsets arrive in order within a partition; the guard only matters if
+	// a source ever redelivers.
+	if cur, ok := parts[m.Partition]; ok && cur.Offset >= m.Offset {
+		return
+	}
+	parts[m.Partition] = Mark{Offset: m.Offset, LeaderEpoch: m.LeaderEpoch}
+}
+
+// commitSource commits what the pipeline has processed. A source that can
+// take explicit marks gets exactly the positions this pipeline has finished
+// with; anything else gets the plain Commit it always did.
+//
+// The distinction is not academic. The Kafka source reads ahead of the
+// pipeline into a buffer, and its plain Commit commits everything it has
+// fetched: after one 20,000-message batch it had committed offset 70,086.
+// Whatever sat in that buffer when the process died was gone for good, with
+// the consumer group showing no lag.
+func (t *Turbine) commitSource() error {
+	if mc, ok := t.source.(MarkCommitter); ok {
+		if len(t.marks) == 0 {
+			return nil
+		}
+		return mc.CommitMarks(t.marks)
+	}
+	return t.source.Commit()
+}
+
 // processBatch invokes the handler on the buffered messages, writes the
 // result to the sink, commits the source, and resets the handler for the
 // next batch.
@@ -459,7 +527,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 
 	// Committed only after the sink has flushed, so a crash replays the
 	// batch rather than losing it.
-	if err := t.source.Commit(); err != nil {
+	if err := t.commitSource(); err != nil {
 		t.logger.Error("error committing source", zap.Error(err))
 		if batch != nil {
 			batch.Release()
