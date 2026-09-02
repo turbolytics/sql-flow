@@ -2,7 +2,10 @@ package managers
 
 import (
 	"context"
+	"errors"
+	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -199,4 +202,350 @@ func TestTumbling_StartPollsUntilContextCancelled(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Start did not return after cancellation")
 	}
+}
+
+// --- Failure paths: a window must never be dropped -------------------------
+
+// failingSink fails on the nominated call, so each half of write-then-flush
+// can be exercised separately.
+type failingSink struct {
+	recordingSink
+	failWrite bool
+	failFlush bool
+}
+
+func (s *failingSink) WriteTable(batch arrow.Table) error {
+	if s.failWrite {
+		return errors.New("sink unreachable")
+	}
+	return s.recordingSink.WriteTable(batch)
+}
+
+func (s *failingSink) Flush() error {
+	if s.failFlush {
+		return errors.New("broker rejected the batch")
+	}
+	return s.recordingSink.Flush()
+}
+
+// A window that could not be written must stay in the table. Deleting it would
+// lose the aggregate with no record anywhere that it existed.
+func TestTumbling_SinkWriteFailureLeavesTheWindow(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &failingSink{failWrite: true}
+	m := newTestTumbling(conn, &sink.recordingSink)
+	m.sink = sink
+
+	err := m.Poll(context.Background())
+	assert.Error(t, err)
+
+	// All three rows survive: two closed, one open.
+	assert.Equal(t, int64(3), countRows(t, conn, "agg_cities_count"))
+}
+
+// The same holds for a flush failure. Flush is where a Kafka sink blocks on
+// broker acks, so this is the likely half to fail in production.
+func TestTumbling_SinkFlushFailureLeavesTheWindow(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &failingSink{failFlush: true}
+	m := newTestTumbling(conn, &sink.recordingSink)
+	m.sink = sink
+
+	err := m.Poll(context.Background())
+	assert.Error(t, err)
+	assert.Equal(t, int64(3), countRows(t, conn, "agg_cities_count"))
+}
+
+// A failed poll must be retryable: the next one publishes the same window
+// rather than skipping it.
+//
+// The retry re-writes rows the sink already received. WriteTable succeeded on
+// the first attempt and only Flush failed, so a Kafka sink has those rows
+// buffered and a retry sends them again. That is the at-least-once guarantee,
+// and it is why a window sink wants a key it can deduplicate on.
+func TestTumbling_RetriesAfterAFailedPoll(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &failingSink{failFlush: true}
+	m := newTestTumbling(conn, &sink.recordingSink)
+	m.sink = sink
+
+	assert.Error(t, m.Poll(context.Background()))
+
+	// The sink recovers.
+	sink.failFlush = false
+	assert.NoError(t, m.Poll(context.Background()))
+
+	// Four writes for two windows: both attempts wrote before the first one's
+	// flush failed.
+	rows, _ := sink.recordingSink.counts()
+	assert.Equal(t, int64(4), rows)
+
+	// The table is drained regardless, so the windows are not published a
+	// third time.
+	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
+}
+
+// A broken delete statement must surface as an error rather than silently
+// republishing the same window on every poll.
+func TestTumbling_DeleteFailureIsReported(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &recordingSink{}
+	m := NewTumbling(conn, collectSQL,
+		"DELETE FROM a_table_that_does_not_exist", time.Millisecond, sink, &sync.Mutex{})
+
+	err := m.Poll(context.Background())
+	assert.Error(t, err)
+
+	// The window was published before the delete failed, so it is still in
+	// the table and will be published again. That is at-least-once, and the
+	// error is what tells an operator to fix the SQL.
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(2), rows)
+	assert.Equal(t, int64(3), countRows(t, conn, "agg_cities_count"))
+}
+
+// --- Close logic: only closed windows move ---------------------------------
+
+// An open window must survive a poll untouched. Publishing it early would
+// emit a partial aggregate as if it were final.
+func TestTumbling_OpenWindowsAreNeitherPublishedNorDeleted(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+
+	exec(t, conn, `CREATE TABLE agg_cities_count (bucket TIMESTAMPTZ, city VARCHAR, count INT);`)
+	// Every row is inside the open window.
+	exec(t, conn, `INSERT INTO agg_cities_count VALUES
+		(now()::timestamptz, 'NYC', 3),
+		(now()::timestamptz, 'SF', 1);`)
+
+	sink := &recordingSink{}
+	m := newTestTumbling(conn, sink)
+	assert.NoError(t, m.Poll(context.Background()))
+
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(0), rows)
+	assert.Equal(t, int64(2), countRows(t, conn, "agg_cities_count"))
+}
+
+// A window that closes between two polls is published on the second, not
+// missed because the first poll saw it open.
+func TestTumbling_PublishesAWindowThatClosesBetweenPolls(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+
+	exec(t, conn, `CREATE TABLE agg_cities_count (bucket TIMESTAMPTZ, city VARCHAR, count INT);`)
+	exec(t, conn, `INSERT INTO agg_cities_count VALUES (now()::timestamptz, 'NYC', 3);`)
+
+	sink := &recordingSink{}
+	m := newTestTumbling(conn, sink)
+
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(0), rows)
+
+	// Age the row past the close predicate rather than sleeping for it.
+	exec(t, conn, `UPDATE agg_cities_count SET bucket = now()::timestamptz - INTERVAL '600' SECOND;`)
+
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ = sink.counts()
+	assert.Equal(t, int64(1), rows)
+	assert.Equal(t, int64(0), countRows(t, conn, "agg_cities_count"))
+}
+
+// Polling a table whose closed windows have already been published must not
+// publish them a second time.
+func TestTumbling_RepeatedPollsDoNotRepublish(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &recordingSink{}
+	m := newTestTumbling(conn, sink)
+
+	assert.NoError(t, m.Poll(context.Background()))
+	assert.NoError(t, m.Poll(context.Background()))
+	assert.NoError(t, m.Poll(context.Background()))
+
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(2), rows)
+}
+
+// --- Shutdown --------------------------------------------------------------
+
+// Start runs one final poll after its context is cancelled, so a window that
+// closes during shutdown is published rather than stranded in the table.
+func TestTumbling_FinalPollOnShutdownPublishesAClosedWindow(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &recordingSink{}
+	// A poll interval longer than the test guarantees the only poll that runs
+	// is the final one.
+	m := NewTumbling(conn, collectSQL, deleteSQL, time.Hour, sink, &sync.Mutex{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Start(ctx) }()
+
+	// Nothing published yet: the ticker will not fire for an hour.
+	time.Sleep(50 * time.Millisecond)
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(0), rows)
+
+	cancel()
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after cancellation")
+	}
+
+	rows, _ = sink.counts()
+	assert.Equal(t, int64(2), rows)
+	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
+}
+
+// A failing poll must not kill the manager: the rows stay and the next tick
+// retries them.
+func TestTumbling_StartSurvivesAFailedPoll(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &failingSink{failFlush: true}
+	m := NewTumbling(conn, collectSQL, deleteSQL, 5*time.Millisecond,
+		&sink.recordingSink, &sync.Mutex{})
+	m.sink = sink
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Start(ctx) }()
+
+	time.Sleep(60 * time.Millisecond)
+	sink.failFlush = false
+
+	deadline := time.After(5 * time.Second)
+	for {
+		if rows, _ := sink.recordingSink.counts(); rows >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("manager stopped polling after a failure")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after cancellation")
+	}
+}
+
+// --- Interaction with the pipeline's state transaction ---------------------
+
+// A stateful pipeline runs with autocommit disabled, and the manager shares
+// its connection. The manager's DELETE therefore lands inside the pipeline's
+// open transaction rather than committing on its own.
+//
+// That is correct, and these tests pin the two halves of why. Within the
+// process the manager sees its own delete, so a window is published once. The
+// delete becomes durable only when the pipeline commits its next batch, so a
+// crash in between republishes the window on restart -- at-least-once, the
+// same guarantee the sink path gives.
+func TestTumbling_DeleteJoinsThePipelineTransaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := duckdb.OpenPath(context.Background(), path)
+	assert.NoError(t, err)
+	defer db.Close()
+
+	writer, err := db.Connect(context.Background())
+	assert.NoError(t, err)
+	defer writer.Close()
+	observer, err := db.Connect(context.Background())
+	assert.NoError(t, err)
+	defer observer.Close()
+
+	seedWindows(t, writer)
+
+	// The pipeline turns autocommit off, as it does for a state path.
+	po, ok := writer.(adbc.PostInitOptions)
+	assert.That(t, ok)
+	assert.NoError(t, po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled))
+
+	sink := &recordingSink{}
+	m := newTestTumbling(writer, sink)
+	assert.NoError(t, m.Poll(context.Background()))
+
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(2), rows)
+
+	// The manager sees its own delete, so a second poll republishes nothing.
+	assert.Equal(t, int64(1), countRows(t, writer, "agg_cities_count"))
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ = sink.counts()
+	assert.Equal(t, int64(2), rows)
+
+	// Another connection still sees all three rows: the delete is not
+	// durable yet. A crash here republishes those windows on restart.
+	assert.Equal(t, int64(3), countRows(t, observer, "agg_cities_count"))
+
+	// The pipeline's next batch commits, and the delete becomes durable.
+	committer, ok := writer.(interface{ Commit(context.Context) error })
+	assert.That(t, ok)
+	assert.NoError(t, committer.Commit(context.Background()))
+	assert.Equal(t, int64(1), countRows(t, observer, "agg_cities_count"))
+}
+
+// A rollback discards the manager's delete along with the batch that failed.
+// The window was already published, so the next poll publishes it again --
+// at-least-once rather than a lost window.
+func TestTumbling_DeleteRollsBackWithTheBatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := duckdb.OpenPath(context.Background(), path)
+	assert.NoError(t, err)
+	defer db.Close()
+
+	writer, err := db.Connect(context.Background())
+	assert.NoError(t, err)
+	defer writer.Close()
+
+	seedWindows(t, writer)
+
+	po, ok := writer.(adbc.PostInitOptions)
+	assert.That(t, ok)
+	assert.NoError(t, po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled))
+
+	sink := &recordingSink{}
+	m := newTestTumbling(writer, sink)
+	assert.NoError(t, m.Poll(context.Background()))
+	assert.Equal(t, int64(1), countRows(t, writer, "agg_cities_count"))
+
+	// The pipeline's batch fails and rolls back.
+	roller, ok := writer.(interface{ Rollback(context.Context) error })
+	assert.That(t, ok)
+	assert.NoError(t, roller.Rollback(context.Background()))
+
+	// The closed windows are back, and the next poll republishes them.
+	assert.Equal(t, int64(3), countRows(t, writer, "agg_cities_count"))
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(4), rows)
 }
