@@ -116,6 +116,29 @@ func TestConfigValidate_ReportsMissingFile(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestConfigValidate_AcceptsStatePath(t *testing.T) {
+	path := writeTempConfig(t, `
+pipeline:
+  batch_size: 10
+  state:
+    path: /var/lib/sqlflow/state.db
+  source:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: [t]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1
+  sink:
+    type: noop
+`)
+
+	assert.NoError(t, validateConfig(path))
+}
+
 func writeTempConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yml")
