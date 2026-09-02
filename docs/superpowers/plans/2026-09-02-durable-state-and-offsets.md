@@ -507,6 +507,102 @@ git commit -m "feat(config): add pipeline.state.path"
 
 ---
 
+## Task 2b: Teach the JSON Schema about `pipeline.state`
+
+**Files:**
+- Modify: `internal/cli/schemas/config.json`
+- Test: `internal/cli/config_test.go`
+
+**Interfaces:** none; this is the validation surface for Task 2's config field.
+
+Found by Task 2's review, not by the original plan. `sqlflow config validate`
+renders the config and checks it against this schema, and the `pipeline`
+object sets `additionalProperties: false` while listing only `batch_size`,
+`description`, `flush_interval_seconds`, `handler`, `name`, `on_error`,
+`sink`, `source`. A config using `pipeline.state.path` therefore **runs but
+fails validation** -- the same trap the README documents for webhook sources,
+where the schema rejects what the engine accepts.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `internal/cli/config_test.go`, following the existing validate tests
+in that file:
+
+```go
+// A config that `run` accepts must also pass `config validate`. The schema
+// sets additionalProperties: false on pipeline, so a new field is invisible
+// to validation until it is declared here too.
+func TestConfigValidate_AcceptsStatePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.yml")
+	body := `
+pipeline:
+  batch_size: 10
+  state:
+    path: /var/lib/sqlflow/state.db
+  source:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      group_id: g
+      topics: [t]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1
+  sink:
+    type: noop
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	assert.NoError(t, validateConfig(path, &out))
+}
+```
+
+Match the helper name and signature the neighbouring validate tests already
+use; read them first rather than assuming `validateConfig`.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `SQLFLOW_DUCKDB_LIB=/opt/homebrew/lib/libduckdb.dylib go test ./internal/cli/ -run TestConfigValidate_AcceptsStatePath -v`
+Expected: FAIL, with a schema error naming `state` as an unexpected property.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Add to the `pipeline` object's `properties` in `internal/cli/schemas/config.json`:
+
+```json
+"state": {
+  "type": "object",
+  "description": "Where the pipeline keeps its DuckDB state. Absent means in-memory, and state is lost on a crash.",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "File backing the pipeline's DuckDB database. Window state and Kafka offsets are stored here and committed together."
+    }
+  },
+  "required": ["path"],
+  "additionalProperties": false
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `SQLFLOW_DUCKDB_LIB=/opt/homebrew/lib/libduckdb.dylib go test ./internal/cli/ -v`
+Expected: PASS, and every pre-existing validate test still passes.
+
+- [ ] **Step 5: Commit**
+
+```bash
+gofmt -w internal/ && go vet ./...
+git add internal/cli/schemas/config.json internal/cli/config_test.go
+git commit -m "fix(schema): accept pipeline.state so validate matches run"
+```
+
+---
+
 ## Task 3: The offset store
 
 **Files:**
