@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/column"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -179,7 +180,14 @@ func (s *ClickhouseSink) Flush() error {
 		return fmt.Errorf("clickhouse sink: prepare batch: %w", err)
 	}
 
-	if err := appendTables(batch, tables); err != nil {
+	// The prepared batch knows the target column types, which the Arrow
+	// schema does not; appendTables needs them to spot temporal columns.
+	types := make([]column.Type, len(batch.Columns()))
+	for i, c := range batch.Columns() {
+		types[i] = c.Type()
+	}
+
+	if err := appendTables(batch, types, tables); err != nil {
 		batch.Abort()
 		return err
 	}
@@ -216,7 +224,7 @@ func withRows(tables []arrow.Table) []arrow.Table {
 	return kept
 }
 
-func appendTables(batch driver.Batch, tables []arrow.Table) error {
+func appendTables(batch driver.Batch, types []column.Type, tables []arrow.Table) error {
 	for _, table := range tables {
 		reader := array.NewTableReader(table, 0)
 
@@ -230,6 +238,11 @@ func appendTables(batch driver.Batch, tables []arrow.Table) error {
 					if err != nil {
 						reader.Release()
 						return fmt.Errorf("clickhouse sink: column %q: %w", rec.ColumnName(c), err)
+					}
+					if s, ok := v.(string); ok && c < len(types) {
+						if t, ok := temporalFromString(types[c], s); ok {
+							v = t
+						}
 					}
 					row[c] = v
 				}
@@ -247,6 +260,57 @@ func appendTables(batch driver.Batch, tables []arrow.Table) error {
 		}
 	}
 	return nil
+}
+
+// temporalFromString parses a string bound for a Date/DateTime column, with a
+// zone-less value read as UTC.
+//
+// Left to the driver, a zone-less string is parsed in time.Local
+// (lib/column/datetime.go, date.go), so a JSON timestamp the handler passed
+// through without a CAST was stored shifted by the SQLFlow host's UTC offset --
+// "12:00:00" from a UTC-4 laptop landed as 16:00:00. The Python engine sends
+// the string to the server, which parses it as UTC; this matches that. A
+// string carrying an explicit offset is honoured as written.
+//
+// The layouts are the driver's own, so anything it accepted before is still
+// accepted; a string that matches none is handed to the driver unchanged to
+// report as it always has.
+func temporalFromString(colType column.Type, s string) (time.Time, bool) {
+	var withZone, noZone string
+	switch base := baseColumnType(colType); {
+	case strings.HasPrefix(base, "DateTime64"):
+		withZone, noZone = "2006-01-02 15:04:05.999999999 -07:00", "2006-01-02 15:04:05.999999999"
+	case strings.HasPrefix(base, "DateTime"):
+		withZone, noZone = "2006-01-02 15:04:05 -07:00", "2006-01-02 15:04:05"
+	case base == "Date" || base == "Date32":
+		withZone, noZone = "2006-01-02 -07:00", "2006-01-02"
+	default:
+		return time.Time{}, false
+	}
+
+	if t, err := time.Parse(withZone, s); err == nil {
+		return t, true
+	}
+	if t, err := time.ParseInLocation(noZone, s, time.UTC); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// baseColumnType strips the Nullable(...) and LowCardinality(...) wrappers so
+// the underlying type can be matched.
+func baseColumnType(t column.Type) string {
+	s := string(t)
+	for {
+		switch {
+		case strings.HasPrefix(s, "Nullable(") && strings.HasSuffix(s, ")"):
+			s = s[len("Nullable(") : len(s)-1]
+		case strings.HasPrefix(s, "LowCardinality(") && strings.HasSuffix(s, ")"):
+			s = s[len("LowCardinality(") : len(s)-1]
+		default:
+			return s
+		}
+	}
 }
 
 // arrowValue converts one Arrow cell to the Go value the driver's column
