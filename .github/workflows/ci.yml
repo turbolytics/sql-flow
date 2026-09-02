@@ -68,3 +68,36 @@ jobs:
 
       - name: Test Unit
         run: go test ./internal/...
+
+  # Functional tests against the built image: entrypoint, CLI surface, the
+  # baked-in libduckdb, and a real pipeline through Kafka. The Go job above
+  # tests the code; this tests the artifact users actually run, which is a
+  # different failure class -- a broken entrypoint or a missing libduckdb
+  # passes every unit test.
+  #
+  # Single-arch and native, so it stays fast; the multi-arch build happens at
+  # release time in release.yml.
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # VERSION comes from `git describe`, which needs tags and history.
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.dev.txt ]; then pip install -r requirements.dev.txt; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # Builds the image, then runs tests/release against it. The Kafka-backed
+      # case brings its own broker up through testcontainers.
+      - name: Test image
+        run: make test-release

@@ -15,8 +15,11 @@ import ast
 import json
 import os
 import subprocess
+import time
 
 import pytest
+import requests
+from confluent_kafka import Producer
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.network import Network
 from testcontainers.core.waiting_utils import wait_for_logs
@@ -178,3 +181,153 @@ def test_basic_agg_mem_readme_example(image):
     # one Kafka message each.
     assert 5 == len(messages), messages
 
+
+
+def test_sqlflow_docker_bluesky_data_fidelity(image):
+    """Arrays, unioned struct fields and decoded JSON escapes, via the image.
+
+    The other invoke case uses a flat scalar fixture, so it passes on an
+    engine that cannot infer arrays, drops struct fields a later message
+    introduces, or never decodes string escapes -- three bugs that shipped.
+    This asserts on the data itself, against a shipped config.
+    """
+    stdout, stderr = run_docker_container(
+        image,
+        "dev invoke /tmp/conf/config/examples/bluesky/bluesky.raw.stdout.yml "
+        "/tmp/conf/fixtures/bluesky.jsonl",
+    )
+
+    rows = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    assert len(rows) == 4, f"stdout={stdout!r} stderr={stderr!r}"
+
+    records = [r["commit"]["record"] for r in rows]
+
+    # JSON arrays infer as lists rather than failing the batch.
+    assert records[0]["langs"] == ["en", "ja"], records[0]
+    # ...including a list of structs holding a list of its own.
+    assert records[0]["facets"][0]["features"][0]["tag"] == "alpha", records[0]
+    # An empty array stays an empty list, not null.
+    assert records[2]["langs"] == [], records[2]
+
+    # "reply" appears only in the last message. It is a column at all only
+    # because struct fields are unioned across the batch.
+    assert "reply" in records[3], records[3]
+    assert records[3]["reply"]["parent"]["uri"].startswith("at://"), records[3]
+
+    # JSON escapes arrive decoded: a real newline and a real e-acute, not the
+    # backslash sequences that were being stored verbatim.
+    assert records[3]["text"] == "line one\nline two at a café", (
+        repr(records[3]["text"])
+    )
+
+
+def _wait_for_clickhouse(url, timeout=90):
+    """Polls until ClickHouse answers a query.
+
+    Connection errors are a server still starting and are retried. An HTTP
+    response is the server talking, so a non-200 is a real answer -- bad auth,
+    say -- and retrying it just burns the whole timeout before reporting what
+    it already knew.
+    """
+    deadline = time.monotonic() + timeout
+    last = "no attempt made"
+    while time.monotonic() < deadline:
+        try:
+            resp = requests.post(url, data=b"SELECT 1", timeout=5)
+            if resp.status_code == 200 and resp.text.strip() == "1":
+                return
+            raise AssertionError(
+                f"clickhouse answered {resp.status_code}: {resp.text[:300]}")
+        except requests.exceptions.RequestException as exc:
+            last = repr(exc)
+        time.sleep(1)
+    raise AssertionError(
+        f"clickhouse did not answer within {timeout}s; last attempt: {last}")
+
+
+def test_clickhouse_sink(image):
+    """A sink other than console/kafka, exercised through the image.
+
+    Every sink silently no-oped at one point in this engine's history, and
+    the ClickHouse sink could not write Array(T) at all until recently. No
+    other image test writes to a database, so that whole class of failure
+    ships unnoticed.
+    """
+    in_topic = "input-clickhouse-sink-user-actions"
+    num_messages = 500
+
+    network = Network().create()
+
+    kafka_ctr = KafkaContainer()
+    kafka_ctr.with_network(network)
+    kafka_ctr.with_network_aliases("kafka")
+    kafka_ctr.start()
+
+    clickhouse_ctr = DockerContainer("clickhouse/clickhouse-server:24.8-alpine")
+    clickhouse_ctr.with_network(network)
+    clickhouse_ctr.with_network_aliases("clickhouse")
+    clickhouse_ctr.with_exposed_ports(8123)
+    # Without this the image generates a random password for the default user,
+    # and every query comes back 516 AUTHENTICATION_FAILED. The dev stack's
+    # ClickHouse has no password, and this config's dsn carries no credentials.
+    clickhouse_ctr.with_env("CLICKHOUSE_SKIP_USER_SETUP", "1")
+    clickhouse_ctr.start()
+
+    ch_url = (
+        f"http://{clickhouse_ctr.get_container_host_ip()}:"
+        f"{clickhouse_ctr.get_exposed_port(8123)}"
+    )
+    # Polled rather than waiting on a log line: this image serves HTTP without
+    # ever printing "Ready for connections" to stdout, so log-scraping just
+    # times out. Answering a query is the condition that actually matters.
+    _wait_for_clickhouse(ch_url)
+
+    def query(sql):
+        resp = requests.post(ch_url, data=sql.encode("utf-8"), timeout=30)
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        return resp.text.strip()
+
+    # The DDL the dev stack ships for this example config.
+    query("CREATE DATABASE IF NOT EXISTS test")
+    query("""CREATE TABLE IF NOT EXISTS test.user_actions (
+        timestamp DateTime,
+        user_id UInt64,
+        action String,
+        browser String
+    ) ENGINE = MergeTree() ORDER BY (timestamp, user_id)""")
+
+    # KafkaFaker emits city events; this config's handler selects the
+    # user_actions shape, so the messages are published directly.
+    producer = Producer({"bootstrap.servers": kafka_ctr.get_bootstrap_server()})
+    actions = ["click", "view", "purchase"]
+    browsers = ["chrome", "firefox", "safari"]
+    for i in range(num_messages):
+        producer.produce(in_topic, json.dumps({
+            "timestamp": "2026-09-01 12:00:00",
+            "user_id": i,
+            "action": actions[i % len(actions)],
+            "browser": browsers[i % len(browsers)],
+        }).encode("utf-8"))
+    producer.flush()
+
+    sqlflow = DockerContainer(image) \
+        .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+        .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
+        .with_env("SQLFLOW_CLICKHOUSE_DSN", "clickhouse://clickhouse:8123/test") \
+        .with_network(network) \
+        .with_command(
+            "run /tmp/conf/config/examples/kafka.clickhouse.yml "
+            f"--max-msgs-to-process={num_messages}")
+    sqlflow.start()
+    wait_for_logs(
+        sqlflow,
+        "consumer loop ending|max messages consumed",
+        timeout=120,
+    )
+
+    # The rows reached ClickHouse, rather than the sink quietly discarding
+    # them and the pipeline reporting success.
+    assert query("SELECT count() FROM test.user_actions") == str(num_messages)
+    # And the values are the ones that were published, not defaults.
+    assert query(
+        "SELECT count(DISTINCT action) FROM test.user_actions") == str(len(actions))

@@ -79,7 +79,7 @@ func TestDevInvoke_BlueskyFirehose(t *testing.T) {
 	assert.NoError(t, err)
 	defer table.Release()
 
-	assert.Equal(t, int64(3), table.NumRows())
+	assert.Equal(t, int64(4), table.NumRows())
 
 	// The arrays survive as lists, nested arbitrarily deep, rather than
 	// collapsing to a string or failing the batch.
@@ -89,6 +89,18 @@ func TestDevInvoke_BlueskyFirehose(t *testing.T) {
 	assert.That(t, strings.Contains(rows, `"aspectRatio":{"height":1068,"width":1068}`))
 	// A message with no langs of its own yields an empty list, not a failure.
 	assert.That(t, strings.Contains(rows, `"langs":[]`))
+
+	// "reply" appears only in the last message. It is a column at all only
+	// because struct fields are unioned across the batch; taking them from
+	// the first message alone drops it silently.
+	assert.That(t, strings.Contains(rows, `"reply"`))
+
+	// JSON escapes arrive decoded. A \uXXXX that was never decoded would
+	// render as a literal backslash-u here, and an undecoded newline as two
+	// backslashes -- both are what corrupted rows looked like.
+	assert.That(t, strings.Contains(rows, "café"))
+	assert.That(t, !strings.Contains(rows, `\u00e9`))
+	assert.That(t, !strings.Contains(rows, `\\n`))
 }
 
 // TestDevInvoke_StructuredBatch covers the path where the handler's table is
