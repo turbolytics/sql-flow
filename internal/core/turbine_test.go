@@ -38,17 +38,17 @@ func (f *fakeSource) Close() error  { return nil }
 // the marks it was handed at each commit.
 type markingSource struct {
 	fakeSource
-	marks []map[string]map[int32]Mark
+	marks []*Marks
 }
 
-func (m *markingSource) CommitMarks(marks map[string]map[int32]Mark) error {
-	copied := map[string]map[int32]Mark{}
-	for topic, parts := range marks {
-		copied[topic] = map[int32]Mark{}
-		for p, mk := range parts {
-			copied[topic][p] = mk
-		}
-	}
+func (m *markingSource) CommitMarks(marks *Marks) error {
+	// Copied because the pipeline keeps advancing the same Marks after this
+	// returns; without the copy every recorded commit would show the final
+	// state.
+	copied := NewMarks()
+	marks.Each(func(topic string, partition int32, mk Mark) {
+		copied.Advance(topic, partition, mk)
+	})
 	m.marks = append(m.marks, copied)
 	return nil
 }
@@ -432,8 +432,12 @@ func TestConsumeLoop_CommitsOnlyProcessedMarks(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, 2, len(src.marks))
-	assert.Equal(t, Mark{Offset: 19, LeaderEpoch: 7}, src.marks[0]["events"][0])
-	assert.Equal(t, Mark{Offset: 29, LeaderEpoch: 7}, src.marks[1]["events"][0])
+	first, ok := src.marks[0].Get("events", 0)
+	assert.That(t, ok)
+	assert.Equal(t, Mark{Offset: 19, LeaderEpoch: 7}, first)
+	second, ok := src.marks[1].Get("events", 0)
+	assert.That(t, ok)
+	assert.Equal(t, Mark{Offset: 29, LeaderEpoch: 7}, second)
 	// A source that can take marks must not also get the blanket commit.
 	assert.Equal(t, 0, src.commits)
 }
@@ -450,6 +454,8 @@ func TestConsumeLoop_MarksTrackEachPartition(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, 1, len(src.marks))
-	assert.Equal(t, int64(102), src.marks[0]["events"][0].Offset)
-	assert.Equal(t, int64(501), src.marks[0]["events"][1].Offset)
+	mark0, _ := src.marks[0].Get("events", 0)
+	mark1, _ := src.marks[0].Get("events", 1)
+	assert.Equal(t, int64(102), mark0.Offset)
+	assert.Equal(t, int64(501), mark1.Offset)
 }

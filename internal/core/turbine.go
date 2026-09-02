@@ -42,9 +42,9 @@ type Mark struct {
 // position. The pipeline prefers it to Commit, because a source that reads
 // ahead of the pipeline -- the Kafka source polls into a buffer -- has fetched
 // messages the pipeline has not processed, and committing "everything fetched"
-// commits those too. Marks are keyed by topic then partition.
+// commits those too.
 type MarkCommitter interface {
-	CommitMarks(marks map[string]map[int32]Mark) error
+	CommitMarks(marks *Marks) error
 }
 
 // HasMetadata reports whether the source supplied provenance for this message.
@@ -148,7 +148,7 @@ type Turbine struct {
 
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
-	marks       map[string]map[int32]Mark
+	marks       *Marks
 	lock        *sync.Mutex
 	running     bool
 	stats       *Stats
@@ -187,7 +187,7 @@ func NewTurbine(
 ) *Turbine {
 	t := &Turbine{
 		source:        source,
-		marks:         map[string]map[int32]Mark{},
+		marks:         NewMarks(),
 		sink:          sink,
 		handler:       handler,
 		batchSize:     batchSize,
@@ -442,17 +442,7 @@ func (t *Turbine) mark(m Message) {
 	if !m.HasMetadata() {
 		return
 	}
-	parts, ok := t.marks[m.Topic]
-	if !ok {
-		parts = map[int32]Mark{}
-		t.marks[m.Topic] = parts
-	}
-	// Offsets arrive in order within a partition; the guard only matters if
-	// a source ever redelivers.
-	if cur, ok := parts[m.Partition]; ok && cur.Offset >= m.Offset {
-		return
-	}
-	parts[m.Partition] = Mark{Offset: m.Offset, LeaderEpoch: m.LeaderEpoch}
+	t.marks.Advance(m.Topic, m.Partition, Mark{Offset: m.Offset, LeaderEpoch: m.LeaderEpoch})
 }
 
 // commitSource commits what the pipeline has processed. A source that can
@@ -466,7 +456,7 @@ func (t *Turbine) mark(m Message) {
 // the consumer group showing no lag.
 func (t *Turbine) commitSource() error {
 	if mc, ok := t.source.(MarkCommitter); ok {
-		if len(t.marks) == 0 {
+		if t.marks.Empty() {
 			return nil
 		}
 		return mc.CommitMarks(t.marks)

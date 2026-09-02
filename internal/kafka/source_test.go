@@ -88,9 +88,9 @@ func TestSource_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
 	}
 	last := got[49]
 
-	assert.NoError(t, src.CommitMarks(map[string]map[int32]core.Mark{
-		topic: {last.Partition: {Offset: last.Offset, LeaderEpoch: last.LeaderEpoch}},
-	}))
+	marks := core.NewMarks()
+	marks.Advance(topic, last.Partition, core.Mark{Offset: last.Offset, LeaderEpoch: last.LeaderEpoch})
+	assert.NoError(t, src.CommitMarks(marks))
 
 	// Kafka commits the *next* offset to read, so processing offset 49
 	// commits 50. Anything larger is a fetched-but-unprocessed message

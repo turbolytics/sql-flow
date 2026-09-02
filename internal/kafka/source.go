@@ -92,14 +92,17 @@ func (k *Source) Commit() error {
 // batch it had committed offset 70,086. A crash then lost the difference
 // with the consumer group showing no lag. Kafka commits the next offset to
 // read, so a mark at offset N commits N+1.
-func (k *Source) CommitMarks(marks map[string]map[int32]core.Mark) error {
-	offsets := make(map[string]map[int32]kgo.EpochOffset, len(marks))
-	for topic, parts := range marks {
-		offsets[topic] = make(map[int32]kgo.EpochOffset, len(parts))
-		for p, m := range parts {
-			offsets[topic][p] = kgo.EpochOffset{Epoch: m.LeaderEpoch, Offset: m.Offset + 1}
-		}
+func (k *Source) CommitMarks(marks *core.Marks) error {
+	if marks == nil || marks.Empty() {
+		return nil
 	}
+	offsets := make(map[string]map[int32]kgo.EpochOffset, marks.Len())
+	marks.Each(func(topic string, partition int32, m core.Mark) {
+		if offsets[topic] == nil {
+			offsets[topic] = map[int32]kgo.EpochOffset{}
+		}
+		offsets[topic][partition] = kgo.EpochOffset{Epoch: m.LeaderEpoch, Offset: m.Offset + 1}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), commitTimeout)
 	defer cancel()
