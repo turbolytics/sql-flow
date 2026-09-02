@@ -353,3 +353,54 @@ func TestClickhouseSink_InsertsNestedArrays(t *testing.T) {
 	assert.Equal(t, 2, len(matrix[0]))
 	assert.Equal(t, int64(3), matrix[1][0])
 }
+
+// A timestamp that arrives as a string -- a JSON field the handler passed
+// through without a CAST -- must be stored as the wall-clock value written,
+// not shifted by whatever zone the SQLFlow host happens to run in. The zone is
+// pinned to one far from UTC so the test means the same thing on a UTC CI
+// runner as on a laptop.
+func TestClickhouseSink_StringTemporalsAreNotShiftedByHostZone(t *testing.T) {
+	tokyo, err := time.LoadLocation("Asia/Tokyo") // UTC+9, no DST
+	assert.NoError(t, err)
+	prev := time.Local
+	time.Local = tokyo
+	t.Cleanup(func() { time.Local = prev })
+
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
+		id UInt64,
+		ts DateTime,
+		ts64 DateTime64(3),
+		d Date
+	) ENGINE = MergeTree() ORDER BY id`)
+
+	alloc := memory.NewGoAllocator()
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "ts", Type: arrow.BinaryTypes.String},
+		{Name: "ts64", Type: arrow.BinaryTypes.String},
+		{Name: "d", Type: arrow.BinaryTypes.String},
+	}, nil)
+	b := array.NewRecordBuilder(alloc, schema)
+	defer b.Release()
+	b.Field(0).(*array.Int64Builder).Append(1)
+	b.Field(1).(*array.StringBuilder).Append("2026-09-01 12:00:00")
+	b.Field(2).(*array.StringBuilder).Append("2026-09-01 12:00:00.123")
+	b.Field(3).(*array.StringBuilder).Append("2026-09-01")
+	rec := b.NewRecord()
+	defer rec.Release()
+	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer table.Release()
+
+	assert.NoError(t, s.WriteTable(table))
+	assert.NoError(t, s.Flush())
+
+	// Rendered by the server in its own zone (UTC in the dev stack), so a
+	// value parsed as Tokyo time would read 03:00, and the date 2026-08-31.
+	var ts, ts64, d string
+	row := s.conn.QueryRow(context.Background(),
+		"SELECT toString(ts), toString(ts64), toString(d) FROM "+s.table+" WHERE id = 1")
+	assert.NoError(t, row.Scan(&ts, &ts64, &d))
+	assert.Equal(t, "2026-09-01 12:00:00", ts)
+	assert.Equal(t, "2026-09-01 12:00:00.123", ts64)
+	assert.Equal(t, "2026-09-01", d)
+}
