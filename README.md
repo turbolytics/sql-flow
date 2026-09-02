@@ -267,6 +267,7 @@ pipeline:   # required
   description:
   batch_size:              # required, >= 1
   flush_interval_seconds:  # optional; unset means only batch_size triggers a batch
+  state:                   # optional; makes state durable, see Durable state
   on_error:                # optional
   source:                  # required
   handler:                 # required
@@ -294,10 +295,9 @@ source:
 ```
 
 Offsets are committed after the batch has been handled and the sink has
-flushed, and only up to the last message the pipeline actually processed — not
-to wherever the consumer has read ahead to. Delivery is therefore
-**at-least-once**: a crash between a sink flush and its commit replays that
-batch on restart.
+flushed, and only up to the last message the pipeline actually processed, not
+to wherever the consumer has read ahead to. See
+[Delivery guarantees](#delivery-guarantees).
 
 **SASL / TLS.** Set `security_protocol` to one of `PLAINTEXT`, `SSL`,
 `SASL_PLAINTEXT`, `SASL_SSL`:
@@ -515,6 +515,64 @@ columns: `error`, `message`, `phase` (`handler.write` or `handler.invoke`) and
 `timestamp`. See [`kafka.dlq.yml`](dev/config/examples/kafka.dlq.yml).
 `source.error.policy` is parsed but unused; use `pipeline.on_error`.
 
+## Durable state
+
+A pipeline that aggregates needs its state to survive a restart. Give it a file:
+
+```yaml
+pipeline:
+  state:
+    path: /var/lib/sqlflow/state.db
+```
+
+DuckDB then runs on that file instead of in memory, and a `sqlflow_offsets`
+table lives there beside the tables your handler writes. Every batch commits
+the handler's writes and the Kafka offsets that produced them in one
+transaction. On startup the pipeline reads those offsets and resumes from them.
+
+Without a state path, DuckDB runs in memory. A crash mid-window loses that
+window's aggregate while its offsets are already committed, so the consumer
+group reports no lag and a restart replays nothing. Set a state path for any
+pipeline with a `tables` block.
+
+Two consequences worth knowing:
+
+- The state file is the source of truth. When it disagrees with the consumer
+  group, the pipeline commits the file's offsets to Kafka on startup.
+- DuckDB locks the file exclusively. One state file belongs to one running
+  pipeline, and no other process can read it, not even read-only. Use the
+  `/stats` endpoint to inspect a running pipeline.
+
+Durable state costs throughput. See
+[What durable state costs](#what-durable-state-costs) for the numbers and the
+batch size to use.
+
+## Delivery guarantees
+
+SQLFlow gives two guarantees. Which one applies depends on where the data
+lands.
+
+**Pipeline state is exactly-once relative to offsets.** With a state path set,
+the tables your handler writes and the offsets that produced them commit in a
+single transaction. A crash replays exactly the batches whose state did not
+commit, so a windowed aggregate is neither short nor double-counted across a
+restart.
+
+**External sinks are at-least-once.** Kafka, ClickHouse, Iceberg and
+`sqlcommand` are flushed before that transaction commits. A crash in between
+replays the batch and the sink sees those rows twice. Committing first would
+move offsets past rows the sink never received, which loses them silently, so
+the duplicate is the deliberate choice. Use a sink that absorbs it:
+`ReplacingMergeTree` in ClickHouse, an upsert in `sqlcommand`, or a downstream
+dedupe on a key.
+
+**Window sinks are at-least-once for the same reason.** A tumbling window is
+published before its rows are deleted, and that delete commits with the
+pipeline's next batch. A crash in between republishes the window.
+
+Without a state path there is no state guarantee at all: handler state does not
+survive the process.
+
 ## Tumbling windows
 
 A table declared under `tables.sql` can carry a `manager`, which polls the table
@@ -547,11 +605,21 @@ tables:
 ```
 
 Collect, write and flush happen before the delete, so a sink failure retries
-rather than dropping a window. One final poll runs on shutdown, so a window that
-closes during shutdown is not stranded. Windows close on wall-clock time as
-written in your `collect_closed_windows_sql`; there is no event-time
-watermarking. `tumbling_window` is currently the only manager type. See
-[`tumbling.window.yml`](dev/config/examples/tumbling.window.yml).
+rather than dropping a window. A retry re-sends rows the sink already received,
+so give a window sink a key it can deduplicate on. One final poll runs on
+shutdown, so a window that closes during shutdown is not stranded.
+
+Windows close on wall-clock time, as written in your
+`collect_closed_windows_sql`. There is no event-time watermarking and no
+late-arrival policy: a message that arrives after its window closed lands in
+whichever window its own SQL puts it in.
+
+State in a managed table is lost on a crash unless the pipeline sets
+[`state.path`](#durable-state).
+
+`tumbling_window` is currently the only manager type. See
+[`tumbling.window.yml`](dev/config/examples/tumbling.window.yml) and
+[`kafka.stateful.window.yml`](dev/config/examples/kafka.stateful.window.yml).
 
 ## Metrics
 
