@@ -175,14 +175,17 @@ func (k *Source) Stream() <-chan []core.Message {
 			}
 
 			batch := make([]core.Message, 0, fetches.NumRecords())
-			fetches.EachRecord(func(r *kgo.Record) {
-				batch = append(batch, core.Message{
-					Value:       r.Value,
-					Topic:       r.Topic,
-					Partition:   r.Partition,
-					Offset:      r.Offset,
-					LeaderEpoch: r.LeaderEpoch,
-				})
+			fetches.EachPartition(func(p kgo.FetchTopicPartition) {
+				for _, r := range p.Records {
+					batch = append(batch, core.Message{
+						Value:         r.Value,
+						Topic:         r.Topic,
+						Partition:     r.Partition,
+						Offset:        r.Offset,
+						LeaderEpoch:   r.LeaderEpoch,
+						HighWatermark: p.HighWatermark,
+					})
+				}
 			})
 
 			if len(batch) == 0 {

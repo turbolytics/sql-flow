@@ -102,3 +102,38 @@ func TestSource_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
 	// truncation, rather than the "unknown" sentinel.
 	assert.Equal(t, last.LeaderEpoch, committed.Epoch)
 }
+
+// Lag is only meaningful against the broker's high watermark, which arrives
+// on the fetch itself. Without it, an operator cannot tell a healthy pipeline
+// from one falling behind.
+func TestSource_MessagesCarryHighWatermark(t *testing.T) {
+	broker := brokerOrSkip(t)
+	topic := fmt.Sprintf("turbine-hwm-%d", time.Now().UnixNano())
+
+	// A plain producer, not the group-consumer client newTestClient builds:
+	// that client starts background fetching as soon as it exists, which
+	// races the synchronous produce loop below and can return a fetch whose
+	// high watermark predates the last record produced.
+	producer, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.AllowAutoTopicCreation())
+	assert.NoError(t, err)
+	defer producer.Close()
+	produce(t, producer, topic, 10)
+
+	client := newTestClient(t, broker, topic, topic)
+	defer client.Close()
+
+	src, err := NewSource(client)
+	assert.NoError(t, err)
+	defer src.Close()
+
+	select {
+	case batch := <-src.Stream():
+		assert.That(t, len(batch) >= 1)
+		// Ten records were produced, so the high watermark is 10 and the
+		// first record sits 9 behind it.
+		assert.Equal(t, int64(10), batch[0].HighWatermark)
+		assert.Equal(t, int64(0), batch[0].Offset)
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for a message")
+	}
+}

@@ -29,6 +29,10 @@ type Message struct {
 	// log truncation. Only meaningful when HasMetadata is true; a source with
 	// no positions leaves it zero along with the rest.
 	LeaderEpoch int32
+	// HighWatermark is the partition's high watermark at fetch time, so lag
+	// can be computed against the position last processed. Zero for sources
+	// without one.
+	HighWatermark int64
 }
 
 // Mark is the position of the last message the pipeline has finished with in
@@ -443,6 +447,16 @@ func (t *Turbine) mark(m Message) {
 		return
 	}
 	t.marks.Advance(m.Topic, m.Partition, Mark{Offset: m.Offset, LeaderEpoch: m.LeaderEpoch})
+
+	// -1 because a mark names the last *processed* offset: having processed
+	// offset 9 with a watermark of 10 is lag zero.
+	if m.HighWatermark > 0 {
+		t.metrics.ConsumerLag.Record(context.Background(), m.HighWatermark-m.Offset-1,
+			metric.WithAttributes(
+				attribute.String("topic", m.Topic),
+				attribute.Int("partition", int(m.Partition)),
+			))
+	}
 }
 
 // commitSource commits what the pipeline has processed. A source that can

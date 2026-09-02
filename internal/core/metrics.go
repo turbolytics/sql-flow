@@ -17,6 +17,7 @@ type Metrics struct {
 	SinkFlushNumRows       metric.Int64Gauge
 	SinkFlushCount         metric.Int64Counter
 	BatchProcessingLatency metric.Float64Histogram
+	ConsumerLag            metric.Int64Gauge
 }
 
 // NewMetrics builds the instruments from a meter provider. Passing a noop
@@ -87,6 +88,14 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("seconds"),
 	); err != nil {
 		return nil, fmt.Errorf("batch_processing_latency: %w", err)
+	}
+
+	if m.ConsumerLag, err = meter.Int64Gauge(
+		"consumer_lag",
+		metric.WithDescription("Messages between the last one processed and the partition's high watermark"),
+		metric.WithUnit("messages"),
+	); err != nil {
+		return nil, fmt.Errorf("consumer_lag: %w", err)
 	}
 
 	return &m, nil
