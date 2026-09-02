@@ -17,6 +17,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -108,8 +109,34 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
-			// Initialize ADBC connection using driver manager
-			conn, err := duckdb.Open(context.Background())
+			// A pipeline that declares a state path gets a DuckDB backed by
+			// that file, so window state and the offsets that produced it
+			// survive a crash. Without one, state is in memory and is lost --
+			// while its offsets have already been committed.
+			statePath := ""
+			if conf.Pipeline.State != nil {
+				statePath = conf.Pipeline.State.Path
+			}
+			if statePath != "" {
+				if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+					return fmt.Errorf("creating state directory for %q: %w", statePath, err)
+				}
+			}
+
+			// The handle is kept, not just a connection: a second connection
+			// is what lets /stats read committed state without contending
+			// with the writer.
+			db, err := duckdb.OpenPath(context.Background(), statePath)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err := db.Close(); err != nil {
+					l.Error("failed to close DuckDB database", zap.Error(err))
+				}
+			}()
+
+			conn, err := db.Connect(context.Background())
 			if err != nil {
 				return err
 			}
@@ -136,11 +163,79 @@ func NewCommand() *cobra.Command {
 			// the table managers and the debug API.
 			lock := &sync.Mutex{}
 
+			// State wiring. Everything below is skipped for a pipeline with no
+			// state path, which then behaves exactly as it did before.
+			var (
+				turbineOpts []core.TurbineOption
+				statsFn     statsFunc
+				storedMarks *core.Marks
+			)
+			if statePath != "" {
+				offsets := core.NewOffsetStore(conn)
+				if err := offsets.Init(context.Background()); err != nil {
+					return fmt.Errorf("initializing offsets table: %w", err)
+				}
+
+				// Read the durable positions before autocommit is turned off,
+				// so setup is committed and the read is straightforward.
+				storedMarks, err = offsets.Load(context.Background())
+				if err != nil {
+					return fmt.Errorf("loading stored offsets: %w", err)
+				}
+
+				// Every batch from here on is one transaction: the handler's
+				// writes and the offsets that produced them commit together.
+				po, ok := conn.(adbc.PostInitOptions)
+				if !ok {
+					return fmt.Errorf("state requires a connection supporting transactions")
+				}
+				if err := po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled); err != nil {
+					return fmt.Errorf("disabling autocommit for state: %w", err)
+				}
+
+				stateConn, ok := conn.(interface {
+					Commit(context.Context) error
+					Rollback(context.Context) error
+				})
+				if !ok {
+					return fmt.Errorf("state requires a connection supporting commit and rollback")
+				}
+				turbineOpts = append(turbineOpts, core.WithStateStore(offsets, stateConn))
+
+				// A connection of its own for reading: it sees committed state
+				// only, so a scrape never blocks a batch and never reports
+				// rows a rollback then erased.
+				statsConn, err := db.Connect(context.Background())
+				if err != nil {
+					return fmt.Errorf("opening state reader connection: %w", err)
+				}
+				defer func() {
+					if err := statsConn.Close(); err != nil {
+						l.Error("failed to close state reader connection", zap.Error(err))
+					}
+				}()
+
+				var statsMu sync.Mutex
+				statsFn = func() (*core.StateStats, error) {
+					// One ADBC connection is not safe for concurrent use, and
+					// the status loop and any number of scrapes share this
+					// one. The lock guards the reader, never the writer.
+					statsMu.Lock()
+					defer statsMu.Unlock()
+					return core.CollectStateStats(context.Background(), statsConn, statePath)
+				}
+				turbineOpts = append(turbineOpts, core.WithStateStats(statsFn))
+
+				l.Info("pipeline state is durable",
+					zap.String("path", statePath),
+					zap.Int("resuming_partitions", storedMarks.Len()))
+			}
+
 			if withHTTPDebug {
 				startDebugServer(conn, lock, l)
 			}
 
-			meterProvider, err := newMeterProvider(metricsExporter, l, nil)
+			meterProvider, err := newMeterProvider(metricsExporter, l, statsFn)
 			if err != nil {
 				return err
 			}
@@ -156,6 +251,19 @@ func NewCommand() *cobra.Command {
 			)
 			if err != nil {
 				return fmt.Errorf("failed to create source: %w", err)
+			}
+
+			// Resume where the durable state left off. The state database is
+			// the source of truth; a disagreement with Kafka is resolved in
+			// its favour, immediately.
+			if storedMarks != nil && !storedMarks.Empty() {
+				seeker, ok := src.(interface{ SeekTo(*core.Marks) error })
+				if !ok {
+					return fmt.Errorf("source %q cannot resume from stored offsets", conf.Pipeline.Source.Type)
+				}
+				if err := seeker.SeekTo(storedMarks); err != nil {
+					return fmt.Errorf("resuming from stored offsets: %w", err)
+				}
 			}
 
 			sink, err := sinks.New(conf.Pipeline.Sink, conn)
@@ -200,8 +308,10 @@ func NewCommand() *cobra.Command {
 				flushInterval,
 				lock,
 				errorPolicies,
-				core.WithTurbineLogger(l),
-				core.WithMetrics(pipelineMetrics),
+				append([]core.TurbineOption{
+					core.WithTurbineLogger(l),
+					core.WithMetrics(pipelineMetrics),
+				}, turbineOpts...)...,
 			)
 
 			managedTables, err := buildManagedTables(conf, conn, lock, l)
