@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -208,21 +209,24 @@ func TestTumbling_StartPollsUntilContextCancelled(t *testing.T) {
 
 // failingSink fails on the nominated call, so each half of write-then-flush
 // can be exercised separately.
+//
+// The flags are atomic because one test flips them while the manager's
+// goroutine is polling.
 type failingSink struct {
 	recordingSink
-	failWrite bool
-	failFlush bool
+	failWrite atomic.Bool
+	failFlush atomic.Bool
 }
 
 func (s *failingSink) WriteTable(batch arrow.Table) error {
-	if s.failWrite {
+	if s.failWrite.Load() {
 		return errors.New("sink unreachable")
 	}
 	return s.recordingSink.WriteTable(batch)
 }
 
 func (s *failingSink) Flush() error {
-	if s.failFlush {
+	if s.failFlush.Load() {
 		return errors.New("broker rejected the batch")
 	}
 	return s.recordingSink.Flush()
@@ -235,7 +239,8 @@ func TestTumbling_SinkWriteFailureLeavesTheWindow(t *testing.T) {
 	defer cleanup()
 	seedWindows(t, conn)
 
-	sink := &failingSink{failWrite: true}
+	sink := &failingSink{}
+	sink.failWrite.Store(true)
 	m := newTestTumbling(conn, &sink.recordingSink)
 	m.sink = sink
 
@@ -253,7 +258,8 @@ func TestTumbling_SinkFlushFailureLeavesTheWindow(t *testing.T) {
 	defer cleanup()
 	seedWindows(t, conn)
 
-	sink := &failingSink{failFlush: true}
+	sink := &failingSink{}
+	sink.failFlush.Store(true)
 	m := newTestTumbling(conn, &sink.recordingSink)
 	m.sink = sink
 
@@ -274,14 +280,15 @@ func TestTumbling_RetriesAfterAFailedPoll(t *testing.T) {
 	defer cleanup()
 	seedWindows(t, conn)
 
-	sink := &failingSink{failFlush: true}
+	sink := &failingSink{}
+	sink.failFlush.Store(true)
 	m := newTestTumbling(conn, &sink.recordingSink)
 	m.sink = sink
 
 	assert.Error(t, m.Poll(context.Background()))
 
 	// The sink recovers.
-	sink.failFlush = false
+	sink.failFlush.Store(false)
 	assert.NoError(t, m.Poll(context.Background()))
 
 	// Four writes for two windows: both attempts wrote before the first one's
@@ -425,7 +432,8 @@ func TestTumbling_StartSurvivesAFailedPoll(t *testing.T) {
 	defer cleanup()
 	seedWindows(t, conn)
 
-	sink := &failingSink{failFlush: true}
+	sink := &failingSink{}
+	sink.failFlush.Store(true)
 	m := NewTumbling(conn, collectSQL, deleteSQL, 5*time.Millisecond,
 		&sink.recordingSink, &sync.Mutex{})
 	m.sink = sink
@@ -435,7 +443,7 @@ func TestTumbling_StartSurvivesAFailedPoll(t *testing.T) {
 	go func() { done <- m.Start(ctx) }()
 
 	time.Sleep(60 * time.Millisecond)
-	sink.failFlush = false
+	sink.failFlush.Store(false)
 
 	deadline := time.After(5 * time.Second)
 	for {
