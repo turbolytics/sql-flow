@@ -398,8 +398,21 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			}
 			continue
 		case <-ctx.Done():
-			t.logger.Warn("context done, stopping consumer loop")
+			t.logger.Info("context done, draining the consumer loop")
 			t.running = false
+			// The source delivered this batch, but nothing has written it yet.
+			// Returning without it drops the tail of every graceful shutdown.
+			//
+			// The drain runs on a context of its own. Every step below reaches
+			// DuckDB and the sink. The cancelled ctx would fail the exact work
+			// the drain exists to finish.
+			if numBatchMessages > 0 {
+				if err := t.processBatch(context.WithoutCancel(ctx), numBatchMessages); err != nil {
+					t.stats.NumErrors++
+					t.logger.Error("error draining the final batch", zap.Error(err))
+					return nil, err
+				}
+			}
 			t.logThroughput()
 			return t.stats, nil
 		}
