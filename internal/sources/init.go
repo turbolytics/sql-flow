@@ -33,12 +33,18 @@ func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, 
 			resetOffset = kgo.NewOffset().AtEnd()
 		}
 
+		// Built before the client because it is a client option, and handed
+		// to the source afterwards so SeekTo can fill it in. With no marks
+		// set it leaves the group's own offsets alone.
+		seeker := tkafka.NewOffsetSeeker()
+
 		opts := []kgo.Opt{
 			kgo.SeedBrokers(brokers...),
 			kgo.ConsumerGroup(c.Kafka.GroupID),
 			kgo.ConsumeTopics(c.Kafka.Topics...),
 			kgo.ConsumeResetOffset(resetOffset),
 			kgo.DisableAutoCommit(),
+			kgo.AdjustFetchOffsetsFn(seeker.Adjust),
 			kgo.FetchMaxPartitionBytes(10 << 20), // 10MB per partition
 			kgo.FetchMaxBytes(100 << 20),         // 100MB total per broker
 		}
@@ -58,7 +64,7 @@ func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, 
 			return nil, fmt.Errorf("kafka client: %w", err)
 		}
 
-		k, err := tkafka.NewSource(client, tkafka.WithLogger(l))
+		k, err := tkafka.NewSource(client, tkafka.WithLogger(l), tkafka.WithSeeker(seeker))
 		return k, err
 
 	case "websocket":

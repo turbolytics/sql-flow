@@ -557,3 +557,58 @@ func TestTumbling_DeleteRollsBackWithTheBatch(t *testing.T) {
 	rows, _ := sink.counts()
 	assert.Equal(t, int64(4), rows)
 }
+
+// The bug this pins: with autocommit disabled the connection holds one open
+// transaction, and DuckDB's now() returns that transaction's start time. A
+// window close predicate written against now() is therefore evaluated against
+// a frozen clock, so a window that closes while the pipeline is idle is never
+// collected -- no error, no metric, and the rows keep being reported as live
+// state.
+//
+// Committing is what advances the clock, which is why the consume loop now
+// commits on its flush tick even with nothing buffered.
+func TestTumbling_ClockAdvancesOnlyAcrossACommit(t *testing.T) {
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+
+	exec(t, conn, `CREATE TABLE agg_cities_count (bucket TIMESTAMPTZ, city VARCHAR, count INT);`)
+	// One window, open now and closed two seconds from now.
+	exec(t, conn, `INSERT INTO agg_cities_count VALUES (now()::timestamptz, 'NYC', 3);`)
+
+	po, ok := conn.(adbc.PostInitOptions)
+	assert.That(t, ok)
+	assert.NoError(t, po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled))
+	tx := conn.(interface {
+		Commit(context.Context) error
+		Rollback(context.Context) error
+	})
+
+	const closeAfter = `(now()::timestamptz - INTERVAL '2' SECOND)`
+	sink := &recordingSink{}
+	m := NewTumbling(conn,
+		`SELECT bucket, city, count FROM agg_cities_count WHERE bucket < `+closeAfter,
+		`DELETE FROM agg_cities_count WHERE bucket < `+closeAfter,
+		time.Hour, sink, &sync.Mutex{})
+
+	// This poll pins the transaction clock.
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(0), rows)
+
+	// Wall clock crosses the threshold.
+	time.Sleep(3 * time.Second)
+
+	// Still frozen, so still nothing -- this is the failure users would see.
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ = sink.counts()
+	assert.Equal(t, int64(0), rows)
+
+	// A commit is what moves the clock.
+	assert.NoError(t, tx.Commit(context.Background()))
+
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ = sink.counts()
+	assert.Equal(t, int64(1), rows)
+	assert.NoError(t, tx.Commit(context.Background()))
+	assert.Equal(t, int64(0), countRows(t, conn, "agg_cities_count"))
+}

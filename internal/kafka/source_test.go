@@ -30,18 +30,19 @@ func brokerOrSkip(t *testing.T) string {
 	return broker
 }
 
-func newTestClient(t *testing.T, broker, topic, group string) *kgo.Client {
+func newTestClient(t *testing.T, broker, topic, group string, extra ...kgo.Opt) *kgo.Client {
 	t.Helper()
 	// Mirrors sources/init.go: a consumer group with autocommit off, so the
 	// only commits are the ones the source makes.
-	client, err := kgo.NewClient(
+	opts := []kgo.Opt{
 		kgo.SeedBrokers(broker),
 		kgo.ConsumerGroup(group),
 		kgo.ConsumeTopics(topic),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
 		kgo.DisableAutoCommit(),
 		kgo.AllowAutoTopicCreation(),
-	)
+	}
+	client, err := kgo.NewClient(append(opts, extra...)...)
 	assert.NoError(t, err)
 	return client
 }
@@ -157,10 +158,11 @@ func TestSource_SeekToResumesFromStoredOffsets(t *testing.T) {
 	cancel()
 	producer.Close()
 
-	client := newTestClient(t, broker, topic, topic)
+	seeker := NewOffsetSeeker()
+	client := newTestClient(t, broker, topic, topic, kgo.AdjustFetchOffsetsFn(seeker.Adjust))
 	defer client.Close()
 
-	src, err := NewSource(client)
+	src, err := NewSource(client, WithSeeker(seeker))
 	assert.NoError(t, err)
 	defer src.Close()
 

@@ -332,11 +332,18 @@ type blockingSource struct {
 	release chan struct{}
 }
 
+// Same reason as newIdleSource: allocate off the consume-loop goroutine.
+func newBlockingSource(batch []Message) *blockingSource {
+	return &blockingSource{
+		batch:   batch,
+		ch:      make(chan []Message),
+		release: make(chan struct{}),
+	}
+}
+
 func (s *blockingSource) Start() error { return nil }
 
 func (s *blockingSource) Stream() <-chan []Message {
-	s.ch = make(chan []Message)
-	s.release = make(chan struct{})
 	go func() {
 		s.ch <- s.batch
 		<-s.release
@@ -351,7 +358,7 @@ func (s *blockingSource) Close() error  { return nil }
 // A batch that never reaches batch_size must still be flushed once the flush
 // interval elapses, otherwise a low-traffic topic stalls forever.
 func TestConsumeLoop_FlushesPartialBatchOnFlushInterval(t *testing.T) {
-	src := &blockingSource{batch: messages(10)}
+	src := newBlockingSource(messages(10))
 	sink := &fakeSink{}
 
 	tb := NewTurbine(src, &fakeHandler{}, sink, 1000, 50*time.Millisecond,
@@ -682,4 +689,123 @@ func TestRecordStateGauges_SurvivesCollectionFailure(t *testing.T) {
 	}
 
 	tb.recordStateGauges(context.Background())
+}
+
+// idleSource never delivers a batch, so the consume loop only ever wakes on
+// the flush ticker. It is the shape of a pipeline whose topic has gone quiet.
+type idleSource struct {
+	ch      chan []Message
+	release chan struct{}
+}
+
+// Channels are allocated here, not in Stream: Stream runs on the consume-loop
+// goroutine while the test closes release from its own.
+func newIdleSource() *idleSource {
+	return &idleSource{
+		ch:      make(chan []Message),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *idleSource) Start() error { return nil }
+
+func (s *idleSource) Stream() <-chan []Message {
+	go func() {
+		<-s.release
+		close(s.ch)
+	}()
+	return s.ch
+}
+
+func (s *idleSource) Commit() error { return nil }
+func (s *idleSource) Close() error  { return nil }
+
+// An idle stateful pipeline must still close its transaction on the flush
+// tick. DuckDB's now() is the transaction's start time, so a transaction held
+// open freezes the clock that every window close predicate is evaluated
+// against, and a pipeline that stops receiving messages silently stops
+// closing windows.
+func TestConsumeLoop_IdleTickCommitsTheStateTransaction(t *testing.T) {
+	var events []string
+	src := newIdleSource()
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000,
+		25*time.Millisecond, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = tb.ConsumeLoop(context.Background(), 0)
+		close(done)
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		tb.lock.Lock()
+		n := 0
+		for _, e := range events {
+			if e == "commit" {
+				n++
+			}
+		}
+		tb.lock.Unlock()
+		if n >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("idle pipeline never committed; events=%v", events)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	close(src.release)
+	<-done
+}
+
+// The same tick on a pipeline with no state database must stay the no-op it
+// always was: no commit, no offset save, nothing.
+func TestConsumeLoop_IdleTickIsANoopWithoutState(t *testing.T) {
+	src := newIdleSource()
+	sink := &fakeSink{}
+
+	tb := NewTurbine(src, &fakeHandler{}, sink, 1000,
+		10*time.Millisecond, &sync.Mutex{}, PipelineErrorPolicies{})
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = tb.ConsumeLoop(context.Background(), 0)
+		close(done)
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	close(src.release)
+	<-done
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	// An idle pipeline must not flush anything to the sink.
+	assert.Equal(t, int64(0), sink.rows)
+}
+
+// The lag metric must not allocate per message. metric.WithAttributes builds
+// its attribute set before any provider decides whether to keep the
+// measurement, so building it inline cost an allocation on every message even
+// with metrics switched off.
+func BenchmarkMark(b *testing.B) {
+	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 1000)
+	msg := Message{
+		Topic: "events", Partition: 0, Offset: 1,
+		LeaderEpoch: 1, HighWatermark: 1000,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.Offset = int64(i)
+		tb.mark(msg)
+	}
 }

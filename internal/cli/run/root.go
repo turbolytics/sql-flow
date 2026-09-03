@@ -334,14 +334,40 @@ func NewCommand() *cobra.Command {
 				}(m)
 			}
 			defer func() {
+				// Close the open transaction first. The managers' final poll
+				// runs on this connection, and its close predicate is
+				// evaluated against the transaction's clock -- which is
+				// frozen at the last commit until this runs.
+				if err := turbine.SyncState(context.Background()); err != nil {
+					l.Error("failed to sync state before final poll", zap.Error(err))
+				}
 				stopManagers()
 				managerWG.Wait()
+				// And again afterwards, so what that poll published is
+				// actually deleted. Without this the delete is rolled back
+				// when the connection closes, and every clean shutdown
+				// guarantees a republished window on the next start.
+				if err := turbine.SyncState(context.Background()); err != nil {
+					l.Error("failed to sync state after final poll", zap.Error(err))
+				}
 			}()
 
+			// Cancelled before the reader connection closes. Left running, a
+			// gauge sample can be mid-query on statsConn while the deferred
+			// Close runs, which is a use-after-free inside DuckDB rather than
+			// anything the race detector can see.
+			statusCtx, stopStatus := context.WithCancel(context.Background())
+			var statusWG sync.WaitGroup
+			statusWG.Add(1)
 			go func() {
-				if err := turbine.StatusLoop(context.Background()); err != nil {
+				defer statusWG.Done()
+				if err := turbine.StatusLoop(statusCtx); err != nil {
 					l.Error("failed to start status loop", zap.Error(err))
 				}
+			}()
+			defer func() {
+				stopStatus()
+				statusWG.Wait()
 			}()
 
 			stats, err := turbine.ConsumeLoop(context.Background(), maxMsgs)

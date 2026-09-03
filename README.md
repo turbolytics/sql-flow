@@ -538,7 +538,13 @@ pipeline with a `tables` block.
 Two consequences worth knowing:
 
 - The state file is the source of truth. When it disagrees with the consumer
-  group, the pipeline commits the file's offsets to Kafka on startup.
+  group, the pipeline resumes from the file's offsets. It applies them while
+  joining the group, so a restart works even while the previous process is
+  still a member, which it is for the session timeout after a crash.
+- Window close predicates are evaluated at most one `flush_interval_seconds`
+  behind the wall clock. A stateful pipeline holds one transaction open per
+  batch and DuckDB's `now()` is the transaction's start time, so the pipeline
+  commits on the flush tick even when idle to keep that clock moving.
 - DuckDB locks the file exclusively. One state file belongs to one running
   pipeline, and no other process can read it, not even read-only. Use the
   `/stats` endpoint to inspect a running pipeline.
@@ -607,7 +613,9 @@ tables:
 Collect, write and flush happen before the delete, so a sink failure retries
 rather than dropping a window. A retry re-sends rows the sink already received,
 so give a window sink a key it can deduplicate on. One final poll runs on
-shutdown, so a window that closes during shutdown is not stranded.
+shutdown, against a current clock and with its delete committed, so a window
+that closes during shutdown is published once and not republished on the next
+start.
 
 Windows close on wall-clock time, as written in your
 `collect_closed_windows_sql`. There is no event-time watermarking and no
@@ -623,7 +631,7 @@ State in a managed table is lost on a crash unless the pipeline sets
 
 ## Metrics
 
-`--metrics prometheus` serves `/metrics` on `:8000`. Seven instruments are
+`--metrics prometheus` serves `/metrics` on `:8000`. Twelve instruments are
 exported under the meter name `sqlflow`:
 
 | Instrument | Type | Unit |
@@ -635,12 +643,41 @@ exported under the meter name `sqlflow`:
 | `sink_flush_latency` | histogram | seconds |
 | `sink_flush_count` | counter | flushes |
 | `sink_flush_num_rows` | gauge | rows |
+| `consumer_lag` | gauge (attrs: `topic`, `partition`) | messages |
+| `state_commit_count` | counter | commits |
+| `state_commit_latency` | histogram | seconds |
+| `state_db_size_bytes` | gauge | bytes |
+| `state_table_rows` | gauge (attr: `table`) | rows |
+
+The last four appear only when the pipeline declares a state path. An absent
+series and an empty state are different facts, so a pipeline with state in
+memory reports nothing rather than zero.
 
 ```
 $ sqlflow run -c <config> --metrics=prometheus &
 $ curl -s localhost:8000/metrics | grep message_count
 message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 ```
+
+`consumer_lag` is the one to alert on. It is the broker's high watermark minus
+the offset the pipeline has finished with, so it measures the work the
+pipeline still owes rather than what its consumer group has been told.
+
+### Inspecting durable state
+
+`--metrics prometheus` also serves `/stats` on `:8000`, which reports what is
+on disk right now:
+
+```
+$ curl -s localhost:8000/stats
+{"state":{"path":"/var/lib/sqlflow/state.db","size_bytes":2109440,
+          "tables":[{"table":"agg_city_count","rows":1440}],
+          "offsets":[{"topic":"events","partition":0,"offset":98213}]}}
+```
+
+Reads come from a second connection, so a scrape never blocks a batch and
+never reports rows a rollback then erased. A pipeline with no state path
+serves no `/stats`.
 
 ## Environment variables
 

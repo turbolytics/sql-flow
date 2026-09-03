@@ -19,6 +19,7 @@ type Source struct {
 	streamChan    chan []core.Message
 	done          chan struct{}
 	closeOnce     sync.Once
+	seeker        *OffsetSeeker
 
 	logger *zap.Logger
 }
@@ -41,6 +42,15 @@ func WithLogger(logger *zap.Logger) Option {
 func WithChannelBuffer(size int) Option {
 	return func(s *Source) {
 		s.channelBuffer = size
+	}
+}
+
+// WithSeeker gives the source the seeker registered on its client, which is
+// what SeekTo writes durable positions into. The seeker has to be built before
+// the client, because it is a client option.
+func WithSeeker(seeker *OffsetSeeker) Option {
+	return func(s *Source) {
+		s.seeker = seeker
 	}
 }
 
@@ -89,19 +99,10 @@ func (k *Source) Commit() error {
 // database, so a restart picks up where the durable state left off rather
 // than wherever the consumer group happens to sit.
 //
-// It works by committing those positions to the group before consumption
-// starts, which is deliberate. kgo.SetOffsets cannot do this: it "sets only
-// partitions that were previously consumed, any extra partitions are
-// skipped", so calling it before the first poll silently does nothing. A
-// group's start position comes from its committed offsets, so writing ours
-// there is what actually moves it.
-//
-// This also settles what happens when Kafka and the state database disagree:
-// the state database wins, and Kafka is made to agree with it immediately.
-//
-// A stored mark names the last offset processed, so consumption resumes at
-// the next one -- the same +1 convention CommitMarks uses, which is why this
-// delegates to it.
+// The positions are handed to the seeker, which applies them during the
+// group's join. Committing them here instead does not work: that commit
+// carries an empty member ID and Kafka refuses it unless the group is Empty,
+// which it is not after a crash. See OffsetSeeker.
 //
 // Empty marks are a no-op rather than a seek to zero. "Nothing recorded" and
 // "recorded position zero" are different facts: the first must leave
@@ -112,9 +113,10 @@ func (k *Source) SeekTo(marks *core.Marks) error {
 		return nil
 	}
 
-	if err := k.CommitMarks(marks); err != nil {
-		return fmt.Errorf("seeking to stored offsets: %w", err)
+	if k.seeker == nil {
+		return fmt.Errorf("seeking to stored offsets: source was built without an offset seeker")
 	}
+	k.seeker.SetMarks(marks)
 
 	k.logger.Info("resuming from stored offsets", zap.Int("partitions", marks.Len()))
 	return nil
