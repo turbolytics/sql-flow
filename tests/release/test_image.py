@@ -15,8 +15,11 @@ import ast
 import json
 import os
 import subprocess
+import tempfile
 import time
+from datetime import datetime, timezone
 
+import duckdb
 import pytest
 import requests
 from confluent_kafka import Producer
@@ -331,3 +334,90 @@ def test_clickhouse_sink(image):
     # And the values are the ones that were published, not defaults.
     assert query(
         "SELECT count(DISTINCT action) FROM test.user_actions") == str(len(actions))
+
+
+def test_window_state_survives_a_restart(image):
+    """A crash mid-window must not lose the aggregate.
+
+    Before durable state, 2,000 events folded into an open window were lost
+    by killing the process: the offsets had already been committed, so the
+    consumer group showed lag 0, a restart replayed nothing, and the
+    aggregate stayed permanently short with no signal that anything was
+    wrong. State and offsets now commit together, so a restart resumes from
+    the durable position and completes the window.
+    """
+    topic = f"stateful-window-{int(time.time())}"
+    num_messages = 2000
+
+    network = Network().create()
+    kafka_ctr = KafkaContainer()
+    kafka_ctr.with_network(network)
+    kafka_ctr.with_network_aliases("kafka")
+    kafka_ctr.start()
+
+    producer = Producer({"bootstrap.servers": kafka_ctr.get_bootstrap_server()})
+    # The current hour, so the window is still open for the length of the run
+    # and recovery is observed on a partial aggregate. A fixed timestamp goes
+    # stale: once it is more than an hour old the manager legitimately closes
+    # the window, publishes it and deletes the rows these assertions read.
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    for i in range(num_messages):
+        producer.produce(topic, json.dumps({
+            "timestamp": timestamp,
+            "properties": {"city": "NYC"},
+            "user": {"id": str(i)},
+        }))
+    producer.flush()
+
+    with tempfile.TemporaryDirectory() as state_dir:
+        # The container writes the state file here; both runs share it, and
+        # the assertions below read it from the host afterwards.
+        os.chmod(state_dir, 0o777)
+
+        def run_half():
+            container = DockerContainer(image) \
+                .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+                .with_volume_mapping(state_dir, "/state", "rw") \
+                .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
+                .with_env("SQLFLOW_STATE_PATH", "/state/state.db") \
+                .with_env("SQLFLOW_TOPIC", topic) \
+                .with_env("SQLFLOW_GROUP_ID", topic) \
+                .with_network(network) \
+                .with_command(
+                    "run /tmp/conf/config/examples/kafka.stateful.window.yml "
+                    f"--max-msgs={num_messages // 2}")
+            container.start()
+            wait_for_logs(
+                container,
+                "consumer loop ending|max messages consumed",
+                timeout=120,
+            )
+            return container
+
+        # First half, then the process goes away with the window still open
+        # and nothing published.
+        run_half()
+
+        state_file = os.path.join(state_dir, "state.db")
+        assert os.path.exists(state_file), "the pipeline did not create its state file"
+
+        conn = duckdb.connect(state_file, read_only=True)
+        halfway = conn.execute("SELECT sum(count) FROM agg_city_count").fetchone()[0]
+        conn.close()
+        assert halfway == num_messages // 2, (
+            f"first run should have aggregated {num_messages // 2}, got {halfway}")
+
+        # Second half in a brand new process, reading the state left behind.
+        run_half()
+
+        conn = duckdb.connect(state_file, read_only=True)
+        total = conn.execute("SELECT sum(count) FROM agg_city_count").fetchone()[0]
+        offset = conn.execute('SELECT max("offset") FROM sqlflow_offsets').fetchone()[0]
+        conn.close()
+
+    # Every event is accounted for across the restart, and the durable
+    # position is the last message actually processed.
+    assert total == num_messages, (
+        f"aggregate lost rows across the restart: {total} of {num_messages}")
+    assert offset == num_messages - 1, (
+        f"stored offset should be the last processed message: {offset}")

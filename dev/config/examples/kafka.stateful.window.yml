@@ -1,0 +1,72 @@
+# A windowed aggregation with durable state.
+#
+# pipeline.state.path makes DuckDB file-backed, so the window table and the
+# Kafka offsets that produced it are committed together in one transaction.
+# Without it, state lives in memory: a crash mid-window loses that window's
+# aggregate while its offsets are already committed, silently, with the
+# consumer group reporting no lag.
+#
+# The close predicate here is deliberately an hour, so the window stays open
+# for the length of a test run and recovery can be observed on a partial
+# aggregate rather than one that has already been published and deleted.
+tables:
+  sql:
+    - name: agg_city_count
+      sql: |
+        CREATE TABLE IF NOT EXISTS agg_city_count (
+          bucket TIMESTAMPTZ,
+          city VARCHAR,
+          count INT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS agg_city_count_idx
+          ON agg_city_count (bucket, city);
+
+      manager:
+        tumbling_window:
+          poll_interval_seconds: 3600
+          collect_closed_windows_sql: |
+            SELECT
+              strftime(bucket, '%Y-%m-%dT%H:%M:%S') AS bucket,
+              city,
+              count
+            FROM agg_city_count
+            WHERE bucket < (now()::timestamptz - INTERVAL '3600' SECOND)
+          delete_closed_windows_sql: |
+            DELETE FROM agg_city_count
+            WHERE bucket < (now()::timestamptz - INTERVAL '3600' SECOND)
+
+        sink:
+          type: console
+
+pipeline:
+  name: stateful-window
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default('250') }}
+
+  state:
+    path: {{ SQLFLOW_STATE_PATH|default('/tmp/sqlflow/state.db') }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('stateful-window') }}
+      auto_offset_reset: earliest
+      topics:
+        - "{{ SQLFLOW_TOPIC|default('input-stateful-window') }}"
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      INSERT INTO agg_city_count
+      BY NAME
+      SELECT
+        date_trunc('hour', CAST(timestamp AS TIMESTAMPTZ)) AS bucket,
+        properties.city AS city,
+        count(*) AS count
+      FROM batch
+      GROUP BY bucket, city
+      ON CONFLICT (bucket, city)
+      DO UPDATE SET count = count + EXCLUDED.count
+
+  sink:
+    type: noop

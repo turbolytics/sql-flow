@@ -38,17 +38,17 @@ func (f *fakeSource) Close() error  { return nil }
 // the marks it was handed at each commit.
 type markingSource struct {
 	fakeSource
-	marks []map[string]map[int32]Mark
+	marks []*Marks
 }
 
-func (m *markingSource) CommitMarks(marks map[string]map[int32]Mark) error {
-	copied := map[string]map[int32]Mark{}
-	for topic, parts := range marks {
-		copied[topic] = map[int32]Mark{}
-		for p, mk := range parts {
-			copied[topic][p] = mk
-		}
-	}
+func (m *markingSource) CommitMarks(marks *Marks) error {
+	// Copied because the pipeline keeps advancing the same Marks after this
+	// returns; without the copy every recorded commit would show the final
+	// state.
+	copied := NewMarks()
+	marks.Each(func(topic string, partition int32, mk Mark) {
+		copied.Advance(topic, partition, mk)
+	})
 	m.marks = append(m.marks, copied)
 	return nil
 }
@@ -332,11 +332,18 @@ type blockingSource struct {
 	release chan struct{}
 }
 
+// Same reason as newIdleSource: allocate off the consume-loop goroutine.
+func newBlockingSource(batch []Message) *blockingSource {
+	return &blockingSource{
+		batch:   batch,
+		ch:      make(chan []Message),
+		release: make(chan struct{}),
+	}
+}
+
 func (s *blockingSource) Start() error { return nil }
 
 func (s *blockingSource) Stream() <-chan []Message {
-	s.ch = make(chan []Message)
-	s.release = make(chan struct{})
 	go func() {
 		s.ch <- s.batch
 		<-s.release
@@ -351,7 +358,7 @@ func (s *blockingSource) Close() error  { return nil }
 // A batch that never reaches batch_size must still be flushed once the flush
 // interval elapses, otherwise a low-traffic topic stalls forever.
 func TestConsumeLoop_FlushesPartialBatchOnFlushInterval(t *testing.T) {
-	src := &blockingSource{batch: messages(10)}
+	src := newBlockingSource(messages(10))
 	sink := &fakeSink{}
 
 	tb := NewTurbine(src, &fakeHandler{}, sink, 1000, 50*time.Millisecond,
@@ -432,8 +439,12 @@ func TestConsumeLoop_CommitsOnlyProcessedMarks(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, 2, len(src.marks))
-	assert.Equal(t, Mark{Offset: 19, LeaderEpoch: 7}, src.marks[0]["events"][0])
-	assert.Equal(t, Mark{Offset: 29, LeaderEpoch: 7}, src.marks[1]["events"][0])
+	first, ok := src.marks[0].Get("events", 0)
+	assert.That(t, ok)
+	assert.Equal(t, Mark{Offset: 19, LeaderEpoch: 7}, first)
+	second, ok := src.marks[1].Get("events", 0)
+	assert.That(t, ok)
+	assert.Equal(t, Mark{Offset: 29, LeaderEpoch: 7}, second)
 	// A source that can take marks must not also get the blanket commit.
 	assert.Equal(t, 0, src.commits)
 }
@@ -450,6 +461,351 @@ func TestConsumeLoop_MarksTrackEachPartition(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, 1, len(src.marks))
-	assert.Equal(t, int64(102), src.marks[0]["events"][0].Offset)
-	assert.Equal(t, int64(501), src.marks[0]["events"][1].Offset)
+	mark0, _ := src.marks[0].Get("events", 0)
+	mark1, _ := src.marks[0].Get("events", 1)
+	assert.Equal(t, int64(102), mark0.Offset)
+	assert.Equal(t, int64(501), mark1.Offset)
+}
+
+// --- Task 4: transactional batch -------------------------------------------
+
+// orderingSink records the calls made to it, so the sequence that makes state
+// and offsets atomic can be asserted rather than assumed.
+type orderingSink struct {
+	events *[]string
+	fail   bool
+}
+
+func (s *orderingSink) WriteTable(batch arrow.Table) error { return nil }
+
+func (s *orderingSink) Flush() error {
+	if s.fail {
+		*s.events = append(*s.events, "flush-failed")
+		return errors.New("sink unreachable")
+	}
+	*s.events = append(*s.events, "flush")
+	return nil
+}
+
+func (s *orderingSink) Batch() (arrow.Table, error) { return nil, nil }
+
+// fakeOffsetStore stands in for the DuckDB-backed store so the ordering test
+// needs no database.
+type fakeOffsetStore struct {
+	events *[]string
+	saved  []*Marks
+	fail   bool
+}
+
+func (s *fakeOffsetStore) Save(ctx context.Context, marks *Marks) error {
+	if s.fail {
+		*s.events = append(*s.events, "save-offsets-failed")
+		return errors.New("disk full")
+	}
+	*s.events = append(*s.events, "save-offsets")
+	copied := NewMarks()
+	marks.Each(func(topic string, partition int32, mk Mark) {
+		copied.Advance(topic, partition, mk)
+	})
+	s.saved = append(s.saved, copied)
+	return nil
+}
+
+// txConn records the transaction boundary calls.
+type txConn struct {
+	events *[]string
+	fail   bool
+}
+
+func (c *txConn) Commit(ctx context.Context) error {
+	if c.fail {
+		*c.events = append(*c.events, "commit-failed")
+		return errors.New("commit rejected")
+	}
+	*c.events = append(*c.events, "commit")
+	return nil
+}
+
+func (c *txConn) Rollback(ctx context.Context) error {
+	*c.events = append(*c.events, "rollback")
+	return nil
+}
+
+// The external sink must flush BEFORE the transaction commits. A crash
+// between them replays the batch -- a duplicate the sink can absorb -- rather
+// than committing offsets for rows the sink never received, which loses them
+// with the consumer group reporting no lag.
+func TestProcessBatch_FlushesSinkBeforeCommittingState(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, []string{"flush", "save-offsets", "commit"}, events)
+}
+
+// A sink failure must roll the transaction back, so the offsets on disk stay
+// where they were and the batch is replayed on restart.
+func TestProcessBatch_RollsBackWhenSinkFails(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events, fail: true}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.Error(t, err)
+	assert.Equal(t, []string{"flush-failed", "rollback"}, events)
+}
+
+// A failure saving offsets must roll back too: state written by the handler
+// in this transaction has to go with the offsets that describe it.
+func TestProcessBatch_RollsBackWhenOffsetSaveFails(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events, fail: true}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.Error(t, err)
+	assert.Equal(t, []string{"flush", "save-offsets-failed", "rollback"}, events)
+}
+
+// A commit failure is fatal to the batch and must not be followed by a Kafka
+// commit: the durable offsets did not move, so Kafka's must not either.
+func TestProcessBatch_CommitFailureDoesNotCommitSource(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events, fail: true}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.Error(t, err)
+	assert.Equal(t, []string{"flush", "save-offsets", "commit-failed", "rollback"}, events)
+	// Kafka must not have been told anything.
+	assert.Equal(t, 0, len(src.marks))
+}
+
+// The offsets handed to the store are the ones the pipeline processed, not
+// whatever the source has fetched ahead to.
+func TestProcessBatch_SavesTheProcessedOffsets(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, &txConn{events: &events}))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, 1, len(store.saved))
+	got, ok := store.saved[0].Get("events", 0)
+	assert.That(t, ok)
+	assert.Equal(t, int64(3), got.Offset)
+}
+
+// Without a state store the pipeline behaves exactly as before: no
+// transaction calls at all, and the source is still committed.
+func TestProcessBatch_NoStateStoreIsUnchanged(t *testing.T) {
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+
+	tb := newTestTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 4)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.Equal(t, []string{"flush"}, events)
+	assert.Equal(t, 1, len(src.marks))
+}
+
+// The state gauges are recorded on StatusLoop's existing tick, from the
+// dedicated reader connection -- not the pipeline's writer -- so a scrape can
+// never stall batch processing.
+func TestRecordStateGauges_ReportsSizeAndRows(t *testing.T) {
+	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
+
+	calls := 0
+	tb.stateStats = func() (*StateStats, error) {
+		calls++
+		return &StateStats{
+			Path:      "/state/state.db",
+			SizeBytes: 4096,
+			Tables:    []TableStat{{Name: "agg", Rows: 24}, {Name: "other", Rows: 7}},
+		}, nil
+	}
+
+	tb.recordStateGauges(context.Background())
+	assert.Equal(t, 1, calls)
+}
+
+// A pipeline with no state database records nothing rather than reporting
+// zero: an absent series and a genuinely empty state are different facts, and
+// a dashboard should be able to tell them apart.
+func TestRecordStateGauges_NoProviderRecordsNothing(t *testing.T) {
+	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
+	// stateStats is nil; this must not panic.
+	tb.recordStateGauges(context.Background())
+}
+
+// A failure collecting stats must not take the status loop down with it --
+// the pipeline keeps running and keeps serving its other metrics.
+func TestRecordStateGauges_SurvivesCollectionFailure(t *testing.T) {
+	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
+	tb.stateStats = func() (*StateStats, error) {
+		return nil, errors.New("state database unreadable")
+	}
+
+	tb.recordStateGauges(context.Background())
+}
+
+// idleSource never delivers a batch, so the consume loop only ever wakes on
+// the flush ticker. It is the shape of a pipeline whose topic has gone quiet.
+type idleSource struct {
+	ch      chan []Message
+	release chan struct{}
+}
+
+// Channels are allocated here, not in Stream: Stream runs on the consume-loop
+// goroutine while the test closes release from its own.
+func newIdleSource() *idleSource {
+	return &idleSource{
+		ch:      make(chan []Message),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *idleSource) Start() error { return nil }
+
+func (s *idleSource) Stream() <-chan []Message {
+	go func() {
+		<-s.release
+		close(s.ch)
+	}()
+	return s.ch
+}
+
+func (s *idleSource) Commit() error { return nil }
+func (s *idleSource) Close() error  { return nil }
+
+// An idle stateful pipeline must still close its transaction on the flush
+// tick. DuckDB's now() is the transaction's start time, so a transaction held
+// open freezes the clock that every window close predicate is evaluated
+// against, and a pipeline that stops receiving messages silently stops
+// closing windows.
+func TestConsumeLoop_IdleTickCommitsTheStateTransaction(t *testing.T) {
+	var events []string
+	src := newIdleSource()
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000,
+		25*time.Millisecond, &sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(store, conn))
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = tb.ConsumeLoop(context.Background(), 0)
+		close(done)
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		tb.lock.Lock()
+		n := 0
+		for _, e := range events {
+			if e == "commit" {
+				n++
+			}
+		}
+		tb.lock.Unlock()
+		if n >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("idle pipeline never committed; events=%v", events)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	close(src.release)
+	<-done
+}
+
+// The same tick on a pipeline with no state database must stay the no-op it
+// always was: no commit, no offset save, nothing.
+func TestConsumeLoop_IdleTickIsANoopWithoutState(t *testing.T) {
+	src := newIdleSource()
+	sink := &fakeSink{}
+
+	tb := NewTurbine(src, &fakeHandler{}, sink, 1000,
+		10*time.Millisecond, &sync.Mutex{}, PipelineErrorPolicies{})
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = tb.ConsumeLoop(context.Background(), 0)
+		close(done)
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	close(src.release)
+	<-done
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	// An idle pipeline must not flush anything to the sink.
+	assert.Equal(t, int64(0), sink.rows)
+}
+
+// The lag metric must not allocate per message. metric.WithAttributes builds
+// its attribute set before any provider decides whether to keep the
+// measurement, so building it inline cost an allocation on every message even
+// with metrics switched off.
+func BenchmarkMark(b *testing.B) {
+	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 1000)
+	msg := Message{
+		Topic: "events", Partition: 0, Offset: 1,
+		LeaderEpoch: 1, HighWatermark: 1000,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.Offset = int64(i)
+		tb.mark(msg)
+	}
 }

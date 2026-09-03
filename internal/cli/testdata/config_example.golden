@@ -159,3 +159,7 @@ pipeline:
         table: <string>
       # Console output sink configuration.
       console:
+  # Where the pipeline keeps its DuckDB state. Absent means in-memory, and state is lost on a crash.
+  state:
+    # File backing the pipeline's DuckDB database. Window state and Kafka offsets are stored here and committed together.
+    path: <string>

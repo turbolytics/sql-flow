@@ -29,6 +29,10 @@ type Message struct {
 	// log truncation. Only meaningful when HasMetadata is true; a source with
 	// no positions leaves it zero along with the rest.
 	LeaderEpoch int32
+	// HighWatermark is the partition's high watermark at fetch time, so lag
+	// can be computed against the position last processed. Zero for sources
+	// without one.
+	HighWatermark int64
 }
 
 // Mark is the position of the last message the pipeline has finished with in
@@ -42,9 +46,9 @@ type Mark struct {
 // position. The pipeline prefers it to Commit, because a source that reads
 // ahead of the pipeline -- the Kafka source polls into a buffer -- has fetched
 // messages the pipeline has not processed, and committing "everything fetched"
-// commits those too. Marks are keyed by topic then partition.
+// commits those too.
 type MarkCommitter interface {
-	CommitMarks(marks map[string]map[int32]Mark) error
+	CommitMarks(marks *Marks) error
 }
 
 // HasMetadata reports whether the source supplied provenance for this message.
@@ -139,6 +143,19 @@ const (
 	phaseHandlerInvoke = "handler.invoke"
 )
 
+// offsetSaver writes positions into the pipeline's state database. It is an
+// interface so the ordering tests need no DuckDB; OffsetStore implements it.
+type offsetSaver interface {
+	Save(ctx context.Context, marks *Marks) error
+}
+
+// stateTx is the transaction boundary on the state database. ADBC connections
+// with autocommit disabled satisfy it.
+type stateTx interface {
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
+}
+
 type Turbine struct {
 	source        Source
 	sink          Sink
@@ -146,21 +163,66 @@ type Turbine struct {
 	batchSize     int
 	flushInterval time.Duration
 
+	// offsets and stateTx are set together, and only when the pipeline has a
+	// state database. Both nil means the historical behaviour: no transaction,
+	// and the source's own commit is the only durable record of progress.
+	offsets offsetSaver
+	stateTx stateTx
+
+	// stateStats reads a snapshot of durable state for the gauges. It reads a
+	// connection dedicated to reading, never the one batches are written on,
+	// so a scrape cannot stall the pipeline. Nil when there is no state
+	// database.
+	stateStats func() (*StateStats, error)
+
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
-	marks       map[string]map[int32]Mark
+	marks       *Marks
 	lock        *sync.Mutex
 	running     bool
 	stats       *Stats
 	errorPolicy PipelineErrorPolicies
 
+	// lagAttrCache keeps one attribute set per topic and partition, so the
+	// per-message lag metric costs no allocation. Touched only by mark, on
+	// the consume-loop goroutine.
+	//
+	// The cached value is the variadic slice itself, not just the option:
+	// passing options one by one reallocates the slice on every call.
+	lagAttrCache map[lagKey][]metric.RecordOption
+
 	logger  *zap.Logger
 	metrics *Metrics
+}
+
+// lagKey identifies one topic and partition for the lag attribute cache.
+type lagKey struct {
+	topic     string
+	partition int32
 }
 
 func WithTurbineLogger(l *zap.Logger) TurbineOption {
 	return func(t *Turbine) {
 		t.logger = l
+	}
+}
+
+// WithStateStore makes each batch transactional: the handler's writes to the
+// state database and the offsets that produced them commit together, so a
+// crash can never leave one without the other.
+func WithStateStore(offsets offsetSaver, tx stateTx) TurbineOption {
+	return func(t *Turbine) {
+		t.offsets = offsets
+		t.stateTx = tx
+	}
+}
+
+// WithStateStats supplies the snapshot function backing the state gauges. It
+// must read a connection dedicated to reading; passing the pipeline's writer
+// would let a scrape contend with batch processing.
+func WithStateStats(fn func() (*StateStats, error)) TurbineOption {
+	return func(t *Turbine) {
+		t.stateStats = fn
 	}
 }
 
@@ -187,7 +249,7 @@ func NewTurbine(
 ) *Turbine {
 	t := &Turbine{
 		source:        source,
-		marks:         map[string]map[int32]Mark{},
+		marks:         NewMarks(),
 		sink:          sink,
 		handler:       handler,
 		batchSize:     batchSize,
@@ -220,9 +282,41 @@ func (t *Turbine) StatusLoop(ctx context.Context) error {
 		select {
 		case <-ticker.C:
 			t.logThroughput()
+			t.recordStateGauges(ctx)
 		case <-ctx.Done():
 			return nil
 		}
+	}
+}
+
+// recordStateGauges samples the state database for the size and row-count
+// gauges. It runs on StatusLoop's existing tick rather than its own ticker,
+// and reads the dedicated reader connection, so it neither adds a goroutine
+// nor competes with the writer.
+//
+// A pipeline with no state database records nothing at all rather than
+// reporting zero: an absent series and a genuinely empty state are different
+// facts, and a dashboard should be able to distinguish them.
+func (t *Turbine) recordStateGauges(ctx context.Context) {
+	if t.stateStats == nil {
+		return
+	}
+
+	stats, err := t.stateStats()
+	if err != nil {
+		// Never fatal: the pipeline keeps running and keeps serving its
+		// other metrics even when state cannot be read.
+		t.logger.Error("collecting state stats", zap.Error(err))
+		return
+	}
+	if stats == nil {
+		return
+	}
+
+	t.metrics.StateSizeBytes.Record(ctx, stats.SizeBytes)
+	for _, tbl := range stats.Tables {
+		t.metrics.StateTableRows.Record(ctx, tbl.Rows,
+			metric.WithAttributes(attribute.String("table", tbl.Name)))
 	}
 }
 
@@ -287,6 +381,20 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 					return nil, err
 				}
 				numBatchMessages = 0
+				continue
+			}
+			// Nothing buffered, but an idle stateful pipeline still has to
+			// close its open transaction. DuckDB's now() returns the
+			// transaction's start time, so a transaction left open freezes
+			// the clock every window predicate is evaluated against, and a
+			// pipeline that stops receiving messages stops closing windows --
+			// silently, with the rows still reported as live state. This tick
+			// is also what makes a table manager's deletes durable while no
+			// messages are arriving.
+			if err := t.commitState(ctx); err != nil {
+				t.stats.NumErrors++
+				t.logger.Error("error committing state on idle tick", zap.Error(err))
+				return nil, err
 			}
 			continue
 		case <-ctx.Done():
@@ -442,17 +550,39 @@ func (t *Turbine) mark(m Message) {
 	if !m.HasMetadata() {
 		return
 	}
-	parts, ok := t.marks[m.Topic]
-	if !ok {
-		parts = map[int32]Mark{}
-		t.marks[m.Topic] = parts
+	t.marks.Advance(m.Topic, m.Partition, Mark{Offset: m.Offset, LeaderEpoch: m.LeaderEpoch})
+
+	// -1 because a mark names the last *processed* offset: having processed
+	// offset 9 with a watermark of 10 is lag zero.
+	if m.HighWatermark > 0 {
+		t.metrics.ConsumerLag.Record(context.Background(), m.HighWatermark-m.Offset-1,
+			t.lagAttrs(m.Topic, m.Partition)...)
 	}
-	// Offsets arrive in order within a partition; the guard only matters if
-	// a source ever redelivers.
-	if cur, ok := parts[m.Partition]; ok && cur.Offset >= m.Offset {
-		return
+}
+
+// lagAttrs returns the cached attribute set for one topic and partition.
+//
+// Building it inline costs an allocation per message whatever the metrics
+// configuration: metric.WithAttributes allocates before any provider decides
+// to discard the measurement. Benchmarked against a noop provider, that took
+// mark from 17.5 ns and no allocations to 224 ns and four -- around 19% of a
+// core at the throughput this engine advertises, spent on garbage.
+//
+// A plain map needs no lock: mark runs only on the consume-loop goroutine.
+func (t *Turbine) lagAttrs(topic string, partition int32) []metric.RecordOption {
+	key := lagKey{topic: topic, partition: partition}
+	if opts, ok := t.lagAttrCache[key]; ok {
+		return opts
 	}
-	parts[m.Partition] = Mark{Offset: m.Offset, LeaderEpoch: m.LeaderEpoch}
+	opts := []metric.RecordOption{metric.WithAttributes(
+		attribute.String("topic", topic),
+		attribute.Int("partition", int(partition)),
+	)}
+	if t.lagAttrCache == nil {
+		t.lagAttrCache = make(map[lagKey][]metric.RecordOption)
+	}
+	t.lagAttrCache[key] = opts
+	return opts
 }
 
 // commitSource commits what the pipeline has processed. A source that can
@@ -466,12 +596,76 @@ func (t *Turbine) mark(m Message) {
 // the consumer group showing no lag.
 func (t *Turbine) commitSource() error {
 	if mc, ok := t.source.(MarkCommitter); ok {
-		if len(t.marks) == 0 {
+		if t.marks.Empty() {
 			return nil
 		}
 		return mc.CommitMarks(t.marks)
 	}
 	return t.source.Commit()
+}
+
+// rollbackState discards this batch's uncommitted state writes. Used on the
+// paths that fail before commitState is reached.
+func (t *Turbine) rollbackState(ctx context.Context) {
+	if t.stateTx == nil {
+		return
+	}
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	if err := t.stateTx.Rollback(ctx); err != nil {
+		t.logger.Error("rollback failed", zap.Error(err))
+	}
+}
+
+// commitState writes the processed offsets into the state database and commits
+// them together with whatever the handler wrote in this batch. Any failure
+// rolls the whole transaction back, leaving the durable offsets where they
+// were so the batch is replayed rather than lost.
+//
+// A pipeline with no state database does nothing here.
+func (t *Turbine) commitState(ctx context.Context) error {
+	if t.offsets == nil || t.stateTx == nil {
+		return nil
+	}
+
+	c0 := time.Now()
+
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	if err := t.offsets.Save(ctx, t.marks); err != nil {
+		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
+			t.logger.Error("rollback after failed offset save", zap.Error(rbErr))
+		}
+		return fmt.Errorf("saving offsets: %w", err)
+	}
+
+	if err := t.stateTx.Commit(ctx); err != nil {
+		// The commit itself failed, so the transaction is still open and
+		// still holds this batch's writes; roll it back explicitly rather
+		// than leaving them to leak into the next batch.
+		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
+			t.logger.Error("rollback after failed commit", zap.Error(rbErr))
+		}
+		return fmt.Errorf("committing state: %w", err)
+	}
+
+	t.metrics.StateCommitLatency.Record(ctx, time.Since(c0).Seconds())
+	t.metrics.StateCommitCount.Add(ctx, 1)
+	return nil
+}
+
+// SyncState closes the open state transaction, making everything written
+// since the last commit durable. A pipeline with no state database does
+// nothing.
+//
+// Shutdown uses it twice: once before the table managers run their final
+// poll, so that poll sees a current clock rather than one frozen at the last
+// batch, and once after, so the rows that poll published are actually deleted
+// instead of being rolled back when the connection closes and republished on
+// the next start.
+func (t *Turbine) SyncState(ctx context.Context) error {
+	return t.commitState(ctx)
 }
 
 // processBatch invokes the handler on the buffered messages, writes the
@@ -503,6 +697,10 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 		if err := t.sink.WriteTable(batch); err != nil {
 			t.stats.NumErrors++
 			t.logger.Error("error writing batch to sink", zap.Error(err))
+			// Same reasoning as the flush path below: this batch's handler
+			// writes are still uncommitted, and leaving them open would let
+			// the next batch's commit adopt them along with its own offsets.
+			t.rollbackState(ctx)
 			batch.Release()
 			return err
 		}
@@ -511,6 +709,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	if err := t.flush(batch); err != nil {
 		t.stats.NumErrors++
 		t.logger.Error("error flushing sink", zap.Error(err))
+		// The handler's writes are still uncommitted in the state
+		// transaction; discard them with the batch they belong to.
+		t.rollbackState(ctx)
 		if batch != nil {
 			batch.Release()
 		}
@@ -525,14 +726,41 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 		t.metrics.SinkFlushNumRows.Record(ctx, batch.NumRows())
 	}
 
-	// Committed only after the sink has flushed, so a crash replays the
-	// batch rather than losing it.
-	if err := t.commitSource(); err != nil {
-		t.logger.Error("error committing source", zap.Error(err))
+	// The state transaction closes after the sink has flushed and before the
+	// source is committed. That order is the guarantee: a crash between the
+	// flush and the commit replays the batch, so an external sink may see a
+	// duplicate -- recoverable -- while state and offsets stay consistent.
+	// Committing first would move the offsets past rows the sink never
+	// received, which loses them silently.
+	if err := t.commitState(ctx); err != nil {
+		t.stats.NumErrors++
+		t.logger.Error("error committing state", zap.Error(err))
 		if batch != nil {
 			batch.Release()
 		}
 		return err
+	}
+
+	// Committed only after the sink has flushed, so a crash replays the
+	// batch rather than losing it. With a state database this is advisory:
+	// the durable position is the one in the state transaction above, and
+	// this keeps the consumer group's lag readable.
+	//
+	// Which is why a failure here is fatal only without a state database.
+	// Once the offsets are durable, killing the pipeline over a rebalance or
+	// a commit timeout trades a readable lag figure for an outage, and the
+	// restart then has to fight its way back into the group.
+	if err := t.commitSource(); err != nil {
+		if t.stateTx != nil {
+			t.logger.Warn("failed to commit offsets to the source; durable offsets are already committed",
+				zap.Error(err))
+		} else {
+			t.logger.Error("error committing source", zap.Error(err))
+			if batch != nil {
+				batch.Release()
+			}
+			return err
+		}
 	}
 
 	b3 := time.Now()

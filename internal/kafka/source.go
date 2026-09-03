@@ -19,6 +19,7 @@ type Source struct {
 	streamChan    chan []core.Message
 	done          chan struct{}
 	closeOnce     sync.Once
+	seeker        *OffsetSeeker
 
 	logger *zap.Logger
 }
@@ -41,6 +42,15 @@ func WithLogger(logger *zap.Logger) Option {
 func WithChannelBuffer(size int) Option {
 	return func(s *Source) {
 		s.channelBuffer = size
+	}
+}
+
+// WithSeeker gives the source the seeker registered on its client, which is
+// what SeekTo writes durable positions into. The seeker has to be built before
+// the client, because it is a client option.
+func WithSeeker(seeker *OffsetSeeker) Option {
+	return func(s *Source) {
+		s.seeker = seeker
 	}
 }
 
@@ -85,6 +95,33 @@ func (k *Source) Commit() error {
 	return nil
 }
 
+// SeekTo resumes consumption from positions recorded in the pipeline's state
+// database, so a restart picks up where the durable state left off rather
+// than wherever the consumer group happens to sit.
+//
+// The positions are handed to the seeker, which applies them during the
+// group's join. Committing them here instead does not work: that commit
+// carries an empty member ID and Kafka refuses it unless the group is Empty,
+// which it is not after a crash. See OffsetSeeker.
+//
+// Empty marks are a no-op rather than a seek to zero. "Nothing recorded" and
+// "recorded position zero" are different facts: the first must leave
+// auto_offset_reset in charge, and seeking to zero would silently replay an
+// entire topic on a pipeline's first run against a fresh state file.
+func (k *Source) SeekTo(marks *core.Marks) error {
+	if marks == nil || marks.Empty() {
+		return nil
+	}
+
+	if k.seeker == nil {
+		return fmt.Errorf("seeking to stored offsets: source was built without an offset seeker")
+	}
+	k.seeker.SetMarks(marks)
+
+	k.logger.Info("resuming from stored offsets", zap.Int("partitions", marks.Len()))
+	return nil
+}
+
 // CommitMarks commits exactly the positions the pipeline has finished with.
 //
 // Commit above commits everything this source has fetched, and the poll
@@ -92,14 +129,17 @@ func (k *Source) Commit() error {
 // batch it had committed offset 70,086. A crash then lost the difference
 // with the consumer group showing no lag. Kafka commits the next offset to
 // read, so a mark at offset N commits N+1.
-func (k *Source) CommitMarks(marks map[string]map[int32]core.Mark) error {
-	offsets := make(map[string]map[int32]kgo.EpochOffset, len(marks))
-	for topic, parts := range marks {
-		offsets[topic] = make(map[int32]kgo.EpochOffset, len(parts))
-		for p, m := range parts {
-			offsets[topic][p] = kgo.EpochOffset{Epoch: m.LeaderEpoch, Offset: m.Offset + 1}
-		}
+func (k *Source) CommitMarks(marks *core.Marks) error {
+	if marks == nil || marks.Empty() {
+		return nil
 	}
+	offsets := make(map[string]map[int32]kgo.EpochOffset, marks.Len())
+	marks.Each(func(topic string, partition int32, m core.Mark) {
+		if offsets[topic] == nil {
+			offsets[topic] = map[int32]kgo.EpochOffset{}
+		}
+		offsets[topic][partition] = kgo.EpochOffset{Epoch: m.LeaderEpoch, Offset: m.Offset + 1}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), commitTimeout)
 	defer cancel()
@@ -172,14 +212,17 @@ func (k *Source) Stream() <-chan []core.Message {
 			}
 
 			batch := make([]core.Message, 0, fetches.NumRecords())
-			fetches.EachRecord(func(r *kgo.Record) {
-				batch = append(batch, core.Message{
-					Value:       r.Value,
-					Topic:       r.Topic,
-					Partition:   r.Partition,
-					Offset:      r.Offset,
-					LeaderEpoch: r.LeaderEpoch,
-				})
+			fetches.EachPartition(func(p kgo.FetchTopicPartition) {
+				for _, r := range p.Records {
+					batch = append(batch, core.Message{
+						Value:         r.Value,
+						Topic:         r.Topic,
+						Partition:     r.Partition,
+						Offset:        r.Offset,
+						LeaderEpoch:   r.LeaderEpoch,
+						HighWatermark: p.HighWatermark,
+					})
+				}
 			})
 
 			if len(batch) == 0 {

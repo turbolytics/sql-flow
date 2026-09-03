@@ -26,6 +26,22 @@ func renderString(t *testing.T, body string, overrides map[string]string) string
 	return strings.TrimSpace(string(out))
 }
 
+func loadString(t *testing.T, body string) *Conf {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conf, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	return conf
+}
+
 // The config spec is Jinja2: filter arguments are parenthesized. pongo2's
 // colon syntax is not interchangeable, and every example config uses Jinja.
 func TestRenderTemplate_JinjaDefaultFilter(t *testing.T) {
@@ -184,4 +200,47 @@ pipeline:
 	_, err := Load(path, nil)
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "bath_size"))
+}
+
+// A pipeline may name a file for its DuckDB state. Absent, state stays in
+// memory and is lost on a crash.
+func TestLoad_StatePath(t *testing.T) {
+	conf := loadString(t, `
+pipeline:
+  batch_size: 10
+  state:
+    path: /var/lib/sqlflow/state.db
+  source:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      group_id: g
+      topics: [t]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1
+  sink:
+    type: noop
+`)
+	assert.That(t, conf.Pipeline.State != nil)
+	assert.Equal(t, "/var/lib/sqlflow/state.db", conf.Pipeline.State.Path)
+}
+
+func TestLoad_StateAbsentIsNil(t *testing.T) {
+	conf := loadString(t, `
+pipeline:
+  batch_size: 10
+  source:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      group_id: g
+      topics: [t]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1
+  sink:
+    type: noop
+`)
+	assert.That(t, conf.Pipeline.State == nil)
 }

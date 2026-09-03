@@ -688,6 +688,20 @@
           "required": [
             "policy"
           ]
+        },
+        "state": {
+          "type": "object",
+          "description": "Where the pipeline keeps its DuckDB state. Absent means in-memory, and state is lost on a crash.",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "File backing the pipeline's DuckDB database. Window state and Kafka offsets are stored here and committed together."
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

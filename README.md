@@ -267,6 +267,7 @@ pipeline:   # required
   description:
   batch_size:              # required, >= 1
   flush_interval_seconds:  # optional; unset means only batch_size triggers a batch
+  state:                   # optional; makes state durable, see Durable state
   on_error:                # optional
   source:                  # required
   handler:                 # required
@@ -294,10 +295,9 @@ source:
 ```
 
 Offsets are committed after the batch has been handled and the sink has
-flushed, and only up to the last message the pipeline actually processed — not
-to wherever the consumer has read ahead to. Delivery is therefore
-**at-least-once**: a crash between a sink flush and its commit replays that
-batch on restart.
+flushed, and only up to the last message the pipeline actually processed, not
+to wherever the consumer has read ahead to. See
+[Delivery guarantees](#delivery-guarantees).
 
 **SASL / TLS.** Set `security_protocol` to one of `PLAINTEXT`, `SSL`,
 `SASL_PLAINTEXT`, `SASL_SSL`:
@@ -515,6 +515,70 @@ columns: `error`, `message`, `phase` (`handler.write` or `handler.invoke`) and
 `timestamp`. See [`kafka.dlq.yml`](dev/config/examples/kafka.dlq.yml).
 `source.error.policy` is parsed but unused; use `pipeline.on_error`.
 
+## Durable state
+
+A pipeline that aggregates needs its state to survive a restart. Give it a file:
+
+```yaml
+pipeline:
+  state:
+    path: /var/lib/sqlflow/state.db
+```
+
+DuckDB then runs on that file instead of in memory, and a `sqlflow_offsets`
+table lives there beside the tables your handler writes. Every batch commits
+the handler's writes and the Kafka offsets that produced them in one
+transaction. On startup the pipeline reads those offsets and resumes from them.
+
+Without a state path, DuckDB runs in memory. A crash mid-window loses that
+window's aggregate while its offsets are already committed, so the consumer
+group reports no lag and a restart replays nothing. Set a state path for any
+pipeline with a `tables` block.
+
+Two consequences worth knowing:
+
+- The state file is the source of truth. When it disagrees with the consumer
+  group, the pipeline resumes from the file's offsets. It applies them while
+  joining the group, so a restart works even while the previous process is
+  still a member, which it is for the session timeout after a crash.
+- Window close predicates are evaluated at most one `flush_interval_seconds`
+  behind the wall clock. A stateful pipeline holds one transaction open per
+  batch and DuckDB's `now()` is the transaction's start time, so the pipeline
+  commits on the flush tick even when idle to keep that clock moving.
+- DuckDB locks the file exclusively. One state file belongs to one running
+  pipeline, and no other process can read it, not even read-only. Use the
+  `/stats` endpoint to inspect a running pipeline.
+
+Durable state costs throughput. See
+[What durable state costs](#what-durable-state-costs) for the numbers and the
+batch size to use.
+
+## Delivery guarantees
+
+SQLFlow gives two guarantees. Which one applies depends on where the data
+lands.
+
+**Pipeline state is exactly-once relative to offsets.** With a state path set,
+the tables your handler writes and the offsets that produced them commit in a
+single transaction. A crash replays exactly the batches whose state did not
+commit, so a windowed aggregate is neither short nor double-counted across a
+restart.
+
+**External sinks are at-least-once.** Kafka, ClickHouse, Iceberg and
+`sqlcommand` are flushed before that transaction commits. A crash in between
+replays the batch and the sink sees those rows twice. Committing first would
+move offsets past rows the sink never received, which loses them silently, so
+the duplicate is the deliberate choice. Use a sink that absorbs it:
+`ReplacingMergeTree` in ClickHouse, an upsert in `sqlcommand`, or a downstream
+dedupe on a key.
+
+**Window sinks are at-least-once for the same reason.** A tumbling window is
+published before its rows are deleted, and that delete commits with the
+pipeline's next batch. A crash in between republishes the window.
+
+Without a state path there is no state guarantee at all: handler state does not
+survive the process.
+
 ## Tumbling windows
 
 A table declared under `tables.sql` can carry a `manager`, which polls the table
@@ -547,15 +611,27 @@ tables:
 ```
 
 Collect, write and flush happen before the delete, so a sink failure retries
-rather than dropping a window. One final poll runs on shutdown, so a window that
-closes during shutdown is not stranded. Windows close on wall-clock time as
-written in your `collect_closed_windows_sql`; there is no event-time
-watermarking. `tumbling_window` is currently the only manager type. See
-[`tumbling.window.yml`](dev/config/examples/tumbling.window.yml).
+rather than dropping a window. A retry re-sends rows the sink already received,
+so give a window sink a key it can deduplicate on. One final poll runs on
+shutdown, against a current clock and with its delete committed, so a window
+that closes during shutdown is published once and not republished on the next
+start.
+
+Windows close on wall-clock time, as written in your
+`collect_closed_windows_sql`. There is no event-time watermarking and no
+late-arrival policy: a message that arrives after its window closed lands in
+whichever window its own SQL puts it in.
+
+State in a managed table is lost on a crash unless the pipeline sets
+[`state.path`](#durable-state).
+
+`tumbling_window` is currently the only manager type. See
+[`tumbling.window.yml`](dev/config/examples/tumbling.window.yml) and
+[`kafka.stateful.window.yml`](dev/config/examples/kafka.stateful.window.yml).
 
 ## Metrics
 
-`--metrics prometheus` serves `/metrics` on `:8000`. Seven instruments are
+`--metrics prometheus` serves `/metrics` on `:8000`. Twelve instruments are
 exported under the meter name `sqlflow`:
 
 | Instrument | Type | Unit |
@@ -567,12 +643,41 @@ exported under the meter name `sqlflow`:
 | `sink_flush_latency` | histogram | seconds |
 | `sink_flush_count` | counter | flushes |
 | `sink_flush_num_rows` | gauge | rows |
+| `consumer_lag` | gauge (attrs: `topic`, `partition`) | messages |
+| `state_commit_count` | counter | commits |
+| `state_commit_latency` | histogram | seconds |
+| `state_db_size_bytes` | gauge | bytes |
+| `state_table_rows` | gauge (attr: `table`) | rows |
+
+The last four appear only when the pipeline declares a state path. An absent
+series and an empty state are different facts, so a pipeline with state in
+memory reports nothing rather than zero.
 
 ```
 $ sqlflow run -c <config> --metrics=prometheus &
 $ curl -s localhost:8000/metrics | grep message_count
 message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 ```
+
+`consumer_lag` is the one to alert on. It is the broker's high watermark minus
+the offset the pipeline has finished with, so it measures the work the
+pipeline still owes rather than what its consumer group has been told.
+
+### Inspecting durable state
+
+`--metrics prometheus` also serves `/stats` on `:8000`, which reports what is
+on disk right now:
+
+```
+$ curl -s localhost:8000/stats
+{"state":{"path":"/var/lib/sqlflow/state.db","size_bytes":2109440,
+          "tables":[{"table":"agg_city_count","rows":1440}],
+          "offsets":[{"topic":"events","partition":0,"offset":98213}]}}
+```
+
+Reads come from a second connection, so a scrape never blocks a batch and
+never reports rows a rollback then erased. A pipeline with no state path
+serves no `/stats`.
 
 ## Environment variables
 
@@ -620,6 +725,43 @@ and lazily-freed pages included) — the provisioning ceiling; **peak working
 set** is anonymous memory, comparable to RSS — what the engine actually holds.
 Memory is flat across handlers and batch sizes at roughly a quarter GiB, so
 throughput scales with batch size without buying it with memory.
+
+## What durable state costs
+
+Setting `pipeline.state.path` puts every batch in a DuckDB transaction. That
+transaction is one fsync per batch, so its cost per message falls as batches
+grow. Same pipeline, same 300,000 messages, state in memory against state on
+disk:
+
+| `batch_size` | State in memory | Durable state | Cost |
+|---|---|---|---|
+| 500 | ~95,600 msgs/sec | ~51,100 msgs/sec | 47% |
+| 2000 | ~184,600 msgs/sec | ~130,600 msgs/sec | 29% |
+| 5000 | ~201,600 msgs/sec | ~171,500 msgs/sec | 15% |
+
+Use a batch of at least 5000 for a stateful pipeline. Below 2000 the commit
+dominates and you pay for durability on every message instead of amortising it
+across a batch.
+
+Memory is unchanged: peak working set stayed within 191-218 MiB across every
+run above, with and without state. Durability costs throughput, not memory.
+
+`state_commit_latency` reports the per-batch commit time on the metrics
+endpoint, so you can see this cost on your own hardware rather than inferring
+it from the table.
+
+Reproduce both arms:
+
+```
+make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000 \
+    CONFIG=dev/config/examples/benchmark.stateful.mem.yml
+STATE_PATH=/tmp/bench-state.db make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000 \
+    CONFIG=dev/config/examples/benchmark.stateful.mem.yml
+```
+
+Delete the state file between runs. A second run resumes from the first run's
+offsets and consumes nothing, which reports a meaningless number rather than
+failing.
 
 To reproduce:
 

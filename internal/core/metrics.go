@@ -17,6 +17,11 @@ type Metrics struct {
 	SinkFlushNumRows       metric.Int64Gauge
 	SinkFlushCount         metric.Int64Counter
 	BatchProcessingLatency metric.Float64Histogram
+	StateCommitLatency     metric.Float64Histogram
+	StateCommitCount       metric.Int64Counter
+	StateSizeBytes         metric.Int64Gauge
+	StateTableRows         metric.Int64Gauge
+	ConsumerLag            metric.Int64Gauge
 }
 
 // NewMetrics builds the instruments from a meter provider. Passing a noop
@@ -87,6 +92,46 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("seconds"),
 	); err != nil {
 		return nil, fmt.Errorf("batch_processing_latency: %w", err)
+	}
+
+	if m.ConsumerLag, err = meter.Int64Gauge(
+		"consumer_lag",
+		metric.WithDescription("Messages between the last one processed and the partition's high watermark"),
+		metric.WithUnit("messages"),
+	); err != nil {
+		return nil, fmt.Errorf("consumer_lag: %w", err)
+	}
+
+	if m.StateCommitLatency, err = meter.Float64Histogram(
+		"state_commit_latency",
+		metric.WithDescription("Latency of committing state and offsets together"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("state_commit_latency: %w", err)
+	}
+
+	if m.StateCommitCount, err = meter.Int64Counter(
+		"state_commit_count",
+		metric.WithDescription("Number of state transactions committed"),
+		metric.WithUnit("commits"),
+	); err != nil {
+		return nil, fmt.Errorf("state_commit_count: %w", err)
+	}
+
+	if m.StateSizeBytes, err = meter.Int64Gauge(
+		"state_db_size_bytes",
+		metric.WithDescription("Size on disk of the pipeline's state database"),
+		metric.WithUnit("By"),
+	); err != nil {
+		return nil, fmt.Errorf("state_db_size_bytes: %w", err)
+	}
+
+	if m.StateTableRows, err = meter.Int64Gauge(
+		"state_table_rows",
+		metric.WithDescription("Rows in each managed state table"),
+		metric.WithUnit("rows"),
+	); err != nil {
+		return nil, fmt.Errorf("state_table_rows: %w", err)
 	}
 
 	return &m, nil
