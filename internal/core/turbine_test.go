@@ -390,6 +390,70 @@ func TestConsumeLoop_FlushesPartialBatchOnFlushInterval(t *testing.T) {
 	<-done
 }
 
+// drainHandler signals after every Write, so a test can cancel at the exact
+// point the batch finishes buffering. Polling the handler's counter instead
+// would race the consume-loop goroutine that owns it.
+type drainHandler struct {
+	fakeHandler
+	wrote chan struct{}
+}
+
+func (h *drainHandler) Write(msg []byte) error {
+	if err := h.fakeHandler.Write(msg); err != nil {
+		return err
+	}
+	h.wrote <- struct{}{}
+	return nil
+}
+
+// A supervisor's SIGTERM reaches the pipeline as a cancelled context. The
+// source has already delivered the batch buffered at that moment, and nothing
+// has written it. Returning without it drops the tail of every graceful
+// shutdown.
+func TestConsumeLoop_CancelDrainsTheBufferedBatch(t *testing.T) {
+	src := newBlockingSource(messages(10))
+	sink := &fakeSink{}
+	h := &drainHandler{wrote: make(chan struct{})}
+
+	// An hour, so nothing but the cancel can move this batch: reaching the
+	// sink here proves the drain ran, not the flush ticker.
+	tb := NewTurbine(src, h, sink, 1000, time.Hour, &sync.Mutex{}, PipelineErrorPolicies{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer close(src.release)
+
+	var (
+		stats *Stats
+		err   error
+		done  = make(chan struct{})
+	)
+	go func() {
+		defer close(done)
+		stats, err = tb.ConsumeLoop(ctx, 0)
+	}()
+
+	for i := 0; i < 10; i++ {
+		<-h.wrote
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("consume loop did not return after the context was cancelled")
+	}
+
+	assert.NoError(t, err)
+
+	sink.mu.Lock()
+	rows, flushes := sink.rows, sink.flushes
+	sink.mu.Unlock()
+
+	assert.Equal(t, int64(10), rows)
+	assert.Equal(t, 1, flushes)
+	assert.Equal(t, int64(10), stats.MessagesConsumed())
+}
+
 func TestConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{messages(500), messages(500), messages(250)}}
 	sink := &fakeSink{}

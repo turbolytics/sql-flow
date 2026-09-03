@@ -579,6 +579,24 @@ pipeline's next batch. A crash in between republishes the window.
 Without a state path there is no state guarantee at all: handler state does not
 survive the process.
 
+## Graceful shutdown
+
+`SIGTERM` and `SIGINT` drain the pipeline. The drain runs in order:
+
+1. Stop consuming.
+2. Write the batch it had buffered.
+3. Run each table manager's final poll.
+4. Commit state and offsets.
+5. Exit 0.
+
+A supervisor that stops a pipeline this way loses nothing. Skipping the drain
+loses no data either, because the buffered batch replays from the last
+committed offset. It costs that duplicate work, and it republishes any window
+that closed during shutdown.
+
+The drain has no deadline. A sink that blocks holds the process open until the
+supervisor escalates to `SIGKILL`.
+
 ## Tumbling windows
 
 A table declared under `tables.sql` can carry a `manager`, which polls the table

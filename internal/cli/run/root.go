@@ -17,9 +17,11 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
@@ -103,6 +105,15 @@ func NewCommand() *cobra.Command {
 					}
 				}()
 			}
+
+			// A supervisor stops a pipeline with SIGTERM. Go's default handler
+			// terminates the process without running any deferred function.
+			// Three deferred steps below would therefore never run: the final
+			// batch, the managers' last poll, and the state commit that makes
+			// their deletes durable.
+			ctx, stopSignals := signal.NotifyContext(
+				context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stopSignals()
 
 			conf, err := config.Load(configPath, map[string]string{})
 			if err != nil {
@@ -370,7 +381,12 @@ func NewCommand() *cobra.Command {
 				statusWG.Wait()
 			}()
 
-			stats, err := turbine.ConsumeLoop(context.Background(), maxMsgs)
+			stats, err := turbine.ConsumeLoop(ctx, maxMsgs)
+			// Restore default signal handling for the rest of the shutdown.
+			// The deferred drain below still has to run. Leaving the handler
+			// installed would swallow a second SIGTERM, so an operator could
+			// not interrupt a drain that hangs.
+			stopSignals()
 			if err != nil {
 				l.Error("failed to consume loop", zap.Error(err))
 				return err

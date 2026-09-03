@@ -421,3 +421,80 @@ def test_window_state_survives_a_restart(image):
         f"aggregate lost rows across the restart: {total} of {num_messages}")
     assert offset == num_messages - 1, (
         f"stored offset should be the last processed message: {offset}")
+
+
+def test_sigterm_drains_the_buffered_batch(image):
+    """A supervisor stops a pipeline with SIGTERM, so SIGTERM must drain it.
+
+    Go terminates on SIGTERM without running any deferred function. The process
+    once died at once: exit 143, the buffered batch never written, the
+    managers' final poll never run.
+
+    The pipeline lost no data, because the offsets had not advanced either.
+    Every graceful stop still threw away its tail and replayed it.
+
+    This run publishes 300 messages against a batch size of 250, which leaves
+    50 buffered. The flush interval outlasts the run, so only the drain can
+    move them.
+    """
+    topic = f"sigterm-drain-{int(time.time())}"
+    num_messages = 300
+    batch_size = 250
+
+    network = Network().create()
+    kafka_ctr = KafkaContainer()
+    kafka_ctr.with_network(network)
+    kafka_ctr.with_network_aliases("kafka")
+    kafka_ctr.start()
+
+    producer = Producer({"bootstrap.servers": kafka_ctr.get_bootstrap_server()})
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    for i in range(num_messages):
+        producer.produce(topic, json.dumps({
+            "timestamp": timestamp,
+            "properties": {"city": "NYC"},
+            "user": {"id": str(i)},
+        }))
+    producer.flush()
+
+    with tempfile.TemporaryDirectory() as state_dir:
+        os.chmod(state_dir, 0o777)
+
+        # No --max-msgs: the pipeline runs until a signal stops it. A pipeline
+        # that exits on its own proves nothing here.
+        container = DockerContainer(image) \
+            .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+            .with_volume_mapping(state_dir, "/state", "rw") \
+            .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
+            .with_env("SQLFLOW_STATE_PATH", "/state/state.db") \
+            .with_env("SQLFLOW_TOPIC", topic) \
+            .with_env("SQLFLOW_GROUP_ID", topic) \
+            .with_env("SQLFLOW_BATCH_SIZE", str(batch_size)) \
+            .with_network(network) \
+            .with_command("run /tmp/conf/config/examples/kafka.stateful.window.yml")
+        container.start()
+
+        # The pipeline has consumed every message, so 50 remain buffered and
+        # wait for something to write them.
+        wait_for_logs(container, f"messages_consumed.*{num_messages}", timeout=120)
+
+        wrapped = container.get_wrapped_container()
+        wrapped.kill(signal="SIGTERM")
+        result = wrapped.wait(timeout=60)
+        exit_code = result["StatusCode"]
+
+        state_file = os.path.join(state_dir, "state.db")
+        conn = duckdb.connect(state_file, read_only=True)
+        total = conn.execute("SELECT sum(count) FROM agg_city_count").fetchone()[0]
+        offset = conn.execute('SELECT max("offset") FROM sqlflow_offsets').fetchone()[0]
+        conn.close()
+
+    # Without a handler this exits 2, not the 143 an unhandled SIGTERM usually
+    # produces. sqlflow runs as PID 1 here, and the kernel discards a signal
+    # that PID 1 has no handler for. The Go runtime re-raises it, gets nowhere,
+    # and falls back to exit(2). The same binary as an ordinary child exits 143.
+    assert exit_code == 0, f"SIGTERM should exit cleanly, got {exit_code}"
+    assert total == num_messages, (
+        f"drain lost the buffered batch: {total} of {num_messages}")
+    assert offset == num_messages - 1, (
+        f"stored offset should be the last processed message: {offset}")
