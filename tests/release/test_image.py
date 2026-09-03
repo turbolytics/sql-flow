@@ -17,6 +17,7 @@ import os
 import subprocess
 import tempfile
 import time
+from datetime import datetime, timezone
 
 import duckdb
 import pytest
@@ -355,7 +356,11 @@ def test_window_state_survives_a_restart(image):
     kafka_ctr.start()
 
     producer = Producer({"bootstrap.servers": kafka_ctr.get_bootstrap_server()})
-    timestamp = "2026-09-02T12:00:00.000Z"
+    # The current hour, so the window is still open for the length of the run
+    # and recovery is observed on a partial aggregate. A fixed timestamp goes
+    # stale: once it is more than an hour old the manager legitimately closes
+    # the window, publishes it and deletes the rows these assertions read.
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     for i in range(num_messages):
         producer.produce(topic, json.dumps({
             "timestamp": timestamp,
