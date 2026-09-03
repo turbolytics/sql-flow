@@ -117,7 +117,9 @@ func NewCommand() *cobra.Command {
 
 			conf, err := config.Load(configPath, map[string]string{})
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
+				// Returned as-is: the error already names the file, the stage and the
+				// code, so another prefix adds a word and no information.
+				return err
 			}
 
 			// A pipeline that declares a state path gets a DuckDB backed by

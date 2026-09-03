@@ -2,13 +2,13 @@ package config
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/nikolalohinski/gonja/v2"
 	"github.com/nikolalohinski/gonja/v2/exec"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,12 +43,12 @@ func RenderTemplate(path string, overrides map[string]string) ([]byte, error) {
 	// Checked up front: the template loader reports a missing file as a stat
 	// error against its parent directory, which reads as an unrelated failure.
 	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("config file not found: %s", path)
+		return nil, errs.New(errs.CodeConfigNotFound, "config file not found: %s", path)
 	}
 
 	tmpl, err := gonja.FromFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("parsing template failed: %w", err)
+		return nil, errs.Wrap(errs.CodeConfigParseFailed, err, "parsing template failed")
 	}
 
 	vars := settingsVars()
@@ -64,7 +64,7 @@ func RenderTemplate(path string, overrides map[string]string) ([]byte, error) {
 
 	out, err := tmpl.ExecuteToBytes(exec.NewContext(vars))
 	if err != nil {
-		return nil, fmt.Errorf("rendering template failed: %w", err)
+		return nil, errs.Wrap(errs.CodeConfigParseFailed, err, "rendering template failed")
 	}
 
 	return out, nil
@@ -73,7 +73,10 @@ func RenderTemplate(path string, overrides map[string]string) ([]byte, error) {
 func Load(path string, overrides map[string]string) (*Conf, error) {
 	rendered, err := RenderTemplate(path, overrides)
 	if err != nil {
-		return nil, fmt.Errorf("rendering config failed: %w", err)
+		// Returned as-is. The inner error already names the file and the
+		// stage that failed, so another "rendering config failed" prefix adds
+		// a word and no information.
+		return nil, err
 	}
 
 	var conf Conf
@@ -83,7 +86,7 @@ func Load(path string, overrides map[string]string) (*Conf, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(rendered))
 	dec.KnownFields(true)
 	if err := dec.Decode(&conf); err != nil {
-		return nil, fmt.Errorf("parsing YAML failed: %w", err)
+		return nil, errs.Wrap(errs.CodeConfigParseFailed, err, "parsing YAML failed")
 	}
 	return &conf, nil
 }
