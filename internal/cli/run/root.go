@@ -18,7 +18,6 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -131,16 +130,20 @@ func NewCommand() *cobra.Command {
 			if conf.Pipeline.State != nil {
 				statePath = conf.Pipeline.State.Path
 			}
-			if statePath != "" {
-				if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
-					return errs.Wrap(errs.CodeStateInternal, err, "creating state directory for %q", statePath)
-				}
-			}
 
 			// The handle is kept, not just a connection: a second connection
 			// is what lets /stats read committed state without contending
 			// with the writer.
-			db, err := duckdb.OpenPath(context.Background(), statePath)
+			//
+			// A declared state path goes through OpenState, which separates a
+			// first run from a damaged file. An empty path is in-memory and
+			// has nothing to recover, so it opens directly.
+			var db *duckdb.DB
+			if statePath != "" {
+				db, err = core.OpenState(context.Background(), statePath)
+			} else {
+				db, err = duckdb.OpenPath(context.Background(), "")
+			}
 			if err != nil {
 				return err
 			}
@@ -185,16 +188,20 @@ func NewCommand() *cobra.Command {
 				storedMarks *core.Marks
 			)
 			if statePath != "" {
+				// Both calls are returned as-is. They already carry a code, and
+				// the outermost code wins: re-wrapping either as
+				// CodeStateInternal would turn a corrupt state file into a
+				// retryable failure and hand a supervisor a crash loop.
 				offsets := core.NewOffsetStore(conn)
 				if err := offsets.Init(context.Background()); err != nil {
-					return errs.Wrap(errs.CodeStateInternal, err, "initializing offsets table")
+					return err
 				}
 
 				// Read the durable positions before autocommit is turned off,
 				// so setup is committed and the read is straightforward.
 				storedMarks, err = offsets.Load(context.Background())
 				if err != nil {
-					return errs.Wrap(errs.CodeStateInternal, err, "loading stored offsets")
+					return err
 				}
 
 				// Every batch from here on is one transaction: the handler's
