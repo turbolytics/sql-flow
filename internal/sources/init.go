@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	tkafka "github.com/turbolytics/sql-flow/internal/kafka"
 	"github.com/turbolytics/sql-flow/internal/webhook"
 	"github.com/turbolytics/sql-flow/internal/websocket"
@@ -61,7 +62,7 @@ func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, 
 
 		client, err := kgo.NewClient(opts...)
 		if err != nil {
-			return nil, fmt.Errorf("kafka client: %w", err)
+			return nil, errs.Wrap(errs.CodeSourceInternal, err, "kafka client")
 		}
 
 		k, err := tkafka.NewSource(client, tkafka.WithLogger(l), tkafka.WithSeeker(seeker))
@@ -69,7 +70,7 @@ func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, 
 
 	case "websocket":
 		if c.Websocket == nil {
-			return nil, fmt.Errorf("websocket source: missing websocket configuration")
+			return nil, errs.New(errs.CodeSourceInvalid, "websocket source: missing websocket configuration")
 		}
 		l.Info("initializing websocket source", zap.String("uri", c.Websocket.URI))
 
@@ -97,6 +98,6 @@ func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, 
 		return webhook.NewSource(opts...)
 
 	default:
-		return nil, fmt.Errorf("source: %q not supported", c.Type)
+		return nil, errs.New(errs.CodeSourceInvalid, "source: %q not supported", c.Type)
 	}
 }

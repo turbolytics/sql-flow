@@ -27,8 +27,9 @@ const (
 	CodeSQLInvalid         Code = "user.sql.invalid"
 
 	// Source and sink configuration the user got wrong.
-	CodeSourceInvalid Code = "user.source.invalid"
-	CodeSinkInvalid   Code = "user.sink.invalid"
+	CodeSourceSecurityInvalid Code = "user.source.security_invalid"
+	CodeSourceInvalid         Code = "user.source.invalid"
+	CodeSinkInvalid           Code = "user.sink.invalid"
 
 	// Source and sink failures that are not the user's doing.
 	CodeSourceUnreachable Code = "system.source.unreachable"
@@ -90,10 +91,15 @@ var registry = map[Code]Definition{
 		"The handler SQL is wrong in a way the specific codes do not cover.",
 		"Read the message, then correct the query.",
 	},
+	CodeSourceSecurityInvalid: {
+		CodeSourceSecurityInvalid,
+		"The source's TLS or SASL configuration is wrong, or its certificate files cannot be read.",
+		"Check security_protocol, the sasl block, and that every ssl path exists and is readable by the pipeline's user.",
+	},
 	CodeSourceInvalid: {
 		CodeSourceInvalid,
 		"The source configuration is incomplete or contradictory.",
-		"Correct the source block. Security settings are the usual cause.",
+		"Correct the source block for the configured source type.",
 	},
 	CodeSinkInvalid: {
 		CodeSinkInvalid,

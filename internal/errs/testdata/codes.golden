@@ -13,6 +13,7 @@ user.config.not_found
 user.config.parse_failed
 user.sink.invalid
 user.source.invalid
+user.source.security_invalid
 user.sql.bind_failed
 user.sql.invalid
 user.sql.type_unsupported

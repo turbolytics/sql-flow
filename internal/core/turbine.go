@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
@@ -650,7 +651,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
 			t.logger.Error("rollback after failed offset save", zap.Error(rbErr))
 		}
-		return fmt.Errorf("saving offsets: %w", err)
+		return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offsets")
 	}
 
 	if err := t.stateTx.Commit(ctx); err != nil {
@@ -660,7 +661,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
 			t.logger.Error("rollback after failed commit", zap.Error(rbErr))
 		}
-		return fmt.Errorf("committing state: %w", err)
+		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing state")
 	}
 
 	t.metrics.StateCommitLatency.Record(ctx, time.Since(c0).Seconds())

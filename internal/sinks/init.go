@@ -2,12 +2,12 @@ package sinks
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/errs"
 )
 
 type NoopSink struct{}
@@ -38,29 +38,29 @@ func New(sink config.Sink, conn adbc.Connection) (core.Sink, error) {
 
 	case "kafka":
 		if sink.Kafka == nil {
-			return nil, fmt.Errorf("sink: kafka sink requires a kafka block")
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: kafka sink requires a kafka block")
 		}
 		return NewKafkaSink(*sink.Kafka)
 
 	case "sqlcommand":
 		if sink.SQLCommand == nil {
-			return nil, fmt.Errorf("sink: sqlcommand sink requires a sqlcommand block")
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: sqlcommand sink requires a sqlcommand block")
 		}
 		return NewSQLCommandSink(conn, sink.SQLCommand.SQL, sink.SQLCommand.Substitutions)
 
 	case "clickhouse":
 		if sink.Clickhouse == nil {
-			return nil, fmt.Errorf("sink: clickhouse sink requires a clickhouse block")
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: clickhouse sink requires a clickhouse block")
 		}
 		return NewClickhouseSink(*sink.Clickhouse)
 
 	case "iceberg":
 		if sink.Iceberg == nil {
-			return nil, fmt.Errorf("sink: iceberg sink requires an iceberg block")
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: iceberg sink requires an iceberg block")
 		}
 		return NewIcebergSink(context.Background(), sink.Iceberg.CatalogName, sink.Iceberg.TableName)
 
 	default:
-		return nil, fmt.Errorf("sink: %q not supported", sink.Type)
+		return nil, errs.New(errs.CodeSinkInvalid, "sink: %q not supported", sink.Type)
 	}
 }
