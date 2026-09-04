@@ -93,14 +93,14 @@ type recordingSink struct {
 	flushes int
 }
 
-func (s *recordingSink) WriteTable(batch arrow.Table) error {
+func (s *recordingSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rows += batch.NumRows()
 	return nil
 }
 
-func (s *recordingSink) Flush() error {
+func (s *recordingSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.flushes++
@@ -218,18 +218,18 @@ type failingSink struct {
 	failFlush atomic.Bool
 }
 
-func (s *failingSink) WriteTable(batch arrow.Table) error {
+func (s *failingSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	if s.failWrite.Load() {
 		return errors.New("sink unreachable")
 	}
-	return s.recordingSink.WriteTable(batch)
+	return s.recordingSink.WriteTable(ctx, batch)
 }
 
-func (s *failingSink) Flush() error {
+func (s *failingSink) Flush(ctx context.Context) error {
 	if s.failFlush.Load() {
 		return errors.New("broker rejected the batch")
 	}
-	return s.recordingSink.Flush()
+	return s.recordingSink.Flush(context.Background())
 }
 
 // A window that could not be written must stay in the table. Deleting it would

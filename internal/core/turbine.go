@@ -71,9 +71,15 @@ type MetadataWriter interface {
 	WriteMessage(msg Message) error
 }
 
+// Sink is where a batch leaves the pipeline.
+//
+// Both write paths take a context so a sink that retries can be interrupted.
+// Without it, a retry ladder outlives the SIGTERM that asked the pipeline to
+// stop, and the graceful drain waits out the full retry deadline before it can
+// finish. See #110.
 type Sink interface {
-	WriteTable(batch arrow.Table) error
-	Flush() error
+	WriteTable(ctx context.Context, batch arrow.Table) error
+	Flush(ctx context.Context) error
 	Batch() (arrow.Table, error)
 }
 
@@ -450,7 +456,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			if err := t.writeMessage(raw); err != nil {
 				t.recordError(ctx, err, phaseHandlerWrite, "error writing message")
 
-				if err := t.applyErrorPolicy(err, phaseHandlerWrite, string(raw.Value)); err != nil {
+				if err := t.applyErrorPolicy(ctx, err, phaseHandlerWrite, string(raw.Value)); err != nil {
 					return nil, err
 				}
 				// The message is dropped from the batch, but it was still
@@ -573,7 +579,7 @@ func (t *Turbine) recordError(ctx context.Context, err error, phase, message str
 // applyErrorPolicy decides what happens to a failed message or batch. It
 // returns a non-nil error only when the pipeline should stop. Counting and
 // logging belong to recordError, which every caller has already run.
-func (t *Turbine) applyErrorPolicy(cause error, phase, message string) error {
+func (t *Turbine) applyErrorPolicy(ctx context.Context, cause error, phase, message string) error {
 
 	switch t.errorPolicy.Policy {
 	case PolicyIgnore:
@@ -583,7 +589,7 @@ func (t *Turbine) applyErrorPolicy(cause error, phase, message string) error {
 		if t.errorPolicy.DLQSink == nil {
 			return fmt.Errorf("error policy is DLQ but no dlq sink is configured: %w", cause)
 		}
-		if err := t.writeDLQ(cause, phase, message); err != nil {
+		if err := t.writeDLQ(ctx, cause, phase, message); err != nil {
 			t.logger.Error("error writing to dlq", zap.Error(err))
 			return err
 		}
@@ -596,7 +602,7 @@ func (t *Turbine) applyErrorPolicy(cause error, phase, message string) error {
 
 // writeDLQ records one failed message or batch, in the same shape the Python
 // engine produces: error, message, phase and timestamp.
-func (t *Turbine) writeDLQ(cause error, phase, message string) error {
+func (t *Turbine) writeDLQ(ctx context.Context, cause error, phase, message string) error {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: "error", Type: arrow.BinaryTypes.String, Nullable: true},
 		{Name: "message", Type: arrow.BinaryTypes.String, Nullable: true},
@@ -618,10 +624,10 @@ func (t *Turbine) writeDLQ(cause error, phase, message string) error {
 	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
 	defer table.Release()
 
-	if err := t.errorPolicy.DLQSink.WriteTable(table); err != nil {
+	if err := t.errorPolicy.DLQSink.WriteTable(ctx, table); err != nil {
 		return err
 	}
-	return t.errorPolicy.DLQSink.Flush()
+	return t.errorPolicy.DLQSink.Flush(ctx)
 }
 
 // mark records that the pipeline has finished with a message -- written to
@@ -764,7 +770,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	if err != nil {
 		t.recordError(ctx, err, phaseHandlerInvoke, "error invoking handler")
 
-		if policyErr := t.applyErrorPolicy(err, phaseHandlerInvoke, "Handler invocation failed"); policyErr != nil {
+		if policyErr := t.applyErrorPolicy(ctx, err, phaseHandlerInvoke, "Handler invocation failed"); policyErr != nil {
 			return policyErr
 		}
 		// The batch yielded no table, so there is nothing to write; the
@@ -774,7 +780,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	}
 
 	if batch != nil {
-		if err := t.sink.WriteTable(batch); err != nil {
+		if err := t.sink.WriteTable(ctx, batch); err != nil {
 			t.recordError(ctx, err, phaseSinkWrite, "error writing batch to sink")
 			t.metrics.SinkFlushCount.Add(ctx, 1, t.resultAttrs(resultError)...)
 			// Same reasoning as the flush path below: this batch's handler
@@ -886,7 +892,7 @@ func (t *Turbine) logThroughput() {
 }
 
 func (t *Turbine) flush(ctx context.Context, batch arrow.Table) error {
-	if err := t.sink.Flush(); err != nil {
+	if err := t.sink.Flush(ctx); err != nil {
 		t.recordError(ctx, err, phaseSinkFlush, "flush error")
 		return err
 	}

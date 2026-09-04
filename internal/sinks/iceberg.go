@@ -59,7 +59,7 @@ func NewIcebergSink(ctx context.Context, catalogName, tableName string) (*Iceber
 	return &IcebergSink{table: tbl}, nil
 }
 
-func (s *IcebergSink) WriteTable(batch arrow.Table) error {
+func (s *IcebergSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -78,7 +78,7 @@ func (s *IcebergSink) Batch() (arrow.Table, error) {
 	return s.tables[len(s.tables)-1], nil
 }
 
-func (s *IcebergSink) Flush() error {
+func (s *IcebergSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	tables := s.tables
 	s.tables = nil
@@ -93,7 +93,6 @@ func (s *IcebergSink) Flush() error {
 		}
 	}()
 
-	ctx := context.Background()
 	for _, t := range tables {
 		if t.NumRows() == 0 {
 			continue

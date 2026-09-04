@@ -37,7 +37,7 @@ func NewSQLCommandSink(conn adbc.Connection, sql string, substitutions []config.
 	return &SQLCommandSink{conn: conn, sql: sql, substitutions: substitutions}, nil
 }
 
-func (s *SQLCommandSink) WriteTable(batch arrow.Table) error {
+func (s *SQLCommandSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -56,7 +56,7 @@ func (s *SQLCommandSink) Batch() (arrow.Table, error) {
 	return s.tables[len(s.tables)-1], nil
 }
 
-func (s *SQLCommandSink) Flush() error {
+func (s *SQLCommandSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	tables := s.tables
 	s.tables = nil
@@ -71,7 +71,6 @@ func (s *SQLCommandSink) Flush() error {
 		}
 	}()
 
-	ctx := context.Background()
 	if err := s.materialize(ctx, tables); err != nil {
 		return err
 	}

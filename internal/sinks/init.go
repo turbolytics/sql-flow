@@ -12,12 +12,12 @@ import (
 
 type NoopSink struct{}
 
-func (n *NoopSink) WriteTable(batch arrow.Table) error {
+func (n *NoopSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	// No operation performed
 	return nil
 }
 
-func (n *NoopSink) Flush() error {
+func (n *NoopSink) Flush(ctx context.Context) error {
 	// No operation performed
 	return nil
 }

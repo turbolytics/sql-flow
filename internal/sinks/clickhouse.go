@@ -134,7 +134,7 @@ func defaultClickhousePort(protocol clickhouse.Protocol, secure bool) string {
 	}
 }
 
-func (s *ClickhouseSink) WriteTable(batch arrow.Table) error {
+func (s *ClickhouseSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -150,7 +150,7 @@ func (s *ClickhouseSink) Batch() (arrow.Table, error) {
 	return nil, nil
 }
 
-func (s *ClickhouseSink) Flush() error {
+func (s *ClickhouseSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	tables := s.tables
 	s.tables = nil
@@ -179,7 +179,6 @@ func (s *ClickhouseSink) Flush() error {
 		}
 	}
 
-	ctx := context.Background()
 	batch, err := s.conn.PrepareBatch(ctx, s.insertStatement(schema))
 	if err != nil {
 		return errs.Wrap(errs.CodeSinkWriteFailed, err, "clickhouse sink: prepare batch")

@@ -128,11 +128,11 @@ func devInvoke(
 	}
 
 	sink := sinks.NewConsoleSinkTo(out)
-	if err := sink.WriteTable(table); err != nil {
+	if err := sink.WriteTable(ctx, table); err != nil {
 		table.Release()
 		return nil, fmt.Errorf("failed to write results: %w", err)
 	}
-	if err := sink.Flush(); err != nil {
+	if err := sink.Flush(ctx); err != nil {
 		table.Release()
 		return nil, fmt.Errorf("failed to flush results: %w", err)
 	}

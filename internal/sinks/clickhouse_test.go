@@ -145,14 +145,14 @@ func TestClickhouseSink_InsertsRows(t *testing.T) {
 	table := clickhouseFixtureTable(t)
 	defer table.Release()
 
-	assert.NoError(t, s.WriteTable(table))
-	assert.NoError(t, s.Flush())
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+	assert.NoError(t, s.Flush(context.Background()))
 
 	assert.Equal(t, uint64(2), clickhouseRowCount(t, s))
 
 	// The buffered table is released on flush; a second flush with nothing
 	// pending must be a no-op rather than a re-insert.
-	assert.NoError(t, s.Flush())
+	assert.NoError(t, s.Flush(context.Background()))
 	assert.Equal(t, uint64(2), clickhouseRowCount(t, s))
 }
 
@@ -165,8 +165,8 @@ func TestClickhouseSink_EmptyTableIsNoop(t *testing.T) {
 	table := array.NewTable(arrow.NewSchema(nil, nil), nil, 0)
 	defer table.Release()
 
-	assert.NoError(t, s.WriteTable(table))
-	assert.NoError(t, s.Flush())
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+	assert.NoError(t, s.Flush(context.Background()))
 }
 
 func TestClickhouseSink_NullsBecomeDefaults(t *testing.T) {
@@ -192,8 +192,8 @@ func TestClickhouseSink_NullsBecomeDefaults(t *testing.T) {
 	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
 	defer table.Release()
 
-	assert.NoError(t, s.WriteTable(table))
-	assert.NoError(t, s.Flush())
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+	assert.NoError(t, s.Flush(context.Background()))
 
 	var action *string
 	row := s.conn.QueryRow(context.Background(), "SELECT action FROM "+s.table+" WHERE user_id = 8")
@@ -281,8 +281,8 @@ func TestClickhouseSink_InsertsArrays(t *testing.T) {
 	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
 	defer table.Release()
 
-	assert.NoError(t, s.WriteTable(table))
-	assert.NoError(t, s.Flush())
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+	assert.NoError(t, s.Flush(context.Background()))
 	assert.Equal(t, uint64(3), clickhouseRowCount(t, s))
 
 	ctx := context.Background()
@@ -343,8 +343,8 @@ func TestClickhouseSink_InsertsNestedArrays(t *testing.T) {
 	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
 	defer table.Release()
 
-	assert.NoError(t, s.WriteTable(table))
-	assert.NoError(t, s.Flush())
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+	assert.NoError(t, s.Flush(context.Background()))
 
 	var matrix [][]int64
 	row := s.conn.QueryRow(context.Background(), "SELECT matrix FROM "+s.table+" WHERE id = 1")
@@ -391,8 +391,8 @@ func TestClickhouseSink_StringTemporalsAreNotShiftedByHostZone(t *testing.T) {
 	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
 	defer table.Release()
 
-	assert.NoError(t, s.WriteTable(table))
-	assert.NoError(t, s.Flush())
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+	assert.NoError(t, s.Flush(context.Background()))
 
 	// Rendered by the server in its own zone (UTC in the dev stack), so a
 	// value parsed as Tokyo time would read 03:00, and the date 2026-08-31.
