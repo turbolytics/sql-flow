@@ -185,3 +185,46 @@ func TestLookupReportsUnknownCodes(t *testing.T) {
 	assert.False(t, ok)
 	assert.True(t, Code("user.sql.from_the_future").IsUser())
 }
+
+func TestExitCodeMapsEveryRegisteredCode(t *testing.T) {
+	for _, d := range All() {
+		exit := ExitCode(New(d.Code, "x"))
+		if exit == 0 {
+			t.Errorf("%q maps to ExitOK, which means success", d.Code)
+		}
+		// A user error a supervisor keeps retrying is the crash loop this
+		// mapping exists to prevent.
+		if d.Code.IsUser() && Retryable(exit) {
+			t.Errorf("%q is a user error but its exit code %d is retryable", d.Code, exit)
+		}
+	}
+}
+
+func TestExitCodeUsesTheSpecificRemedyWhereThereIsOne(t *testing.T) {
+	assert.Equal(t, ExitOK, ExitCode(nil))
+	assert.Equal(t, ExitStateCorrupt, ExitCode(New(CodeStateCorrupt, "x")))
+	assert.Equal(t, ExitSinkUnreachable, ExitCode(New(CodeSinkUnreachable, "x")))
+	assert.Equal(t, ExitSourceUnreachable, ExitCode(New(CodeSourceUnreachable, "x")))
+	assert.Equal(t, ExitUserError, ExitCode(New(CodeConfigNotFound, "x")))
+	assert.Equal(t, ExitInternal, ExitCode(New(CodeStateCommitFailed, "x")))
+
+	// Uncoded errors are ours, so they are retryable rather than terminal.
+	assert.Equal(t, ExitInternal, ExitCode(errors.New("bare")))
+	assert.True(t, Retryable(ExitInternal))
+}
+
+// A code this build has never seen still has to resolve, or a newer component
+// crashes the mapping instead of exiting usefully.
+func TestExitCodeResolvesUnknownCodes(t *testing.T) {
+	assert.Equal(t, ExitUserError, ExitCode(New(Code("user.sql.from_the_future"), "x")))
+	assert.Equal(t, ExitResourceLimit, ExitCode(New(Code("system.limit.disk_exhausted"), "x")))
+	assert.Equal(t, ExitInternal, ExitCode(New(Code("system.mystery.thing"), "x")))
+}
+
+// 2 collides with cobra's usage error and with the Go runtime's exit when a
+// signal cannot kill PID 1, which #159 measured.
+func TestNoExitCodeUsesTwo(t *testing.T) {
+	for _, d := range All() {
+		assert.False(t, ExitCode(New(d.Code, "x")) == 2)
+	}
+}
