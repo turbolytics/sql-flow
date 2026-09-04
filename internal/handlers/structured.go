@@ -222,6 +222,16 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 
 	t2 := time.Now()
 
+	// Re-prepared per batch, after the ingest. DuckDB's ADBC layer plans the
+	// statement when the SQL is set and keeps that plan until the catalog
+	// changes, which TRUNCATE and append never do. A plan built against the
+	// empty table folds its statistics in: a WHERE over a column becomes
+	// always-false and an expression over a list element becomes NULL, so
+	// every batch afterwards returns nothing or one group.
+	if err := h.queryStmt.SetSqlQuery(h.sql); err != nil {
+		return nil, fmt.Errorf("set query sql: %w", err)
+	}
+
 	// Query results back using the user's SQL
 	reader, _, err := h.queryStmt.ExecuteQuery(ctx)
 
