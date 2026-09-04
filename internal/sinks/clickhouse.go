@@ -45,9 +45,13 @@ func NewClickhouseSink(conf config.ClickhouseSink) (*ClickhouseSink, error) {
 		return nil, err
 	}
 
+	// Open validates the options and does not dial, so a failure here is a
+	// bad configuration rather than an unreachable server. A pipeline pointed
+	// at a host that does not resolve still starts, and only fails on its
+	// first flush. See #110.
 	conn, err := clickhouse.Open(opts)
 	if err != nil {
-		return nil, errs.Wrap(errs.CodeSinkUnreachable, err, "clickhouse sink: open")
+		return nil, errs.Wrap(errs.CodeSinkInvalid, err, "clickhouse sink: open")
 	}
 
 	return &ClickhouseSink{conn: conn, table: conf.Table}, nil
