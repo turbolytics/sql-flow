@@ -3,10 +3,12 @@ package core
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/errs"
 )
 
 // offsetsTable is where a pipeline's Kafka positions live in DuckDB, next to
@@ -30,9 +32,49 @@ func NewOffsetStore(conn adbc.Connection) *OffsetStore {
 	return &OffsetStore{conn: conn}
 }
 
-// Init creates the offsets table if it does not already exist. It is safe to
-// call on every start, including against a state file from a previous run.
+// offsetsSchema is the shape Load binds against, in column order. Init compares
+// an existing table to this rather than trusting it, because CREATE TABLE IF
+// NOT EXISTS accepts any table that merely shares the name.
+var offsetsSchema = []string{
+	"topic VARCHAR",
+	"partition INTEGER",
+	"offset BIGINT",
+	"leader_epoch INTEGER",
+}
+
+// Init prepares the offsets table, and refuses to run against a state file it
+// cannot read.
+//
+// The table is created only when it is absent, which is the first run. When it
+// is present, its schema has to match offsetsSchema exactly. A table that
+// carries the right name and the wrong shape means the file was written by
+// something else, or damaged; either way the positions in it cannot be trusted.
+//
+// The alternative -- CREATE TABLE IF NOT EXISTS, as this did before -- accepts
+// the damaged table, finds no readable positions, and replays the topic from
+// the beginning while reporting healthy. A silent restart from zero is worse
+// than a refusal to start, so this returns CodeStateCorrupt and changes
+// nothing on disk.
 func (s *OffsetStore) Init(ctx context.Context) error {
+	found, err := s.offsetsTableSchema(ctx)
+	if err != nil {
+		return errs.Wrap(errs.CodeStateCorrupt, err,
+			"reading the schema of %s from the state file", offsetsTable)
+	}
+
+	if len(found) > 0 {
+		if !slices.Equal(found, offsetsSchema) {
+			return errs.New(errs.CodeStateCorrupt,
+				"state file has a %s table this build cannot read; "+
+					"expected (%s), found (%s). The file has been left untouched: "+
+					"preserve it and report, or start from a new state path to resume service",
+				offsetsTable,
+				strings.Join(offsetsSchema, ", "),
+				strings.Join(found, ", "))
+		}
+		return nil
+	}
+
 	stmt, err := s.conn.NewStatement()
 	if err != nil {
 		return fmt.Errorf("creating statement: %w", err)
@@ -40,7 +82,7 @@ func (s *OffsetStore) Init(ctx context.Context) error {
 	defer stmt.Close()
 
 	if err := stmt.SetSqlQuery(`
-		CREATE TABLE IF NOT EXISTS ` + offsetsTable + ` (
+		CREATE TABLE ` + offsetsTable + ` (
 		    topic        VARCHAR NOT NULL,
 		    partition    INTEGER NOT NULL,
 		    "offset"     BIGINT  NOT NULL,
@@ -54,6 +96,48 @@ func (s *OffsetStore) Init(ctx context.Context) error {
 		return fmt.Errorf("creating offsets table: %w", err)
 	}
 	return nil
+}
+
+// offsetsTableSchema returns the table's columns as "name type" strings in
+// ordinal order, or nil when the table does not exist.
+func (s *OffsetStore) offsetsTableSchema(ctx context.Context) ([]string, error) {
+	stmt, err := s.conn.NewStatement()
+	if err != nil {
+		return nil, fmt.Errorf("creating statement: %w", err)
+	}
+	defer stmt.Close()
+
+	if err := stmt.SetSqlQuery(fmt.Sprintf(
+		`SELECT column_name || ' ' || data_type
+		 FROM information_schema.columns
+		 WHERE table_name = '%s'
+		 ORDER BY ordinal_position`, offsetsTable)); err != nil {
+		return nil, fmt.Errorf("setting schema query: %w", err)
+	}
+
+	reader, _, err := stmt.ExecuteQuery(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("querying schema: %w", err)
+	}
+	defer reader.Release()
+
+	var cols []string
+	for reader.Next() {
+		rec := reader.Record()
+		vals, ok := rec.Column(0).(*array.String)
+		if !ok {
+			return nil, fmt.Errorf("unexpected type for column description: %T", rec.Column(0))
+		}
+		for i := 0; i < int(rec.NumRows()); i++ {
+			// Clone: the value aliases the record's buffer, which is released
+			// when this function returns.
+			cols = append(cols, strings.Clone(vals.Value(i)))
+		}
+	}
+	if err := reader.Err(); err != nil {
+		return nil, fmt.Errorf("reading schema: %w", err)
+	}
+	return cols, nil
 }
 
 // Save upserts one row per topic/partition in marks. It does not commit: the
@@ -109,7 +193,10 @@ func (s *OffsetStore) Load(ctx context.Context) (*Marks, error) {
 
 	reader, _, err := stmt.ExecuteQuery(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("querying offsets: %w", err)
+		// Init already proved the table's schema, so a failure here is the file
+		// itself. A database truncated mid-write reports as a short read. Coded
+		// corrupt so a supervisor stops rather than re-reading the same bytes.
+		return nil, errs.Wrap(errs.CodeStateCorrupt, err, "reading offsets from the state file")
 	}
 	defer reader.Release()
 
@@ -145,7 +232,7 @@ func (s *OffsetStore) Load(ctx context.Context) (*Marks, error) {
 		}
 	}
 	if err := reader.Err(); err != nil {
-		return nil, fmt.Errorf("reading offsets: %w", err)
+		return nil, errs.Wrap(errs.CodeStateCorrupt, err, "reading offsets from the state file")
 	}
 
 	return marks, nil

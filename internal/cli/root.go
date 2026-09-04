@@ -5,6 +5,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/sql-flow/internal/cli/run"
 	"github.com/turbolytics/sql-flow/internal/cli/tail"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"os"
 )
 
@@ -16,6 +17,14 @@ func NewRootCommand() *cobra.Command {
 		// The run function is called when the command is executed
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println("Welcome to sqlflow!")
+		},
+		// Cobra prints the whole flag list for any error a command returns,
+		// which buries the one line that says what failed. Flags have already
+		// parsed by the time this runs, so a usage error still gets usage and
+		// a runtime failure does not.
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+			return nil
 		},
 	}
 
@@ -34,10 +43,20 @@ func NewRootCommand() *cobra.Command {
 }
 
 func Execute() {
-	cmd := NewRootCommand()
-	// cobra has already reported the error on stderr by this point; printing
-	// it again here would duplicate every message.
+	os.Exit(execute(NewRootCommand()))
+}
+
+// execute runs the command and returns the code the process should exit with.
+//
+// The code is the part of the error taxonomy a supervisor actually reads, so
+// it has to come from the error rather than being a constant. Exiting 1 for
+// every failure marks a bad config and a corrupt state file as retryable, and
+// a supervisor then restarts both forever.
+//
+// Nothing is printed here: cobra has already reported the error on stderr.
+func execute(cmd *cobra.Command) int {
 	if err := cmd.Execute(); err != nil {
-		os.Exit(1)
+		return errs.ExitCode(err)
 	}
+	return errs.ExitOK
 }
