@@ -6,6 +6,7 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"go.uber.org/zap"
 )
 
@@ -15,17 +16,17 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 		// Derive the Arrow schema from the DuckDB table definition
 		stmt, err := conn.NewStatement()
 		if err != nil {
-			return nil, fmt.Errorf("failed to create statement: %w", err)
+			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create statement")
 		}
 		defer stmt.Close()
 
 		if err := stmt.SetSqlQuery(fmt.Sprintf("SELECT * FROM %s LIMIT 0", c.Table)); err != nil {
-			return nil, fmt.Errorf("failed to set SQL query: %w", err)
+			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to set SQL query")
 		}
 
 		reader, _, err := stmt.ExecuteQuery(context.Background())
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute query: %w", err)
+			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to execute query")
 		}
 		defer reader.Release()
 
@@ -37,7 +38,7 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 			StructuredBatchWithLogger(l),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create StructuredBatchHandler: %w", err)
+			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create StructuredBatchHandler")
 		}
 		return h, nil
 
@@ -48,7 +49,7 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 			InferredMemBatchWithLogger(l),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create InferredMemBatchHandler: %w", err)
+			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create InferredMemBatchHandler")
 		}
 		return h, nil
 
@@ -65,11 +66,11 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 			InferredDiskBatchWithLogger(l),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create InferredDiskBatchHandler: %w", err)
+			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create InferredDiskBatchHandler")
 		}
 		return h, nil
 
 	default:
-		return nil, fmt.Errorf(`handler: %q not supported`, c.Type)
+		return nil, errs.New(errs.CodeSQLInvalid, "handler: %q not supported", c.Type)
 	}
 }

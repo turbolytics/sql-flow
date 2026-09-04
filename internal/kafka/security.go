@@ -4,11 +4,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"os"
 	"strings"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/sasl"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
@@ -31,7 +31,7 @@ func SecurityOptions(protocol string, sslConf *config.KafkaSSL, saslConf *config
 		}
 	case "SSL", "SASL_SSL", "SASL_PLAINTEXT":
 	default:
-		return nil, fmt.Errorf("unsupported security_protocol: %q", protocol)
+		return nil, errs.New(errs.CodeSourceSecurityInvalid, "unsupported security_protocol: %q", protocol)
 	}
 
 	if protocol == "SSL" || protocol == "SASL_SSL" {
@@ -44,7 +44,7 @@ func SecurityOptions(protocol string, sslConf *config.KafkaSSL, saslConf *config
 
 	if protocol == "SASL_SSL" || protocol == "SASL_PLAINTEXT" || saslConf != nil {
 		if saslConf == nil {
-			return nil, fmt.Errorf("security_protocol %q requires a sasl block", protocol)
+			return nil, errs.New(errs.CodeSourceSecurityInvalid, "security_protocol %q requires a sasl block", protocol)
 		}
 		mech, err := saslMechanism(saslConf)
 		if err != nil {
@@ -69,7 +69,7 @@ func saslMechanism(conf *config.KafkaSASL) (sasl.Mechanism, error) {
 	default:
 		// GSSAPI is in the config schema but needs Kerberos infrastructure
 		// franz-go does not provide out of the box.
-		return nil, fmt.Errorf("unsupported sasl mechanism: %q", conf.Mechanism)
+		return nil, errs.New(errs.CodeSourceSecurityInvalid, "unsupported sasl mechanism: %q", conf.Mechanism)
 	}
 }
 
@@ -82,18 +82,18 @@ func tlsConfig(conf *config.KafkaSSL) (*tls.Config, error) {
 	if conf.CALocation != "" {
 		pemBytes, err := os.ReadFile(conf.CALocation)
 		if err != nil {
-			return nil, fmt.Errorf("reading ca_location: %w", err)
+			return nil, errs.Wrap(errs.CodeSourceSecurityInvalid, err, "reading ca_location")
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pemBytes) {
-			return nil, fmt.Errorf("ca_location %q contains no usable certificates", conf.CALocation)
+			return nil, errs.New(errs.CodeSourceSecurityInvalid, "ca_location %q contains no usable certificates", conf.CALocation)
 		}
 		cfg.RootCAs = pool
 	}
 
 	if conf.CertificateLocation != "" || conf.KeyLocation != "" {
 		if conf.CertificateLocation == "" || conf.KeyLocation == "" {
-			return nil, fmt.Errorf("ssl requires both certificate_location and key_location")
+			return nil, errs.New(errs.CodeSourceSecurityInvalid, "ssl requires both certificate_location and key_location")
 		}
 		cert, err := loadKeyPair(conf.CertificateLocation, conf.KeyLocation, conf.KeyPassword)
 		if err != nil {
@@ -113,11 +113,11 @@ func tlsConfig(conf *config.KafkaSSL) (*tls.Config, error) {
 func loadKeyPair(certPath, keyPath, keyPassword string) (tls.Certificate, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("reading certificate_location: %w", err)
+		return tls.Certificate{}, errs.Wrap(errs.CodeSourceSecurityInvalid, err, "reading certificate_location")
 	}
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("reading key_location: %w", err)
+		return tls.Certificate{}, errs.Wrap(errs.CodeSourceSecurityInvalid, err, "reading key_location")
 	}
 
 	if keyPassword != "" {
@@ -130,7 +130,7 @@ func loadKeyPair(certPath, keyPath, keyPassword string) (tls.Certificate, error)
 
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("loading key pair: %w", err)
+		return tls.Certificate{}, errs.Wrap(errs.CodeSourceSecurityInvalid, err, "loading key pair")
 	}
 	return cert, nil
 }
@@ -141,14 +141,14 @@ func loadKeyPair(certPath, keyPath, keyPassword string) (tls.Certificate, error)
 func decryptKeyPEM(keyPEM []byte, password string) ([]byte, error) {
 	block, _ := pem.Decode(keyPEM)
 	if block == nil {
-		return nil, fmt.Errorf("key_location does not contain a PEM block")
+		return nil, errs.New(errs.CodeSourceSecurityInvalid, "key_location does not contain a PEM block")
 	}
 	//lint:ignore SA1019 detection only; the key is not decrypted here
 	if _, encrypted := block.Headers["DEK-Info"]; !encrypted {
 		// Not an encrypted PEM: the password is redundant, so use the key.
 		return keyPEM, nil
 	}
-	return nil, fmt.Errorf(
-		"key_location is an encrypted PEM, which Go's TLS stack cannot read; " +
+	return nil, errs.New(errs.CodeSourceSecurityInvalid,
+		"key_location is an encrypted PEM, which Go's TLS stack cannot read; "+
 			"decrypt the key (openssl pkcs8 -topk8 -nocrypt) and drop key_password")
 }

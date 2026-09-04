@@ -17,6 +17,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/errs"
 )
 
 // ClickhouseSink inserts result batches into a ClickHouse table.
@@ -36,7 +37,7 @@ type ClickhouseSink struct {
 
 func NewClickhouseSink(conf config.ClickhouseSink) (*ClickhouseSink, error) {
 	if strings.TrimSpace(conf.Table) == "" {
-		return nil, fmt.Errorf("clickhouse sink: table is required")
+		return nil, errs.New(errs.CodeSinkInvalid, "clickhouse sink: table is required")
 	}
 
 	opts, err := clickhouseOptions(conf.DSN)
@@ -44,9 +45,13 @@ func NewClickhouseSink(conf config.ClickhouseSink) (*ClickhouseSink, error) {
 		return nil, err
 	}
 
+	// Open validates the options and does not dial, so a failure here is a
+	// bad configuration rather than an unreachable server. A pipeline pointed
+	// at a host that does not resolve still starts, and only fails on its
+	// first flush. See #110.
 	conn, err := clickhouse.Open(opts)
 	if err != nil {
-		return nil, fmt.Errorf("clickhouse sink: open: %w", err)
+		return nil, errs.Wrap(errs.CodeSinkInvalid, err, "clickhouse sink: open")
 	}
 
 	return &ClickhouseSink{conn: conn, table: conf.Table}, nil
@@ -60,7 +65,7 @@ func NewClickhouseSink(conf config.ClickhouseSink) (*ClickhouseSink, error) {
 func clickhouseOptions(dsn string) (*clickhouse.Options, error) {
 	u, err := url.Parse(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("clickhouse sink: parse dsn: %w", err)
+		return nil, errs.Wrap(errs.CodeSinkInvalid, err, "clickhouse sink: parse dsn")
 	}
 
 	var (
@@ -77,12 +82,12 @@ func clickhouseOptions(dsn string) (*clickhouse.Options, error) {
 	case "natives":
 		protocol, secure = clickhouse.Native, true
 	default:
-		return nil, fmt.Errorf("clickhouse sink: unsupported dsn scheme %q", u.Scheme)
+		return nil, errs.New(errs.CodeSinkInvalid, "clickhouse sink: unsupported dsn scheme %q", u.Scheme)
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return nil, fmt.Errorf("clickhouse sink: dsn has no host: %q", dsn)
+		return nil, errs.New(errs.CodeSinkInvalid, "clickhouse sink: dsn has no host: %q", dsn)
 	}
 
 	port := u.Port()
@@ -177,7 +182,7 @@ func (s *ClickhouseSink) Flush() error {
 	ctx := context.Background()
 	batch, err := s.conn.PrepareBatch(ctx, s.insertStatement(schema))
 	if err != nil {
-		return fmt.Errorf("clickhouse sink: prepare batch: %w", err)
+		return errs.Wrap(errs.CodeSinkWriteFailed, err, "clickhouse sink: prepare batch")
 	}
 
 	// The prepared batch knows the target column types, which the Arrow
@@ -193,7 +198,7 @@ func (s *ClickhouseSink) Flush() error {
 	}
 
 	if err := batch.Send(); err != nil {
-		return fmt.Errorf("clickhouse sink: send batch: %w", err)
+		return errs.Wrap(errs.CodeSinkWriteFailed, err, "clickhouse sink: send batch")
 	}
 	return nil
 }

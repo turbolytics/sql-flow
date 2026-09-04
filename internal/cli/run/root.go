@@ -26,6 +26,7 @@ import (
 
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/errs"
 )
 
 // newErrorPolicies resolves pipeline.on_error, building the DLQ sink when the
@@ -117,7 +118,9 @@ func NewCommand() *cobra.Command {
 
 			conf, err := config.Load(configPath, map[string]string{})
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
+				// Returned as-is: the error already names the file, the stage and the
+				// code, so another prefix adds a word and no information.
+				return err
 			}
 
 			// A pipeline that declares a state path gets a DuckDB backed by
@@ -130,7 +133,7 @@ func NewCommand() *cobra.Command {
 			}
 			if statePath != "" {
 				if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
-					return fmt.Errorf("creating state directory for %q: %w", statePath, err)
+					return errs.Wrap(errs.CodeStateInternal, err, "creating state directory for %q", statePath)
 				}
 			}
 
@@ -184,24 +187,24 @@ func NewCommand() *cobra.Command {
 			if statePath != "" {
 				offsets := core.NewOffsetStore(conn)
 				if err := offsets.Init(context.Background()); err != nil {
-					return fmt.Errorf("initializing offsets table: %w", err)
+					return errs.Wrap(errs.CodeStateInternal, err, "initializing offsets table")
 				}
 
 				// Read the durable positions before autocommit is turned off,
 				// so setup is committed and the read is straightforward.
 				storedMarks, err = offsets.Load(context.Background())
 				if err != nil {
-					return fmt.Errorf("loading stored offsets: %w", err)
+					return errs.Wrap(errs.CodeStateInternal, err, "loading stored offsets")
 				}
 
 				// Every batch from here on is one transaction: the handler's
 				// writes and the offsets that produced them commit together.
 				po, ok := conn.(adbc.PostInitOptions)
 				if !ok {
-					return fmt.Errorf("state requires a connection supporting transactions")
+					return errs.New(errs.CodeStateInternal, "state requires a connection supporting transactions")
 				}
 				if err := po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled); err != nil {
-					return fmt.Errorf("disabling autocommit for state: %w", err)
+					return errs.Wrap(errs.CodeStateInternal, err, "disabling autocommit for state")
 				}
 
 				stateConn, ok := conn.(interface {
@@ -209,7 +212,7 @@ func NewCommand() *cobra.Command {
 					Rollback(context.Context) error
 				})
 				if !ok {
-					return fmt.Errorf("state requires a connection supporting commit and rollback")
+					return errs.New(errs.CodeStateInternal, "state requires a connection supporting commit and rollback")
 				}
 				turbineOpts = append(turbineOpts, core.WithStateStore(offsets, stateConn))
 
@@ -218,7 +221,7 @@ func NewCommand() *cobra.Command {
 				// rows a rollback then erased.
 				statsConn, err := db.Connect(context.Background())
 				if err != nil {
-					return fmt.Errorf("opening state reader connection: %w", err)
+					return errs.Wrap(errs.CodeStateInternal, err, "opening state reader connection")
 				}
 				defer func() {
 					if err := statsConn.Close(); err != nil {
@@ -261,7 +264,8 @@ func NewCommand() *cobra.Command {
 				meterProvider,
 			)
 			if err != nil {
-				return fmt.Errorf("failed to create source: %w", err)
+				// Returned as-is: the code already names the subsystem.
+				return err
 			}
 
 			// Resume where the durable state left off. The state database is
@@ -279,7 +283,7 @@ func NewCommand() *cobra.Command {
 
 			sink, err := sinks.New(conf.Pipeline.Sink, conn)
 			if err != nil {
-				return fmt.Errorf("failed to create sink: %w", err)
+				return err
 			}
 
 			handler, err := handlers.New(
@@ -288,7 +292,7 @@ func NewCommand() *cobra.Command {
 				logger,
 			)
 			if err != nil {
-				return fmt.Errorf("failed to create handler: %w", err)
+				return err
 			}
 			// Disk-backed handlers stage batch files under the results cache
 			// dir and only remove them on close.
