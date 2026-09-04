@@ -78,3 +78,46 @@ func TestRuntimeErrorDoesNotPrintTheFlagList(t *testing.T) {
 		t.Errorf("a runtime failure printed the usage text:\n%s", output)
 	}
 }
+
+// runArgs executes the CLI with args and reports the exit code and output.
+func runArgs(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	var out bytes.Buffer
+	cmd := NewRootCommand()
+	cmd.SetArgs(args)
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	return execute(cmd), out.String()
+}
+
+// A config path that does not exist is the user's to fix. Exiting retryable
+// would have a supervisor restart until someone notices.
+func TestExecute_MissingConfigIsTerminal(t *testing.T) {
+	code, output := runArgs(t, "run", "/nope/does-not-exist.yml")
+
+	assert.Equal(t, errs.ExitUserError, code)
+	assert.That(t, !errs.Retryable(code))
+	assert.That(t, strings.Contains(output, string(errs.CodeConfigNotFound)))
+}
+
+// Unparseable YAML does not become parseable on a retry.
+func TestExecute_MalformedConfigIsTerminal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.yml")
+	assert.NoError(t, os.WriteFile(path, []byte("pipeline:\n  name: [unclosed\n"), 0o644))
+
+	code, output := runArgs(t, "run", path)
+
+	assert.Equal(t, errs.ExitUserError, code)
+	assert.That(t, !errs.Retryable(code))
+	assert.That(t, strings.Contains(output, "user.config"))
+}
+
+// Suppressing usage for runtime errors must not suppress it for the errors
+// usage actually answers.
+func TestExecute_UsageErrorStillPrintsUsage(t *testing.T) {
+	_, output := runArgs(t, "run", "--not-a-real-flag")
+
+	if !strings.Contains(output, "Flags:") {
+		t.Errorf("a usage error lost its usage text:\n%s", output)
+	}
+}

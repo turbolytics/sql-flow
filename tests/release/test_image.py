@@ -75,20 +75,43 @@ def parse_rows(stdout):
 
 
 def run_docker_container(image, command):
+    _, stdout, stderr = run_image(image, command)
+    return stdout, stderr
+
+
+# Exit codes from internal/errs/exit.go. Restated here on purpose: these are
+# the contract a supervisor reads, so the release suite asserts the numbers
+# rather than importing whatever the build happens to define.
+EXIT_OK = 0
+EXIT_INTERNAL = 1
+EXIT_USER_ERROR = 10
+EXIT_SOURCE_UNREACHABLE = 11
+EXIT_SINK_UNREACHABLE = 12
+EXIT_RESOURCE_LIMIT = 13
+EXIT_STATE_CORRUPT = 14
+
+# A supervisor must stop on these rather than restart into the same failure.
+TERMINAL_EXITS = {EXIT_USER_ERROR, EXIT_STATE_CORRUPT}
+
+
+def run_image(image, command, volumes=None, env=None):
+    """Run the image and return (exit_code, stdout, stderr).
+
+    The exit code is the point: it is what a supervisor reads to decide
+    whether restarting can help, and run_docker_container drops it.
+    """
+    args = ["docker", "run", "--rm", "-v", f"{settings.DEV_DIR}:/tmp/conf"]
+    for host, container in (volumes or {}).items():
+        args += ["-v", f"{host}:{container}:rw"]
+    for key, value in (env or {}).items():
+        args += ["-e", f"{key}={value}"]
+    args.append(image)
+
     result = subprocess.run(
-        [
-            "docker",
-            "run",
-            "-v",
-            f"{settings.DEV_DIR}:/tmp/conf",
-            "--rm",
-            image,
-        ] + command.split(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
+        args + command.split(),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    return result.stdout, result.stderr
+    return result.returncode, result.stdout, result.stderr
 
 
 def test_sqlflow_docker_invoke_readme_example(image):
@@ -498,3 +521,50 @@ def test_sigterm_drains_the_buffered_batch(image):
         f"drain lost the buffered batch: {total} of {num_messages}")
     assert offset == num_messages - 1, (
         f"stored offset should be the last processed message: {offset}")
+
+
+def test_the_process_exit_code_carries_the_error_code(image):
+    """A supervisor reads the process's exit status, so the image must set it.
+
+    The mapping from error code to exit code is a Go unit test's job, and it
+    is covered there. What only the image can show is that the status survives
+    the entrypoint and PID 1 -- where exit codes have already surprised us
+    once: an unhandled SIGTERM exits 2 here and 143 as an ordinary child.
+
+    Two cases, one per class, rather than one per error: a user error and a
+    damaged state file. Both must be terminal, because a supervisor that
+    retries either loops forever.
+    """
+    with tempfile.TemporaryDirectory() as statedir:
+        os.chmod(statedir, 0o777)
+        state = os.path.join(statedir, "state.db")
+        with open(state, "wb") as fh:
+            fh.write(b"this is not a duckdb database")
+        os.chmod(state, 0o666)
+        before = open(state, "rb").read()
+
+        cases = [
+            ("missing config", EXIT_USER_ERROR, "user.config.not_found",
+             dict(command="run /tmp/conf/config/nope.yml")),
+            ("corrupt state file", EXIT_STATE_CORRUPT, "system.state.corrupt",
+             dict(command="run /tmp/conf/config/examples/kafka.stateful.window.yml"
+                          " --max-msgs=1",
+                  volumes={statedir: "/state"},
+                  env={"SQLFLOW_STATE_PATH": "/state/state.db",
+                       "SQLFLOW_KAFKA_BROKERS": "kafka:9092"})),
+        ]
+
+        for name, want_exit, want_code, kwargs in cases:
+            code, stdout, stderr = run_image(image, **kwargs)
+            output = stdout + stderr
+
+            assert code == want_exit, (
+                f"{name}: expected exit {want_exit}, got {code}\n{output}")
+            assert want_exit in TERMINAL_EXITS
+            assert want_code in output, f"{name}: no error code in\n{output}"
+            # Cobra prints the whole flag list for any error a command
+            # returns, which buries the one line saying what failed.
+            assert "Flags:" not in output, f"{name}: usage text buried the error"
+
+        # A damaged state file is the only copy of the pipeline's positions.
+        assert open(state, "rb").read() == before, "the damaged file was modified"
