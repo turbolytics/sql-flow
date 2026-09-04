@@ -1,0 +1,82 @@
+# Counts Bluesky posts per minute by language in a 1-minute tumbling window
+# and writes each closed window to Postgres.
+commands:
+  - name: load postgres extension
+    sql: |
+      INSTALL postgres;
+      LOAD postgres;
+
+  - name: attach postgres
+    sql: |
+      ATTACH '{{ SQLFLOW_POSTGRES_URI|default('postgresql://postgres:postgres@sqlflow-postgres:5432/postgres') }}' AS pg (TYPE POSTGRES);
+
+  - name: declare the post schema
+    sql: |
+      CREATE TABLE IF NOT EXISTS posts (
+        time_us BIGINT,
+        commit STRUCT(
+          operation TEXT,
+          record STRUCT(langs TEXT[])
+        )
+      );
+
+tables:
+  sql:
+    - name: posts_per_minute_by_lang
+      sql: |
+        CREATE TABLE IF NOT EXISTS posts_per_minute_by_lang (
+          bucket TIMESTAMP,
+          lang TEXT,
+          posts INTEGER
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS posts_per_minute_by_lang_idx
+          ON posts_per_minute_by_lang (bucket, lang);
+
+      manager:
+        # The grace period outlives the batch wait on purpose. A batch flushes
+        # when it fills or after flush_interval_seconds, so an event from the
+        # last seconds of a window can reach DuckDB up to that long after the
+        # window ended. A grace period shorter than the batch wait publishes
+        # the window before those events land.
+        tumbling_window:
+          poll_interval_seconds: 10
+          collect_closed_windows_sql: |
+            SELECT bucket, lang, posts
+            FROM posts_per_minute_by_lang
+            WHERE bucket + INTERVAL '1 minute' < now()::TIMESTAMP - INTERVAL '60 seconds'
+          delete_closed_windows_sql: |
+            DELETE FROM posts_per_minute_by_lang
+            WHERE bucket + INTERVAL '1 minute' < now()::TIMESTAMP - INTERVAL '60 seconds'
+
+        sink:
+          type: sqlcommand
+          sqlcommand:
+            sql: |
+              INSERT INTO pg.posts_per_minute_by_lang (bucket, lang, posts)
+              SELECT bucket, lang, posts FROM sqlflow_sink_batch
+
+pipeline:
+  name: bluesky-posts-per-minute-by-lang
+  batch_size: 500
+
+  source:
+    type: websocket
+    websocket:
+      uri: 'wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post'
+
+  handler:
+    type: handlers.StructuredBatch
+    table: posts
+    sql: |
+      INSERT INTO posts_per_minute_by_lang
+      SELECT
+        date_trunc('minute', make_timestamp(time_us)) AS bucket,
+        coalesce(commit.record.langs[1], 'unknown') AS lang,
+        count(*) AS posts
+      FROM posts
+      WHERE commit.operation = 'create'
+      GROUP BY bucket, lang
+      ON CONFLICT (bucket, lang) DO UPDATE SET posts = posts + EXCLUDED.posts
+
+  sink:
+    type: noop
