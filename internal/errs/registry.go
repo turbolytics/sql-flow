@@ -21,6 +21,11 @@ const (
 	CodeConfigParseFailed Code = "user.config.parse_failed"
 	CodeConfigInvalid     Code = "user.config.invalid"
 
+	// Data: the messages themselves, as opposed to the pipeline definition.
+	// A malformed record is the producer's problem, never ours.
+	CodeDataMalformed Code = "user.data.malformed"
+	CodeDataInvalid   Code = "user.data.invalid"
+
 	// SQL: the handler's query and the schema it binds against.
 	CodeSQLBindFailed      Code = "user.sql.bind_failed"
 	CodeSQLTypeUnsupported Code = "user.sql.type_unsupported"
@@ -75,6 +80,16 @@ var registry = map[Code]Definition{
 		CodeConfigInvalid,
 		"The config is well-formed but asks for something impossible.",
 		"Read the message for the offending key, then correct it.",
+	},
+	CodeDataMalformed: {
+		CodeDataMalformed,
+		"A message could not be parsed.",
+		"Fix the producer, or set pipeline.on_error to dlq to divert bad records and keep running.",
+	},
+	CodeDataInvalid: {
+		CodeDataInvalid,
+		"A message is unusable for a reason the specific codes do not cover.",
+		"Inspect the record. Set pipeline.on_error to dlq to collect them.",
 	},
 	CodeSQLBindFailed: {
 		CodeSQLBindFailed,

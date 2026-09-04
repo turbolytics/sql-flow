@@ -11,6 +11,8 @@ system.state.internal
 user.config.invalid
 user.config.not_found
 user.config.parse_failed
+user.data.invalid
+user.data.malformed
 user.sink.invalid
 user.source.invalid
 user.source.security_invalid

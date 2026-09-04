@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/buger/jsonparser"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"go.uber.org/zap"
 )
 
@@ -105,7 +106,7 @@ func (h *InferredMemBatchHandler) Write(r []byte) error {
 	// Validated here rather than at Invoke so malformed JSON surfaces as a
 	// per-message write error, which is what the error policies key off.
 	if !json.Valid(r) {
-		return fmt.Errorf("invalid json: %q", truncate(r, 64))
+		return errs.New(errs.CodeDataMalformed, "invalid json: %q", truncate(r, 64))
 	}
 	h.rawBatch = append(h.rawBatch, r)
 	return nil
