@@ -73,6 +73,20 @@ type Sink struct {
 	SQLCommand *SQLCommandSink `yaml:"sqlcommand,omitempty"`
 	Iceberg    *IcebergSink    `yaml:"iceberg,omitempty"`
 	Clickhouse *ClickhouseSink `yaml:"clickhouse,omitempty"`
+	Retry      *SinkRetry      `yaml:"retry,omitempty"`
+}
+
+// SinkRetry bounds how long a sink keeps trying a destination that is not
+// answering. Omit the block to accept the defaults; set max_attempts to 1 to
+// turn retrying off.
+//
+// The Kafka sink ignores this. franz-go already retries a produce with its own
+// backoff, and a second ladder on top of that one is worse than none.
+type SinkRetry struct {
+	MaxAttempts      int `yaml:"max_attempts,omitempty"`
+	InitialBackoffMS int `yaml:"initial_backoff_ms,omitempty"`
+	MaxBackoffMS     int `yaml:"max_backoff_ms,omitempty"`
+	DeadlineSeconds  int `yaml:"deadline_seconds,omitempty"`
 }
 
 // Tumbling Window Manager
