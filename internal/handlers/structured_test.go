@@ -148,6 +148,81 @@ func TestStructuredBatchHandler_NestedStruct(t *testing.T) {
 	res.Release()
 }
 
+// The handler prepares its SQL before any batch exists. A WHERE over a struct
+// field must still see the rows of the batch that arrives afterwards, not the
+// empty table the statement was planned against.
+func TestStructuredBatchHandler_FilterSeesRowsIngestedAfterPrepare(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE posts (time_us BIGINT, commit STRUCT(operation TEXT));`)
+
+	schema := arrow.NewSchema(
+		[]arrow.Field{
+			{Name: "time_us", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "commit", Type: arrow.StructOf(
+				arrow.Field{Name: "operation", Type: arrow.BinaryTypes.String},
+			)},
+		}, nil)
+
+	h, err := NewStructuredBatchHandler(conn,
+		"SELECT time_us FROM posts WHERE commit.operation = 'create'",
+		"posts", schema)
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	messages := []string{
+		`{"time_us": 1, "commit": {"operation": "create"}}`,
+		`{"time_us": 2, "commit": {"operation": "delete"}}`,
+		`{"time_us": 3, "commit": {"operation": "create"}}`,
+	}
+	for _, msg := range messages {
+		assert.NoError(t, h.Write([]byte(msg)))
+	}
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int64(2), res.NumRows())
+	res.Release()
+}
+
+// Same defect, different symptom: an expression over a list element inside a
+// struct folds to NULL when planned against the empty table.
+func TestStructuredBatchHandler_ListElementSeesRowsIngestedAfterPrepare(t *testing.T) {
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE posts (record STRUCT(langs TEXT[]));`)
+
+	schema := arrow.NewSchema(
+		[]arrow.Field{
+			{Name: "record", Type: arrow.StructOf(
+				arrow.Field{Name: "langs", Type: arrow.ListOf(arrow.BinaryTypes.String)},
+			)},
+		}, nil)
+
+	h, err := NewStructuredBatchHandler(conn,
+		"SELECT coalesce(record.langs[1], 'unknown') AS lang, COUNT(*) AS cnt FROM posts GROUP BY lang ORDER BY lang",
+		"posts", schema)
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	messages := []string{
+		`{"record": {"langs": ["en"]}}`,
+		`{"record": {"langs": ["pt"]}}`,
+		`{"record": {"langs": ["en"]}}`,
+	}
+	for _, msg := range messages {
+		assert.NoError(t, h.Write([]byte(msg)))
+	}
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	// en and pt, not a single 'unknown' group.
+	assert.Equal(t, int64(2), res.NumRows())
+	res.Release()
+}
+
 func TestStructuredBatchHandler_LargeBatch(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
