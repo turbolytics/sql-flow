@@ -9,14 +9,11 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// TestEmbeddedSchemaMatchesPython guards the copy of the config schema that
-// go:embed requires against drifting from the Python engine's original, which
-// lives outside the package and so cannot be embedded directly.
-func TestEmbeddedSchemaMatchesPython(t *testing.T) {
-	original, err := os.ReadFile("../../sqlflow/static/schemas/config.json")
-	assert.NoError(t, err)
-	assert.Equal(t, string(original), string(configSchemaJSON))
-}
+// schemas/config.json is now the config spec itself, not a copy of one. It was
+// mirrored from the Python engine's sqlflow/static/schemas/config.json, and a
+// test compared the two byte for byte; with that engine gone there is nothing
+// left to drift from, and editing the schema here no longer needs a second
+// edit somewhere else.
 
 func TestConfigExample_MatchesPythonOutput(t *testing.T) {
 	golden, err := os.ReadFile("testdata/config_example.golden")

@@ -1,3 +1,7 @@
+# This config does not run. It is kept as the fixture that proves a `udfs:`
+# block is rejected rather than silently ignored, and the import path names a
+# module that pre-v1 provided and nothing does now. Define the function in
+# DuckDB instead: a macro, an extension, or an ATTACHed database.
 udfs:
   - function_name: parse_domain
     import_path: sqlflow.udf.url.parse_domain

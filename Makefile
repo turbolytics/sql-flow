@@ -20,17 +20,11 @@ install-tools:
 .PHONY: setup-dev
 setup-dev: install-tools
 
+# The Go checks and the image tests. There is no Python suite: the engine it
+# covered is gone, and what remains of the package is harness for the image
+# tests below.
 .PHONY: test
-test: test-unit test-integration
-
-.PHONY: test-unit
-test-unit:
-	PYICEBERG_HOME=$(shell pwd)/tests/config/ \
-		pytest \
-		--ignore=tests/benchmarks \
-		--ignore=tests/integration \
-		--ignore=tests/release \
-		tests
+test: test-go test-release
 
 # Functional tests against the shipped container image: entrypoint, CLI
 # surface, baked-in libduckdb, and a real pipeline through Kafka. Runs against
@@ -39,10 +33,6 @@ test-unit:
 .PHONY: test-image
 test-image: sqlflow-image
 	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) pytest tests/release
-
-.PHONY: test-integration
-test-integration:
-	PYICEBERG_HOME=$(shell pwd)/tests/config/ pytest tests/integration
 
 .PHONY: test-release
 test-release: sqlflow-image
@@ -105,9 +95,8 @@ sqlflow-image:
 		--label io.turbolytics.duckdb.version=$(DUCKDB_VERSION) \
 		-t $(SQLFLOW_IMAGE) .
 
-# Publishes the Go engine's image. This is the ONLY target that pushes, and it
-# builds the root Dockerfile, never Dockerfile.python -- a bare version tag on
-# turbolytics/sql-flow means the Go engine as of v1.
+# Publishes the Go engine's image. This is the ONLY target that pushes, and a
+# bare version tag on turbolytics/sql-flow means the Go engine as of v1.
 #
 # Multi-arch is the point of the target existing. v1.0.0 was published by hand
 # from a mac with a plain `docker build`, which produces a single-arch image, so
@@ -173,20 +162,8 @@ test-go:
 	go build ./...
 	go vet ./...
 	@test -z "$$(gofmt -l internal/ cmd/)" || { echo "gofmt needed:"; gofmt -l internal/ cmd/; exit 1; }
-	go test ./internal/...
+	go test ./...
 
-# The legacy Python engine image. It shares the turbolytics/sql-flow repository
-# with `make sqlflow-image` above, which is deliberate -- one image, one
-# entrypoint, one config spec -- but it means a tag published from here serves
-# the Python engine. As of v1 the Go engine is what that name should mean, so
-# publish from sqlflow-image and keep this for reproducing old tags only.
-.PHONY: docker-image
-docker-image:
-	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build --platform linux/amd64 -f Dockerfile.python -t turbolytics/sql-flow:python-$$GIT_HASH .
-
-.PHONY: docker-image-multiarch
-docker-image-multiarch:
-	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build --platform linux/arm64 -f Dockerfile.python -t turbolytics/sql-flow:python-$$GIT_HASH .
-	# docker buildx build --platform linux/arm64,linux/amd64 -t turbolytics/sql-flow:python-multiarch-$$GIT_HASH --push .
+# The Python engine's image targets are gone with the engine. Published
+# python-* tags are still on Docker Hub; reproducing one means checking out a
+# commit from before this change.

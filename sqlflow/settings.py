@@ -1,30 +1,15 @@
-import os.path
+"""Paths the release-test harness needs.
 
-SQL_RESULTS_CACHE_DIR = os.environ.get(
-    'SQLFLOW_SQL_RESULTS_CACHE_DIR',
-    os.path.join(
-        '/tmp',
-        'sqlflow',
-        'resultscache',
-    ),
-)
+What remains of the Python package is test tooling for the Go engine's image
+tests: this module, kafka.py and fixtures/. The engine itself is gone.
+"""
 
-STATIC_ROOT = os.environ.get(
-    'SQLFLOW_STATIC_ROOT',
-    os.path.join(
-        '/tmp',
-        'sqlflow',
-        'static',
-    ),
-)
+import os
 
 LOG_LEVEL = os.environ.get('SQLFLOW_LOG_LEVEL', 'INFO')
 
-VARS = {
-    'STATIC_ROOT': STATIC_ROOT,
-    'SQL_RESULTS_CACHE_DIR': SQL_RESULTS_CACHE_DIR
-}
-
+# The repo's dev/ directory, which the image tests mount into the container as
+# /tmp/conf so a test can name a shipped example config.
 DEV_DIR = os.path.join(
     os.path.dirname(__file__),
     '..',
@@ -33,4 +18,3 @@ DEV_DIR = os.path.join(
 
 CONF_DIR = os.path.join(DEV_DIR, 'config')
 FIXTURES_DIR = os.path.join(DEV_DIR, 'fixtures')
-PACKAGE_ROOT = os.path.dirname(__file__)
