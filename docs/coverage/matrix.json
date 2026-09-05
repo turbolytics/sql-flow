@@ -947,6 +947,26 @@
               "attribution": "name"
             },
             {
+              "name": "TestHandlerInferredMem_ExplicitNullInFirstRowIsNull",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestHandlerInferredMem_ExplicitNullListElementIsNull",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestHandlerInferredMem_ExplicitNullStringIsNull",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestHandlerInferredMem_ExplicitNullStructIsANullStruct",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
               "name": "TestHandlerInferredMem_FieldMissingFromLaterRowIsNull",
               "outcome": "pass",
               "attribution": "name"
@@ -1154,6 +1174,11 @@
         "unit": {
           "status": "covered",
           "tests": [
+            {
+              "name": "TestHandlerStructured_ExplicitNullStringIsNull",
+              "outcome": "pass",
+              "attribution": "name"
+            },
             {
               "name": "TestHandlerStructured_FilterSeesRowsIngestedAfterPrepare",
               "outcome": "pass",
