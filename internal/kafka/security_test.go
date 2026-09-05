@@ -60,7 +60,7 @@ func TestSourceKafka_SecurityOptionsSASLSSLAddsBoth(t *testing.T) {
 	assert.Equal(t, 2, len(opts))
 }
 
-func TestTLSConfig_DisablesHostnameVerification(t *testing.T) {
+func TestSourceKafka_TLSConfigDisablesHostnameVerification(t *testing.T) {
 	cfg, err := tlsConfig(&config.KafkaSSL{EndpointIdentificationAlgorithm: "none"})
 	assert.NoError(t, err)
 	assert.That(t, cfg.InsecureSkipVerify)
@@ -70,12 +70,12 @@ func TestTLSConfig_DisablesHostnameVerification(t *testing.T) {
 	assert.That(t, !cfg.InsecureSkipVerify)
 }
 
-func TestTLSConfig_ReportsMissingCAFile(t *testing.T) {
+func TestSourceKafka_TLSConfigReportsMissingCAFile(t *testing.T) {
 	_, err := tlsConfig(&config.KafkaSSL{CALocation: "/nonexistent/ca.pem"})
 	assert.Error(t, err)
 }
 
-func TestTLSConfig_RequiresBothCertAndKey(t *testing.T) {
+func TestSourceKafka_TLSConfigRequiresBothCertAndKey(t *testing.T) {
 	_, err := tlsConfig(&config.KafkaSSL{CertificateLocation: "/tmp/cert.pem"})
 	assert.Error(t, err)
 }

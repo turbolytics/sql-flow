@@ -13,6 +13,26 @@ import json
 import os
 
 _results = {}
+_covers = {}
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "covers(*features): additional features this test proves, beyond the "
+        "one its name claims. Use it only when a test really does cover "
+        "several; a feature that needs a marker to be covered at all wants "
+        "its own test.",
+    )
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        extra = []
+        for marker in item.iter_markers(name="covers"):
+            extra.extend(marker.args)
+        if extra:
+            _covers[item.nodeid.rsplit("::", 1)[-1]] = sorted(set(extra))
 
 
 def pytest_runtest_logreport(report):
@@ -45,7 +65,9 @@ def pytest_sessionfinish(session, exitstatus):
         return
     with open(path, "w") as fh:
         json.dump(
-            {"tests": [{"nodeid": name, "outcome": outcome}
+            {"tests": [{"nodeid": name,
+                        "outcome": outcome,
+                        "covers": _covers.get(name, [])}
                        for name, outcome in sorted(_results.items())]},
             fh,
             indent=2,

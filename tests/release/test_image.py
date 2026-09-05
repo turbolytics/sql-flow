@@ -12,6 +12,7 @@ prove an existing invocation keeps working against the new image.
 """
 
 import ast
+import contextlib
 import json
 import os
 import subprocess
@@ -109,6 +110,24 @@ def unique(prefix):
     return f"{prefix}-{int(time.time() * 1000)}"
 
 
+@contextlib.contextmanager
+def container_writable_dir():
+    """A host directory the container writes into, cleaned up best-effort.
+
+    The container runs as root, so the files and directories it creates are
+    owned by root on the host. Docker Desktop maps that back to the calling
+    user; a Linux CI runner does not, and TemporaryDirectory then fails to
+    remove the tree with EPERM -- after the test has already passed.
+
+    Cleanup is therefore best-effort. Leaking a directory under /tmp on a
+    throwaway runner costs nothing; failing a green test on its teardown
+    costs a red build and an hour working out that nothing was wrong.
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as path:
+        os.chmod(path, 0o777)
+        yield path
+
+
 def run_pipeline(image, stack, config, env=None, volumes=None, max_msgs=None,
                  timeout=180, expect_exit=0):
     """Run one pipeline to completion in the image and return its stats.
@@ -117,8 +136,7 @@ def run_pipeline(image, stack, config, env=None, volumes=None, max_msgs=None,
     That suite ran ./bin/sqlflow directly; this runs the published image, so
     the entrypoint and the baked-in libduckdb are covered too.
     """
-    with tempfile.TemporaryDirectory() as statsdir:
-        os.chmod(statsdir, 0o777)
+    with container_writable_dir() as statsdir:
 
         container = DockerContainer(image) \
             .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
@@ -234,6 +252,7 @@ def run_image(image, command, volumes=None, env=None):
     return result.returncode, result.stdout, result.stderr
 
 
+@pytest.mark.covers("cli.dev_invoke", "sink.console")
 def test_handler_inferred_mem_invoke_renders_rows(image):
     """The README quickstart, run against the image.
 
@@ -265,6 +284,7 @@ def test_sqlflow_docker_version(image):
     )
 
 
+@pytest.mark.covers("config.templating")
 def test_config_validation_accepts_a_shipped_example(image):
     """config validate works with no libduckdb setup beyond the image."""
     stdout, stderr = run_docker_container(
@@ -284,6 +304,7 @@ def test_config_validation_accepts_a_shipped_example(image):
     assert expected == container.get_logs()
     '''
 
+@pytest.mark.covers("source.kafka", "sink.kafka")
 def test_handler_inferred_mem_aggregates_every_message(image, stack):
     num_messages = 1000
     in_topic = unique('input-simple-agg-mem')
@@ -311,6 +332,7 @@ def test_handler_inferred_mem_aggregates_every_message(image, stack):
 
 
 
+@pytest.mark.covers("source.websocket", "handler.structured")
 def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):
     """Arrays, unioned struct fields and decoded JSON escapes, via the image.
 
@@ -461,6 +483,7 @@ def test_sink_clickhouse_inserts_rows(image, stack, request):
         "SELECT count(DISTINCT action) FROM test.user_actions") == str(len(actions))
 
 
+@pytest.mark.covers("state.offsets", "manager.tumbling_window", "source.kafka")
 def test_state_durability_survives_a_restart(image, stack):
     """A crash mid-window must not lose the aggregate.
 
@@ -489,10 +512,9 @@ def test_state_durability_survives_a_restart(image, stack):
         }))
     producer.flush()
 
-    with tempfile.TemporaryDirectory() as state_dir:
+    with container_writable_dir() as state_dir:
         # The container writes the state file here; both runs share it, and
         # the assertions below read it from the host afterwards.
-        os.chmod(state_dir, 0o777)
 
         def run_half():
             container = DockerContainer(image) \
@@ -572,8 +594,7 @@ def test_lifecycle_drain_writes_the_buffered_batch_on_sigterm(image, stack):
         }))
     producer.flush()
 
-    with tempfile.TemporaryDirectory() as state_dir:
-        os.chmod(state_dir, 0o777)
+    with container_writable_dir() as state_dir:
 
         # No --max-msgs: the pipeline runs until a signal stops it. A pipeline
         # that exits on its own proves nothing here.
@@ -615,6 +636,7 @@ def test_lifecycle_drain_writes_the_buffered_batch_on_sigterm(image, stack):
         f"stored offset should be the last processed message: {offset}")
 
 
+@pytest.mark.covers("state.corruption")
 def test_lifecycle_exit_codes_carry_the_error_code(image):
     """A supervisor reads the process's exit status, so the image must set it.
 
@@ -627,8 +649,7 @@ def test_lifecycle_exit_codes_carry_the_error_code(image):
     damaged state file. Both must be terminal, because a supervisor that
     retries either loops forever.
     """
-    with tempfile.TemporaryDirectory() as statedir:
-        os.chmod(statedir, 0o777)
+    with container_writable_dir() as statedir:
         state = os.path.join(statedir, "state.db")
         with open(state, "wb") as fh:
             fh.write(b"this is not a duckdb database")
@@ -683,8 +704,7 @@ def test_sink_iceberg_writes_every_row(image, stack):
     catalog_name = unique("release_iceberg").replace("-", "_")
     table_name = "default.city_events"
 
-    with tempfile.TemporaryDirectory() as warehouse:
-        os.chmod(warehouse, 0o777)
+    with container_writable_dir() as warehouse:
 
         catalog = SqlCatalog(catalog_name, **{
             "uri": f"sqlite:///{warehouse}/catalog.db",
@@ -729,8 +749,7 @@ def test_sink_parquet_writes_every_row(image, stack):
     KafkaFaker(bootstrap_servers=stack.bootstrap,
                num_messages=num_messages, topic=topic).publish()
 
-    with tempfile.TemporaryDirectory() as out_dir:
-        os.chmod(out_dir, 0o777)
+    with container_writable_dir() as out_dir:
 
         stats = run_pipeline(
             image, stack, "local.parquet.sink.yml",
