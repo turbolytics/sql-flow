@@ -167,6 +167,13 @@ release-image:
 	@test -z "$$(git status --porcelain)" || { \
 		echo "release-image: working tree is dirty, so $(VERSION) would not be reproducible" >&2; \
 		echo "               commit or stash, then re-run" >&2; exit 1; }
+	@# A clean, tagged HEAD is not enough: v1.0.5 was first tagged and published
+	@# from a feature branch, so the image shipped unmerged commits and lacked
+	@# the fixes its own tag message described. The release must be on main.
+	@git fetch -q origin main && git merge-base --is-ancestor HEAD origin/main || { \
+		echo "release-image: HEAD is not on origin/main, so $(VERSION) would ship unmerged commits" >&2; \
+		echo "               git checkout main && git pull --ff-only origin main, then tag and re-run" >&2; \
+		exit 1; }
 	@git describe --exact-match --tags HEAD >/dev/null 2>&1 || { \
 		echo "release-image: HEAD is not tagged (VERSION=$(VERSION))" >&2; \
 		echo "               tag the release first: git tag -a vX.Y.Z -m ... && git push origin vX.Y.Z" >&2; \
