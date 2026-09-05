@@ -4,10 +4,10 @@ pipeline:
     type: kafka
     kafka:
       brokers: [localhost:9092]
-      group_id: test
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "topic-csv-filesystem-join"
+        - {{ SQLFLOW_INPUT_TOPIC|default('topic-csv-filesystem-join') }}
 
   handler:
     type: 'handlers.InferredMemBatch'
@@ -28,4 +28,4 @@ pipeline:
     type: kafka
     kafka:
       brokers: [localhost:9092]
-      topic: output-csv-filesystem-join
+      topic: {{ SQLFLOW_OUTPUT_TOPIC|default('output-csv-filesystem-join') }}

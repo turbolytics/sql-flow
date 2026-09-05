@@ -5,7 +5,7 @@ pipeline:
     type: kafka
     kafka:
       brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
-      group_id: test
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       security_protocol: SASL_SSL
       ssl:
@@ -20,7 +20,7 @@ pipeline:
         password: bitnami
 
       topics:
-        - "input-sasl-tls-1"
+        - {{ SQLFLOW_INPUT_TOPIC|default('input-sasl-tls-1') }}
 
   handler:
     type: "handlers.InferredMemBatch"
@@ -30,7 +30,7 @@ pipeline:
     type: kafka
     kafka:
       brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-      topic: output-sasl-tls-1
+      topic: {{ SQLFLOW_OUTPUT_TOPIC|default('output-sasl-tls-1') }}
       security_protocol: SASL_SSL
       ssl:
         ca_location: {{ SQLFLOW_ROOT_DIR }}/dev/kafka/certs/ca-cert.pem

@@ -40,7 +40,7 @@ func runWithCorruptState(t *testing.T) (error, string) {
 // The exit code is the whole point of the taxonomy: it is what a supervisor
 // reads. Exiting 1 marks the failure retryable, so the supervisor restarts
 // forever into the same bytes.
-func TestExecute_CorruptStateFileExitsTerminal(t *testing.T) {
+func TestLifecycleExitCodes_CorruptStateFileExitsTerminal(t *testing.T) {
 	cmd, _ := corruptStateCommand(t)
 
 	code := execute(cmd)
@@ -50,7 +50,7 @@ func TestExecute_CorruptStateFileExitsTerminal(t *testing.T) {
 }
 
 // A successful command exits zero.
-func TestExecute_SuccessExitsZero(t *testing.T) {
+func TestLifecycleExitCodes_SuccessExitsZero(t *testing.T) {
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{"version"})
 	cmd.SetOut(&bytes.Buffer{})
@@ -61,7 +61,7 @@ func TestExecute_SuccessExitsZero(t *testing.T) {
 
 // Guards propagation rather than driving it: the code has to survive cobra's
 // error path to reach execute at all.
-func TestErrorCodeSurvivesCobra(t *testing.T) {
+func TestLifecycleExitCodes_SurvivesCobra(t *testing.T) {
 	err, _ := runWithCorruptState(t)
 
 	assert.Error(t, err)
@@ -71,7 +71,7 @@ func TestErrorCodeSurvivesCobra(t *testing.T) {
 // Failing loud means the operator sees the error. Cobra prints the full flag
 // list for any error a command returns, which buries the one line that says
 // what went wrong.
-func TestRuntimeErrorDoesNotPrintTheFlagList(t *testing.T) {
+func TestLifecycleExitCodes_NoFlagList(t *testing.T) {
 	_, output := runWithCorruptState(t)
 
 	if strings.Contains(output, "Flags:") {
@@ -92,7 +92,7 @@ func runArgs(t *testing.T, args ...string) (int, string) {
 
 // A config path that does not exist is the user's to fix. Exiting retryable
 // would have a supervisor restart until someone notices.
-func TestExecute_MissingConfigIsTerminal(t *testing.T) {
+func TestLifecycleExitCodes_MissingConfigIsTerminal(t *testing.T) {
 	code, output := runArgs(t, "run", "/nope/does-not-exist.yml")
 
 	assert.Equal(t, errs.ExitUserError, code)
@@ -101,7 +101,7 @@ func TestExecute_MissingConfigIsTerminal(t *testing.T) {
 }
 
 // Unparseable YAML does not become parseable on a retry.
-func TestExecute_MalformedConfigIsTerminal(t *testing.T) {
+func TestLifecycleExitCodes_MalformedConfigIsTerminal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.yml")
 	assert.NoError(t, os.WriteFile(path, []byte("pipeline:\n  name: [unclosed\n"), 0o644))
 
@@ -114,7 +114,7 @@ func TestExecute_MalformedConfigIsTerminal(t *testing.T) {
 
 // Suppressing usage for runtime errors must not suppress it for the errors
 // usage actually answers.
-func TestExecute_UsageErrorStillPrintsUsage(t *testing.T) {
+func TestLifecycleExitCodes_UsageErrorStillPrintsUsage(t *testing.T) {
 	_, output := runArgs(t, "run", "--not-a-real-flag")
 
 	if !strings.Contains(output, "Flags:") {

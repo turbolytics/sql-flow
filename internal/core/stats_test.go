@@ -31,7 +31,7 @@ func execSQL(tb testing.TB, conn adbc.Connection, sql string) {
 // stateful pipeline: is my state growing without bound, and where am I in the
 // stream. It reports the user's tables and the stored offsets, and must not
 // leak the engine's own bookkeeping tables into either.
-func TestCollectStateStats(t *testing.T) {
+func TestStateDurability_Stats(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 
@@ -64,7 +64,7 @@ func TestCollectStateStats(t *testing.T) {
 
 // A fresh state file reports zero tables rather than failing, so the endpoint
 // is useful on a pipeline that has not processed anything yet.
-func TestCollectStateStats_EmptyState(t *testing.T) {
+func TestStateDurability_Stats_EmptyState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	assert.NoError(t, NewOffsetStore(conn).Init(context.Background()))
@@ -79,7 +79,7 @@ func TestCollectStateStats_EmptyState(t *testing.T) {
 // The transient batch table the inferred handlers create per batch is engine
 // machinery too; reporting it as user state would be noise that changes on
 // every batch.
-func TestCollectStateStats_ExcludesTheBatchTable(t *testing.T) {
+func TestStateDurability_Stats_ExcludesTheBatchTable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	assert.NoError(t, NewOffsetStore(conn).Init(context.Background()))
@@ -95,7 +95,7 @@ func TestCollectStateStats_ExcludesTheBatchTable(t *testing.T) {
 
 // Tables and offsets are sorted so /stats output and CLI diffs stay stable
 // between runs; DuckDB's row order and map iteration are not guaranteed.
-func TestCollectStateStats_IsDeterministicallyOrdered(t *testing.T) {
+func TestStateDurability_Stats_IsDeterministicallyOrdered(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 
@@ -128,7 +128,7 @@ func TestCollectStateStats_IsDeterministicallyOrdered(t *testing.T) {
 // until it commits. Without this the endpoint would report rows that a
 // rollback then erased -- a durability feature reporting numbers that never
 // survived anything.
-func TestCollectStateStats_DoesNotSeeUncommittedWrites(t *testing.T) {
+func TestStateDurability_Stats_DoesNotSeeUncommittedWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 
 	db, err := duckdb.OpenPath(context.Background(), path)
@@ -169,7 +169,7 @@ func TestCollectStateStats_DoesNotSeeUncommittedWrites(t *testing.T) {
 // A table name is read out of a record reader, whose backing buffer is freed
 // when the reader is released. Returning a string that aliases it would hand
 // callers memory that can be reused underneath them.
-func TestCollectStateStats_TableNamesSurviveReaderRelease(t *testing.T) {
+func TestStateDurability_Stats_TableNamesSurviveReaderRelease(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	assert.NoError(t, NewOffsetStore(conn).Init(context.Background()))

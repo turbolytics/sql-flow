@@ -9,7 +9,7 @@ import (
 
 // sqlflow.settings defaults SQLFLOW_LOG_LEVEL to INFO, which is quieter than
 // zap's development logger.
-func TestNew_DefaultsToInfo(t *testing.T) {
+func TestSinkRetry_NewDefaultsToInfo(t *testing.T) {
 	t.Setenv("SQLFLOW_LOG_LEVEL", "")
 
 	l, err := New()
@@ -18,7 +18,7 @@ func TestNew_DefaultsToInfo(t *testing.T) {
 	assert.That(t, !l.Core().Enabled(zapcore.DebugLevel))
 }
 
-func TestNew_HonorsEnvVar(t *testing.T) {
+func TestSinkRetry_NewHonorsEnvVar(t *testing.T) {
 	tests := []struct {
 		level string
 		want  zapcore.Level
@@ -53,7 +53,7 @@ func TestNew_HonorsEnvVar(t *testing.T) {
 
 // Python's logging.basicConfig raises on an unknown level; the returned logger
 // still works so callers that only log the failure are not left without one.
-func TestNew_ReportsUnknownLevel(t *testing.T) {
+func TestSinkRetry_NewReportsUnknownLevel(t *testing.T) {
 	t.Setenv("SQLFLOW_LOG_LEVEL", "chatty")
 
 	_, err := Level()

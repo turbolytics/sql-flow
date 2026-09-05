@@ -5,11 +5,11 @@ pipeline:
   source:
     type: kafka
     kafka:
-      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-      group_id: test
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "topic-enrich"
+        - {{ SQLFLOW_INPUT_TOPIC|default('topic-enrich') }}
 
   handler:
     type: 'handlers.InferredMemBatch'
@@ -23,5 +23,5 @@ pipeline:
   sink:
     type: kafka
     kafka:
-      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-      topic: output-enrich
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      topic: {{ SQLFLOW_OUTPUT_TOPIC|default('output-enrich') }}

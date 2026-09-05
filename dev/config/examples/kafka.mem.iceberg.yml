@@ -5,10 +5,10 @@ pipeline:
     type: kafka
     kafka:
       brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
-      group_id: test
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "input-kafka-mem-iceberg"
+        - {{ SQLFLOW_INPUT_TOPIC|default('input-kafka-mem-iceberg') }}
 
   handler:
     type: 'handlers.InferredMemBatch'
@@ -22,5 +22,5 @@ pipeline:
   sink:
     type: iceberg
     iceberg:
-      catalog_name: {{ catalog_name|default('sqlflow_test') }}
-      table_name: {{ table_name|default('default.city_events') }}
+      catalog_name: {{ SQLFLOW_CATALOG_NAME|default('sqlflow_test') }}
+      table_name: {{ SQLFLOW_TABLE_NAME|default('default.city_events') }}

@@ -65,7 +65,7 @@ func newTestDiskHandler(t *testing.T, sql string) (*InferredDiskBatchHandler, st
 	return h, dir
 }
 
-func TestInferredDiskBatchHandler_SingleRowReturn(t *testing.T) {
+func TestHandlerInferredDisk_SingleRowReturn(t *testing.T) {
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
@@ -81,7 +81,7 @@ func TestInferredDiskBatchHandler_SingleRowReturn(t *testing.T) {
 	assert.DeepEqual(t, []map[string]any{{"num_rows": float64(3)}}, tableToPylist(t, res))
 }
 
-func TestInferredDiskBatchHandler_NestedReturn(t *testing.T) {
+func TestHandlerInferredDisk_NestedReturn(t *testing.T) {
 	h, _ := newTestDiskHandler(t, `
 SELECT
     {'city': city} as s1,
@@ -107,7 +107,7 @@ FROM batch`)
 
 // The cache dir is the handler's to manage: a fresh checkout has no
 // /tmp/sqlflow/resultscache, and the Python engine's open() would fail there.
-func TestInferredDiskBatchHandler_CreatesCacheDir(t *testing.T) {
+func TestHandlerInferredDisk_CreatesCacheDir(t *testing.T) {
 	h, dir := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	info, err := os.Stat(dir)
@@ -126,7 +126,7 @@ func TestInferredDiskBatchHandler_CreatesCacheDir(t *testing.T) {
 // Each batch must start from an empty buffer and an absent `batch` table:
 // the second invoke sees only its own messages, and CREATE TABLE batch
 // would fail outright if the previous invoke had not dropped it.
-func TestInferredDiskBatchHandler_ResetsBetweenBatches(t *testing.T) {
+func TestHandlerInferredDisk_ResetsBetweenBatches(t *testing.T) {
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
@@ -148,7 +148,7 @@ func TestInferredDiskBatchHandler_ResetsBetweenBatches(t *testing.T) {
 	res.Release()
 }
 
-func TestInferredDiskBatchHandler_BatchTableDroppedAfterInvoke(t *testing.T) {
+func TestHandlerInferredDisk_BatchTableDroppedAfterInvoke(t *testing.T) {
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
@@ -173,7 +173,7 @@ func TestInferredDiskBatchHandler_BatchTableDroppedAfterInvoke(t *testing.T) {
 
 // Malformed JSON is rejected per message, matching InferredMemBatch: a bad
 // line buffered to disk would otherwise fail the whole batch at read_json.
-func TestInferredDiskBatchHandler_RejectsInvalidJSON(t *testing.T) {
+func TestHandlerInferredDisk_RejectsInvalidJSON(t *testing.T) {
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	assert.NoError(t, h.Init(context.Background()))
@@ -183,7 +183,7 @@ func TestInferredDiskBatchHandler_RejectsInvalidJSON(t *testing.T) {
 // An empty batch is a no-op rather than an error: the pipeline counts a
 // message it consumed even when the handler rejected it, so a batch of
 // entirely malformed messages reaches Invoke with nothing buffered.
-func TestInferredDiskBatchHandler_EmptyBatchIsNoOp(t *testing.T) {
+func TestHandlerInferredDisk_EmptyBatchIsNoOp(t *testing.T) {
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
@@ -197,7 +197,7 @@ func TestInferredDiskBatchHandler_EmptyBatchIsNoOp(t *testing.T) {
 // A query matching no rows is a normal outcome, not an error: COPY writes an
 // empty file, which must come back as an empty table rather than a read
 // failure that would fail the batch and stall the source offset.
-func TestInferredDiskBatchHandler_EmptyResult(t *testing.T) {
+func TestHandlerInferredDisk_EmptyResult(t *testing.T) {
 	h, _ := newTestDiskHandler(t, "SELECT city FROM batch WHERE city = 'Nowhere'")
 
 	ctx := context.Background()
@@ -214,7 +214,7 @@ func TestInferredDiskBatchHandler_EmptyResult(t *testing.T) {
 
 // Close removes the staged files; leaving a many-MB consumer_batch.json in
 // the cache dir after shutdown is a leak.
-func TestInferredDiskBatchHandler_CloseRemovesFiles(t *testing.T) {
+func TestHandlerInferredDisk_CloseRemovesFiles(t *testing.T) {
 	h, dir := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()

@@ -20,17 +20,11 @@ install-tools:
 .PHONY: setup-dev
 setup-dev: install-tools
 
+# The Go checks and the image tests. There is no Python suite: the engine it
+# covered is gone, and what remains of the package is harness for the image
+# tests below.
 .PHONY: test
-test: test-unit test-integration
-
-.PHONY: test-unit
-test-unit:
-	PYICEBERG_HOME=$(shell pwd)/tests/config/ \
-		pytest \
-		--ignore=tests/benchmarks \
-		--ignore=tests/integration \
-		--ignore=tests/release \
-		tests
+test: test-go test-release
 
 # Functional tests against the shipped container image: entrypoint, CLI
 # surface, baked-in libduckdb, and a real pipeline through Kafka. Runs against
@@ -40,9 +34,49 @@ test-unit:
 test-image: sqlflow-image
 	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) pytest tests/release
 
-.PHONY: test-integration
-test-integration:
-	PYICEBERG_HOME=$(shell pwd)/tests/config/ pytest tests/integration
+# Regenerates docs/coverage/matrix.md from both suites' output.
+#
+# The matrix is checked in, and CI regenerates it and diffs. That is what makes
+# a coverage change visible in review: adding a feature without a test, or a
+# test quietly starting to skip, both show up as a diff on a tracked file
+# rather than as nothing at all.
+#
+# Depends on the image because the release suite runs against it. Without
+# that dependency every release test errors in collection, and the `-` below
+# swallows it: the matrix regenerates with every release row marked failing.
+.PHONY: coverage-matrix
+coverage-matrix: sqlflow-image
+	@mkdir -p .coverage
+	-CGO_ENABLED=1 go test -json ./... > .coverage/go.json 2>&1
+	-SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
+		SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
+		TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
+		pytest tests/release -q
+	python3 scripts/coverage_matrix.py \
+		--go .coverage/go.json --pytest .coverage/pytest.json --write
+
+# The merge gate, in two parts.
+#
+# Stale: the checked-in matrix must match what the suites just reported, the
+# way a golden file does. That is what makes a coverage change show up in
+# review rather than nowhere.
+#
+# Gaps: a feature missing a level it requires fails the build. There is no
+# baseline and no escape hatch -- a gap is closed by a test, or by the
+# registry honestly no longer requiring that level.
+#
+# Not yet wired into CI: three sinks have no unit test file, and turning this
+# on before they do would land a red build. The follow-up closes them.
+.PHONY: coverage-matrix-check
+coverage-matrix-check: coverage-matrix
+	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md || { \
+		echo ""; \
+		echo "The coverage matrix is out of date."; \
+		echo "Run 'make coverage-matrix' and commit the result."; \
+		exit 1; \
+	}
+	python3 scripts/coverage_matrix.py \
+		--go .coverage/go.json --pytest .coverage/pytest.json --check
 
 .PHONY: test-release
 test-release: sqlflow-image
@@ -105,9 +139,8 @@ sqlflow-image:
 		--label io.turbolytics.duckdb.version=$(DUCKDB_VERSION) \
 		-t $(SQLFLOW_IMAGE) .
 
-# Publishes the Go engine's image. This is the ONLY target that pushes, and it
-# builds the root Dockerfile, never Dockerfile.python -- a bare version tag on
-# turbolytics/sql-flow means the Go engine as of v1.
+# Publishes the Go engine's image. This is the ONLY target that pushes, and a
+# bare version tag on turbolytics/sql-flow means the Go engine as of v1.
 #
 # Multi-arch is the point of the target existing. v1.0.0 was published by hand
 # from a mac with a plain `docker build`, which produces a single-arch image, so
@@ -173,20 +206,8 @@ test-go:
 	go build ./...
 	go vet ./...
 	@test -z "$$(gofmt -l internal/ cmd/)" || { echo "gofmt needed:"; gofmt -l internal/ cmd/; exit 1; }
-	go test ./internal/...
+	go test ./...
 
-# The legacy Python engine image. It shares the turbolytics/sql-flow repository
-# with `make sqlflow-image` above, which is deliberate -- one image, one
-# entrypoint, one config spec -- but it means a tag published from here serves
-# the Python engine. As of v1 the Go engine is what that name should mean, so
-# publish from sqlflow-image and keep this for reproducing old tags only.
-.PHONY: docker-image
-docker-image:
-	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build --platform linux/amd64 -f Dockerfile.python -t turbolytics/sql-flow:python-$$GIT_HASH .
-
-.PHONY: docker-image-multiarch
-docker-image-multiarch:
-	@GIT_HASH=$$(git rev-parse --short HEAD) && \
-	docker build --platform linux/arm64 -f Dockerfile.python -t turbolytics/sql-flow:python-$$GIT_HASH .
-	# docker buildx build --platform linux/arm64,linux/amd64 -t turbolytics/sql-flow:python-multiarch-$$GIT_HASH --push .
+# The Python engine's image targets are gone with the engine. Published
+# python-* tags are still on Docker Hub; reproducing one means checking out a
+# commit from before this change.

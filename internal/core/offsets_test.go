@@ -26,7 +26,7 @@ func newStateConn(t *testing.T, path string) adbc.Connection {
 
 // Offsets round-trip through DuckDB, which is what lets a restart resume from
 // the position that produced the state currently in the database.
-func TestOffsetStore_RoundTrip(t *testing.T) {
+func TestStateOffsets_RoundTrip(t *testing.T) {
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	s := NewOffsetStore(conn)
 	assert.NoError(t, s.Init(context.Background()))
@@ -47,7 +47,7 @@ func TestOffsetStore_RoundTrip(t *testing.T) {
 }
 
 // Saving the same partition again advances it rather than duplicating it.
-func TestOffsetStore_SaveIsAnUpsert(t *testing.T) {
+func TestStateOffsets_SaveIsAnUpsert(t *testing.T) {
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	s := NewOffsetStore(conn)
 	assert.NoError(t, s.Init(context.Background()))
@@ -69,7 +69,7 @@ func TestOffsetStore_SaveIsAnUpsert(t *testing.T) {
 
 // A fresh state file has no offsets; the caller must treat that as "start
 // where auto_offset_reset says", not as offset zero.
-func TestOffsetStore_LoadEmptyIsEmptyNotZero(t *testing.T) {
+func TestStateOffsets_LoadEmptyIsEmptyNotZero(t *testing.T) {
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	s := NewOffsetStore(conn)
 	assert.NoError(t, s.Init(context.Background()))
@@ -80,7 +80,7 @@ func TestOffsetStore_LoadEmptyIsEmptyNotZero(t *testing.T) {
 }
 
 // Init runs on every start, including against an existing state file.
-func TestOffsetStore_InitIsIdempotent(t *testing.T) {
+func TestStateOffsets_InitIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	s := NewOffsetStore(conn)

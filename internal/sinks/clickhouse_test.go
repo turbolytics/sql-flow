@@ -15,7 +15,7 @@ import (
 	"github.com/zeebo/assert"
 )
 
-func TestClickhouseOptions_PythonDSN(t *testing.T) {
+func TestSinkClickhouse_OptionsPythonDSN(t *testing.T) {
 	// The dsn the Python configs carry. clickhouse_connect speaks only the
 	// HTTP interface, so 8123 is an HTTP port and must not be dialed with
 	// the native protocol.
@@ -30,7 +30,7 @@ func TestClickhouseOptions_PythonDSN(t *testing.T) {
 	assert.Nil(t, opts.TLS)
 }
 
-func TestClickhouseOptions_Credentials(t *testing.T) {
+func TestSinkClickhouse_OptionsCredentials(t *testing.T) {
 	opts, err := clickhouseOptions("clickhouse://alice:s3cret@ch.example.com/analytics")
 	assert.NoError(t, err)
 
@@ -41,7 +41,7 @@ func TestClickhouseOptions_Credentials(t *testing.T) {
 	assert.Equal(t, "analytics", opts.Auth.Database)
 }
 
-func TestClickhouseOptions_Secure(t *testing.T) {
+func TestSinkClickhouse_OptionsSecure(t *testing.T) {
 	opts, err := clickhouseOptions("clickhouses://ch.example.com/analytics")
 	assert.NoError(t, err)
 
@@ -50,7 +50,7 @@ func TestClickhouseOptions_Secure(t *testing.T) {
 	assert.NotNil(t, opts.TLS)
 }
 
-func TestClickhouseOptions_Native(t *testing.T) {
+func TestSinkClickhouse_OptionsNative(t *testing.T) {
 	opts, err := clickhouseOptions("tcp://localhost:9000/test")
 	assert.NoError(t, err)
 
@@ -58,7 +58,7 @@ func TestClickhouseOptions_Native(t *testing.T) {
 	assert.DeepEqual(t, []string{"localhost:9000"}, opts.Addr)
 }
 
-func TestClickhouseOptions_Invalid(t *testing.T) {
+func TestSinkClickhouse_OptionsInvalid(t *testing.T) {
 	_, err := clickhouseOptions("postgres://localhost:5432/test")
 	assert.Error(t, err)
 
@@ -66,7 +66,7 @@ func TestClickhouseOptions_Invalid(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestNewClickhouseSink_RequiresTable(t *testing.T) {
+func TestSinkClickhouse_NewRequiresTable(t *testing.T) {
 	_, err := NewClickhouseSink(config.ClickhouseSink{DSN: "clickhouse://localhost:8123/test"})
 	assert.Error(t, err)
 }
@@ -74,7 +74,7 @@ func TestNewClickhouseSink_RequiresTable(t *testing.T) {
 // Batch mirrors the Python ClickhouseSink, which alone among the sinks
 // returns nothing: the rows go straight to ClickHouse and are not held for a
 // downstream reader.
-func TestClickhouseSink_BatchIsNil(t *testing.T) {
+func TestSinkClickhouse_BatchIsNil(t *testing.T) {
 	s := newLiveClickhouseSink(t, "")
 
 	batch, err := s.Batch()
@@ -132,7 +132,7 @@ func clickhouseRowCount(t *testing.T, s *ClickhouseSink) uint64 {
 	return count
 }
 
-func TestClickhouseSink_InsertsRows(t *testing.T) {
+func TestSinkClickhouse_InsertsRows(t *testing.T) {
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		timestamp DateTime,
 		user_id UInt64,
@@ -159,7 +159,7 @@ func TestClickhouseSink_InsertsRows(t *testing.T) {
 // A handler whose query matched no rows yields an empty, column-less table.
 // Flushing it must be a no-op: the column list would otherwise be empty and
 // the INSERT malformed.
-func TestClickhouseSink_EmptyTableIsNoop(t *testing.T) {
+func TestSinkClickhouse_EmptyTableIsNoop(t *testing.T) {
 	s := newLiveClickhouseSink(t, "")
 
 	table := array.NewTable(arrow.NewSchema(nil, nil), nil, 0)
@@ -169,7 +169,7 @@ func TestClickhouseSink_EmptyTableIsNoop(t *testing.T) {
 	assert.NoError(t, s.Flush(context.Background()))
 }
 
-func TestClickhouseSink_NullsBecomeDefaults(t *testing.T) {
+func TestSinkClickhouse_NullsBecomeDefaults(t *testing.T) {
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		user_id UInt64,
 		action Nullable(String)
@@ -242,7 +242,7 @@ func clickhouseFixtureTable(t *testing.T) arrow.Table {
 // handler turns any JSON array into a list, so this is reachable from an
 // ordinary config -- a Bluesky pipeline selecting commit.record.langs
 // produces exactly this shape.
-func TestClickhouseSink_InsertsArrays(t *testing.T) {
+func TestSinkClickhouse_InsertsArrays(t *testing.T) {
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		id UInt64,
 		langs Array(String),
@@ -313,7 +313,7 @@ func TestClickhouseSink_InsertsArrays(t *testing.T) {
 
 // A list of lists must reach Array(Array(T)), since the handler infers
 // nested lists from nested JSON arrays.
-func TestClickhouseSink_InsertsNestedArrays(t *testing.T) {
+func TestSinkClickhouse_InsertsNestedArrays(t *testing.T) {
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		id UInt64,
 		matrix Array(Array(Int64))
@@ -359,7 +359,7 @@ func TestClickhouseSink_InsertsNestedArrays(t *testing.T) {
 // not shifted by whatever zone the SQLFlow host happens to run in. The zone is
 // pinned to one far from UTC so the test means the same thing on a UTC CI
 // runner as on a laptop.
-func TestClickhouseSink_StringTemporalsAreNotShiftedByHostZone(t *testing.T) {
+func TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone(t *testing.T) {
 	tokyo, err := time.LoadLocation("Asia/Tokyo") // UTC+9, no DST
 	assert.NoError(t, err)
 	prev := time.Local

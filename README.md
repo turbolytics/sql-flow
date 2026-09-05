@@ -944,36 +944,38 @@ $ duckdb -c "select count(*) from '/tmp/sqlflow/warehouse/default.db/city_events
 └──────────────┘
 ```
 
-# Migrating from the Python engine
+# Upgrading from a pre-v1 release
 
-SQLFlow began as a Python engine. It is **deprecated and no longer
-maintained**; v1 is the Go engine described above, and it reads the same
-configuration files. Move an existing pipeline by swapping the image or binary
-— the config, the templating and the DuckDB SQL carry over. What changes:
+SQLFlow was written in Python before v1. That implementation has been removed.
+v1 reads the same configuration files, so moving a pipeline means swapping the
+image or binary: the config, the templating and the DuckDB SQL carry over.
 
-- **UDFs are not supported.** The Python engine took Python UDFs via a `udfs:`
-  block. Define the function in DuckDB instead — a macro, an extension, or an
-  `ATTACH`ed database that provides it. A `udfs:` block is a hard error naming
-  the functions, rather than a silent skip that would later surface as an
+Seven things changed:
+
+- **UDFs are not supported.** Pre-v1 took Python UDFs through a `udfs:` block.
+  Define the function in DuckDB instead — a macro, an extension, or an
+  `ATTACH`ed database that provides it. A `udfs:` block is now a hard error
+  naming the functions, rather than a silent skip that surfaces later as an
   opaque binder error.
 - **The command line is accepted as it was.** `run pipeline.yml
-  --max-msgs-to-process=N` works unchanged; `-c` and `--max-msgs` are the
+  --max-msgs-to-process=N` works unchanged. `-c` and `--max-msgs` are the
   native spellings.
 - **Console output** is one JSON object per line rather than a Python list of
   dicts. Same rows, different rendering.
-- **An empty batch** produces no output; the Python engine raised.
-- **`StructuredBatch`** truncates its table every batch; the Python engine did
-  not.
-- **Log format** is zap's console format rather than Python logging's, and
-  `SQLFLOW_LOG_LEVEL` accepts Python's level names too.
-- **DuckDB** is whatever `libduckdb` you install (the image pins 1.5.x); the
-  Python engine pinned 1.3.1. "Same SQL, same result" is not guaranteed across
-  that gap.
+- **An empty batch** produces no output. It used to raise.
+- **`StructuredBatch`** truncates its table every batch. It used to keep it.
+- **Log format** is zap's console format. `SQLFLOW_LOG_LEVEL` still accepts
+  Python's level names.
+- **DuckDB** is whatever `libduckdb` you install, and the image pins 1.5.x.
+  Pre-v1 pinned 1.3.1, so "same SQL, same result" is not guaranteed across that
+  gap.
 
-The Python source stays in the repository under `sqlflow/` for reference, with
-`Dockerfile.python` and `make docker-image` (tagged `python-<sha>`) to reproduce
-an old image. Do not publish a bare version tag from it. The Python test suite
-(`make test-unit`, `make test-integration`) is frozen with it.
+Published `python-<sha>` tags remain on Docker Hub. Reproducing one means
+checking out a commit from before the removal.
+
+The `sqlflow/` directory still exists, and holds test harness rather than an
+engine: `settings.py`, `kafka.py`, `fixtures/` and `logging.py`. The image
+tests under `tests/release` and the dev scripts in `cmd/` import them.
 
 # Development
 

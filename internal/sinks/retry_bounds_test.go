@@ -23,7 +23,7 @@ func alwaysFails() *flakySink {
 
 // The batch must reach the sink even under a nonsense policy. Skipping the
 // flush loses the batch, and the caller is told it succeeded.
-func TestBounds_MaxAttemptsZeroStillFlushesOnce(t *testing.T) {
+func TestSinkRetry_BoundsMaxAttemptsZeroStillFlushesOnce(t *testing.T) {
 	inner := &flakySink{}
 	p := testPolicy()
 	p.MaxAttempts = 0
@@ -35,7 +35,7 @@ func TestBounds_MaxAttemptsZeroStillFlushesOnce(t *testing.T) {
 	assert.Equal(t, 1, inner.attempts)
 }
 
-func TestBounds_MaxAttemptsNegativeStillFlushesOnce(t *testing.T) {
+func TestSinkRetry_BoundsMaxAttemptsNegativeStillFlushesOnce(t *testing.T) {
 	inner := &flakySink{}
 	p := testPolicy()
 	p.MaxAttempts = -3
@@ -46,7 +46,7 @@ func TestBounds_MaxAttemptsNegativeStillFlushesOnce(t *testing.T) {
 }
 
 // A failure under a zero policy still has to be reported, not swallowed.
-func TestBounds_MaxAttemptsZeroReportsTheFailure(t *testing.T) {
+func TestSinkRetry_BoundsMaxAttemptsZeroReportsTheFailure(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 0
@@ -58,7 +58,7 @@ func TestBounds_MaxAttemptsZeroReportsTheFailure(t *testing.T) {
 	assert.Equal(t, 1, inner.attempts)
 }
 
-func TestBounds_MaxAttemptsOneMakesExactlyOneAttempt(t *testing.T) {
+func TestSinkRetry_BoundsMaxAttemptsOneMakesExactlyOneAttempt(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 1
@@ -69,7 +69,7 @@ func TestBounds_MaxAttemptsOneMakesExactlyOneAttempt(t *testing.T) {
 	assert.Equal(t, 0, len(*slept))
 }
 
-func TestBounds_MaxAttemptsTwoSleepsExactlyOnce(t *testing.T) {
+func TestSinkRetry_BoundsMaxAttemptsTwoSleepsExactlyOnce(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 2
@@ -81,7 +81,7 @@ func TestBounds_MaxAttemptsTwoSleepsExactlyOnce(t *testing.T) {
 }
 
 // The ladder sleeps between attempts, never after the last one.
-func TestBounds_NeverSleepsAfterTheFinalAttempt(t *testing.T) {
+func TestSinkRetry_BoundsNeverSleepsAfterTheFinalAttempt(t *testing.T) {
 	for attempts := 1; attempts <= 6; attempts++ {
 		inner := alwaysFails()
 		p := testPolicy()
@@ -103,7 +103,7 @@ func TestBounds_NeverSleepsAfterTheFinalAttempt(t *testing.T) {
 
 // A cap below the initial backoff must bind on the first sleep. Applying it
 // only after the first sleep lets one wait exceed the cap the operator set.
-func TestBounds_InitialBackoffAboveTheCapIsCapped(t *testing.T) {
+func TestSinkRetry_BoundsInitialBackoffAboveTheCapIsCapped(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 3
@@ -123,7 +123,7 @@ func TestBounds_InitialBackoffAboveTheCapIsCapped(t *testing.T) {
 
 // Zero backoff means retry immediately, which is a legitimate ask. It must
 // stay bounded by MaxAttempts rather than spinning.
-func TestBounds_ZeroBackoffRetriesImmediately(t *testing.T) {
+func TestSinkRetry_BoundsZeroBackoffRetriesImmediately(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 4
@@ -140,7 +140,7 @@ func TestBounds_ZeroBackoffRetriesImmediately(t *testing.T) {
 }
 
 // A negative backoff must not become a negative sleep or an endless one.
-func TestBounds_NegativeBackoffIsTreatedAsZero(t *testing.T) {
+func TestSinkRetry_BoundsNegativeBackoffIsTreatedAsZero(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 3
@@ -160,7 +160,7 @@ func TestBounds_NegativeBackoffIsTreatedAsZero(t *testing.T) {
 
 // Doubling must not overflow into a negative duration, which would turn a
 // long backoff into a tight loop.
-func TestBounds_HugeBackoffDoesNotOverflow(t *testing.T) {
+func TestSinkRetry_BoundsHugeBackoffDoesNotOverflow(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 8
@@ -181,7 +181,7 @@ func TestBounds_HugeBackoffDoesNotOverflow(t *testing.T) {
 
 // A zero deadline leaves no room to wait, so the ladder makes its one attempt
 // and reports. It must not skip the flush.
-func TestBounds_ZeroDeadlineMakesOneAttempt(t *testing.T) {
+func TestSinkRetry_BoundsZeroDeadlineMakesOneAttempt(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 10
@@ -193,7 +193,7 @@ func TestBounds_ZeroDeadlineMakesOneAttempt(t *testing.T) {
 	assert.Equal(t, 0, len(*slept))
 }
 
-func TestBounds_NegativeDeadlineMakesOneAttempt(t *testing.T) {
+func TestSinkRetry_BoundsNegativeDeadlineMakesOneAttempt(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 10
@@ -207,7 +207,7 @@ func TestBounds_NegativeDeadlineMakesOneAttempt(t *testing.T) {
 // The deadline bounds the total wait. A ladder that would sleep past it stops
 // rather than overrunning, because it runs inside the state transaction whose
 // clock the window depends on.
-func TestBounds_TotalSleepNeverExceedsTheDeadline(t *testing.T) {
+func TestSinkRetry_BoundsTotalSleepNeverExceedsTheDeadline(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 50
@@ -232,7 +232,7 @@ func TestBounds_TotalSleepNeverExceedsTheDeadline(t *testing.T) {
 // An operator reading the error has to know whether to raise max_attempts or
 // the deadline. Reporting "after N attempts" when the deadline stopped it
 // early sends them to the wrong knob.
-func TestBounds_ErrorSaysTheDeadlineStoppedIt(t *testing.T) {
+func TestSinkRetry_BoundsErrorSaysTheDeadlineStoppedIt(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 100
@@ -250,7 +250,7 @@ func TestBounds_ErrorSaysTheDeadlineStoppedIt(t *testing.T) {
 	assert.That(t, strings.Contains(err.Error(), "deadline"))
 }
 
-func TestBounds_ErrorSaysAttemptsWereExhausted(t *testing.T) {
+func TestSinkRetry_BoundsErrorSaysAttemptsWereExhausted(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 3
@@ -264,7 +264,7 @@ func TestBounds_ErrorSaysAttemptsWereExhausted(t *testing.T) {
 }
 
 // The cause has to survive so an operator sees what the destination said.
-func TestBounds_ExhaustedErrorWrapsTheCause(t *testing.T) {
+func TestSinkRetry_BoundsExhaustedErrorWrapsTheCause(t *testing.T) {
 	cause := errors.New("dial tcp 10.0.0.1:9000: connect: connection refused")
 	inner := &flakySink{failures: 1 << 30, err: cause}
 	p := testPolicy()
@@ -281,7 +281,7 @@ func TestBounds_ExhaustedErrorWrapsTheCause(t *testing.T) {
 // --- Success ---------------------------------------------------------------
 
 // Succeeding on the final attempt is a success, not an exhausted ladder.
-func TestBounds_SuccessOnTheFinalAttempt(t *testing.T) {
+func TestSinkRetry_BoundsSuccessOnTheFinalAttempt(t *testing.T) {
 	inner := &flakySink{failures: 3, err: errs.New(errs.CodeSinkUnreachable, "refused")}
 	p := testPolicy()
 	p.MaxAttempts = 4
@@ -294,7 +294,7 @@ func TestBounds_SuccessOnTheFinalAttempt(t *testing.T) {
 // --- Cancellation ----------------------------------------------------------
 
 // A context cancelled partway through stops the ladder there.
-func TestBounds_CancellationMidLadderStops(t *testing.T) {
+func TestSinkRetry_BoundsCancellationMidLadderStops(t *testing.T) {
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 10
@@ -317,7 +317,7 @@ func TestBounds_CancellationMidLadderStops(t *testing.T) {
 
 // A rejected write must stop after one attempt regardless of how generous the
 // policy is.
-func TestBounds_NonRetryableStopsUnderAnyPolicy(t *testing.T) {
+func TestSinkRetry_BoundsNonRetryableStopsUnderAnyPolicy(t *testing.T) {
 	for _, p := range []RetryPolicy{
 		{MaxAttempts: 0},
 		{MaxAttempts: 1},

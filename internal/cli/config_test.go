@@ -9,16 +9,13 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// TestEmbeddedSchemaMatchesPython guards the copy of the config schema that
-// go:embed requires against drifting from the Python engine's original, which
-// lives outside the package and so cannot be embedded directly.
-func TestEmbeddedSchemaMatchesPython(t *testing.T) {
-	original, err := os.ReadFile("../../sqlflow/static/schemas/config.json")
-	assert.NoError(t, err)
-	assert.Equal(t, string(original), string(configSchemaJSON))
-}
+// schemas/config.json is now the config spec itself, not a copy of one. It was
+// mirrored from the Python engine's sqlflow/static/schemas/config.json, and a
+// test compared the two byte for byte; with that engine gone there is nothing
+// left to drift from, and editing the schema here no longer needs a second
+// edit somewhere else.
 
-func TestConfigExample_MatchesPythonOutput(t *testing.T) {
+func TestConfigValidation_ExampleMatchesPythonOutput(t *testing.T) {
 	golden, err := os.ReadFile("testdata/config_example.golden")
 	assert.NoError(t, err)
 
@@ -27,13 +24,13 @@ func TestConfigExample_MatchesPythonOutput(t *testing.T) {
 	assert.Equal(t, string(golden), out)
 }
 
-// TestConfigValidate_Examples validates the shipped example configs, mirroring
+// TestConfigValidation_Examples validates the shipped example configs, mirroring
 // the Python suite, which asserts every example satisfies the schema.
 // Every shipped example must satisfy the schema. Checking a hand-picked few
 // lets the schema drift away from the configs it is supposed to describe --
 // that is how `type: webhook` came to be rejected by `config validate` while
 // `run` accepted it.
-func TestConfigValidate_Examples(t *testing.T) {
+func TestConfigValidation_Examples(t *testing.T) {
 	for _, path := range exampleConfigs(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			assert.NoError(t, validateConfig(path))
@@ -41,7 +38,7 @@ func TestConfigValidate_Examples(t *testing.T) {
 	}
 }
 
-func TestConfigValidate_RendersTemplateBeforeValidating(t *testing.T) {
+func TestConfigValidation_RendersTemplateBeforeValidating(t *testing.T) {
 	// batch_size arrives only through the Jinja2 default filter; validating
 	// the raw file would see a template expression where an integer is required.
 	path := writeTempConfig(t, `
@@ -63,7 +60,7 @@ pipeline:
 	assert.NoError(t, validateConfig(path))
 }
 
-func TestConfigValidate_RejectsMissingPipeline(t *testing.T) {
+func TestConfigValidation_RejectsMissingPipeline(t *testing.T) {
 	path := writeTempConfig(t, "commands: []\n")
 
 	err := validateConfig(path)
@@ -71,7 +68,7 @@ func TestConfigValidate_RejectsMissingPipeline(t *testing.T) {
 	assert.That(t, strings.Contains(err.Error(), "pipeline"))
 }
 
-func TestConfigValidate_RejectsBadEnum(t *testing.T) {
+func TestConfigValidation_RejectsBadEnum(t *testing.T) {
 	path := writeTempConfig(t, `
 pipeline:
   batch_size: 1
@@ -89,7 +86,7 @@ pipeline:
 	assert.That(t, strings.Contains(err.Error(), "type"))
 }
 
-func TestConfigValidate_RejectsMissingRequiredHandlerSQL(t *testing.T) {
+func TestConfigValidation_RejectsMissingRequiredHandlerSQL(t *testing.T) {
 	path := writeTempConfig(t, `
 pipeline:
   batch_size: 1
@@ -111,12 +108,12 @@ pipeline:
 	assert.That(t, strings.Contains(err.Error(), "sql"))
 }
 
-func TestConfigValidate_ReportsMissingFile(t *testing.T) {
+func TestConfigValidation_ReportsMissingFile(t *testing.T) {
 	err := validateConfig(filepath.Join(t.TempDir(), "nope.yml"))
 	assert.Error(t, err)
 }
 
-func TestConfigValidate_AcceptsStatePath(t *testing.T) {
+func TestConfigValidation_AcceptsStatePath(t *testing.T) {
 	path := writeTempConfig(t, `
 pipeline:
   batch_size: 10

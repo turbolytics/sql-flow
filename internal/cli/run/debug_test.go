@@ -52,7 +52,7 @@ func debugGet(t *testing.T, h http.Handler, sql string) *httptest.ResponseRecord
 
 // The Python endpoint jsonifies duckdb's fetchall(), a list of row tuples, so
 // rows arrive as arrays rather than objects.
-func TestDebugHandler_ReturnsRowsAsJSON(t *testing.T) {
+func TestObservabilityDebugApi_HandlerReturnsRowsAsJSON(t *testing.T) {
 	conn := newTestConn(t)
 	execSQL(t, conn, "CREATE TABLE t (id BIGINT, name VARCHAR)")
 	execSQL(t, conn, "INSERT INTO t VALUES (1, 'a'), (2, 'b')")
@@ -65,7 +65,7 @@ func TestDebugHandler_ReturnsRowsAsJSON(t *testing.T) {
 	assert.Equal(t, `[[1,"a"],[2,"b"]]`, strings.TrimSpace(w.Body.String()))
 }
 
-func TestDebugHandler_ReturnsEmptyArrayForNoRows(t *testing.T) {
+func TestObservabilityDebugApi_HandlerReturnsEmptyArrayForNoRows(t *testing.T) {
 	conn := newTestConn(t)
 	execSQL(t, conn, "CREATE TABLE empty (id BIGINT)")
 
@@ -76,7 +76,7 @@ func TestDebugHandler_ReturnsEmptyArrayForNoRows(t *testing.T) {
 	assert.Equal(t, `[]`, strings.TrimSpace(w.Body.String()))
 }
 
-func TestDebugHandler_RejectsMissingQuery(t *testing.T) {
+func TestObservabilityDebugApi_HandlerRejectsMissingQuery(t *testing.T) {
 	h := newDebugHandler(newTestConn(t), &sync.Mutex{})
 	w := debugGet(t, h, "")
 
@@ -84,7 +84,7 @@ func TestDebugHandler_RejectsMissingQuery(t *testing.T) {
 	assert.Equal(t, `{"error":"No SQL query provided"}`, strings.TrimSpace(w.Body.String()))
 }
 
-func TestDebugHandler_ReportsQueryErrors(t *testing.T) {
+func TestObservabilityDebugApi_HandlerReportsQueryErrors(t *testing.T) {
 	h := newDebugHandler(newTestConn(t), &sync.Mutex{})
 	w := debugGet(t, h, "SELECT * FROM does_not_exist")
 
@@ -96,7 +96,7 @@ func TestDebugHandler_ReportsQueryErrors(t *testing.T) {
 
 // The endpoint shares the pipeline's connection, so it must not touch it while
 // a handler holds the lock.
-func TestDebugHandler_WaitsForThePipelineLock(t *testing.T) {
+func TestObservabilityDebugApi_HandlerWaitsForThePipelineLock(t *testing.T) {
 	conn := newTestConn(t)
 	execSQL(t, conn, "CREATE TABLE t (id BIGINT)")
 
@@ -125,11 +125,11 @@ func TestDebugHandler_WaitsForThePipelineLock(t *testing.T) {
 }
 
 // Python serves the endpoint from Flask's default 127.0.0.1:5000.
-func TestDebugServer_ServesOnPythonPort(t *testing.T) {
+func TestObservabilityDebugApi_ServerServesOnPythonPort(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:5000", debugAddr)
 }
 
-func TestDebugServer_ServesTheDebugRoute(t *testing.T) {
+func TestObservabilityDebugApi_ServerServesTheDebugRoute(t *testing.T) {
 	conn := newTestConn(t)
 	execSQL(t, conn, "CREATE TABLE t (id BIGINT)")
 	execSQL(t, conn, "INSERT INTO t VALUES (7)")

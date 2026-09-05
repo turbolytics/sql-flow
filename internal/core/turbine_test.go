@@ -135,7 +135,7 @@ func messages(n int) []Message {
 
 // Reaching --max-msgs must not cost the batch in flight: every message the
 // pipeline reports as consumed has to reach the sink.
-func TestConsumeLoop_FlushesFinalBatchWhenMaxMsgsReached(t *testing.T) {
+func TestCoreConsumeLoop_FlushesFinalBatchWhenMaxMsgsReached(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{messages(1000)}}
 	sink := &fakeSink{}
 
@@ -150,7 +150,7 @@ func TestConsumeLoop_FlushesFinalBatchWhenMaxMsgsReached(t *testing.T) {
 
 // A batch that is still partial when the source ends must also be written,
 // otherwise the tail of a finite stream is silently dropped.
-func TestConsumeLoop_FlushesPartialBatchWhenStreamEnds(t *testing.T) {
+func TestCoreConsumeLoop_FlushesPartialBatchWhenStreamEnds(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{messages(250)}}
 	sink := &fakeSink{}
 
@@ -226,7 +226,7 @@ func mixedMessages(bad string, good int) []Message {
 	return append(msgs, messages(good)...)
 }
 
-func TestConsumeLoop_RaisePolicyStopsOnWriteError(t *testing.T) {
+func TestErrorRaise_ConsumeLoopStopsOnWriteError(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
 	h := &failingHandler{failWriteOn: "bad"}
 
@@ -235,7 +235,7 @@ func TestConsumeLoop_RaisePolicyStopsOnWriteError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestConsumeLoop_IgnorePolicySkipsBadMessage(t *testing.T) {
+func TestErrorIgnore_ConsumeLoopSkipsBadMessage(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
 	h := &failingHandler{failWriteOn: "bad"}
 	sink := &fakeSink{}
@@ -255,7 +255,7 @@ func TestConsumeLoop_IgnorePolicySkipsBadMessage(t *testing.T) {
 // A message the handler rejects was still consumed from the source. The
 // Python engine counts it, and --max-msgs has to account for it too or a
 // stream of bad messages never terminates.
-func TestConsumeLoop_CountsRejectedMessagesAsConsumed(t *testing.T) {
+func TestErrorIgnore_CountsRejectedMessagesAsConsumed(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
 	h := &failingHandler{failWriteOn: "bad"}
 
@@ -269,7 +269,7 @@ func TestConsumeLoop_CountsRejectedMessagesAsConsumed(t *testing.T) {
 	assert.Equal(t, 1, stats.NumErrors)
 }
 
-func TestConsumeLoop_DLQPolicyRoutesWriteError(t *testing.T) {
+func TestErrorDlq_ConsumeLoopRoutesWriteError(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
 	h := &failingHandler{failWriteOn: "bad"}
 	sink := &fakeSink{}
@@ -290,7 +290,7 @@ func TestConsumeLoop_DLQPolicyRoutesWriteError(t *testing.T) {
 	assert.That(t, dlq.flushes > 0)
 }
 
-func TestConsumeLoop_DLQPolicyRoutesInvokeError(t *testing.T) {
+func TestErrorDlq_ConsumeLoopRoutesInvokeError(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{messages(4)}}
 	h := &failingHandler{failInvokeOn: true}
 	sink := &fakeSink{}
@@ -310,7 +310,7 @@ func TestConsumeLoop_DLQPolicyRoutesInvokeError(t *testing.T) {
 	assert.That(t, strings.Contains(dlq.rows[0]["error"], "Binder Error"))
 }
 
-func TestConsumeLoop_IgnorePolicyContinuesAfterInvokeError(t *testing.T) {
+func TestErrorIgnore_ConsumeLoopContinuesAfterInvokeError(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{messages(4)}}
 	h := &failingHandler{failInvokeOn: true}
 	sink := &fakeSink{}
@@ -357,7 +357,7 @@ func (s *blockingSource) Close() error  { return nil }
 
 // A batch that never reaches batch_size must still be flushed once the flush
 // interval elapses, otherwise a low-traffic topic stalls forever.
-func TestConsumeLoop_FlushesPartialBatchOnFlushInterval(t *testing.T) {
+func TestCoreConsumeLoop_FlushesPartialBatchOnFlushInterval(t *testing.T) {
 	src := newBlockingSource(messages(10))
 	sink := &fakeSink{}
 
@@ -410,7 +410,7 @@ func (h *drainHandler) Write(msg []byte) error {
 // source has already delivered the batch buffered at that moment, and nothing
 // has written it. Returning without it drops the tail of every graceful
 // shutdown.
-func TestConsumeLoop_CancelDrainsTheBufferedBatch(t *testing.T) {
+func TestLifecycleDrain_CancelDrainsTheBufferedBatch(t *testing.T) {
 	src := newBlockingSource(messages(10))
 	sink := &fakeSink{}
 	h := &drainHandler{wrote: make(chan struct{})}
@@ -454,7 +454,7 @@ func TestConsumeLoop_CancelDrainsTheBufferedBatch(t *testing.T) {
 	assert.Equal(t, int64(10), stats.MessagesConsumed())
 }
 
-func TestConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {
+func TestCoreConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{messages(500), messages(500), messages(250)}}
 	sink := &fakeSink{}
 
@@ -470,7 +470,7 @@ func TestConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {
 // a rejected message was consumed and is counted. The handler has nothing
 // buffered, which is a batch with no rows -- not a second error on top of the
 // per-message ones the policy already handled.
-func TestConsumeLoop_BatchOfOnlyBadMessagesIsNotAHandlerError(t *testing.T) {
+func TestErrorIgnore_BatchOfOnlyBadMessagesIsNotAHandlerError(t *testing.T) {
 	src := &fakeSource{batches: [][]Message{{{Value: []byte("bad")}, {Value: []byte("bad")}}}}
 	h := &failingHandler{failWriteOn: "bad"}
 	sink := &fakeSink{}
@@ -491,7 +491,7 @@ func TestConsumeLoop_BatchOfOnlyBadMessagesIsNotAHandlerError(t *testing.T) {
 // one 20,000-message batch it had committed offset 70,086. A crash then loses
 // the difference with the consumer group showing no lag. The pipeline must
 // instead hand the source the exact position it has finished with.
-func TestConsumeLoop_CommitsOnlyProcessedMarks(t *testing.T) {
+func TestCoreConsumeLoop_CommitsOnlyProcessedMarks(t *testing.T) {
 	src := &markingSource{fakeSource: fakeSource{
 		// One fetch delivers 30 messages; batch_size is 20, so the first
 		// commit must name offset 19 and the final one 29 -- never 29 twice.
@@ -513,7 +513,7 @@ func TestConsumeLoop_CommitsOnlyProcessedMarks(t *testing.T) {
 	assert.Equal(t, 0, src.commits)
 }
 
-func TestConsumeLoop_MarksTrackEachPartition(t *testing.T) {
+func TestCoreConsumeLoop_MarksTrackEachPartition(t *testing.T) {
 	p0 := kafkaMessages("events", 0, 100, 3)
 	p1 := kafkaMessages("events", 1, 500, 2)
 	src := &markingSource{fakeSource: fakeSource{
@@ -599,7 +599,7 @@ func (c *txConn) Rollback(ctx context.Context) error {
 // between them replays the batch -- a duplicate the sink can absorb -- rather
 // than committing offsets for rows the sink never received, which loses them
 // with the consumer group reporting no lag.
-func TestProcessBatch_FlushesSinkBeforeCommittingState(t *testing.T) {
+func TestCoreConsumeLoop_ProcessBatchFlushesSinkBeforeCommittingState(t *testing.T) {
 	var events []string
 	src := &markingSource{fakeSource: fakeSource{
 		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
@@ -619,7 +619,7 @@ func TestProcessBatch_FlushesSinkBeforeCommittingState(t *testing.T) {
 
 // A sink failure must roll the transaction back, so the offsets on disk stay
 // where they were and the batch is replayed on restart.
-func TestProcessBatch_RollsBackWhenSinkFails(t *testing.T) {
+func TestCoreConsumeLoop_ProcessBatchRollsBackWhenSinkFails(t *testing.T) {
 	var events []string
 	src := &markingSource{fakeSource: fakeSource{
 		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
@@ -638,7 +638,7 @@ func TestProcessBatch_RollsBackWhenSinkFails(t *testing.T) {
 
 // A failure saving offsets must roll back too: state written by the handler
 // in this transaction has to go with the offsets that describe it.
-func TestProcessBatch_RollsBackWhenOffsetSaveFails(t *testing.T) {
+func TestCoreConsumeLoop_ProcessBatchRollsBackWhenOffsetSaveFails(t *testing.T) {
 	var events []string
 	src := &markingSource{fakeSource: fakeSource{
 		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
@@ -657,7 +657,7 @@ func TestProcessBatch_RollsBackWhenOffsetSaveFails(t *testing.T) {
 
 // A commit failure is fatal to the batch and must not be followed by a Kafka
 // commit: the durable offsets did not move, so Kafka's must not either.
-func TestProcessBatch_CommitFailureDoesNotCommitSource(t *testing.T) {
+func TestCoreConsumeLoop_ProcessBatchCommitFailureDoesNotCommitSource(t *testing.T) {
 	var events []string
 	src := &markingSource{fakeSource: fakeSource{
 		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
@@ -678,7 +678,7 @@ func TestProcessBatch_CommitFailureDoesNotCommitSource(t *testing.T) {
 
 // The offsets handed to the store are the ones the pipeline processed, not
 // whatever the source has fetched ahead to.
-func TestProcessBatch_SavesTheProcessedOffsets(t *testing.T) {
+func TestCoreConsumeLoop_ProcessBatchSavesTheProcessedOffsets(t *testing.T) {
 	var events []string
 	src := &markingSource{fakeSource: fakeSource{
 		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
@@ -700,7 +700,7 @@ func TestProcessBatch_SavesTheProcessedOffsets(t *testing.T) {
 
 // Without a state store the pipeline behaves exactly as before: no
 // transaction calls at all, and the source is still committed.
-func TestProcessBatch_NoStateStoreIsUnchanged(t *testing.T) {
+func TestCoreConsumeLoop_ProcessBatchNoStateStoreIsUnchanged(t *testing.T) {
 	var events []string
 	src := &markingSource{fakeSource: fakeSource{
 		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
@@ -718,7 +718,7 @@ func TestProcessBatch_NoStateStoreIsUnchanged(t *testing.T) {
 // The state gauges are recorded on StatusLoop's existing tick, from the
 // dedicated reader connection -- not the pipeline's writer -- so a scrape can
 // never stall batch processing.
-func TestRecordStateGauges_ReportsSizeAndRows(t *testing.T) {
+func TestObservabilityMetrics_StateGaugesReportsSizeAndRows(t *testing.T) {
 	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
 
 	calls := 0
@@ -738,7 +738,7 @@ func TestRecordStateGauges_ReportsSizeAndRows(t *testing.T) {
 // A pipeline with no state database records nothing rather than reporting
 // zero: an absent series and a genuinely empty state are different facts, and
 // a dashboard should be able to tell them apart.
-func TestRecordStateGauges_NoProviderRecordsNothing(t *testing.T) {
+func TestObservabilityMetrics_StateGaugesNoProviderRecordsNothing(t *testing.T) {
 	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
 	// stateStats is nil; this must not panic.
 	tb.recordStateGauges(context.Background())
@@ -746,7 +746,7 @@ func TestRecordStateGauges_NoProviderRecordsNothing(t *testing.T) {
 
 // A failure collecting stats must not take the status loop down with it --
 // the pipeline keeps running and keeps serving its other metrics.
-func TestRecordStateGauges_SurvivesCollectionFailure(t *testing.T) {
+func TestObservabilityMetrics_StateGaugesSurvivesCollectionFailure(t *testing.T) {
 	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
 	tb.stateStats = func() (*StateStats, error) {
 		return nil, errors.New("state database unreadable")
@@ -789,7 +789,7 @@ func (s *idleSource) Close() error  { return nil }
 // open freezes the clock that every window close predicate is evaluated
 // against, and a pipeline that stops receiving messages silently stops
 // closing windows.
-func TestConsumeLoop_IdleTickCommitsTheStateTransaction(t *testing.T) {
+func TestCoreConsumeLoop_IdleTickCommitsTheStateTransaction(t *testing.T) {
 	var events []string
 	src := newIdleSource()
 	store := &fakeOffsetStore{events: &events}
@@ -832,7 +832,7 @@ func TestConsumeLoop_IdleTickCommitsTheStateTransaction(t *testing.T) {
 
 // The same tick on a pipeline with no state database must stay the no-op it
 // always was: no commit, no offset save, nothing.
-func TestConsumeLoop_IdleTickIsANoopWithoutState(t *testing.T) {
+func TestCoreConsumeLoop_IdleTickIsANoopWithoutState(t *testing.T) {
 	src := newIdleSource()
 	sink := &fakeSink{}
 

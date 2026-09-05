@@ -32,7 +32,7 @@ func newTestTable(t *testing.T, cities []string, counts []int64) arrow.Table {
 	return array.NewTableFromRecords(schema, []arrow.Record{rec})
 }
 
-func TestTableRowsAsJSON_OneObjectPerRow(t *testing.T) {
+func TestSinkConsole_RowsAsJSONOneObjectPerRow(t *testing.T) {
 	table := newTestTable(t, []string{"NYC", "SF"}, []int64{3, 1})
 	defer table.Release()
 
@@ -51,7 +51,7 @@ func TestTableRowsAsJSON_OneObjectPerRow(t *testing.T) {
 	assert.Equal(t, float64(1), second["count"])
 }
 
-func TestTableRowsAsJSON_EmptyTable(t *testing.T) {
+func TestSinkConsole_RowsAsJSONEmptyTable(t *testing.T) {
 	table := newTestTable(t, []string{}, []int64{})
 	defer table.Release()
 

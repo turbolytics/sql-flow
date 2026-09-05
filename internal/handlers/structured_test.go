@@ -54,7 +54,7 @@ func createTable(t *testing.T, conn adbc.Connection, ddl string) {
 	assert.NoError(t, err)
 }
 
-func TestStructuredBatchHandler_SingleRecord(t *testing.T) {
+func TestHandlerStructured_SingleRecord(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -78,7 +78,7 @@ func TestStructuredBatchHandler_SingleRecord(t *testing.T) {
 	res.Release()
 }
 
-func TestStructuredBatchHandler_MultipleRecords(t *testing.T) {
+func TestHandlerStructured_MultipleRecords(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -113,7 +113,7 @@ func TestStructuredBatchHandler_MultipleRecords(t *testing.T) {
 	res.Release()
 }
 
-func TestStructuredBatchHandler_NestedStruct(t *testing.T) {
+func TestHandlerStructured_NestedStruct(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -151,7 +151,7 @@ func TestStructuredBatchHandler_NestedStruct(t *testing.T) {
 // The handler prepares its SQL before any batch exists. A WHERE over a struct
 // field must still see the rows of the batch that arrives afterwards, not the
 // empty table the statement was planned against.
-func TestStructuredBatchHandler_FilterSeesRowsIngestedAfterPrepare(t *testing.T) {
+func TestHandlerStructured_FilterSeesRowsIngestedAfterPrepare(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -188,7 +188,7 @@ func TestStructuredBatchHandler_FilterSeesRowsIngestedAfterPrepare(t *testing.T)
 
 // Same defect, different symptom: an expression over a list element inside a
 // struct folds to NULL when planned against the empty table.
-func TestStructuredBatchHandler_ListElementSeesRowsIngestedAfterPrepare(t *testing.T) {
+func TestHandlerStructured_ListElementSeesRowsIngestedAfterPrepare(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -223,7 +223,7 @@ func TestStructuredBatchHandler_ListElementSeesRowsIngestedAfterPrepare(t *testi
 	res.Release()
 }
 
-func TestStructuredBatchHandler_LargeBatch(t *testing.T) {
+func TestHandlerStructured_LargeBatch(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 

@@ -17,10 +17,10 @@ pipeline:
     type: kafka
     kafka:
       brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
-      group_id: test
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "input-user-clicks-demo"
+        - {{ SQLFLOW_INPUT_TOPIC|default('input-user-clicks-demo') }}
 
   handler:
     type: 'handlers.InferredMemBatch'

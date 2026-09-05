@@ -64,7 +64,7 @@ func queryInt64(tb testing.TB, conn adbc.Connection, sql string) int64 {
 // so window state survives the process. In-memory state is lost on a crash
 // while its offsets are already committed -- silently, with the consumer group
 // reporting no lag.
-func TestOpenPath_PersistsAcrossProcesses(t *testing.T) {
+func TestStateDurability_OpenPathPersistsAcrossProcesses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 
 	db, err := OpenPath(context.Background(), path)
@@ -93,7 +93,7 @@ func TestOpenPath_PersistsAcrossProcesses(t *testing.T) {
 
 // An empty path keeps today's in-memory behaviour, so a config without a state
 // path is unaffected.
-func TestOpenPath_EmptyPathIsInMemory(t *testing.T) {
+func TestStateDurability_OpenPathEmptyPathIsInMemory(t *testing.T) {
 	db, err := OpenPath(context.Background(), "")
 	assert.NoError(t, err)
 	defer db.Close()
@@ -109,7 +109,7 @@ func TestOpenPath_EmptyPathIsInMemory(t *testing.T) {
 // Holding the database handle is the point of this type: a second connection
 // is what lets stats be read without disturbing the writer. Each connection
 // has its own transaction state, so an uncommitted batch stays invisible.
-func TestDB_SecondConnectionSeesOnlyCommittedState(t *testing.T) {
+func TestStateDurability_DBSecondConnectionSeesOnlyCommittedState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 
 	db, err := OpenPath(context.Background(), path)
@@ -145,7 +145,7 @@ func TestDB_SecondConnectionSeesOnlyCommittedState(t *testing.T) {
 }
 
 // Open keeps working for callers that want one connection and no handle.
-func TestOpen_StillReturnsAUsableConnection(t *testing.T) {
+func TestStateDurability_OpenReturnsAConnection(t *testing.T) {
 	conn, err := Open(context.Background())
 	assert.NoError(t, err)
 	defer conn.Close()

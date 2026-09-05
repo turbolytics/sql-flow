@@ -135,7 +135,7 @@ func newTestTumbling(conn adbc.Connection, sink *recordingSink) *Tumbling {
 	return NewTumbling(conn, collectSQL, deleteSQL, time.Millisecond, sink, &sync.Mutex{})
 }
 
-func TestTumbling_PublishesAndDeletesClosedWindows(t *testing.T) {
+func TestManagerTumblingWindow__PublishesAndDeletesClosedWindows(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -153,7 +153,7 @@ func TestTumbling_PublishesAndDeletesClosedWindows(t *testing.T) {
 	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
 }
 
-func TestTumbling_NoClosedWindowsIsANoop(t *testing.T) {
+func TestManagerTumblingWindow__NoClosedWindowsIsANoop(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 
@@ -171,7 +171,7 @@ func TestTumbling_NoClosedWindowsIsANoop(t *testing.T) {
 }
 
 // Start must poll until its context is cancelled, and return cleanly.
-func TestTumbling_StartPollsUntilContextCancelled(t *testing.T) {
+func TestManagerTumblingWindow__StartPollsUntilContextCancelled(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -234,7 +234,7 @@ func (s *failingSink) Flush(ctx context.Context) error {
 
 // A window that could not be written must stay in the table. Deleting it would
 // lose the aggregate with no record anywhere that it existed.
-func TestTumbling_SinkWriteFailureLeavesTheWindow(t *testing.T) {
+func TestManagerTumblingWindow__SinkWriteFailureLeavesTheWindow(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -253,7 +253,7 @@ func TestTumbling_SinkWriteFailureLeavesTheWindow(t *testing.T) {
 
 // The same holds for a flush failure. Flush is where a Kafka sink blocks on
 // broker acks, so this is the likely half to fail in production.
-func TestTumbling_SinkFlushFailureLeavesTheWindow(t *testing.T) {
+func TestManagerTumblingWindow__SinkFlushFailureLeavesTheWindow(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -275,7 +275,7 @@ func TestTumbling_SinkFlushFailureLeavesTheWindow(t *testing.T) {
 // the first attempt and only Flush failed, so a Kafka sink has those rows
 // buffered and a retry sends them again. That is the at-least-once guarantee,
 // and it is why a window sink wants a key it can deduplicate on.
-func TestTumbling_RetriesAfterAFailedPoll(t *testing.T) {
+func TestManagerTumblingWindow__RetriesAfterAFailedPoll(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -303,7 +303,7 @@ func TestTumbling_RetriesAfterAFailedPoll(t *testing.T) {
 
 // A broken delete statement must surface as an error rather than silently
 // republishing the same window on every poll.
-func TestTumbling_DeleteFailureIsReported(t *testing.T) {
+func TestManagerTumblingWindow__DeleteFailureIsReported(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -327,7 +327,7 @@ func TestTumbling_DeleteFailureIsReported(t *testing.T) {
 
 // An open window must survive a poll untouched. Publishing it early would
 // emit a partial aggregate as if it were final.
-func TestTumbling_OpenWindowsAreNeitherPublishedNorDeleted(t *testing.T) {
+func TestManagerTumblingWindow__OpenWindowsAreNeitherPublishedNorDeleted(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 
@@ -348,7 +348,7 @@ func TestTumbling_OpenWindowsAreNeitherPublishedNorDeleted(t *testing.T) {
 
 // A window that closes between two polls is published on the second, not
 // missed because the first poll saw it open.
-func TestTumbling_PublishesAWindowThatClosesBetweenPolls(t *testing.T) {
+func TestManagerTumblingWindow__PublishesAWindowThatClosesBetweenPolls(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 
@@ -373,7 +373,7 @@ func TestTumbling_PublishesAWindowThatClosesBetweenPolls(t *testing.T) {
 
 // Polling a table whose closed windows have already been published must not
 // publish them a second time.
-func TestTumbling_RepeatedPollsDoNotRepublish(t *testing.T) {
+func TestManagerTumblingWindow__RepeatedPollsDoNotRepublish(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -393,7 +393,7 @@ func TestTumbling_RepeatedPollsDoNotRepublish(t *testing.T) {
 
 // Start runs one final poll after its context is cancelled, so a window that
 // closes during shutdown is published rather than stranded in the table.
-func TestTumbling_FinalPollOnShutdownPublishesAClosedWindow(t *testing.T) {
+func TestManagerTumblingWindow__FinalPollOnShutdownPublishesAClosedWindow(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -427,7 +427,7 @@ func TestTumbling_FinalPollOnShutdownPublishesAClosedWindow(t *testing.T) {
 
 // A failing poll must not kill the manager: the rows stay and the next tick
 // retries them.
-func TestTumbling_StartSurvivesAFailedPoll(t *testing.T) {
+func TestManagerTumblingWindow__StartSurvivesAFailedPoll(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 	seedWindows(t, conn)
@@ -478,7 +478,7 @@ func TestTumbling_StartSurvivesAFailedPoll(t *testing.T) {
 // delete becomes durable only when the pipeline commits its next batch, so a
 // crash in between republishes the window on restart -- at-least-once, the
 // same guarantee the sink path gives.
-func TestTumbling_DeleteJoinsThePipelineTransaction(t *testing.T) {
+func TestManagerTumblingWindow__DeleteJoinsThePipelineTransaction(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	db, err := duckdb.OpenPath(context.Background(), path)
 	assert.NoError(t, err)
@@ -525,7 +525,7 @@ func TestTumbling_DeleteJoinsThePipelineTransaction(t *testing.T) {
 // A rollback discards the manager's delete along with the batch that failed.
 // The window was already published, so the next poll publishes it again --
 // at-least-once rather than a lost window.
-func TestTumbling_DeleteRollsBackWithTheBatch(t *testing.T) {
+func TestManagerTumblingWindow__DeleteRollsBackWithTheBatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	db, err := duckdb.OpenPath(context.Background(), path)
 	assert.NoError(t, err)
@@ -567,7 +567,7 @@ func TestTumbling_DeleteRollsBackWithTheBatch(t *testing.T) {
 //
 // Committing is what advances the clock, which is why the consume loop now
 // commits on its flush tick even with nothing buffered.
-func TestTumbling_ClockAdvancesOnlyAcrossACommit(t *testing.T) {
+func TestManagerTumblingWindow__ClockAdvancesOnlyAcrossACommit(t *testing.T) {
 	conn, cleanup := newTestConn(t)
 	defer cleanup()
 

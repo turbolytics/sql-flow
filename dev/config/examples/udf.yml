@@ -1,3 +1,7 @@
+# This config does not run. It is kept as the fixture that proves a `udfs:`
+# block is rejected rather than silently ignored, and the import path names a
+# module that pre-v1 provided and nothing does now. Define the function in
+# DuckDB instead: a macro, an extension, or an ATTACHed database.
 udfs:
   - function_name: parse_domain
     import_path: sqlflow.udf.url.parse_domain
@@ -9,10 +13,10 @@ pipeline:
     type: kafka
     kafka:
       brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-      group_id: test
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "input-udf"
+        - {{ SQLFLOW_INPUT_TOPIC|default('input-udf') }}
 
   handler:
     type: 'handlers.InferredMemBatch'
@@ -25,4 +29,4 @@ pipeline:
     type: kafka
     kafka:
       brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-      topic: output-udf
+      topic: {{ SQLFLOW_OUTPUT_TOPIC|default('output-udf') }}

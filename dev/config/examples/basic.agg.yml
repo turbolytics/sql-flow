@@ -5,10 +5,10 @@ pipeline:
     type: kafka
     kafka:
       brokers: [localhost:9092]
-      group_id: test
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "topic-simple-agg"
+        - {{ SQLFLOW_INPUT_TOPIC|default('topic-simple-agg') }}
 
   handler:
     type: 'handlers.InferredDiskBatch'
@@ -25,4 +25,4 @@ pipeline:
     type: kafka
     kafka:
       brokers: [localhost:9092]
-      topic: output-simple-agg-disk
+      topic: {{ SQLFLOW_OUTPUT_TOPIC|default('output-simple-agg-disk') }}

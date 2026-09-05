@@ -44,7 +44,7 @@ func loadString(t *testing.T, body string) *Conf {
 
 // The config spec is Jinja2: filter arguments are parenthesized. pongo2's
 // colon syntax is not interchangeable, and every example config uses Jinja.
-func TestRenderTemplate_JinjaDefaultFilter(t *testing.T) {
+func TestConfigTemplating_Render_JinjaDefaultFilter(t *testing.T) {
 	tests := []struct {
 		name      string
 		body      string
@@ -89,7 +89,7 @@ func TestRenderTemplate_JinjaDefaultFilter(t *testing.T) {
 
 // The Python engine seeds the context with these, and configs reference them
 // unqualified.
-func TestRenderTemplate_ProvidesSettingsVars(t *testing.T) {
+func TestConfigTemplating_Render_ProvidesSettingsVars(t *testing.T) {
 	out := renderString(t, `root: {{ STATIC_ROOT }}/x.csv`, nil)
 	assert.Equal(t, "root: /tmp/sqlflow/static/x.csv", out)
 
@@ -97,7 +97,7 @@ func TestRenderTemplate_ProvidesSettingsVars(t *testing.T) {
 	assert.Equal(t, "cache: /tmp/sqlflow/resultscache", out)
 }
 
-func TestRenderTemplate_SettingsVarsHonorEnvOverrides(t *testing.T) {
+func TestConfigTemplating_Render_SettingsVarsHonorEnvOverrides(t *testing.T) {
 	t.Setenv("SQLFLOW_STATIC_ROOT", "/data/static")
 	out := renderString(t, `root: {{ STATIC_ROOT }}`, nil)
 	assert.Equal(t, "root: /data/static", out)
@@ -105,7 +105,7 @@ func TestRenderTemplate_SettingsVarsHonorEnvOverrides(t *testing.T) {
 
 // Every shipped config must render and parse, so a config written for the
 // Python engine runs on turbine unmodified.
-func TestLoad_AllExampleConfigs(t *testing.T) {
+func TestConfigTemplating_Load_AllExampleConfigs(t *testing.T) {
 	// Walked rather than globbed: a plain *.yml glob is not recursive, so it
 	// silently skipped every config under examples/bluesky/ -- the shipped
 	// configs least like the others, and the ones this test most needed to
@@ -141,7 +141,7 @@ func TestLoad_AllExampleConfigs(t *testing.T) {
 
 // The webhook block's keys are the Python engine's, see the WebhookSource and
 // HMACConfig dataclasses in sqlflow/config.py.
-func TestLoad_WebhookSourceKeys(t *testing.T) {
+func TestConfigTemplating_Load_WebhookSourceKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "webhook.yml")
 	body := `
@@ -177,7 +177,7 @@ pipeline:
 
 // An unrecognized key is a typo, not a setting to drop silently: the config
 // schema sets additionalProperties: false.
-func TestLoad_RejectsUnknownKeys(t *testing.T) {
+func TestConfigTemplating_Load_RejectsUnknownKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yml")
 
@@ -204,7 +204,7 @@ pipeline:
 
 // A pipeline may name a file for its DuckDB state. Absent, state stays in
 // memory and is lost on a crash.
-func TestLoad_StatePath(t *testing.T) {
+func TestConfigTemplating_Load_StatePath(t *testing.T) {
 	conf := loadString(t, `
 pipeline:
   batch_size: 10
@@ -226,7 +226,7 @@ pipeline:
 	assert.Equal(t, "/var/lib/sqlflow/state.db", conf.Pipeline.State.Path)
 }
 
-func TestLoad_StateAbsentIsNil(t *testing.T) {
+func TestConfigTemplating_Load_StateAbsentIsNil(t *testing.T) {
 	conf := loadString(t, `
 pipeline:
   batch_size: 10
