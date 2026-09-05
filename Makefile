@@ -49,17 +49,30 @@ coverage-matrix:
 		TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
 		pytest tests/release -q
 	python3 scripts/coverage_matrix.py \
-		--go .coverage/go.json --pytest .coverage/pytest.json --write --check
+		--go .coverage/go.json --pytest .coverage/pytest.json --write
 
-# Fails when the checked-in matrix is stale, the way a golden file does.
+# The merge gate, in two parts.
+#
+# Stale: the checked-in matrix must match what the suites just reported, the
+# way a golden file does. That is what makes a coverage change show up in
+# review rather than nowhere.
+#
+# Gaps: a feature missing a level it requires fails the build. There is no
+# baseline and no escape hatch -- a gap is closed by a test, or by the
+# registry honestly no longer requiring that level.
+#
+# Not yet wired into CI: three sinks have no unit test file, and turning this
+# on before they do would land a red build. The follow-up closes them.
 .PHONY: coverage-matrix-check
 coverage-matrix-check: coverage-matrix
-	@git diff --exit-code docs/coverage/matrix.md || { \
+	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md || { \
 		echo ""; \
-		echo "docs/coverage/matrix.md is out of date."; \
+		echo "The coverage matrix is out of date."; \
 		echo "Run 'make coverage-matrix' and commit the result."; \
 		exit 1; \
 	}
+	python3 scripts/coverage_matrix.py \
+		--go .coverage/go.json --pytest .coverage/pytest.json --check
 
 .PHONY: test-release
 test-release: sqlflow-image
