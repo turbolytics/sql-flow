@@ -15,6 +15,7 @@ import ast
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -116,16 +117,24 @@ def container_writable_dir():
 
     The container runs as root, so the files and directories it creates are
     owned by root on the host. Docker Desktop maps that back to the calling
-    user; a Linux CI runner does not, and TemporaryDirectory then fails to
-    remove the tree with EPERM -- after the test has already passed.
+    user; a Linux CI runner does not, and removing the tree then fails with
+    EPERM -- after the test has already passed.
 
     Cleanup is therefore best-effort. Leaking a directory under /tmp on a
     throwaway runner costs nothing; failing a green test on its teardown
     costs a red build and an hour working out that nothing was wrong.
+
+    TemporaryDirectory(ignore_cleanup_errors=True) does NOT do this. Its
+    handler chmods the parent on EPERM before it consults the flag, and that
+    chmod raises EPERM of its own, uncaught. shutil.rmtree(ignore_errors=True)
+    installs a handler that does nothing at all, so it cannot raise.
     """
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as path:
-        os.chmod(path, 0o777)
+    path = tempfile.mkdtemp()
+    os.chmod(path, 0o777)
+    try:
         yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def run_pipeline(image, stack, config, env=None, volumes=None, max_msgs=None,
