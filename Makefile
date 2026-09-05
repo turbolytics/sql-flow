@@ -40,8 +40,12 @@ test-image: sqlflow-image
 # a coverage change visible in review: adding a feature without a test, or a
 # test quietly starting to skip, both show up as a diff on a tracked file
 # rather than as nothing at all.
+#
+# Depends on the image because the release suite runs against it. Without
+# that dependency every release test errors in collection, and the `-` below
+# swallows it: the matrix regenerates with every release row marked failing.
 .PHONY: coverage-matrix
-coverage-matrix:
+coverage-matrix: sqlflow-image
 	@mkdir -p .coverage
 	-CGO_ENABLED=1 go test -json ./... > .coverage/go.json 2>&1
 	-SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \

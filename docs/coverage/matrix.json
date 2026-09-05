@@ -2204,7 +2204,7 @@
             },
             {
               "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/attach-geoip.yml",
-              "outcome": "skip",
+              "outcome": "pass",
               "attribution": "name"
             },
             {
@@ -2264,7 +2264,7 @@
             },
             {
               "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/csv.mem.join.yml",
-              "outcome": "skip",
+              "outcome": "pass",
               "attribution": "name"
             },
             {
@@ -2309,12 +2309,12 @@
             },
             {
               "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.postgres.join.yml",
-              "outcome": "skip",
+              "outcome": "pass",
               "attribution": "name"
             },
             {
               "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.postgres.sink.yml",
-              "outcome": "skip",
+              "outcome": "pass",
               "attribution": "name"
             },
             {
@@ -2519,6 +2519,11 @@
             },
             {
               "name": "TestConfigValidation_Examples/udf.yml",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestConfigValidation_ExternalAccessIsDenied",
               "outcome": "pass",
               "attribution": "name"
             },
