@@ -38,6 +38,11 @@ type retrying struct {
 	// backoff ladder without taking it.
 	sleep func(ctx context.Context, d time.Duration) error
 
+	// now reads the clock the deadline is measured against. Injected alongside
+	// sleep: a test that fakes one and not the other measures a deadline
+	// against a clock that never advances, and the deadline never binds.
+	now func() time.Time
+
 	// onRetry reports an attempt that failed and will be tried again, so a
 	// stalled sink is visible before the deadline fires.
 	onRetry func(attempt int, err error)
@@ -48,6 +53,7 @@ func newRetrying(inner core.Sink, policy RetryPolicy) *retrying {
 		inner:   inner,
 		policy:  policy,
 		sleep:   sleepCtx,
+		now:     time.Now,
 		onRetry: func(int, error) {},
 	}
 }
@@ -75,43 +81,83 @@ func (r *retrying) WriteTable(ctx context.Context, batch arrow.Table) error {
 }
 
 func (r *retrying) Flush(ctx context.Context) error {
-	deadline := time.Now().Add(r.policy.Deadline)
-	backoff := r.policy.InitialBackoff
+	// A policy bounds how many times the write is retried. It never licenses
+	// skipping the write: max_attempts of 0 must still deliver the batch, or
+	// the caller is told a flush happened that never did.
+	maxAttempts := r.policy.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
 
-	var err error
-	for attempt := 1; attempt <= r.policy.MaxAttempts; attempt++ {
-		err = r.inner.Flush(ctx)
+	maxBackoff := r.policy.MaxBackoff
+	if maxBackoff < 0 {
+		maxBackoff = 0
+	}
+	// Clamped before the first sleep, not after it. Applying the cap only on
+	// the way round the loop lets the first wait exceed the ceiling the
+	// operator set.
+	backoff := clamp(r.policy.InitialBackoff, maxBackoff)
+	deadline := r.now().Add(r.policy.Deadline)
+
+	for attempt := 1; ; attempt++ {
+		err := r.inner.Flush(ctx)
 		if err == nil {
 			return nil
 		}
+		// A rejected write or a bad config keeps its own code. Rewriting it as
+		// unreachable would tell a supervisor to retry a pipeline that cannot
+		// succeed.
 		if !retryable(err) {
 			return err
 		}
-		if attempt == r.policy.MaxAttempts {
-			break
+
+		if attempt >= maxAttempts {
+			return errs.Wrap(errs.CodeSinkUnreachable, err,
+				"sink still failing after %d attempts", attempt)
 		}
 
-		// Checked before sleeping rather than after, so a ladder that would
-		// wake past the deadline stops now instead of overrunning it.
-		if time.Now().Add(backoff).After(deadline) {
-			break
+		// Checked before sleeping, so a ladder that would wake past the
+		// deadline stops now instead of overrunning it. The clock, not the sum
+		// of the backoffs: a flush attempt that blocks on a TCP timeout spends
+		// the deadline too.
+		if r.now().Add(backoff).After(deadline) {
+			return errs.Wrap(errs.CodeSinkUnreachable, err,
+				"sink still failing after %d attempts, %s retry deadline reached",
+				attempt, r.policy.Deadline)
 		}
 
 		r.onRetry(attempt, err)
 		if sleepErr := r.sleep(ctx, backoff); sleepErr != nil {
+			// The context ended. Report the sink's failure rather than the
+			// cancellation: the sink is why this batch did not land.
 			return err
 		}
 
-		backoff *= 2
-		if backoff > r.policy.MaxBackoff {
-			backoff = r.policy.MaxBackoff
-		}
+		backoff = grow(backoff, maxBackoff)
 	}
+}
 
-	// The ladder ran out. Report the destination as unreachable so the exit
-	// code says "the dependency may come back" rather than "we have a bug".
-	return errs.Wrap(errs.CodeSinkUnreachable, err,
-		"sink still failing after %d attempts", r.policy.MaxAttempts)
+// clamp keeps a backoff inside [0, max]. A negative duration would make
+// time.Timer fire immediately and turn the ladder into a spin.
+func clamp(d, max time.Duration) time.Duration {
+	if d < 0 {
+		d = 0
+	}
+	if d > max {
+		d = max
+	}
+	return d
+}
+
+// grow doubles a backoff, stopping at max. The overflow check matters because
+// doubling past the int64 ceiling wraps negative, which clamp would then read
+// as zero and spin on.
+func grow(d, max time.Duration) time.Duration {
+	next := d * 2
+	if next < d {
+		next = max
+	}
+	return clamp(next, max)
 }
 
 // retryable reports whether another attempt could plausibly succeed.

@@ -44,11 +44,21 @@ func testPolicy() RetryPolicy {
 }
 
 // newTestRetry wraps inner and captures the backoffs instead of sleeping.
+//
+// The fake sleep advances a virtual clock by exactly what it was asked to
+// wait, and the policy's deadline is measured against that same clock. Faking
+// only the sleep would leave the deadline measured against a wall clock that
+// never moves, so it could never bind and every deadline test would pass
+// whatever the code did.
 func newTestRetry(inner *flakySink, p RetryPolicy) (*retrying, *[]time.Duration) {
 	var slept []time.Duration
+	clock := time.Now()
+
 	r := newRetrying(inner, p)
+	r.now = func() time.Time { return clock }
 	r.sleep = func(ctx context.Context, d time.Duration) error {
 		slept = append(slept, d)
+		clock = clock.Add(d)
 		return ctx.Err()
 	}
 	return r, &slept
