@@ -8,6 +8,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/errs"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type NoopSink struct{}
@@ -27,8 +28,22 @@ func (n *NoopSink) Batch() (arrow.Table, error) {
 	return nil, nil
 }
 
-func New(sink config.Sink, conn adbc.Connection) (core.Sink, error) {
-	return NewWithContext(context.Background(), sink, conn)
+// Option configures how a sink is built.
+type Option func(*options)
+
+type options struct {
+	meterProvider metric.MeterProvider
+}
+
+// WithMeterProvider supplies the provider the retry counter records through.
+// Without one the counter records nothing, which is what a pipeline started
+// with no --metrics wants.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(o *options) { o.meterProvider = mp }
+}
+
+func New(sink config.Sink, conn adbc.Connection, opts ...Option) (core.Sink, error) {
+	return NewWithContext(context.Background(), sink, conn, opts...)
 }
 
 // NewWithContext builds a sink and wraps it in a retry ladder where one helps.
@@ -41,59 +56,89 @@ func New(sink config.Sink, conn adbc.Connection) (core.Sink, error) {
 // failure there is not a network blip.
 //
 // That leaves the sinks that cross a network to somebody else's server.
-func NewWithContext(ctx context.Context, sink config.Sink, conn adbc.Connection) (core.Sink, error) {
-	built, wrap, err := buildSink(ctx, sink, conn)
+func NewWithContext(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Option) (core.Sink, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	built, err := buildSink(ctx, sink, conn)
 	if err != nil {
 		return nil, err
 	}
 
+	// Checked before the pipeline consumes anything, so a destination that is
+	// not there fails the start rather than the first flush.
+	if err := probe(ctx, built); err != nil {
+		return nil, err
+	}
+
 	policy := RetryPolicyFrom(sink.Retry)
-	if !wrap || !policy.Enabled() {
+	if !retriesHelp(sink.Type) || !policy.Enabled() {
 		return built, nil
 	}
-	return newRetrying(built, policy), nil
+
+	r := newRetrying(built, policy)
+	r.onRetry = retryCounter(o.meterProvider, sink.Type)
+	return r, nil
 }
 
-// buildSink constructs the sink and reports whether a retry ladder belongs
-// around it.
-func buildSink(ctx context.Context, sink config.Sink, conn adbc.Connection) (core.Sink, bool, error) {
+// retriesHelp reports whether a retry ladder belongs around a sink type.
+//
+// Only the sinks that cross a network to somebody else's server. Kafka is
+// excluded on purpose: it hands records to franz-go, which already retries a
+// produce with its own backoff, and a second ladder on top of that one delays
+// the report without improving delivery. Console, noop and sqlcommand reach
+// nothing that can be temporarily unavailable -- sqlcommand writes through the
+// pipeline's own DuckDB connection, and a failure there is not a blip.
+//
+// Kept as a function of the type alone so the policy is testable without
+// building a sink, which would dial.
+func retriesHelp(sinkType string) bool {
+	switch sinkType {
+	case "clickhouse", "iceberg":
+		return true
+	default:
+		return false
+	}
+}
+
+// buildSink constructs the sink itself. Whether a retry ladder belongs around
+// it is retriesHelp's decision, not this one's.
+func buildSink(ctx context.Context, sink config.Sink, conn adbc.Connection) (core.Sink, error) {
 	switch sink.Type {
 	case "noop":
-		return &NoopSink{}, false, nil
+		return &NoopSink{}, nil
 
 	case "console", "":
 		// The Python engine falls back to console for an unset type.
-		return NewConsoleSink(), false, nil
+		return NewConsoleSink(), nil
 
 	case "kafka":
 		if sink.Kafka == nil {
-			return nil, false, errs.New(errs.CodeSinkInvalid, "sink: kafka sink requires a kafka block")
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: kafka sink requires a kafka block")
 		}
-		s, err := NewKafkaSink(*sink.Kafka)
-		return s, false, err
+		return NewKafkaSink(*sink.Kafka)
 
 	case "sqlcommand":
 		if sink.SQLCommand == nil {
-			return nil, false, errs.New(errs.CodeSinkInvalid, "sink: sqlcommand sink requires a sqlcommand block")
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: sqlcommand sink requires a sqlcommand block")
 		}
-		s, err := NewSQLCommandSink(conn, sink.SQLCommand.SQL, sink.SQLCommand.Substitutions)
-		return s, false, err
+		return NewSQLCommandSink(conn, sink.SQLCommand.SQL, sink.SQLCommand.Substitutions)
 
 	case "clickhouse":
 		if sink.Clickhouse == nil {
-			return nil, false, errs.New(errs.CodeSinkInvalid, "sink: clickhouse sink requires a clickhouse block")
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: clickhouse sink requires a clickhouse block")
 		}
-		s, err := NewClickhouseSink(*sink.Clickhouse)
-		return s, true, err
+		return NewClickhouseSink(*sink.Clickhouse)
 
 	case "iceberg":
 		if sink.Iceberg == nil {
-			return nil, false, errs.New(errs.CodeSinkInvalid, "sink: iceberg sink requires an iceberg block")
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: iceberg sink requires an iceberg block")
 		}
-		s, err := NewIcebergSink(ctx, sink.Iceberg.CatalogName, sink.Iceberg.TableName)
-		return s, true, err
+		return NewIcebergSink(ctx, sink.Iceberg.CatalogName, sink.Iceberg.TableName)
 
 	default:
-		return nil, false, errs.New(errs.CodeSinkInvalid, "sink: %q not supported", sink.Type)
+		return nil, errs.New(errs.CodeSinkInvalid, "sink: %q not supported", sink.Type)
 	}
 }

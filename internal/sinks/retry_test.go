@@ -203,37 +203,40 @@ func isRetrying(s core.Sink) bool {
 // Kafka must not be wrapped. franz-go already retries a produce with its own
 // backoff, and a second ladder on top of that one delays the report without
 // improving delivery. The sinks reaching nothing remote gain nothing either.
-func TestNew_WrapsOnlyTheSinksThatCrossANetwork(t *testing.T) {
-	for _, tc := range []struct {
-		sink config.Sink
-		want bool
-	}{
-		{config.Sink{Type: "noop"}, false},
-		{config.Sink{Type: "console"}, false},
-		{config.Sink{Type: ""}, false},
-		{config.Sink{Type: "kafka", Kafka: &config.KafkaSink{
-			Brokers: []string{"localhost:9092"}, Topic: "t"}}, false},
-		{config.Sink{Type: "clickhouse", Clickhouse: &config.ClickhouseSink{
-			DSN: "clickhouse://localhost:8123/db", Table: "t"}}, true},
+func TestRetriesHelp_OnlyForSinksThatCrossANetwork(t *testing.T) {
+	for sinkType, want := range map[string]bool{
+		"clickhouse": true,
+		"iceberg":    true,
+		"kafka":      false,
+		"console":    false,
+		"":           false,
+		"noop":       false,
+		"sqlcommand": false,
 	} {
-		s, err := New(tc.sink, nil)
-		assert.NoError(t, err)
-		if got := isRetrying(s); got != tc.want {
-			t.Errorf("sink %q: wrapped=%v, want %v", tc.sink.Type, got, tc.want)
+		if got := retriesHelp(sinkType); got != want {
+			t.Errorf("sink %q: retriesHelp=%v, want %v", sinkType, got, want)
 		}
+	}
+}
+
+// The sinks that reach nothing remote are built without a ladder. These build
+// for real, so they also prove construction does not dial.
+func TestNew_LocalSinksAreNotWrapped(t *testing.T) {
+	for _, s := range []config.Sink{
+		{Type: "noop"},
+		{Type: "console"},
+		{Type: ""},
+	} {
+		built, err := New(s, nil)
+		assert.NoError(t, err)
+		assert.That(t, !isRetrying(built))
 	}
 }
 
 // max_attempts: 1 is how an operator turns retrying off.
 func TestNew_MaxAttemptsOneDisablesRetrying(t *testing.T) {
-	s, err := New(config.Sink{
-		Type:       "clickhouse",
-		Clickhouse: &config.ClickhouseSink{DSN: "clickhouse://localhost:8123/db", Table: "t"},
-		Retry:      &config.SinkRetry{MaxAttempts: 1},
-	}, nil)
-
-	assert.NoError(t, err)
-	assert.That(t, !isRetrying(s))
+	assert.That(t, !RetryPolicyFrom(&config.SinkRetry{MaxAttempts: 1}).Enabled())
+	assert.That(t, RetryPolicyFrom(&config.SinkRetry{MaxAttempts: 2}).Enabled())
 }
 
 // An omitted block takes the defaults rather than turning retrying off. One

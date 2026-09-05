@@ -47,6 +47,16 @@ tables:
             table: <string>
           # Console output sink configuration.
           console:
+          # Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.
+          retry:
+            # Total attempts, including the first. 1 disables retrying.
+            max_attempts: <integer>
+            # Wait before the first retry. Doubles each attempt.
+            initial_backoff_ms: <integer>
+            # Ceiling on the backoff.
+            max_backoff_ms: <integer>
+            # Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on.
+            deadline_seconds: <integer>
 # List of User-Defined Functions (UDFs) to be used in SQL queries.
 udfs:
   -
@@ -124,6 +134,16 @@ pipeline:
       table: <string>
     # Console output sink configuration.
     console:
+    # Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.
+    retry:
+      # Total attempts, including the first. 1 disables retrying.
+      max_attempts: <integer>
+      # Wait before the first retry. Doubles each attempt.
+      initial_backoff_ms: <integer>
+      # Ceiling on the backoff.
+      max_backoff_ms: <integer>
+      # Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on.
+      deadline_seconds: <integer>
   # Global error handling strategy for the pipeline.
   on_error:
     # Defines how errors should be handled.
@@ -159,6 +179,16 @@ pipeline:
         table: <string>
       # Console output sink configuration.
       console:
+      # Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.
+      retry:
+        # Total attempts, including the first. 1 disables retrying.
+        max_attempts: <integer>
+        # Wait before the first retry. Doubles each attempt.
+        initial_backoff_ms: <integer>
+        # Ceiling on the backoff.
+        max_backoff_ms: <integer>
+        # Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on.
+        deadline_seconds: <integer>
   # Where the pipeline keeps its DuckDB state. Absent means in-memory, and state is lost on a crash.
   state:
     # File backing the pipeline's DuckDB database. Window state and Kafka offsets are stored here and committed together.

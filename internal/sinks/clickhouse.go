@@ -181,7 +181,7 @@ func (s *ClickhouseSink) Flush(ctx context.Context) error {
 
 	batch, err := s.conn.PrepareBatch(ctx, s.insertStatement(schema))
 	if err != nil {
-		return errs.Wrap(errs.CodeSinkWriteFailed, err, "clickhouse sink: prepare batch")
+		return sinkError(err, "clickhouse sink: prepare batch")
 	}
 
 	// The prepared batch knows the target column types, which the Arrow
@@ -197,9 +197,15 @@ func (s *ClickhouseSink) Flush(ctx context.Context) error {
 	}
 
 	if err := batch.Send(); err != nil {
-		return errs.Wrap(errs.CodeSinkWriteFailed, err, "clickhouse sink: send batch")
+		return sinkError(err, "clickhouse sink: send batch")
 	}
 	return nil
+}
+
+// Probe dials the server. clickhouse.Open only validates options, so this is
+// the first time the pipeline learns whether the destination is there.
+func (s *ClickhouseSink) Probe(ctx context.Context) error {
+	return s.conn.Ping(ctx)
 }
 
 func (s *ClickhouseSink) Close() error {
