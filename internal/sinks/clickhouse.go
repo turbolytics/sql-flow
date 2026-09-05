@@ -134,7 +134,7 @@ func defaultClickhousePort(protocol clickhouse.Protocol, secure bool) string {
 	}
 }
 
-func (s *ClickhouseSink) WriteTable(batch arrow.Table) error {
+func (s *ClickhouseSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -150,7 +150,7 @@ func (s *ClickhouseSink) Batch() (arrow.Table, error) {
 	return nil, nil
 }
 
-func (s *ClickhouseSink) Flush() error {
+func (s *ClickhouseSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	tables := s.tables
 	s.tables = nil
@@ -179,10 +179,9 @@ func (s *ClickhouseSink) Flush() error {
 		}
 	}
 
-	ctx := context.Background()
 	batch, err := s.conn.PrepareBatch(ctx, s.insertStatement(schema))
 	if err != nil {
-		return errs.Wrap(errs.CodeSinkWriteFailed, err, "clickhouse sink: prepare batch")
+		return sinkError(err, "clickhouse sink: prepare batch")
 	}
 
 	// The prepared batch knows the target column types, which the Arrow
@@ -198,9 +197,15 @@ func (s *ClickhouseSink) Flush() error {
 	}
 
 	if err := batch.Send(); err != nil {
-		return errs.Wrap(errs.CodeSinkWriteFailed, err, "clickhouse sink: send batch")
+		return sinkError(err, "clickhouse sink: send batch")
 	}
 	return nil
+}
+
+// Probe dials the server. clickhouse.Open only validates options, so this is
+// the first time the pipeline learns whether the destination is there.
+func (s *ClickhouseSink) Probe(ctx context.Context) error {
+	return s.conn.Ping(ctx)
 }
 
 func (s *ClickhouseSink) Close() error {

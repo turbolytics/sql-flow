@@ -2,6 +2,7 @@ package sinks
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"os"
 	"sync"
@@ -24,7 +25,7 @@ func NewConsoleSinkTo(w io.Writer) *ConsoleSink {
 	return &ConsoleSink{out: bufio.NewWriter(w)}
 }
 
-func (s *ConsoleSink) WriteTable(batch arrow.Table) error {
+func (s *ConsoleSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	rows, err := tableRowsAsJSON(batch)
 	if err != nil {
 		return err
@@ -45,7 +46,7 @@ func (s *ConsoleSink) WriteTable(batch arrow.Table) error {
 	return nil
 }
 
-func (s *ConsoleSink) Flush() error {
+func (s *ConsoleSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.out.Flush()

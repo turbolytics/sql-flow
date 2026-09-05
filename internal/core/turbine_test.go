@@ -105,14 +105,14 @@ type fakeSink struct {
 	released bool
 }
 
-func (s *fakeSink) WriteTable(batch arrow.Table) error {
+func (s *fakeSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rows += batch.NumRows()
 	return nil
 }
 
-func (s *fakeSink) Flush() error {
+func (s *fakeSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.flushes++
@@ -193,7 +193,7 @@ type recordingSink struct {
 	flushes int
 }
 
-func (s *recordingSink) WriteTable(batch arrow.Table) error {
+func (s *recordingSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -212,7 +212,7 @@ func (s *recordingSink) WriteTable(batch arrow.Table) error {
 	return nil
 }
 
-func (s *recordingSink) Flush() error {
+func (s *recordingSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.flushes++
@@ -540,9 +540,9 @@ type orderingSink struct {
 	fail   bool
 }
 
-func (s *orderingSink) WriteTable(batch arrow.Table) error { return nil }
+func (s *orderingSink) WriteTable(ctx context.Context, batch arrow.Table) error { return nil }
 
-func (s *orderingSink) Flush() error {
+func (s *orderingSink) Flush(ctx context.Context) error {
 	if s.fail {
 		*s.events = append(*s.events, "flush-failed")
 		return errors.New("sink unreachable")

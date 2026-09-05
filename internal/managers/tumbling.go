@@ -115,12 +115,12 @@ func (m *Tumbling) Poll(ctx context.Context) error {
 
 	m.logger.Debug("publishing closed windows", zap.Int64("rows", closed.NumRows()))
 
-	if err := m.sink.WriteTable(closed); err != nil {
+	if err := m.sink.WriteTable(ctx, closed); err != nil {
 		return fmt.Errorf("writing closed windows: %w", err)
 	}
 	// Flushed before deleting, so a failure leaves the rows in the table to be
 	// retried rather than dropping them.
-	if err := m.sink.Flush(); err != nil {
+	if err := m.sink.Flush(ctx); err != nil {
 		return fmt.Errorf("flushing closed windows: %w", err)
 	}
 

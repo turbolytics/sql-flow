@@ -182,6 +182,37 @@
                         "type": "object",
                         "description": "Console output sink configuration.",
                         "properties": {}
+                      },
+                      "retry": {
+                        "type": "object",
+                        "description": "Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.",
+                        "properties": {
+                          "max_attempts": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 4,
+                            "description": "Total attempts, including the first. 1 disables retrying."
+                          },
+                          "initial_backoff_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 100,
+                            "description": "Wait before the first retry. Doubles each attempt."
+                          },
+                          "max_backoff_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 2000,
+                            "description": "Ceiling on the backoff."
+                          },
+                          "deadline_seconds": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 10,
+                            "description": "Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on."
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -536,6 +567,37 @@
               "type": "object",
               "description": "Console output sink configuration.",
               "properties": {}
+            },
+            "retry": {
+              "type": "object",
+              "description": "Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.",
+              "properties": {
+                "max_attempts": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 4,
+                  "description": "Total attempts, including the first. 1 disables retrying."
+                },
+                "initial_backoff_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 100,
+                  "description": "Wait before the first retry. Doubles each attempt."
+                },
+                "max_backoff_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 2000,
+                  "description": "Ceiling on the backoff."
+                },
+                "deadline_seconds": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 10,
+                  "description": "Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on."
+                }
+              },
+              "additionalProperties": false
             }
           },
           "required": [
@@ -678,6 +740,37 @@
                   "type": "object",
                   "description": "Console output sink configuration.",
                   "properties": {}
+                },
+                "retry": {
+                  "type": "object",
+                  "description": "Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 4,
+                      "description": "Total attempts, including the first. 1 disables retrying."
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 100,
+                      "description": "Wait before the first retry. Doubles each attempt."
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 2000,
+                      "description": "Ceiling on the backoff."
+                    },
+                    "deadline_seconds": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 10,
+                      "description": "Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on."
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": [

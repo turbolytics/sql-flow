@@ -50,7 +50,7 @@ func NewKafkaSink(conf config.KafkaSink) (*KafkaSink, error) {
 	return &KafkaSink{client: client, topic: conf.Topic}, nil
 }
 
-func (s *KafkaSink) WriteTable(batch arrow.Table) error {
+func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	rows, err := tableRowsAsJSON(batch)
 	if err != nil {
 		return err
@@ -78,7 +78,7 @@ func (s *KafkaSink) WriteTable(batch arrow.Table) error {
 
 // Flush blocks until every buffered record has been acknowledged, so a
 // batch is durable before its source offsets are committed.
-func (s *KafkaSink) Flush() error {
+func (s *KafkaSink) Flush(ctx context.Context) error {
 	if err := s.client.Flush(context.Background()); err != nil {
 		return err
 	}

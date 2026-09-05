@@ -288,7 +288,10 @@ func NewCommand() *cobra.Command {
 				}
 			}
 
-			sink, err := sinks.New(conf.Pipeline.Sink, conn)
+			// The signal context, so a SIGTERM arriving while the sink dials
+			// its destination stops the start instead of waiting it out.
+			sink, err := sinks.NewWithContext(ctx, conf.Pipeline.Sink, conn,
+				sinks.WithMeterProvider(meterProvider))
 			if err != nil {
 				return err
 			}
