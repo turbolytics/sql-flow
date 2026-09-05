@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestNew_Websocket(t *testing.T) {
+func TestSinkRetry_NewWebsocket(t *testing.T) {
 	s, err := New(config.Source{
 		Type:      "websocket",
 		Websocket: &config.WebsocketSource{URI: "ws://localhost:1234/subscribe"},
@@ -27,12 +27,12 @@ func TestNew_Websocket(t *testing.T) {
 	assert.That(t, ok)
 }
 
-func TestNew_WebsocketRequiresURI(t *testing.T) {
+func TestSinkRetry_NewWebsocketRequiresURI(t *testing.T) {
 	_, err := New(config.Source{Type: "websocket"}, zap.NewNop(), nil)
 	assert.Error(t, err)
 }
 
-func TestNew_Webhook(t *testing.T) {
+func TestSinkRetry_NewWebhook(t *testing.T) {
 	s, err := New(config.Source{
 		Type: "webhook",
 		Webhook: &config.WebhookSource{
@@ -53,7 +53,7 @@ func TestNew_Webhook(t *testing.T) {
 
 // signature_type is what turns HMAC verification on, matching
 // sqlflow/sources/__init__.py.
-func TestNew_WebhookWithoutSignatureType(t *testing.T) {
+func TestSinkRetry_NewWebhookWithoutSignatureType(t *testing.T) {
 	s, err := New(config.Source{
 		Type:    "webhook",
 		Webhook: &config.WebhookSource{},
@@ -67,7 +67,7 @@ func TestNew_WebhookWithoutSignatureType(t *testing.T) {
 
 // The webhook source is the only one that records its own metrics, so the
 // provider has to survive the trip through New.
-func TestNew_WebhookRecordsRequestMetrics(t *testing.T) {
+func TestSinkRetry_NewWebhookRecordsRequestMetrics(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	s, err := New(
 		config.Source{Type: "webhook", Webhook: &config.WebhookSource{}},
@@ -101,7 +101,7 @@ func TestNew_WebhookRecordsRequestMetrics(t *testing.T) {
 	assert.That(t, found)
 }
 
-func TestNew_UnsupportedSource(t *testing.T) {
+func TestSinkRetry_NewUnsupportedSource(t *testing.T) {
 	_, err := New(config.Source{Type: "carrier-pigeon"}, zap.NewNop(), nil)
 	assert.Error(t, err)
 }

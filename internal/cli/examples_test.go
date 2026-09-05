@@ -47,11 +47,14 @@ func exampleConfigs(t *testing.T) []string {
 //
 // Sources are deliberately not constructed: a kafka source dials a broker and
 // a webhook source binds a port, neither of which belongs in a unit test.
-func TestExampleConfigs_BuildRealComponents(t *testing.T) {
-	// Values the integration tests supply for configs with no default.
+func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
+	// Values the release tests supply. Every example now names its variables
+	// with the SQLFLOW_ prefix, which is the only form an environment can
+	// reach -- these are passed as overrides here only because this test never
+	// runs a process.
 	overrides := map[string]string{
-		"catalog_name": "test_catalog",
-		"table_name":   "default.test_table",
+		"SQLFLOW_CATALOG_NAME": "test_catalog",
+		"SQLFLOW_TABLE_NAME":   "default.test_table",
 	}
 
 	for _, path := range exampleConfigs(t) {

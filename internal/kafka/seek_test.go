@@ -11,7 +11,7 @@ import (
 	"github.com/zeebo/assert"
 )
 
-func TestOffsetSeeker_NoMarksLeavesTheGroupOffsetsAlone(t *testing.T) {
+func TestStateOffsets_SeekerNoMarksLeavesTheGroupOffsetsAlone(t *testing.T) {
 	s := NewOffsetSeeker()
 	fetched := map[string]map[int32]kgo.Offset{
 		"events": {0: kgo.NewOffset().At(60)},
@@ -24,7 +24,7 @@ func TestOffsetSeeker_NoMarksLeavesTheGroupOffsetsAlone(t *testing.T) {
 
 // A stored mark names the last offset processed, so consumption resumes at the
 // next one.
-func TestOffsetSeeker_MarkOverridesTheGroupOffset(t *testing.T) {
+func TestStateOffsets_SeekerMarkOverridesTheGroupOffset(t *testing.T) {
 	s := NewOffsetSeeker()
 	marks := core.NewMarks()
 	marks.Advance("events", 0, core.Mark{Offset: 9, LeaderEpoch: 4})
@@ -43,7 +43,7 @@ func TestOffsetSeeker_MarkOverridesTheGroupOffset(t *testing.T) {
 // franz-go assigns exactly the map Adjust returns, so a partition invented
 // here becomes a partition this member consumes without the group ever
 // assigning it -- two consumers reading the same partition.
-func TestOffsetSeeker_NeverAddsAnUnassignedPartition(t *testing.T) {
+func TestStateOffsets_SeekerNeverAddsAnUnassignedPartition(t *testing.T) {
 	s := NewOffsetSeeker()
 	marks := core.NewMarks()
 	marks.Advance("events", 0, core.Mark{Offset: 9})
@@ -63,7 +63,7 @@ func TestOffsetSeeker_NeverAddsAnUnassignedPartition(t *testing.T) {
 
 // A partition the pipeline holds no mark for keeps the group's own offset, so
 // a pipeline that gains a partition still follows auto_offset_reset for it.
-func TestOffsetSeeker_UnmarkedPartitionKeepsTheGroupOffset(t *testing.T) {
+func TestStateOffsets_SeekerUnmarkedPartitionKeepsTheGroupOffset(t *testing.T) {
 	s := NewOffsetSeeker()
 	marks := core.NewMarks()
 	marks.Advance("events", 0, core.Mark{Offset: 9})
@@ -86,7 +86,7 @@ func TestOffsetSeeker_UnmarkedPartitionKeepsTheGroupOffset(t *testing.T) {
 // UNKNOWN_MEMBER_ID, 3 times out of 3, and the pipeline crash-looped.
 //
 // SeekTo must therefore reach Kafka not at all.
-func TestSource_SeekToIssuesNoCommit(t *testing.T) {
+func TestSourceKafka_SeekToIssuesNoCommit(t *testing.T) {
 	broker := brokerOrSkip(t)
 	topic := fmt.Sprintf("turbine-seek-nocommit-%d", time.Now().UnixNano())
 	client := newTestClient(t, broker, topic, topic)
@@ -108,7 +108,7 @@ func TestSource_SeekToIssuesNoCommit(t *testing.T) {
 
 // End to end: the state database disagrees with the consumer group, and the
 // state database wins.
-func TestSource_SeekToResumesFromDurableOffsets(t *testing.T) {
+func TestSourceKafka_SeekToResumesFromDurableOffsets(t *testing.T) {
 	broker := brokerOrSkip(t)
 	topic := fmt.Sprintf("turbine-seek-resume-%d", time.Now().UnixNano())
 

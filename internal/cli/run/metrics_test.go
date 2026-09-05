@@ -14,7 +14,7 @@ import (
 // DuckDB takes an exclusive lock on the state file, so a second process
 // cannot read it while the pipeline holds it -- not even read-only. A running
 // pipeline therefore has to serve its own stats.
-func TestStatsHandler_ReportsState(t *testing.T) {
+func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 	want := &core.StateStats{
 		Path:      "/state/state.db",
 		SizeBytes: 4096,
@@ -47,7 +47,7 @@ func TestStatsHandler_ReportsState(t *testing.T) {
 
 // A pipeline with no state path still answers, with a null state block. The
 // endpoint stays useful for the counters even when nothing is durable.
-func TestStatsHandler_NullStateWithoutAStateDatabase(t *testing.T) {
+func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *testing.T) {
 	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return nil, nil })
 
 	rec := httptest.NewRecorder()
@@ -62,7 +62,7 @@ func TestStatsHandler_NullStateWithoutAStateDatabase(t *testing.T) {
 // A failure reading state is reported as a server error rather than an empty
 // success, so a monitoring system sees the problem instead of a healthy-looking
 // blank.
-func TestStatsHandler_ReportsCollectionFailure(t *testing.T) {
+func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T) {
 	mux := newHTTPMux(nil, func() (*core.StateStats, error) {
 		return nil, errors.New("state database unreadable")
 	})
@@ -74,7 +74,7 @@ func TestStatsHandler_ReportsCollectionFailure(t *testing.T) {
 
 // With no stats provider at all -- metrics enabled but state unwired -- the
 // endpoint must not be registered as a half-working route.
-func TestStatsHandler_AbsentWithoutAProvider(t *testing.T) {
+func TestObservabilityMetrics_StatsHandler_AbsentWithoutAProvider(t *testing.T) {
 	mux := newHTTPMux(nil, nil)
 
 	rec := httptest.NewRecorder()

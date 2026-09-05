@@ -48,7 +48,7 @@ func newMeteredRetry(inner *flakySink, p RetryPolicy) (*retrying, sdkmetric.Read
 }
 
 // Two failures then a success is two retries, counted before the batch lands.
-func TestMetrics_CountsEveryRetry(t *testing.T) {
+func TestSinkRetry_MetricsCountsEveryRetry(t *testing.T) {
 	inner := &flakySink{failures: 2, err: errs.New(errs.CodeSinkUnreachable, "refused")}
 	r, reader := newMeteredRetry(inner, testPolicy())
 
@@ -59,7 +59,7 @@ func TestMetrics_CountsEveryRetry(t *testing.T) {
 
 // A sink that works records nothing, so a nonzero counter always means the
 // destination is struggling.
-func TestMetrics_SuccessCountsNoRetries(t *testing.T) {
+func TestSinkRetry_MetricsSuccessCountsNoRetries(t *testing.T) {
 	inner := &flakySink{}
 	r, reader := newMeteredRetry(inner, testPolicy())
 
@@ -69,7 +69,7 @@ func TestMetrics_SuccessCountsNoRetries(t *testing.T) {
 }
 
 // A rejected write is not retried, so it must not inflate the retry counter.
-func TestMetrics_NonRetryableCountsNoRetries(t *testing.T) {
+func TestSinkRetry_MetricsNonRetryableCountsNoRetries(t *testing.T) {
 	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkWriteFailed, "no such column")}
 	r, reader := newMeteredRetry(inner, testPolicy())
 
@@ -80,7 +80,7 @@ func TestMetrics_NonRetryableCountsNoRetries(t *testing.T) {
 
 // An exhausted ladder counts every retry it made, which is one fewer than the
 // attempts: the last attempt is not followed by another.
-func TestMetrics_ExhaustedLadderCountsItsRetries(t *testing.T) {
+func TestSinkRetry_MetricsExhaustedLadderCountsItsRetries(t *testing.T) {
 	p := testPolicy()
 	p.MaxAttempts = 4
 	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkUnreachable, "refused")}
@@ -93,7 +93,7 @@ func TestMetrics_ExhaustedLadderCountsItsRetries(t *testing.T) {
 
 // A nil provider must not panic. A pipeline started without --metrics still
 // retries.
-func TestMetrics_NilProviderIsSafe(t *testing.T) {
+func TestSinkRetry_MetricsNilProviderIsSafe(t *testing.T) {
 	inner := &flakySink{failures: 1, err: errs.New(errs.CodeSinkUnreachable, "refused")}
 	r, _ := newTestRetry(inner, testPolicy())
 	r.onRetry = retryCounter(nil, "clickhouse")

@@ -46,7 +46,7 @@ func readBody(t *testing.T, resp *http.Response) string {
 
 // Status codes and response bodies are the Python engine's, see
 // tests/sources/test_webhook.py.
-func TestSource_EventsHMACValidation(t *testing.T) {
+func TestSourceWebhook_EventsHMACValidation(t *testing.T) {
 	body := []byte(`{"key": "value"}`)
 	conf := &HMAC{Header: "X-HMAC-Signature", SigKey: "sha256", Secret: "test_secret"}
 
@@ -127,7 +127,7 @@ func TestSource_EventsHMACValidation(t *testing.T) {
 	}
 }
 
-func TestSource_DeliversBodyToStream(t *testing.T) {
+func TestSourceWebhook_DeliversBodyToStream(t *testing.T) {
 	s, err := NewSource()
 	assert.NoError(t, err)
 	defer s.Close()
@@ -151,7 +151,7 @@ func TestSource_DeliversBodyToStream(t *testing.T) {
 
 // The Python source queues at most one message, so a second delivery waits
 // for the pipeline to consume the first.
-func TestSource_BackpressureHoldsSecondRequest(t *testing.T) {
+func TestSourceWebhook_BackpressureHoldsSecondRequest(t *testing.T) {
 	s, err := NewSource()
 	assert.NoError(t, err)
 	defer s.Close()
@@ -190,7 +190,7 @@ func TestSource_BackpressureHoldsSecondRequest(t *testing.T) {
 	assert.Equal(t, "second", string(batch[0].Value))
 }
 
-func TestSource_CloseReleasesBlockedRequest(t *testing.T) {
+func TestSourceWebhook_CloseReleasesBlockedRequest(t *testing.T) {
 	s, err := NewSource()
 	assert.NoError(t, err)
 
@@ -219,7 +219,7 @@ func TestSource_CloseReleasesBlockedRequest(t *testing.T) {
 	}
 }
 
-func TestSource_RoutesOnlyPostEvents(t *testing.T) {
+func TestSourceWebhook_RoutesOnlyPostEvents(t *testing.T) {
 	s, err := NewSource()
 	assert.NoError(t, err)
 	defer s.Close()
@@ -237,7 +237,7 @@ func TestSource_RoutesOnlyPostEvents(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
-func TestSource_StartServesOnItsOwnListener(t *testing.T) {
+func TestSourceWebhook_StartServesOnItsOwnListener(t *testing.T) {
 	s, err := NewSource(WithAddr("127.0.0.1:0"))
 	assert.NoError(t, err)
 	assert.NoError(t, s.Start())
@@ -256,7 +256,7 @@ func TestSource_StartServesOnItsOwnListener(t *testing.T) {
 	}
 }
 
-func TestSource_StartReportsBindFailure(t *testing.T) {
+func TestSourceWebhook_StartReportsBindFailure(t *testing.T) {
 	first, err := NewSource(WithAddr("127.0.0.1:0"))
 	assert.NoError(t, err)
 	assert.NoError(t, first.Start())
@@ -267,13 +267,13 @@ func TestSource_StartReportsBindFailure(t *testing.T) {
 	assert.Error(t, second.Start())
 }
 
-func TestSource_DefaultsToPythonHostAndPort(t *testing.T) {
+func TestSourceWebhook_DefaultsToPythonHostAndPort(t *testing.T) {
 	s, err := NewSource()
 	assert.NoError(t, err)
 	assert.Equal(t, "0.0.0.0:8001", s.addr)
 }
 
-func TestSource_CloseIsIdempotent(t *testing.T) {
+func TestSourceWebhook_CloseIsIdempotent(t *testing.T) {
 	s, err := NewSource(WithAddr("127.0.0.1:0"))
 	assert.NoError(t, err)
 	assert.NoError(t, s.Start())

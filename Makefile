@@ -34,6 +34,33 @@ test: test-go test-release
 test-image: sqlflow-image
 	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) pytest tests/release
 
+# Regenerates docs/coverage/matrix.md from both suites' output.
+#
+# The matrix is checked in, and CI regenerates it and diffs. That is what makes
+# a coverage change visible in review: adding a feature without a test, or a
+# test quietly starting to skip, both show up as a diff on a tracked file
+# rather than as nothing at all.
+.PHONY: coverage-matrix
+coverage-matrix:
+	@mkdir -p .coverage
+	-CGO_ENABLED=1 go test -json ./... > .coverage/go.json 2>&1
+	-SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
+		SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
+		TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
+		pytest tests/release -q
+	python3 scripts/coverage_matrix.py \
+		--go .coverage/go.json --pytest .coverage/pytest.json --write --check
+
+# Fails when the checked-in matrix is stale, the way a golden file does.
+.PHONY: coverage-matrix-check
+coverage-matrix-check: coverage-matrix
+	@git diff --exit-code docs/coverage/matrix.md || { \
+		echo ""; \
+		echo "docs/coverage/matrix.md is out of date."; \
+		echo "Run 'make coverage-matrix' and commit the result."; \
+		exit 1; \
+	}
+
 .PHONY: test-release
 test-release: sqlflow-image
 	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \

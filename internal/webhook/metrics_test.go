@@ -42,7 +42,7 @@ func drain(s *Source) {
 
 // Names, units and descriptions come from sqlflow/sources/webhook.py, where
 // the meter is created as 'sqlflow.sources.http'.
-func TestMetrics_MatchPythonInstruments(t *testing.T) {
+func TestSinkRetry_MetricsMatchPythonInstruments(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	s, err := NewSource(WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
 	assert.NoError(t, err)
@@ -66,7 +66,7 @@ func TestMetrics_MatchPythonInstruments(t *testing.T) {
 
 // The Python middleware wraps the whole app and attributes every response by
 // its status code, so rejected and unrouted requests are counted too.
-func TestMetrics_CountRequestsByStatusCode(t *testing.T) {
+func TestSinkRetry_MetricsCountRequestsByStatusCode(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	s, err := NewSource(
 		WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))),
@@ -105,7 +105,7 @@ func TestMetrics_CountRequestsByStatusCode(t *testing.T) {
 	assert.Equal(t, int64(1), counts["404"])
 }
 
-func TestMetrics_RecordRequestDuration(t *testing.T) {
+func TestSinkRetry_MetricsRecordRequestDuration(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	s, err := NewSource(WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
 	assert.NoError(t, err)
@@ -133,7 +133,7 @@ func TestMetrics_RecordRequestDuration(t *testing.T) {
 
 // A source built without a provider must still serve, so the request path
 // needs no nil checks.
-func TestMetrics_NoProviderRecordsNothing(t *testing.T) {
+func TestSinkRetry_MetricsNoProviderRecordsNothing(t *testing.T) {
 	s, err := NewSource()
 	assert.NoError(t, err)
 	defer s.Close()

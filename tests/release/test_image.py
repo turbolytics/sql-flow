@@ -17,12 +17,17 @@ import os
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import duckdb
+import pyarrow.dataset as ds
 import pytest
 import requests
 from confluent_kafka import Producer
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import NestedField, StringType, TimestampType
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.network import Network
 from testcontainers.core.waiting_utils import wait_for_logs
@@ -57,6 +62,121 @@ def image():
     )
 
     yield name
+
+
+@dataclass
+class Stack:
+    """The backing services the pipeline tests share.
+
+    `bootstrap` is reachable from this test process; `internal` is the alias
+    the container resolves. They are different addresses for the same broker.
+    """
+    network: Network
+    bootstrap: str
+    internal: str = "kafka:9092"
+
+
+@pytest.fixture(scope="module")
+def stack():
+    """One broker and one network for the whole module.
+
+    Each test used to start its own KafkaContainer. Four of them at 10-20
+    seconds each dominated the suite, and nothing needed the isolation: every
+    test derives its topics and group from the clock, so they cannot collide.
+    """
+    network = Network().create()
+    kafka = KafkaContainer()
+    kafka.with_network(network)
+    kafka.with_network_aliases("kafka")
+    kafka.start()
+    try:
+        yield Stack(network=network, bootstrap=kafka.get_bootstrap_server())
+    finally:
+        kafka.stop()
+        # A test that started its own container on this network -- the
+        # ClickHouse one does -- may still be attached, and Docker refuses to
+        # remove a network with a live endpoint. Ryuk reaps it either way, so
+        # a failure here must not fail the run: the tests have already passed
+        # by the time this executes.
+        try:
+            network.remove()
+        except Exception as exc:  # noqa: BLE001 - teardown must not mask results
+            print(f"leaving the test network for ryuk to reap: {exc}")
+
+
+def unique(prefix):
+    """A topic or group name no other test in this run will use."""
+    return f"{prefix}-{int(time.time() * 1000)}"
+
+
+def run_pipeline(image, stack, config, env=None, volumes=None, max_msgs=None,
+                 timeout=180, expect_exit=0):
+    """Run one pipeline to completion in the image and return its stats.
+
+    This is the seam the deleted Python integration suite had in engines.py.
+    That suite ran ./bin/sqlflow directly; this runs the published image, so
+    the entrypoint and the baked-in libduckdb are covered too.
+    """
+    with tempfile.TemporaryDirectory() as statsdir:
+        os.chmod(statsdir, 0o777)
+
+        container = DockerContainer(image) \
+            .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+            .with_volume_mapping(statsdir, "/stats", "rw") \
+            .with_network(stack.network) \
+            .with_env("SQLFLOW_KAFKA_BROKERS", stack.internal)
+
+        # Every shipped config hardcoded `group_id: test`. One broker for the
+        # whole module means every test would otherwise join that same group,
+        # and a rebalance in one would move partitions out from under another.
+        # The deleted integration suite worked around this by deleting the
+        # group before each test; namespacing it removes the shared state
+        # instead. A caller that needs a stable group across two runs -- the
+        # restart test does, to resume from its committed offset -- passes one.
+        env = dict(env or {})
+        env.setdefault("SQLFLOW_GROUP_ID", unique(config.replace(".yml", "")))
+
+        for key, value in env.items():
+            container = container.with_env(key, str(value))
+        for host_path, container_path in (volumes or {}).items():
+            container = container.with_volume_mapping(host_path, container_path, "rw")
+
+        command = (f"run /tmp/conf/config/examples/{config} "
+                   f"--stats-json /stats/stats.json")
+        if max_msgs is not None:
+            command += f" --max-msgs={max_msgs}"
+        container = container.with_command(command)
+
+        container.start()
+        try:
+            wrapped = container.get_wrapped_container()
+            code = wrapped.wait(timeout=timeout)["StatusCode"]
+            logs = container.get_logs()
+            assert code == expect_exit, (
+                f"pipeline exited {code}, expected {expect_exit}\n"
+                f"--- stdout ---\n{logs[0].decode()}\n"
+                f"--- stderr ---\n{logs[1].decode()}"
+            )
+            with open(os.path.join(statsdir, "stats.json")) as fh:
+                return json.load(fh)
+        finally:
+            container.stop()
+
+
+def assert_all_messages_accounted_for(stats, published, rows, count_field):
+    """Assert no input message was silently dropped.
+
+    Consuming N messages is not evidence of processing them: a sink can drop
+    rows, a batch can fail after its offsets commit, and a final partial batch
+    can be lost at shutdown. These pipelines aggregate, so the row count alone
+    cannot show completeness -- the per-group counts have to add back up to
+    the number published.
+    """
+    assert stats["messages_consumed"] == published, (
+        f'consumed {stats["messages_consumed"]}, published {published}')
+    total = sum(row[count_field] for row in rows)
+    assert total == published, (
+        f"aggregate counts sum to {total}, published {published}")
 
 
 def parse_rows(stdout):
@@ -114,7 +234,7 @@ def run_image(image, command, volumes=None, env=None):
     return result.returncode, result.stdout, result.stderr
 
 
-def test_sqlflow_docker_invoke_readme_example(image):
+def test_handler_inferred_mem_invoke_renders_rows(image):
     """The README quickstart, run against the image.
 
     The Go engine's console sink emits one JSON object per line where the
@@ -145,7 +265,7 @@ def test_sqlflow_docker_version(image):
     )
 
 
-def test_sqlflow_docker_config_validate(image):
+def test_config_validation_accepts_a_shipped_example(image):
     """config validate works with no libduckdb setup beyond the image."""
     stdout, stderr = run_docker_container(
         image, "config validate /tmp/conf/config/examples/basic.agg.mem.yml")
@@ -164,52 +284,34 @@ def test_sqlflow_docker_config_validate(image):
     assert expected == container.get_logs()
     '''
 
-def test_basic_agg_mem_readme_example(image):
+def test_handler_inferred_mem_aggregates_every_message(image, stack):
     num_messages = 1000
-    in_topic = 'input-simple-agg-mem'
-    out_topic = 'output-simple-agg-mem'
+    in_topic = unique('input-simple-agg-mem')
+    out_topic = unique('output-simple-agg-mem')
 
-    network = Network().create()
-
-    kafka_ctr = KafkaContainer()
-    kafka_ctr.with_network(network)
-    kafka_ctr.with_network_aliases("kafka")
-    kafka_ctr.start()
-
-    bootstrap_server = kafka_ctr.get_bootstrap_server()
-
-    kf = KafkaFaker(
-        bootstrap_servers=bootstrap_server,
+    KafkaFaker(
+        bootstrap_servers=stack.bootstrap,
         num_messages=num_messages,
         topic=in_topic,
-    )
-    kf.publish()
+    ).publish()
 
-    sqlflow = DockerContainer(image) \
-        .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
-        .with_env("SQLFLOW_KAFKA_BROKERS", 'kafka:9092') \
-        .with_network(network) \
-        .with_command("run /tmp/conf/config/examples/basic.agg.mem.yml  --max-msgs-to-process=1000")
-
-    sqlflow.start()
-    # Each engine words its own completion differently -- the Python engine
-    # logs "consumer loop ending", the Go engine "max messages consumed" --
-    # so this waits for whichever the image under test emits.
-    wait_for_logs(
-        sqlflow,
-        "consumer loop ending|max messages consumed",
-        timeout=60,
+    stats = run_pipeline(
+        image, stack, "basic.agg.mem.yml",
+        env={"SQLFLOW_INPUT_TOPIC": in_topic, "SQLFLOW_OUTPUT_TOPIC": out_topic},
+        max_msgs=num_messages,
     )
 
-    messages = read_all_kafka_messages(bootstrap_server, out_topic)
+    messages = read_all_kafka_messages(stack.bootstrap, out_topic)
 
     # One batch of 1000 messages aggregated to one row per city, published as
-    # one Kafka message each.
+    # one Kafka message each. Their counts must add back up to every message
+    # published, which a row count alone cannot show.
     assert 5 == len(messages), messages
+    assert_all_messages_accounted_for(stats, num_messages, messages, 'city_count')
 
 
 
-def test_sqlflow_docker_bluesky_data_fidelity(image):
+def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):
     """Arrays, unioned struct fields and decoded JSON escapes, via the image.
 
     The other invoke case uses a flat scalar fixture, so it passes on an
@@ -271,7 +373,7 @@ def _wait_for_clickhouse(url, timeout=90):
         f"clickhouse did not answer within {timeout}s; last attempt: {last}")
 
 
-def test_clickhouse_sink(image):
+def test_sink_clickhouse_inserts_rows(image, stack, request):
     """A sink other than console/kafka, exercised through the image.
 
     Every sink silently no-oped at one point in this engine's history, and
@@ -279,15 +381,10 @@ def test_clickhouse_sink(image):
     other image test writes to a database, so that whole class of failure
     ships unnoticed.
     """
-    in_topic = "input-clickhouse-sink-user-actions"
+    in_topic = unique("input-clickhouse-sink-user-actions")
     num_messages = 500
 
-    network = Network().create()
-
-    kafka_ctr = KafkaContainer()
-    kafka_ctr.with_network(network)
-    kafka_ctr.with_network_aliases("kafka")
-    kafka_ctr.start()
+    network = stack.network
 
     clickhouse_ctr = DockerContainer("clickhouse/clickhouse-server:24.8-alpine")
     clickhouse_ctr.with_network(network)
@@ -298,6 +395,9 @@ def test_clickhouse_sink(image):
     # ClickHouse has no password, and this config's dsn carries no credentials.
     clickhouse_ctr.with_env("CLICKHOUSE_SKIP_USER_SETUP", "1")
     clickhouse_ctr.start()
+    # Stopped explicitly: the network is now shared with the whole module, and
+    # Docker will not remove a network that still has an endpoint attached.
+    request.addfinalizer(clickhouse_ctr.stop)
 
     ch_url = (
         f"http://{clickhouse_ctr.get_container_host_ip()}:"
@@ -324,7 +424,7 @@ def test_clickhouse_sink(image):
 
     # KafkaFaker emits city events; this config's handler selects the
     # user_actions shape, so the messages are published directly.
-    producer = Producer({"bootstrap.servers": kafka_ctr.get_bootstrap_server()})
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
     actions = ["click", "view", "purchase"]
     browsers = ["chrome", "firefox", "safari"]
     for i in range(num_messages):
@@ -340,6 +440,8 @@ def test_clickhouse_sink(image):
         .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
         .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
         .with_env("SQLFLOW_CLICKHOUSE_DSN", "clickhouse://clickhouse:8123/test") \
+        .with_env("SQLFLOW_INPUT_TOPIC", in_topic) \
+        .with_env("SQLFLOW_GROUP_ID", in_topic) \
         .with_network(network) \
         .with_command(
             "run /tmp/conf/config/examples/kafka.clickhouse.yml "
@@ -359,7 +461,7 @@ def test_clickhouse_sink(image):
         "SELECT count(DISTINCT action) FROM test.user_actions") == str(len(actions))
 
 
-def test_window_state_survives_a_restart(image):
+def test_state_durability_survives_a_restart(image, stack):
     """A crash mid-window must not lose the aggregate.
 
     Before durable state, 2,000 events folded into an open window were lost
@@ -372,13 +474,8 @@ def test_window_state_survives_a_restart(image):
     topic = f"stateful-window-{int(time.time())}"
     num_messages = 2000
 
-    network = Network().create()
-    kafka_ctr = KafkaContainer()
-    kafka_ctr.with_network(network)
-    kafka_ctr.with_network_aliases("kafka")
-    kafka_ctr.start()
-
-    producer = Producer({"bootstrap.servers": kafka_ctr.get_bootstrap_server()})
+    network = stack.network
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
     # The current hour, so the window is still open for the length of the run
     # and recovery is observed on a partial aggregate. A fixed timestamp goes
     # stale: once it is more than an hour old the manager legitimately closes
@@ -446,7 +543,7 @@ def test_window_state_survives_a_restart(image):
         f"stored offset should be the last processed message: {offset}")
 
 
-def test_sigterm_drains_the_buffered_batch(image):
+def test_lifecycle_drain_writes_the_buffered_batch_on_sigterm(image, stack):
     """A supervisor stops a pipeline with SIGTERM, so SIGTERM must drain it.
 
     Go terminates on SIGTERM without running any deferred function. The process
@@ -464,13 +561,8 @@ def test_sigterm_drains_the_buffered_batch(image):
     num_messages = 300
     batch_size = 250
 
-    network = Network().create()
-    kafka_ctr = KafkaContainer()
-    kafka_ctr.with_network(network)
-    kafka_ctr.with_network_aliases("kafka")
-    kafka_ctr.start()
-
-    producer = Producer({"bootstrap.servers": kafka_ctr.get_bootstrap_server()})
+    network = stack.network
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     for i in range(num_messages):
         producer.produce(topic, json.dumps({
@@ -523,7 +615,7 @@ def test_sigterm_drains_the_buffered_batch(image):
         f"stored offset should be the last processed message: {offset}")
 
 
-def test_the_process_exit_code_carries_the_error_code(image):
+def test_lifecycle_exit_codes_carry_the_error_code(image):
     """A supervisor reads the process's exit status, so the image must set it.
 
     The mapping from error code to exit code is a Go unit test's job, and it
@@ -568,3 +660,243 @@ def test_the_process_exit_code_carries_the_error_code(image):
 
         # A damaged state file is the only copy of the pipeline's positions.
         assert open(state, "rb").read() == before, "the damaged file was modified"
+
+
+# --------------------------------------------------------------------------
+# Pipelines ported from tests/integration
+#
+# That suite ran against the Python engine by default -- nothing ever set
+# SQLFLOW_ENGINE=turbine -- so these seven scenarios had never been exercised
+# against the Go engine end to end. They run against the image here, which is
+# what users actually run.
+# --------------------------------------------------------------------------
+
+
+def test_sink_iceberg_writes_every_row(image, stack):
+    """Kafka to an Iceberg table, read back through pyiceberg.
+
+    The warehouse is mounted at the same absolute path inside the container as
+    outside it. The catalog stores absolute file:// URIs, so a path that
+    differs across the boundary produces metadata this process cannot follow.
+    """
+    num_messages = 5000
+    catalog_name = unique("release_iceberg").replace("-", "_")
+    table_name = "default.city_events"
+
+    with tempfile.TemporaryDirectory() as warehouse:
+        os.chmod(warehouse, 0o777)
+
+        catalog = SqlCatalog(catalog_name, **{
+            "uri": f"sqlite:///{warehouse}/catalog.db",
+            "warehouse": f"file://{warehouse}",
+        })
+        catalog.create_namespace("default")
+        iceberg_table = catalog.create_table(table_name, schema=Schema(
+            NestedField(field_id=1, name="timestamp",
+                        field_type=TimestampType(), required=False),
+            NestedField(field_id=2, name="city",
+                        field_type=StringType(), required=False),
+        ))
+
+        topic = unique("release-iceberg")
+        KafkaFaker(bootstrap_servers=stack.bootstrap,
+                   num_messages=num_messages, topic=topic).publish()
+
+        env_prefix = f"PYICEBERG_CATALOG__{catalog_name.upper()}__"
+        stats = run_pipeline(
+            image, stack, "kafka.mem.iceberg.yml",
+            env={
+                "SQLFLOW_CATALOG_NAME": catalog_name,
+                "SQLFLOW_TABLE_NAME": table_name,
+                "SQLFLOW_INPUT_TOPIC": topic,
+                env_prefix + "URI": f"sqlite:///{warehouse}/catalog.db",
+                env_prefix + "WAREHOUSE": f"file://{warehouse}",
+            },
+            volumes={warehouse: warehouse},
+            max_msgs=num_messages,
+        )
+
+        assert stats["messages_consumed"] == num_messages
+        iceberg_table.refresh()
+        assert len(iceberg_table.scan().to_arrow()) == num_messages
+
+
+def test_sink_parquet_writes_every_row(image, stack):
+    """Kafka to parquet files on disk, read back with pyarrow."""
+    num_messages = 2000
+    topic = unique("release-parquet")
+
+    KafkaFaker(bootstrap_servers=stack.bootstrap,
+               num_messages=num_messages, topic=topic).publish()
+
+    with tempfile.TemporaryDirectory() as out_dir:
+        os.chmod(out_dir, 0o777)
+
+        stats = run_pipeline(
+            image, stack, "local.parquet.sink.yml",
+            env={
+                "SQLFLOW_SINK_BASE_PATH": out_dir,
+                "SQLFLOW_BATCH_SIZE": 1000,
+                "SQLFLOW_INPUT_TOPIC": topic,
+            },
+            volumes={out_dir: out_dir},
+            max_msgs=num_messages,
+        )
+        assert stats["messages_consumed"] == num_messages
+
+        parquet_files = [f for f in os.listdir(out_dir) if f.endswith(".parquet")]
+        assert len(parquet_files) == 2, f"expected 2 files, got {parquet_files}"
+
+        table = ds.dataset(out_dir, format="parquet").to_table()
+        total = sum(row["num_records"] for row in table.to_pylist())
+        assert total == num_messages, f"parquet holds {total} of {num_messages}"
+
+
+def test_error_ignore_drops_bad_records_and_keeps_going(image, stack):
+    """A malformed record must not stop the pipeline under policy IGNORE.
+
+    Five invalid messages and five valid ones. All ten are consumed; only the
+    five valid ones reach the sink.
+    """
+    in_topic = unique("release-ignore-in")
+    out_topic = unique("release-ignore-out")
+
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
+    for _ in range(5):
+        producer.produce(in_topic, value="invalid!")
+    for _ in range(5):
+        producer.produce(in_topic, value=json.dumps({"properties": {"city": "test"}}))
+    producer.flush()
+
+    stats = run_pipeline(
+        image, stack, "basic.agg.mem.yml",
+        env={
+            "SQLFLOW_SOURCE_ERROR_POLICY": "ignore",
+            "SQLFLOW_INPUT_TOPIC": in_topic,
+            "SQLFLOW_OUTPUT_TOPIC": out_topic,
+            "SQLFLOW_BATCH_SIZE": 1,
+        },
+        max_msgs=10,
+    )
+
+    assert stats["messages_consumed"] == 10
+    assert len(read_all_kafka_messages(stack.bootstrap, out_topic)) == 5
+
+
+def test_handler_inferred_mem_joins_against_a_csv(image, stack):
+    """A join against a CSV read from disk.
+
+    SQLFLOW_STATIC_ROOT points at the mounted dev/ directory, which is where
+    the CSV lives.
+    """
+    num_messages = 1000
+    in_topic = unique("release-csv-join-in")
+    out_topic = unique("release-csv-join-out")
+
+    KafkaFaker(bootstrap_servers=stack.bootstrap,
+               num_messages=num_messages, topic=in_topic).publish()
+
+    stats = run_pipeline(
+        image, stack, "csv.mem.join.yml",
+        env={
+            "SQLFLOW_STATIC_ROOT": "/tmp/conf",
+            "SQLFLOW_INPUT_TOPIC": in_topic,
+            "SQLFLOW_OUTPUT_TOPIC": out_topic,
+        },
+        max_msgs=num_messages,
+    )
+
+    assert stats["messages_consumed"] == num_messages
+    messages = read_all_kafka_messages(stack.bootstrap, out_topic)
+    assert len(messages) == num_messages, f"joined {len(messages)} of {num_messages}"
+
+
+def test_handler_inferred_mem_enriches_every_row(image, stack):
+    """Per-record enrichment through the handler SQL."""
+    num_messages = 1000
+    in_topic = unique("release-enrich-in")
+    out_topic = unique("release-enrich-out")
+
+    KafkaFaker(bootstrap_servers=stack.bootstrap,
+               num_messages=num_messages, topic=in_topic).publish()
+
+    stats = run_pipeline(
+        image, stack, "enrich.yml",
+        env={"SQLFLOW_INPUT_TOPIC": in_topic, "SQLFLOW_OUTPUT_TOPIC": out_topic},
+        max_msgs=num_messages,
+    )
+
+    assert stats["messages_consumed"] == num_messages
+    messages = read_all_kafka_messages(stack.bootstrap, out_topic)
+    assert len(messages) == num_messages, f"enriched {len(messages)} of {num_messages}"
+
+
+def test_error_dlq_diverts_a_record_the_handler_cannot_parse(image, stack):
+    """A malformed record must reach the DLQ, not vanish.
+
+    This is the handler.write phase: the record never becomes a row.
+    """
+    in_topic = unique("release-dlq-write-in")
+    dlq_topic = unique("release-dlq-write-dlq")
+
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
+    producer.produce(in_topic, value=b"{!invalidJSON!")
+    producer.flush()
+
+    stats = run_pipeline(
+        image, stack, "kafka.dlq.yml",
+        env={
+            "SQLFLOW_INPUT_TOPIC": in_topic,
+            "SQLFLOW_DLQ_TOPIC": dlq_topic,
+            "SQLFLOW_SOURCE_ERROR_POLICY": "dlq",
+            "SQLFLOW_BATCH_SIZE": 1,
+        },
+        max_msgs=1,
+    )
+
+    assert stats["messages_consumed"] == 1
+    assert stats["num_errors"] == 1
+
+    dlq = read_all_kafka_messages(stack.bootstrap, dlq_topic)
+    assert len(dlq) == 1, f"expected 1 DLQ record, got {len(dlq)}"
+    record = dlq[0]
+    # The wording of a parse failure is the engine's business; that it is
+    # reported, against which message and which phase, is the contract.
+    assert record["error"]
+    assert record["message"] == "{!invalidJSON!"
+    assert record["phase"] == "handler.write"
+    assert record["timestamp"]
+
+
+def test_error_dlq_diverts_a_batch_the_handler_cannot_query(image, stack):
+    """A valid record the handler SQL cannot bind against still reaches the DLQ.
+
+    This is the handler.invoke phase: the record parsed, and the query failed.
+    """
+    in_topic = unique("release-dlq-invoke-in")
+    dlq_topic = unique("release-dlq-invoke-dlq")
+
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
+    producer.produce(in_topic, value=b'{"valid": "json"}')
+    producer.flush()
+
+    stats = run_pipeline(
+        image, stack, "kafka.dlq.yml",
+        env={
+            "SQLFLOW_INPUT_TOPIC": in_topic,
+            "SQLFLOW_DLQ_TOPIC": dlq_topic,
+            "SQLFLOW_SOURCE_ERROR_POLICY": "dlq",
+            "SQLFLOW_BATCH_SIZE": 1,
+        },
+        max_msgs=1,
+    )
+
+    assert stats["messages_consumed"] == 1
+    assert stats["num_errors"] == 1
+
+    dlq = read_all_kafka_messages(stack.bootstrap, dlq_topic)
+    assert len(dlq) == 1, f"expected 1 DLQ record, got {len(dlq)}"
+    record = dlq[0]
+    assert 'Binder Error: Referenced column "broken" not found' in record["error"]
+    assert record["message"] == "Handler invocation failed"
+    assert record["phase"] == "handler.invoke"

@@ -23,7 +23,7 @@ func (fakeTimeout) Error() string   { return "i/o timeout" }
 func (fakeTimeout) Timeout() bool   { return true }
 func (fakeTimeout) Temporary() bool { return true }
 
-func TestClassify_NetworkFailuresAreUnreachable(t *testing.T) {
+func TestSinkRetry_ClassifyNetworkFailuresAreUnreachable(t *testing.T) {
 	for name, err := range map[string]error{
 		"connection refused":  syscall.ECONNREFUSED,
 		"connection reset":    syscall.ECONNRESET,
@@ -47,7 +47,7 @@ func TestClassify_NetworkFailuresAreUnreachable(t *testing.T) {
 
 // A server that answered and rejected the write is not unreachable. Retrying
 // a schema mismatch burns the deadline and reports it late.
-func TestClassify_ServerRejectionsAreNotUnreachable(t *testing.T) {
+func TestSinkRetry_ClassifyServerRejectionsAreNotUnreachable(t *testing.T) {
 	for name, err := range map[string]error{
 		"missing column": errors.New("code: 16, message: No such column city in table events"),
 		"type mismatch":  errors.New("code: 53, message: Type mismatch"),
@@ -59,13 +59,13 @@ func TestClassify_ServerRejectionsAreNotUnreachable(t *testing.T) {
 	}
 }
 
-func TestClassify_NilIsNotUnreachable(t *testing.T) {
+func TestSinkRetry_ClassifyNilIsNotUnreachable(t *testing.T) {
 	assert.That(t, !isUnreachable(nil))
 }
 
 // sinkError applies the classification, so a call site can wrap once and get
 // the right code either way.
-func TestSinkError_CodesByCause(t *testing.T) {
+func TestSinkRetry_SinkErrorCodesByCause(t *testing.T) {
 	network := sinkError(syscall.ECONNREFUSED, "clickhouse sink: prepare batch")
 	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(network))
 	assert.That(t, errors.Is(network, syscall.ECONNREFUSED))
@@ -76,7 +76,7 @@ func TestSinkError_CodesByCause(t *testing.T) {
 
 // The classification has to reach the ladder: an unreachable cause is
 // retried, a rejection is not.
-func TestSinkError_DrivesTheRetryDecision(t *testing.T) {
+func TestSinkRetry_SinkErrorDrivesTheRetryDecision(t *testing.T) {
 	assert.That(t, retryable(sinkError(syscall.ECONNREFUSED, "prepare")))
 	assert.That(t, !retryable(sinkError(errors.New("no such column"), "append")))
 }

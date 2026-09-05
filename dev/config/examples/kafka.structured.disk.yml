@@ -10,10 +10,10 @@ pipeline:
     type: kafka
     kafka:
       brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
-      group_id: test
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "input-structured-mem"
+        - {{ SQLFLOW_INPUT_TOPIC|default('input-structured-mem') }}
 
   handler:
     type: "handlers.StructuredBatch"

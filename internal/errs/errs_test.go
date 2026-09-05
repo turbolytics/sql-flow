@@ -13,7 +13,7 @@ import (
 
 const goldenPath = "testdata/codes.golden"
 
-func TestCodeSplitsIntoItsThreeParts(t *testing.T) {
+func TestErrorTaxonomy_CodeSplitsIntoThreeParts(t *testing.T) {
 	c := Code("user.sql.bind_failed")
 	assert.Equal(t, ClassUser, c.Class())
 	assert.Equal(t, "sql", c.Domain())
@@ -24,7 +24,7 @@ func TestCodeSplitsIntoItsThreeParts(t *testing.T) {
 
 // A malformed code must not report a class. Guessing one would route a
 // failure to the wrong audience.
-func TestMalformedCodeHasNoClass(t *testing.T) {
+func TestErrorTaxonomy_MalformedCodeHasNoClass(t *testing.T) {
 	for _, bad := range []Code{"", "nonsense", "user", "user.sql", "other.sql.x", "USER.sql.x"} {
 		assert.Equal(t, Class(""), bad.Class())
 		assert.False(t, bad.IsUser())
@@ -32,7 +32,7 @@ func TestMalformedCodeHasNoClass(t *testing.T) {
 	}
 }
 
-func TestEveryRegisteredCodeIsWellFormed(t *testing.T) {
+func TestErrorTaxonomy_EveryCodeIsWellFormed(t *testing.T) {
 	for _, d := range All() {
 		if d.Code.Class() == "" {
 			t.Errorf("%q has no valid class", d.Code)
@@ -54,7 +54,7 @@ func TestEveryRegisteredCodeIsWellFormed(t *testing.T) {
 // Every domain carries a catch-all, so a new failure has a home before anyone
 // gives it a specific code. Without this, the next issue that adds an error
 // invents a code in a hurry and the space fragments.
-func TestEveryDomainHasACatchAll(t *testing.T) {
+func TestErrorTaxonomy_EveryDomainHasACatchAll(t *testing.T) {
 	catchAllReason := map[Class]string{ClassUser: "invalid", ClassSystem: "internal"}
 
 	seen := map[string]bool{}
@@ -78,7 +78,7 @@ func TestEveryDomainHasACatchAll(t *testing.T) {
 // Codes are public API. Adding one is safe, because consumers match on the
 // class prefix. Removing one, or changing what it means, breaks a provider's
 // automation and the runbook their support team reads.
-func TestRegistryIsAppendOnly(t *testing.T) {
+func TestErrorTaxonomy_RegistryIsAppendOnly(t *testing.T) {
 	current := map[Code]bool{}
 	lines := make([]string, 0, len(registry))
 	for _, d := range All() {
@@ -110,7 +110,7 @@ func TestRegistryIsAppendOnly(t *testing.T) {
 	}
 }
 
-func TestErrorPrefixesTheCode(t *testing.T) {
+func TestErrorTaxonomy_ErrorPrefixesTheCode(t *testing.T) {
 	e := New(CodeConfigNotFound, "config file not found: %s", "/nope.yml")
 	assert.Equal(t, "[user.config.not_found] config file not found: /nope.yml", e.Error())
 
@@ -123,7 +123,7 @@ func TestErrorPrefixesTheCode(t *testing.T) {
 
 // A multi-line cause is the normal case for YAML and SQL. The code has to
 // survive on the first line, where an operator actually sees it.
-func TestCodeStaysOnTheFirstLineOfAMultiLineCause(t *testing.T) {
+func TestErrorTaxonomy_CodeStaysOnTheFirstLineOfAMultiLineCause(t *testing.T) {
 	cause := errors.New("yaml: unmarshal errors:\n  line 3: field bad_key not found")
 	got := Wrap(CodeConfigParseFailed, cause, "parsing YAML failed").Error()
 
@@ -134,7 +134,7 @@ func TestCodeStaysOnTheFirstLineOfAMultiLineCause(t *testing.T) {
 // The code has to survive the fmt.Errorf wrapping every interior call site
 // already does, or converting the codebase would mean touching all 220 raise
 // sites instead of the ~30 boundaries.
-func TestCodeSurvivesWrapping(t *testing.T) {
+func TestErrorTaxonomy_CodeSurvivesWrapping(t *testing.T) {
 	base := New(CodeStateCorrupt, "state file has no offsets table")
 	wrapped := fmt.Errorf("opening state: %w", fmt.Errorf("loading offsets: %w", base))
 
@@ -146,7 +146,7 @@ func TestCodeSurvivesWrapping(t *testing.T) {
 
 // An uncoded error is ours until proven otherwise. Defaulting to a user error
 // would blame a customer for our bug.
-func TestUncodedErrorReportsAsInternal(t *testing.T) {
+func TestErrorTaxonomy_UncodedIsInternal(t *testing.T) {
 	assert.Equal(t, CodeInternalUnexpected, CodeOf(errors.New("bare")))
 	assert.Equal(t, ClassSystem, ClassOf(errors.New("bare")))
 	assert.Equal(t, Code(""), CodeOf(nil))
@@ -154,13 +154,13 @@ func TestUncodedErrorReportsAsInternal(t *testing.T) {
 
 // The boundary nearest the user decides how to describe the failure, so the
 // outermost code wins.
-func TestOutermostCodeWins(t *testing.T) {
+func TestErrorTaxonomy_OutermostCodeWins(t *testing.T) {
 	inner := New(CodeSinkWriteFailed, "rejected")
 	outer := Wrap(CodeSinkUnreachable, inner, "after retries")
 	assert.Equal(t, CodeSinkUnreachable, CodeOf(outer))
 }
 
-func TestPositionOfFindsAWrappedPosition(t *testing.T) {
+func TestErrorTaxonomy_PositionSurvivesWrapping(t *testing.T) {
 	base := New(CodeSQLBindFailed, "unknown column").At("sql", 3, 9)
 	wrapped := fmt.Errorf("invoking handler: %w", base)
 
@@ -174,7 +174,7 @@ func TestPositionOfFindsAWrappedPosition(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestLookupReportsUnknownCodes(t *testing.T) {
+func TestErrorTaxonomy_LookupReportsUnknown(t *testing.T) {
 	d, ok := Lookup(CodeConfigNotFound)
 	assert.True(t, ok)
 	assert.Equal(t, CodeConfigNotFound, d.Code)
@@ -186,7 +186,7 @@ func TestLookupReportsUnknownCodes(t *testing.T) {
 	assert.True(t, Code("user.sql.from_the_future").IsUser())
 }
 
-func TestExitCodeMapsEveryRegisteredCode(t *testing.T) {
+func TestErrorTaxonomy_ExitCodeMapsEveryCode(t *testing.T) {
 	for _, d := range All() {
 		exit := ExitCode(New(d.Code, "x"))
 		if exit == 0 {
@@ -200,7 +200,7 @@ func TestExitCodeMapsEveryRegisteredCode(t *testing.T) {
 	}
 }
 
-func TestExitCodeUsesTheSpecificRemedyWhereThereIsOne(t *testing.T) {
+func TestErrorTaxonomy_ExitCodeUsesTheSpecificRemedy(t *testing.T) {
 	assert.Equal(t, ExitOK, ExitCode(nil))
 	assert.Equal(t, ExitStateCorrupt, ExitCode(New(CodeStateCorrupt, "x")))
 	assert.Equal(t, ExitSinkUnreachable, ExitCode(New(CodeSinkUnreachable, "x")))
@@ -215,7 +215,7 @@ func TestExitCodeUsesTheSpecificRemedyWhereThereIsOne(t *testing.T) {
 
 // A code this build has never seen still has to resolve, or a newer component
 // crashes the mapping instead of exiting usefully.
-func TestExitCodeResolvesUnknownCodes(t *testing.T) {
+func TestErrorTaxonomy_ExitCodeResolvesUnknown(t *testing.T) {
 	assert.Equal(t, ExitUserError, ExitCode(New(Code("user.sql.from_the_future"), "x")))
 	assert.Equal(t, ExitResourceLimit, ExitCode(New(Code("system.limit.disk_exhausted"), "x")))
 	assert.Equal(t, ExitInternal, ExitCode(New(Code("system.mystery.thing"), "x")))
@@ -223,7 +223,7 @@ func TestExitCodeResolvesUnknownCodes(t *testing.T) {
 
 // 2 collides with cobra's usage error and with the Go runtime's exit when a
 // signal cannot kill PID 1, which #159 measured.
-func TestNoExitCodeUsesTwo(t *testing.T) {
+func TestErrorTaxonomy_NoExitCodeUsesTwo(t *testing.T) {
 	for _, d := range All() {
 		assert.False(t, ExitCode(New(d.Code, "x")) == 2)
 	}

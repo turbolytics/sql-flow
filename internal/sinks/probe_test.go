@@ -30,7 +30,7 @@ func (s *probeSink) Probe(ctx context.Context) error {
 	return s.err
 }
 
-func TestProbe_ReachableSinkStarts(t *testing.T) {
+func TestSinkRetry_ProbeReachableSinkStarts(t *testing.T) {
 	s := &probeSink{}
 
 	assert.NoError(t, probe(context.Background(), s))
@@ -39,7 +39,7 @@ func TestProbe_ReachableSinkStarts(t *testing.T) {
 
 // A destination that is not there fails the start with the code whose exit
 // status tells a supervisor the dependency may come back.
-func TestProbe_UnreachableSinkFailsTheStart(t *testing.T) {
+func TestSinkRetry_ProbeUnreachableSinkFailsTheStart(t *testing.T) {
 	s := &probeSink{err: syscall.ECONNREFUSED}
 
 	err := probe(context.Background(), s)
@@ -53,7 +53,7 @@ func TestProbe_UnreachableSinkFailsTheStart(t *testing.T) {
 
 // A server that answers and refuses is the user's to fix. Reporting it as
 // unreachable would have a supervisor retry a pipeline that cannot start.
-func TestProbe_AuthFailureIsAUserError(t *testing.T) {
+func TestSinkRetry_ProbeAuthFailureIsAUserError(t *testing.T) {
 	s := &probeSink{err: errors.New("code: 516, message: Authentication failed")}
 
 	err := probe(context.Background(), s)
@@ -64,7 +64,7 @@ func TestProbe_AuthFailureIsAUserError(t *testing.T) {
 }
 
 // A sink with nothing to dial is not probed and must not fail the start.
-func TestProbe_SinksWithNothingToDialAreSkipped(t *testing.T) {
+func TestSinkRetry_ProbeSinksWithNothingToDialAreSkipped(t *testing.T) {
 	for _, s := range []config.Sink{
 		{Type: "noop"},
 		{Type: "console"},
@@ -82,7 +82,7 @@ func TestProbe_SinksWithNothingToDialAreSkipped(t *testing.T) {
 // so the restart is the retry. A ladder here would only delay the report of a
 // destination that is genuinely down, and it would run before the pipeline has
 // consumed anything, where there is nothing to lose by failing fast.
-func TestProbe_DialsOnceAndDoesNotRetry(t *testing.T) {
+func TestSinkRetry_ProbeDialsOnceAndDoesNotRetry(t *testing.T) {
 	s := &probeSink{err: syscall.ECONNREFUSED}
 
 	assert.Error(t, probe(context.Background(), s))
@@ -90,7 +90,7 @@ func TestProbe_DialsOnceAndDoesNotRetry(t *testing.T) {
 }
 
 // A cancelled context stops the start rather than dialing anyway.
-func TestProbe_RespectsACancelledContext(t *testing.T) {
+func TestSinkRetry_ProbeRespectsACancelledContext(t *testing.T) {
 	s := &probeSink{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

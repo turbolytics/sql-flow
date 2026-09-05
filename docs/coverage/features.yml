@@ -1,0 +1,154 @@
+# The features sqlflow ships, and the coverage each one must carry.
+#
+# This file is declared, not derived. That is the point: a generated list can
+# only show tests that exist, and the failure this catches is a feature with
+# no test at all. Iceberg shipped for months with a unit test that skipped and
+# printed "ok"; nothing could see it, because nothing had written down that
+# Iceberg was supposed to be covered.
+#
+# `id` is the feature. It never encodes a test level, so the same id appears in
+# every level a test covers it at, and the matrix can ask "covered at unit but
+# not in the image".
+#
+# `requires` lists the levels the feature must be covered at. A missing level
+# fails `make coverage-matrix`.
+#
+#   unit     go test ./...          the logic is right
+#   release  pytest tests/release   the shipped image does it
+#
+# Tests attach to a feature by name. `sink.clickhouse` is covered by any Go
+# test named TestSinkClickhouse* or any Python test named test_sink_clickhouse*.
+# Names are matched against this registry rather than parsed, so a name that
+# matches nothing is reported rather than silently inventing a feature.
+
+features:
+  # --- Sources ------------------------------------------------------------
+  - id: source.kafka
+    description: Consumes a Kafka topic, tracking offsets and leader epochs.
+    requires: [unit, release]
+
+  - id: source.webhook
+    description: Accepts records over HTTP, with optional HMAC signature checks.
+    requires: [unit]
+
+  - id: source.websocket
+    description: Consumes a websocket stream, reconnecting on drop.
+    requires: [unit, release]
+
+  # --- Sinks --------------------------------------------------------------
+  - id: sink.kafka
+    description: Publishes result rows to a Kafka topic.
+    requires: [unit, release]
+
+  - id: sink.clickhouse
+    description: Inserts result batches into a ClickHouse table.
+    requires: [unit, release]
+
+  - id: sink.iceberg
+    description: Appends result batches to an Iceberg table through a catalog.
+    requires: [unit, release]
+
+  - id: sink.parquet
+    description: Writes result batches as parquet files to a local path.
+    requires: [release]
+
+  - id: sink.sqlcommand
+    description: Runs a SQL command against the pipeline's own DuckDB connection.
+    requires: [unit]
+
+  - id: sink.console
+    description: Writes result rows to stdout as JSON.
+    requires: [unit, release]
+
+  - id: sink.retry
+    description: Retries a sink whose destination is not answering, bounded by a deadline.
+    requires: [unit]
+
+  # --- Handlers -----------------------------------------------------------
+  - id: handler.inferred_mem
+    description: Infers a schema per batch and runs the query in memory.
+    requires: [unit, release]
+
+  - id: handler.inferred_disk
+    description: Infers a schema per batch, staging the batch on disk.
+    requires: [unit]
+
+  - id: handler.structured
+    description: Binds a declared schema, ingesting through Arrow.
+    requires: [unit, release]
+
+  # --- Durable state ------------------------------------------------------
+  - id: state.durability
+    description: Window state and the offsets that produced it commit together.
+    requires: [unit, release]
+
+  - id: state.offsets
+    description: Kafka positions are stored in DuckDB and resumed on restart.
+    requires: [unit, release]
+
+  - id: state.corruption
+    description: A damaged state file fails the start rather than silently resetting.
+    requires: [unit, release]
+
+  # --- Process lifecycle --------------------------------------------------
+  - id: lifecycle.drain
+    description: SIGTERM writes the buffered batch before exiting.
+    requires: [unit, release]
+
+  - id: lifecycle.exit_codes
+    description: The process exit status carries the error code a supervisor reads.
+    requires: [unit, release]
+
+  # --- The batch loop -----------------------------------------------------
+  - id: core.consume_loop
+    description: Accumulates a batch, flushes it, and commits in that order.
+    requires: [unit]
+
+  # --- Error policy -------------------------------------------------------
+  - id: error.taxonomy
+    description: Every failure carries a class.domain.reason code.
+    requires: [unit]
+
+  - id: error.raise
+    description: Policy RAISE stops the pipeline on a bad record.
+    requires: [unit]
+
+  - id: error.ignore
+    description: Policy IGNORE drops a bad record and keeps the pipeline running.
+    requires: [unit, release]
+
+  - id: error.dlq
+    description: Policy DLQ diverts a bad record to a sink instead of dropping it.
+    requires: [unit, release]
+
+  # --- Table managers -----------------------------------------------------
+  - id: manager.tumbling_window
+    description: Publishes and deletes closed windows on an interval.
+    requires: [unit, release]
+
+  # --- Config -------------------------------------------------------------
+  - id: config.templating
+    description: Renders a config through Jinja2 against SQLFLOW_ environment variables.
+    requires: [unit]
+
+  - id: config.validation
+    description: Validates a config against the schema and reports where it is wrong.
+    requires: [unit, release]
+
+  # --- Observability ------------------------------------------------------
+  - id: observability.metrics
+    description: Exports pipeline counters and histograms over Prometheus.
+    requires: [unit]
+
+  - id: observability.debug_api
+    description: Serves ad-hoc SQL against the live DuckDB connection.
+    requires: [unit]
+
+  # --- CLI ----------------------------------------------------------------
+  - id: cli.invocation
+    description: Resolves the config path and message limits from either flag form.
+    requires: [unit]
+
+  - id: cli.dev_invoke
+    description: Runs a pipeline against a fixture file, without a source.
+    requires: [unit, release]

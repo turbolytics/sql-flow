@@ -69,7 +69,7 @@ func recv(t *testing.T, stream <-chan []core.Message) []byte {
 	}
 }
 
-func TestSource_StreamsMessages(t *testing.T) {
+func TestSourceWebsocket_StreamsMessages(t *testing.T) {
 	srv, _ := newServer(t, []string{"one", "two", "three"}, true)
 
 	s, err := NewSource(wsURL(srv))
@@ -83,7 +83,7 @@ func TestSource_StreamsMessages(t *testing.T) {
 	}
 }
 
-func TestSource_StartReportsDialFailure(t *testing.T) {
+func TestSourceWebsocket_StartReportsDialFailure(t *testing.T) {
 	// A port that nothing listens on: bind one, then release it.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	assert.NoError(t, err)
@@ -97,7 +97,7 @@ func TestSource_StartReportsDialFailure(t *testing.T) {
 
 // The server drops every connection after one message, so a second message
 // can only arrive over a reconnect.
-func TestSource_ReconnectsAfterDrop(t *testing.T) {
+func TestSourceWebsocket_ReconnectsAfterDrop(t *testing.T) {
 	srv, conns := newServer(t, []string{"msg"}, false)
 
 	s, err := NewSource(wsURL(srv), WithReconnectDelay(10*time.Millisecond))
@@ -111,7 +111,7 @@ func TestSource_ReconnectsAfterDrop(t *testing.T) {
 	assert.That(t, conns.Load() >= 2)
 }
 
-func TestSource_CloseEndsStream(t *testing.T) {
+func TestSourceWebsocket_CloseEndsStream(t *testing.T) {
 	srv, _ := newServer(t, []string{"one"}, true)
 
 	s, err := NewSource(wsURL(srv))
@@ -135,7 +135,7 @@ func TestSource_CloseEndsStream(t *testing.T) {
 
 // A message larger than the library's 32KiB default read limit must not kill
 // the connection.
-func TestSource_ReadsLargeMessages(t *testing.T) {
+func TestSourceWebsocket_ReadsLargeMessages(t *testing.T) {
 	large := strings.Repeat("a", 128*1024)
 	srv, _ := newServer(t, []string{large}, true)
 

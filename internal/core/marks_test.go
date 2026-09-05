@@ -11,7 +11,7 @@ import (
 // redelivered message cannot rewind a position that has already been
 // committed. The rule used to live inline in Turbine.mark; it belongs with
 // the data it constrains.
-func TestMarks_AdvanceNeverGoesBackwards(t *testing.T) {
+func TestStateOffsets_MarksAdvanceNeverGoesBackwards(t *testing.T) {
 	m := NewMarks()
 	m.Advance("events", 0, Mark{Offset: 10, LeaderEpoch: 1})
 	m.Advance("events", 0, Mark{Offset: 4, LeaderEpoch: 1})
@@ -21,7 +21,7 @@ func TestMarks_AdvanceNeverGoesBackwards(t *testing.T) {
 	assert.Equal(t, int64(10), got.Offset)
 }
 
-func TestMarks_AdvanceMovesForward(t *testing.T) {
+func TestStateOffsets_MarksAdvanceMovesForward(t *testing.T) {
 	m := NewMarks()
 	m.Advance("events", 0, Mark{Offset: 4, LeaderEpoch: 1})
 	m.Advance("events", 0, Mark{Offset: 10, LeaderEpoch: 2})
@@ -31,7 +31,7 @@ func TestMarks_AdvanceMovesForward(t *testing.T) {
 	assert.Equal(t, int32(2), got.LeaderEpoch)
 }
 
-func TestMarks_TracksPartitionsIndependently(t *testing.T) {
+func TestStateOffsets_MarksTracksPartitionsIndependently(t *testing.T) {
 	m := NewMarks()
 	m.Advance("events", 0, Mark{Offset: 5})
 	m.Advance("events", 1, Mark{Offset: 99})
@@ -47,7 +47,7 @@ func TestMarks_TracksPartitionsIndependently(t *testing.T) {
 	assert.Equal(t, int64(1), other.Offset)
 }
 
-func TestMarks_EmptyAndMissing(t *testing.T) {
+func TestStateOffsets_MarksEmptyAndMissing(t *testing.T) {
 	m := NewMarks()
 	assert.That(t, m.Empty())
 	assert.Equal(t, 0, m.Len())
@@ -62,7 +62,7 @@ func TestMarks_EmptyAndMissing(t *testing.T) {
 
 // Offset 0 is a real position, not "unset": a mark at 0 means the first
 // message was processed, and Advance must not treat it as absent.
-func TestMarks_ZeroOffsetIsAPosition(t *testing.T) {
+func TestStateOffsets_MarksZeroOffsetIsAPosition(t *testing.T) {
 	m := NewMarks()
 	m.Advance("events", 0, Mark{Offset: 0, LeaderEpoch: 3})
 
@@ -75,7 +75,7 @@ func TestMarks_ZeroOffsetIsAPosition(t *testing.T) {
 
 // Sorted iteration keeps /stats output and CLI diffs stable between runs; map
 // order would shuffle them for no reason.
-func TestMarks_EachIteratesInSortedOrder(t *testing.T) {
+func TestStateOffsets_MarksEachIteratesInSortedOrder(t *testing.T) {
 	m := NewMarks()
 	m.Advance("zeta", 0, Mark{Offset: 1})
 	m.Advance("alpha", 2, Mark{Offset: 2})
@@ -90,7 +90,7 @@ func TestMarks_EachIteratesInSortedOrder(t *testing.T) {
 	assert.Equal(t, []string{"alpha/0", "alpha/2", "alpha/10", "zeta/0"}, order)
 }
 
-func TestMarks_EachOverEmptyIsANoop(t *testing.T) {
+func TestStateOffsets_MarksEachOverEmptyIsANoop(t *testing.T) {
 	m := NewMarks()
 	called := 0
 	m.Each(func(string, int32, Mark) { called++ })

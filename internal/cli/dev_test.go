@@ -37,9 +37,9 @@ func newTestADBCConn(t *testing.T) (adbc.Connection, func()) {
 	return conn, func() { conn.Close() }
 }
 
-// TestDevInvoke_InferredMemBatch mirrors the Python suite's basic.agg.mem
+// TestCliDevInvoke_InferredMemBatch mirrors the Python suite's basic.agg.mem
 // invoke case: two messages in, one aggregated row per city out.
-func TestDevInvoke_InferredMemBatch(t *testing.T) {
+func TestCliDevInvoke_InferredMemBatch(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -60,11 +60,11 @@ func TestDevInvoke_InferredMemBatch(t *testing.T) {
 `, out.String())
 }
 
-// TestDevInvoke_BlueskyFirehose runs a shipped bluesky config end to end.
+// TestCliDevInvoke_BlueskyFirehose runs a shipped bluesky config end to end.
 // Every firehose record carries JSON arrays -- langs, facets, embed.images --
 // and none of the other invoke tests has an array anywhere in its fixture,
 // which is how "unsupported json array value" reached a release.
-func TestDevInvoke_BlueskyFirehose(t *testing.T) {
+func TestCliDevInvoke_BlueskyFirehose(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -103,9 +103,9 @@ func TestDevInvoke_BlueskyFirehose(t *testing.T) {
 	assert.That(t, !strings.Contains(rows, `\\n`))
 }
 
-// TestDevInvoke_StructuredBatch covers the path where the handler's table is
+// TestCliDevInvoke_StructuredBatch covers the path where the handler's table is
 // created by a config command, which must run before the handler is built.
-func TestDevInvoke_StructuredBatch(t *testing.T) {
+func TestCliDevInvoke_StructuredBatch(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -126,9 +126,9 @@ func TestDevInvoke_StructuredBatch(t *testing.T) {
 `, out.String())
 }
 
-// TestDevInvoke_SkipsBlankLines matches the Python invoke, which strips each
+// TestCliDevInvoke_SkipsBlankLines matches the Python invoke, which strips each
 // fixture line and writes only the non-empty ones.
-func TestDevInvoke_SkipsBlankLines(t *testing.T) {
+func TestCliDevInvoke_SkipsBlankLines(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -156,11 +156,11 @@ func TestDevInvoke_SkipsBlankLines(t *testing.T) {
 	assert.Equal(t, `{"city":"New York","city_count":2}`+"\n", out.String())
 }
 
-// TestDevInvoke_LargeFixture is the README quickstart case. It covers fixtures
+// TestCliDevInvoke_LargeFixture is the README quickstart case. It covers fixtures
 // bigger than the read buffer, where the scanner refills and so overwrites the
 // bytes of lines already handed to the handler; a handler keeps those slices
 // until invoke, so any that were not copied out decode as garbage.
-func TestDevInvoke_LargeFixture(t *testing.T) {
+func TestCliDevInvoke_LargeFixture(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -181,7 +181,7 @@ func TestDevInvoke_LargeFixture(t *testing.T) {
 `, out.String())
 }
 
-func TestDevInvoke_ReportsMissingFixture(t *testing.T) {
+func TestCliDevInvoke_ReportsMissingFixture(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -200,7 +200,7 @@ func TestDevInvoke_ReportsMissingFixture(t *testing.T) {
 // An empty fixture is the degenerate unit test, and `dev invoke` is where
 // users meet it first. It must report no rows rather than crash on the nil
 // table an empty batch produces.
-func TestDevInvoke_EmptyFixture(t *testing.T) {
+func TestCliDevInvoke_EmptyFixture(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -222,7 +222,7 @@ func TestDevInvoke_EmptyFixture(t *testing.T) {
 
 // A fixture of nothing but blank lines reaches the handler with no messages
 // by the same route.
-func TestDevInvoke_FixtureOfOnlyBlankLines(t *testing.T) {
+func TestCliDevInvoke_FixtureOfOnlyBlankLines(t *testing.T) {
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 

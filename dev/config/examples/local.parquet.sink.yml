@@ -1,14 +1,14 @@
 pipeline:
-  batch_size: {{ batch_size|default(5000) }}
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(5000) }}
 
   source:
     type: kafka
     kafka:
-      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-      group_id: test
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "topic-local-parquet-sink"
+        - {{ SQLFLOW_INPUT_TOPIC|default('topic-local-parquet-sink') }}
 
   handler:
     type: 'handlers.InferredMemBatch'
@@ -23,5 +23,5 @@ pipeline:
           type: uuid4
       sql: |
         COPY sqlflow_sink_batch
-          TO '{{ sink_base_path|default('/tmp/sqlflow/test/local.parquet.sink.yml/testing') }}/$sqlflow_uuid.parquet'
+          TO '{{ SQLFLOW_SINK_BASE_PATH|default('/tmp/sqlflow/test/local.parquet.sink.yml/testing') }}/$sqlflow_uuid.parquet'
         (FORMAT 'parquet');

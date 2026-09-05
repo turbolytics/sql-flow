@@ -27,8 +27,8 @@ tables:
         sink:
           type: kafka
           kafka:
-            brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-            topic: output-tumbling-window-1
+            brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+            topic: {{ SQLFLOW_OUTPUT_TOPIC|default('output-tumbling-window-1') }}
 
 pipeline:
   batch_size: 1000
@@ -36,11 +36,11 @@ pipeline:
   source:
     type: kafka
     kafka:
-      brokers: [{{ kafka_brokers|default('localhost:9092') }}]
-      group_id: test
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('test') }}
       auto_offset_reset: earliest
       topics:
-        - "{{ topic|default('tumbling-window') }}"
+        - "{{ SQLFLOW_TOPIC|default('tumbling-window') }}"
 
   handler:
     type: 'handlers.InferredMemBatch'

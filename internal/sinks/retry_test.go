@@ -67,7 +67,7 @@ func newTestRetry(inner *flakySink, p RetryPolicy) (*retrying, *[]time.Duration)
 // An unreachable sink is the case retry exists for: the destination may come
 // back, and a restart to recover from a 50ms hiccup costs a cold start and a
 // group rejoin.
-func TestRetry_RetriesAnUnreachableSink(t *testing.T) {
+func TestSinkRetry_RetriesAnUnreachableSink(t *testing.T) {
 	inner := &flakySink{failures: 2, err: errs.New(errs.CodeSinkUnreachable, "connection refused")}
 	r, slept := newTestRetry(inner, testPolicy())
 
@@ -79,7 +79,7 @@ func TestRetry_RetriesAnUnreachableSink(t *testing.T) {
 
 // A rejected write fails the same way every attempt. Retrying a schema
 // mismatch burns the deadline and reports the failure minutes late.
-func TestRetry_DoesNotRetryARejectedWrite(t *testing.T) {
+func TestSinkRetry_DoesNotRetryARejectedWrite(t *testing.T) {
 	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkWriteFailed, "no such column")}
 	r, slept := newTestRetry(inner, testPolicy())
 
@@ -92,7 +92,7 @@ func TestRetry_DoesNotRetryARejectedWrite(t *testing.T) {
 }
 
 // A misconfigured sink is the user's to fix. No number of attempts helps.
-func TestRetry_DoesNotRetryAConfigError(t *testing.T) {
+func TestSinkRetry_DoesNotRetryAConfigError(t *testing.T) {
 	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkInvalid, "table is required")}
 	r, _ := newTestRetry(inner, testPolicy())
 
@@ -105,7 +105,7 @@ func TestRetry_DoesNotRetryAConfigError(t *testing.T) {
 
 // Exhausting the ladder reports the destination as unreachable, which maps to
 // a retryable exit code so a supervisor restarts rather than giving up.
-func TestRetry_ExhaustedAttemptsReportUnreachable(t *testing.T) {
+func TestSinkRetry_ExhaustedAttemptsReportUnreachable(t *testing.T) {
 	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkUnreachable, "connection refused")}
 	r, _ := newTestRetry(inner, testPolicy())
 
@@ -119,7 +119,7 @@ func TestRetry_ExhaustedAttemptsReportUnreachable(t *testing.T) {
 
 // Backoff grows and then stops growing. An unbounded ladder sleeps past the
 // flush interval and freezes the window clock.
-func TestRetry_BackoffGrowsAndIsCapped(t *testing.T) {
+func TestSinkRetry_BackoffGrowsAndIsCapped(t *testing.T) {
 	p := testPolicy()
 	p.MaxAttempts = 6
 	p.InitialBackoff = 10 * time.Millisecond
@@ -140,7 +140,7 @@ func TestRetry_BackoffGrowsAndIsCapped(t *testing.T) {
 
 // The reason the interface carries a context. A SIGTERM mid-ladder must stop
 // the retries, or the graceful drain waits out the whole deadline.
-func TestRetry_CancellationStopsTheLadder(t *testing.T) {
+func TestSinkRetry_CancellationStopsTheLadder(t *testing.T) {
 	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkUnreachable, "refused")}
 	r := newRetrying(inner, testPolicy())
 
@@ -156,7 +156,7 @@ func TestRetry_CancellationStopsTheLadder(t *testing.T) {
 }
 
 // A sink that works costs nothing.
-func TestRetry_SuccessDoesNotSleep(t *testing.T) {
+func TestSinkRetry_SuccessDoesNotSleep(t *testing.T) {
 	inner := &flakySink{failures: 0}
 	r, slept := newTestRetry(inner, testPolicy())
 
@@ -168,7 +168,7 @@ func TestRetry_SuccessDoesNotSleep(t *testing.T) {
 
 // The deadline bounds the whole ladder, not each attempt. It is what keeps a
 // retry from outliving the flush interval.
-func TestRetry_DeadlineStopsTheLadder(t *testing.T) {
+func TestSinkRetry_DeadlineStopsTheLadder(t *testing.T) {
 	p := testPolicy()
 	p.MaxAttempts = 100
 	p.Deadline = 25 * time.Millisecond
@@ -187,7 +187,7 @@ func TestRetry_DeadlineStopsTheLadder(t *testing.T) {
 // An uncoded error is not evidence the destination is reachable or not.
 // Retrying it is the safer default: the alternative fails a pipeline on a
 // driver error nobody classified yet.
-func TestRetry_RetriesAnUncodedError(t *testing.T) {
+func TestSinkRetry_RetriesAnUncodedError(t *testing.T) {
 	inner := &flakySink{failures: 1, err: errors.New("i/o timeout")}
 	r, _ := newTestRetry(inner, testPolicy())
 
@@ -203,7 +203,7 @@ func isRetrying(s core.Sink) bool {
 // Kafka must not be wrapped. franz-go already retries a produce with its own
 // backoff, and a second ladder on top of that one delays the report without
 // improving delivery. The sinks reaching nothing remote gain nothing either.
-func TestRetriesHelp_OnlyForSinksThatCrossANetwork(t *testing.T) {
+func TestSinkRetry_HelpsOnlyForSinksThatCrossANetwork(t *testing.T) {
 	for sinkType, want := range map[string]bool{
 		"clickhouse": true,
 		"iceberg":    true,
@@ -221,7 +221,7 @@ func TestRetriesHelp_OnlyForSinksThatCrossANetwork(t *testing.T) {
 
 // The sinks that reach nothing remote are built without a ladder. These build
 // for real, so they also prove construction does not dial.
-func TestNew_LocalSinksAreNotWrapped(t *testing.T) {
+func TestSinkRetry_NewLocalSinksAreNotWrapped(t *testing.T) {
 	for _, s := range []config.Sink{
 		{Type: "noop"},
 		{Type: "console"},
@@ -234,14 +234,14 @@ func TestNew_LocalSinksAreNotWrapped(t *testing.T) {
 }
 
 // max_attempts: 1 is how an operator turns retrying off.
-func TestNew_MaxAttemptsOneDisablesRetrying(t *testing.T) {
+func TestSinkRetry_NewMaxAttemptsOneDisablesRetrying(t *testing.T) {
 	assert.That(t, !RetryPolicyFrom(&config.SinkRetry{MaxAttempts: 1}).Enabled())
 	assert.That(t, RetryPolicyFrom(&config.SinkRetry{MaxAttempts: 2}).Enabled())
 }
 
 // An omitted block takes the defaults rather than turning retrying off. One
 // refused connection killing the process was the defect, not the baseline.
-func TestRetryPolicyFrom_DefaultsAreOn(t *testing.T) {
+func TestSinkRetry_PolicyFromDefaultsAreOn(t *testing.T) {
 	p := RetryPolicyFrom(nil)
 
 	assert.That(t, p.Enabled())
@@ -249,7 +249,7 @@ func TestRetryPolicyFrom_DefaultsAreOn(t *testing.T) {
 	assert.Equal(t, DefaultRetryDeadline, p.Deadline)
 }
 
-func TestRetryPolicyFrom_OverridesOnlyWhatIsSet(t *testing.T) {
+func TestSinkRetry_PolicyFromOverridesOnlyWhatIsSet(t *testing.T) {
 	p := RetryPolicyFrom(&config.SinkRetry{MaxAttempts: 9, DeadlineSeconds: 3})
 
 	assert.Equal(t, 9, p.MaxAttempts)

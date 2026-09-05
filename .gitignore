@@ -8,3 +8,6 @@ dist/
 *.ducklake
 *.ducklake.wal
 *.ducklake.files/
+
+# Test output the coverage matrix is generated from.
+.coverage/
