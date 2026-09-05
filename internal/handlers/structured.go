@@ -83,7 +83,19 @@ func appendJSONValue(builder array.Builder, fieldType arrow.DataType, data []byt
 
 // appendValue appends an already-extracted JSON value. List elements arrive
 // this way: ArrayEach hands over the item itself, with no key to look up.
+//
+// An explicit JSON null is a null, whatever the column type. jsonparser
+// reports it as its own value type with the raw bytes "null" in val, and the
+// string branch below would store those four characters as a value. The
+// numeric branches only escaped that because parsing "null" fails. Checked
+// here rather than in appendJSONValue so that list elements, which never pass
+// through the keyed lookup, get the same treatment.
 func appendValue(builder array.Builder, fieldType arrow.DataType, val []byte, dataType jsonparser.ValueType) error {
+	if dataType == jsonparser.Null {
+		builder.AppendNull()
+		return nil
+	}
+
 	switch fieldType.(type) {
 	case *arrow.StringType:
 		builder.(*array.StringBuilder).Append(jsonString(val))
