@@ -1,33 +1,6 @@
 name: CI
 on: [push]
 jobs:
-  ci:
-    name: CI
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.11
-
-      - name: Install python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.dev.txt ]; then pip install -r requirements.dev.txt; fi
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
-      - name: Test Unit
-        run: |
-          mkdir /tmp/sqlflow
-          mkdir /tmp/sqlflow/resultscache
-          make test-unit
-
-      - name: Test Integration
-        run: |
-          make test-integration
-
   # The Go engine (sqlflow). Unit tests only: anything that needs a Kafka broker
   # stays out of CI and runs from the dev stack.
   go:
@@ -66,8 +39,11 @@ jobs:
             exit 1
           fi
 
+      # ./... rather than ./internal/...: the narrower form covers 16 of the 17
+      # packages, and the 17th has no tests today. That makes the gap silent
+      # rather than absent -- the first test added under cmd/ would not run.
       - name: Test Unit
-        run: go test ./internal/...
+        run: go test ./...
 
   # Functional tests against the built image: entrypoint, CLI surface, the
   # baked-in libduckdb, and a real pipeline through Kafka. The Go job above
