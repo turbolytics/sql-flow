@@ -42,8 +42,12 @@ jobs:
       # ./... rather than ./internal/...: the narrower form covers 16 of the 17
       # packages, and the 17th has no tests today. That makes the gap silent
       # rather than absent -- the first test added under cmd/ would not run.
+      #
+      # -short is the unit pass. This job has no broker on purpose: it is the
+      # fast feedback, and the integration tests fail rather than skip without
+      # their service. The Coverage job runs those against a real one.
       - name: Test Unit
-        run: go test ./...
+        run: go test -short ./...
 
   # The coverage matrix generator. It gates every merge, so a wrong generator
   # is a wrong gate. Pure Python: no Docker, no image, seconds to run.
