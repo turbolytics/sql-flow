@@ -57,7 +57,7 @@ docker exec -it kafka1 kafka-console-consumer --bootstrap-server=kafka1:9092 --t
 The consumer prints one row per city:
 
 ```
-{"city":"San Fransisco","city_count":177}
+{"city":"San Francisco","city_count":177}
 {"city":"New York","city_count":236}
 {"city":"Miami","city_count":203}
 {"city":"Baltimore","city_count":180}

@@ -23,7 +23,7 @@ event = {
 }
 
 cities = [
-    'San Fransisco',
+    'San Francisco',
     'Baltimore',
     'New York',
     'Miami',
