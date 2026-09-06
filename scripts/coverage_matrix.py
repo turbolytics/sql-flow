@@ -604,17 +604,40 @@ def render(snap):
     return "\n".join(lines) + "\n"
 
 
-INV_MARK = {
-    "covered": "✅",
-    "skipped": "⚠️ skipped",
-    "missing": "❌ missing",
-    "failing": "🔥 failing",
-    "exempt": "— exempt",
-}
+# Level initials, so a cell fits: u = unit, i = integration, r = release.
+LEVEL_INITIALS = {lvl: lvl[0] for lvl in LEVELS}
 
-# Worst first. A cell shows the weakest status across the levels it is judged
-# on, so a green row means green everywhere it was asked.
-STATUS_RANK = ("failing", "missing", "skipped", "covered", "exempt")
+
+def invariant_cell(levels, required):
+    """Render one integration's cell for one invariant.
+
+    A covered cell names the levels that proved it, because "proven with a
+    fake but never against the real thing" is the question this matrix exists
+    to answer, and a bare tick cannot say it.
+
+    Failing beats missing beats skipped: a cell reports the worst thing that
+    happened, then what was achieved.
+    """
+    if any(c["status"] == "exempt" for c in levels.values()):
+        return "— exempt"
+
+    states = {lvl: cell["status"] for lvl, cell in levels.items()}
+    if "failing" in states.values():
+        return "🔥 failing"
+
+    covered = [lvl for lvl in LEVELS if states.get(lvl) == "covered"]
+    if covered:
+        proven = "".join(LEVEL_INITIALS[lvl] for lvl in covered)
+        # A required level that is not covered is a gap, listed below. Say so
+        # here too rather than showing a tick beside an unmet requirement.
+        unmet = [lvl for lvl in required if states.get(lvl) != "covered"]
+        if unmet:
+            return f"⚠️ {proven}, {'+'.join(unmet)} missing"
+        return f"✅ {proven}"
+
+    if "skipped" in states.values():
+        return "⚠️ skipped"
+    return "❌ missing"
 
 
 def render_invariants(snap):
@@ -632,16 +655,14 @@ def render_invariants(snap):
         "ids -- a harness test's name says nothing, because the same code runs",
         "for every integration.",
         "",
-        "**exempt** carries its reason in the JSON. **missing** means no",
-        "evidence. Nothing here fails the build until an invariant's `requires`",
-        "is filled in, and none is yet.",
+        "A covered cell names the levels that proved it: `u` unit, `i`",
+        "integration, `r` release. That is the question the matrix exists to",
+        "answer -- proven with a fake, or against the real thing, or in the",
+        "shipped image. **exempt** carries its reason in the JSON, and",
+        "**missing** means no evidence. Nothing here fails the build until an",
+        "invariant's `requires` is filled in, and none is yet.",
         "",
     ]
-
-    def worst(levels, required):
-        judged = required or list(levels)
-        states = [levels[lvl]["status"] for lvl in judged if lvl in levels]
-        return min(states, key=STATUS_RANK.index) if states else "missing"
 
     families = []
     for inv in snap["invariants"]:
@@ -673,7 +694,7 @@ def render_invariants(snap):
                 claim += f" *(declared, tracked by {inv['tracked_by']})*"
             if columns:
                 cells = " | ".join(
-                    INV_MARK[worst(inv["integrations"][c], inv["requires"])]
+                    invariant_cell(inv["integrations"][c], inv["requires"])
                     if c in inv["integrations"] else "·"
                     for c in columns)
                 lines.append(f"| `{inv['id']}` | {claim} | {cells} |")

@@ -6,7 +6,7 @@ import (
 	"github.com/zeebo/assert"
 )
 
-func TestCoverageRegistry_ListsSinksByBareName(t *testing.T) {
+func TestToolingCoverageRegistry_ListsSinksByBareName(t *testing.T) {
 	got, err := Integrations("sink")
 	assert.NoError(t, err)
 
@@ -17,13 +17,13 @@ func TestCoverageRegistry_ListsSinksByBareName(t *testing.T) {
 	}, got)
 }
 
-func TestCoverageRegistry_ListsSources(t *testing.T) {
+func TestToolingCoverageRegistry_ListsSources(t *testing.T) {
 	got, err := Integrations("source")
 	assert.NoError(t, err)
 	assert.DeepEqual(t, []string{"kafka", "webhook", "websocket"}, got)
 }
 
-func TestCoverageRegistry_ListsHandlers(t *testing.T) {
+func TestToolingCoverageRegistry_ListsHandlers(t *testing.T) {
 	got, err := Integrations("handler")
 	assert.NoError(t, err)
 	assert.DeepEqual(t, []string{"inferred_disk", "inferred_mem", "structured"}, got)
@@ -31,12 +31,12 @@ func TestCoverageRegistry_ListsHandlers(t *testing.T) {
 
 // pipeline is a kind an invariant can apply to, but no constructor builds
 // one. Asking for its integrations is a mistake worth naming.
-func TestCoverageRegistry_RejectsAKindNothingConstructs(t *testing.T) {
+func TestToolingCoverageRegistry_RejectsAKindNothingConstructs(t *testing.T) {
 	_, err := Integrations("pipeline")
 	assert.Error(t, err)
 }
 
-func TestCoverageRegistry_RejectsAnUnknownKind(t *testing.T) {
+func TestToolingCoverageRegistry_RejectsAnUnknownKind(t *testing.T) {
 	_, err := Integrations("router")
 	assert.Error(t, err)
 }

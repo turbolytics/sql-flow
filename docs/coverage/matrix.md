@@ -25,7 +25,7 @@ names every one of them.
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | — | ✅ | 7 |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | — | ✅ | 16 |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 20 |
 | `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 13 |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
 | `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 10 |
@@ -52,8 +52,10 @@ names every one of them.
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 16 |
+| `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 12 |
 
-**31 features declared, 31 fully covered, 0 gap(s).**
+**33 features declared, 33 fully covered, 0 gap(s).**
 
 ## Covered only by another test's marker
 
@@ -72,6 +74,10 @@ that deserves its own test.
 - `config.templating` (release) — via `test_config_validation_accepts_a_shipped_example`
 - `cli.dev_invoke` (release) — via `test_handler_inferred_mem_invoke_renders_rows`
 
+## Markers naming an unknown feature
+
+- `TestToolingConformanceSinks_ACorrectSinkPasses` marks `sink.noop`
+
 
 # Invariant matrix
 
@@ -84,16 +90,19 @@ harness in `internal/conformance`, which emits a marker naming both
 ids -- a harness test's name says nothing, because the same code runs
 for every integration.
 
-**exempt** carries its reason in the JSON. **missing** means no
-evidence. Nothing here fails the build until an invariant's `requires`
-is filled in, and none is yet.
+A covered cell names the levels that proved it: `u` unit, `i`
+integration, `r` release. That is the question the matrix exists to
+answer -- proven with a fake, or against the real thing, or in the
+shipped image. **exempt** carries its reason in the JSON, and
+**missing** means no evidence. Nothing here fails the build until an
+invariant's `requires` is filled in, and none is yet.
 
 ## Invariants: resilience
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | — exempt |
+| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. | ❌ missing | ✅ i | ❌ missing | — exempt | — exempt | — exempt |
 | `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.flush.preserves_order` | Rows reach the destination in WriteTable order, across a retry. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |

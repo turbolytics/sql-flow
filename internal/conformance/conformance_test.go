@@ -20,13 +20,13 @@ import (
 // whose behaviour is known: one that honours the contract, and several that
 // break it in the ways real sinks have.
 
-func TestConformanceSinks_ACorrectSinkPasses(t *testing.T) {
+func TestToolingConformanceSinks_ACorrectSinkPasses(t *testing.T) {
 	Sinks(t, subject(newMemSink()))
 }
 
 // #221's defect: a failed Flush discards the buffer, so the retry finds
 // nothing to send and reports a success that delivered no rows.
-func TestConformanceSinks_ASinkThatDropsItsBatchIsCaught(t *testing.T) {
+func TestToolingConformanceSinks_ASinkThatDropsItsBatchIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&dropSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, v.failure != "")
@@ -37,7 +37,7 @@ func TestConformanceSinks_ASinkThatDropsItsBatchIsCaught(t *testing.T) {
 // shape today. It reaches the destination before the fault, so a read-back
 // after the retry finds the row and every downstream check passes for the
 // wrong reason. Only a read-back before the first Flush catches it.
-func TestConformanceSinks_ASinkThatWritesThroughIsCaught(t *testing.T) {
+func TestToolingConformanceSinks_ASinkThatWritesThroughIsCaught(t *testing.T) {
 	vs := verdicts(t, subject(&writeThroughSink{memSink: newMemSink()}))
 
 	assert.True(t, vs[buffersOnly].failure != "")
@@ -50,7 +50,7 @@ func TestConformanceSinks_ASinkThatWritesThroughIsCaught(t *testing.T) {
 
 // The two invariants are independent: a sink can buffer correctly and still
 // lose the batch, and the matrix must show which one broke.
-func TestConformanceSinks_ADroppingSinkStillBuffersOnly(t *testing.T) {
+func TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly(t *testing.T) {
 	vs := verdicts(t, subject(&dropSink{memSink: newMemSink()}))
 
 	assert.Equal(t, "", vs[buffersOnly].failure)
@@ -58,7 +58,7 @@ func TestConformanceSinks_ADroppingSinkStillBuffersOnly(t *testing.T) {
 }
 
 // A sink that keeps the batch but never clears it delivers the row twice.
-func TestConformanceSinks_ASinkThatDeliversTwiceIsCaught(t *testing.T) {
+func TestToolingConformanceSinks_ASinkThatDeliversTwiceIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&neverClearSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, strings.Contains(v.failure, "id=1, id=1"))
@@ -66,13 +66,13 @@ func TestConformanceSinks_ASinkThatDeliversTwiceIsCaught(t *testing.T) {
 
 // A retry that fails is not the same defect, and the message must not blame
 // the buffer for it.
-func TestConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
+func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&staysDownSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
 }
 
-func TestConformanceSinks_ASubjectWithNothingToBreakIsSkipped(t *testing.T) {
+func TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped(t *testing.T) {
 	s := subject(newMemSink())
 	s.Break, s.Heal = nil, nil
 
@@ -87,7 +87,7 @@ func TestConformanceSinks_ASubjectWithNothingToBreakIsSkipped(t *testing.T) {
 // A skip is not coverage, so a skipped verdict must not emit a marker. The
 // matrix would otherwise read a subject that exercises nothing as covered,
 // which is the sink.iceberg failure.
-func TestConformanceSinks_ASkippedVerdictEmitsNoMarker(t *testing.T) {
+func TestToolingConformanceSinks_ASkippedVerdictEmitsNoMarker(t *testing.T) {
 	s := subject(newMemSink())
 	s.Break, s.Heal = nil, nil
 
@@ -97,7 +97,7 @@ func TestConformanceSinks_ASkippedVerdictEmitsNoMarker(t *testing.T) {
 	}
 }
 
-func TestConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected(t *testing.T) {
+func TestToolingConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected(t *testing.T) {
 	s := subject(newMemSink())
 	s.Integration = ""
 
@@ -106,14 +106,14 @@ func TestConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected(t *testing.T)
 
 // Break without Heal would leave the destination broken for whatever runs
 // next, which is a fault the next subject cannot explain.
-func TestConformanceSinks_ASubjectWithBreakAndNoHealIsRejected(t *testing.T) {
+func TestToolingConformanceSinks_ASubjectWithBreakAndNoHealIsRejected(t *testing.T) {
 	s := subject(newMemSink())
 	s.Heal = nil
 
 	assert.True(t, fatals(t, func(t *testing.T) { requireSubject(t, s) }))
 }
 
-func TestConformanceSinks_ASubjectMissingReadBackIsRejected(t *testing.T) {
+func TestToolingConformanceSinks_ASubjectMissingReadBackIsRejected(t *testing.T) {
 	s := subject(newMemSink())
 	s.ReadBack = nil
 
@@ -122,7 +122,7 @@ func TestConformanceSinks_ASubjectMissingReadBackIsRejected(t *testing.T) {
 
 // The harness must not report a sink defect when the subject's own fault
 // injection did nothing: that sends the reader to the wrong file.
-func TestConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink(t *testing.T) {
+func TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink(t *testing.T) {
 	s := subject(newMemSink())
 	s.Break = func(*testing.T) {} // does nothing
 	s.Heal = func(*testing.T) {}
@@ -130,7 +130,7 @@ func TestConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink(t *tes
 	assert.True(t, fatals(t, func(t *testing.T) { sinkVerdicts(t, s) }))
 }
 
-func TestConformanceDescribe_NamesTheRowsItFound(t *testing.T) {
+func TestToolingConformanceDescribe_NamesTheRowsItFound(t *testing.T) {
 	assert.Equal(t, "no rows", describe(nil))
 	assert.Equal(t, "rows [id=1]", describe([]Row{{"id": int64(1)}}))
 	assert.Equal(t, "rows [id=1, id=2]",
@@ -267,7 +267,12 @@ type breakable interface {
 
 func subject(sink breakable) SinkSubject {
 	return SinkSubject{
-		Integration: "sink.clickhouse", // a declared id, so markers resolve
+		// sink.noop, not a sink with a real destination. These tests run in
+		// the unit pass against an in-memory fake, and the marker Sinks emits
+		// must not credit a sink this never touched. noop is exempt from both
+		// invariants, so the marker lands on an exempt cell and changes
+		// nothing -- which is what a fake proving nothing should do.
+		Integration: "sink.noop",
 		New:         func(*testing.T) core.Sink { return sink },
 		Break:       func(*testing.T) { sink.set(true) },
 		Heal:        func(*testing.T) { sink.set(false) },
@@ -291,7 +296,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 
 // Every invariant the harness judges must be declared, or its marker reports
 // as unknown and the cell never appears.
-func TestConformanceSinks_JudgesOnlyDeclaredInvariants(t *testing.T) {
+func TestToolingConformanceSinks_JudgesOnlyDeclaredInvariants(t *testing.T) {
 	declared, err := coverage.Invariants()
 	assert.NoError(t, err)
 

@@ -1006,16 +1006,17 @@ def test_snapshot_deduplicates_an_unknown_marker_seen_twice():
 
 def test_render_agrees_with_the_snapshot():
     """The markdown is a view. It can never disagree with the JSON that gates
-    the build."""
+    the build, and a cell the JSON calls covered must not read as missing."""
     s = inv_snap(
         evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
         results={"unit": {"TestA": cm.PASS}},
     )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "unit")["status"] == "covered"
+
     md = cm.render_invariants(s)
     line = next(l for l in md.splitlines() if "`sink.flush.keeps_batch`" in l)
-    # clickhouse is covered at unit and missing elsewhere, and no level is
-    # required, so the cell shows the worst of the three.
-    assert "missing" in line
+    assert "✅ u" in line
 
 
 def test_render_shows_covered_when_every_judged_level_is_covered():
@@ -1027,7 +1028,54 @@ def test_render_shows_covered_when_every_judged_level_is_covered():
     )
     md = cm.render_invariants(s)
     line = next(l for l in md.splitlines() if "`sink.flush.keeps_batch`" in l)
-    assert "✅" in line
+    assert "✅ u" in line
+
+
+# --- invariant_cell: what a reader sees ------------------------------------
+#
+# The cell answers "proven with a fake, or against the real thing?", which a
+# bare tick cannot. These pin each shape it can take.
+
+def levels(**states):
+    return {lvl: {"status": states.get(lvl, "missing")} for lvl in cm.LEVELS}
+
+
+def test_cell_names_the_level_that_proved_it():
+    assert cm.invariant_cell(levels(integration="covered"), []) == "✅ i"
+    assert cm.invariant_cell(levels(unit="covered"), []) == "✅ u"
+
+
+def test_cell_names_every_level_that_proved_it():
+    """'covered at unit but never against the real thing' is the question the
+    matrix exists to answer, so both levels show."""
+    assert cm.invariant_cell(
+        levels(unit="covered", integration="covered"), []) == "✅ ui"
+
+
+def test_cell_with_no_evidence_is_missing():
+    assert cm.invariant_cell(levels(), []) == "❌ missing"
+
+
+def test_cell_reports_a_failure_over_anything_achieved():
+    assert cm.invariant_cell(
+        levels(unit="covered", integration="failing"), []) == "🔥 failing"
+
+
+def test_cell_reports_a_skip_rather_than_missing():
+    assert cm.invariant_cell(levels(unit="skipped"), []) == "⚠️ skipped"
+
+
+def test_cell_is_exempt_whatever_else_is_present():
+    assert cm.invariant_cell(
+        {lvl: {"status": "exempt", "reason": "r"} for lvl in cm.LEVELS},
+        []) == "— exempt"
+
+
+def test_cell_warns_when_a_required_level_is_not_the_one_proven():
+    """A tick beside an unmet requirement reads as done. The gap is listed
+    below the table, and the cell must not contradict it."""
+    assert cm.invariant_cell(
+        levels(unit="covered"), ["integration"]) == "⚠️ u, integration missing"
 
 
 def test_render_names_the_tracking_issue_of_an_unenforced_invariant():

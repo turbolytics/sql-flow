@@ -11,7 +11,7 @@ import (
 // invariant cells at all, which is the sink.iceberg failure: nothing written
 // down, so nothing can be missing. This runs in the unit pass, in
 // milliseconds, so the gap closes before the matrix is ever regenerated.
-func TestHandlerRegistry_MatchesTheConstructorSwitch(t *testing.T) {
+func TestToolingCoverageHandlerRegistry_MatchesTheConstructorSwitch(t *testing.T) {
 	declared, err := coverage.Integrations("handler")
 	assert.NoError(t, err)
 	assert.DeepEqual(t, declared, Kinds())
@@ -20,7 +20,7 @@ func TestHandlerRegistry_MatchesTheConstructorSwitch(t *testing.T) {
 // The config's names and the registry's are two maps, so they can drift. A
 // config type with no builder panics on a nil function rather than reporting
 // an unsupported handler.
-func TestHandlerRegistry_EveryConfigTypeHasABuilder(t *testing.T) {
+func TestToolingCoverageHandlerRegistry_EveryConfigTypeHasABuilder(t *testing.T) {
 	for configType, kind := range configTypes {
 		if _, ok := builders[kind]; !ok {
 			t.Errorf("config type %q maps to %q, which has no builder", configType, kind)

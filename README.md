@@ -990,6 +990,12 @@ make test-image     # build the image and run tests/release against it
 which builds the environment from `uv.lock` on first use. There is no
 `pip install` step, and no dependency is resolved at install time.
 
+`docs/coverage/matrix.md` is the coverage matrix: one table per feature, and
+one per invariant family. Features say what sqlflow does; invariants say what
+every integration must hold whatever it does, and `internal/conformance`
+proves them. A new sink or source supplies a subject in its package's
+`conformance_test.go` and inherits the whole contract.
+
 `make test-go` and `make test-image` are what CI runs on every push.
 Kafka-backed integration tests are deliberately excluded from `test-go`; they
 run from the dev stack. Backing services for local development:

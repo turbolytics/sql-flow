@@ -75,6 +75,10 @@ integrations:
     implements: [Sink]
     feature: sink.console
     exempt:
+      - invariant: sink.write.buffers_only
+        reason: >
+          discards every row by design, so there is no destination for a
+          write to reach and nothing a read-back could show
       - invariant: sink.flush.keeps_batch
         reason: discards every row by design; it exists for benchmarking
       - invariant: sink.flush.no_hollow_success

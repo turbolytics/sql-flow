@@ -11,7 +11,7 @@ import (
 // The generator parses these lines with a fixed regex. A format drift is a
 // silent loss of every cell the marker feeds, so the exact bytes are pinned
 // on this side too.
-func TestCoverageInvariant_EmitsTheStructuredMarker(t *testing.T) {
+func TestToolingCoverageInvariant_EmitsTheStructuredMarker(t *testing.T) {
 	rec := &recorder{}
 	Invariant(rec, "sink.flush.keeps_batch", "sink.clickhouse")
 
@@ -20,7 +20,7 @@ func TestCoverageInvariant_EmitsTheStructuredMarker(t *testing.T) {
 		rec.lines)
 }
 
-func TestCoverageCovers_EmitsOneLinePerFeature(t *testing.T) {
+func TestToolingCoverageCovers_EmitsOneLinePerFeature(t *testing.T) {
 	rec := &recorder{}
 	Covers(rec, "sink.clickhouse", "source.kafka")
 
@@ -33,7 +33,7 @@ func TestCoverageCovers_EmitsOneLinePerFeature(t *testing.T) {
 // A structured marker must not also read as a plain one. The generator drops
 // the plain match when a structured one is present, and this is the other
 // half of that contract: the two lines cannot be confused for each other.
-func TestCoverageInvariant_DoesNotLookLikeAFeatureMarker(t *testing.T) {
+func TestToolingCoverageInvariant_DoesNotLookLikeAFeatureMarker(t *testing.T) {
 	rec := &recorder{}
 	Invariant(rec, "sink.flush.keeps_batch", "sink.clickhouse")
 

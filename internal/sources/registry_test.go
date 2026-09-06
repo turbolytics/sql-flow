@@ -11,7 +11,7 @@ import (
 // invariant cells at all, which is the sink.iceberg failure: nothing written
 // down, so nothing can be missing. This runs in the unit pass, in
 // milliseconds, so the gap closes before the matrix is ever regenerated.
-func TestSourceRegistry_MatchesTheConstructorSwitch(t *testing.T) {
+func TestToolingCoverageSourceRegistry_MatchesTheConstructorSwitch(t *testing.T) {
 	declared, err := coverage.Integrations("source")
 	assert.NoError(t, err)
 	assert.DeepEqual(t, declared, Kinds())

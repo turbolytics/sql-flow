@@ -178,6 +178,7 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestIntegrationSinkClickhouse_Conformance",
             "TestSinkClickhouse_BatchIsNil",
             "TestSinkClickhouse_EmptyTableIsNoop",
             "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
@@ -195,6 +196,7 @@
             "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer"
           ],
           "skipped": [
+            "TestIntegrationSinkClickhouse_Conformance",
             "TestSinkClickhouse_BatchIsNil",
             "TestSinkClickhouse_EmptyTableIsNoop",
             "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
@@ -207,7 +209,12 @@
           ]
         },
         "integration": {
-          "status": "not_required"
+          "status": "covered",
+          "tests": [
+            "TestIntegrationSinkClickhouse_Conformance",
+            "TestIntegrationSinkClickhouse_Conformance/sink.flush.keeps_batch",
+            "TestIntegrationSinkClickhouse_Conformance/sink.write.buffers_only"
+          ]
         },
         "release": {
           "status": "covered",
@@ -1230,6 +1237,74 @@
           ]
         }
       }
+    },
+    {
+      "id": "tooling.conformance",
+      "description": "The harness proves the declared invariants for any integration.",
+      "requires": [
+        "unit"
+      ],
+      "levels": {
+        "unit": {
+          "status": "covered",
+          "tests": [
+            "TestToolingConformanceDescribe_NamesTheRowsItFound",
+            "TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink",
+            "TestToolingConformanceSinks_ACorrectSinkPasses",
+            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.keeps_batch",
+            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.write.buffers_only",
+            "TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly",
+            "TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught",
+            "TestToolingConformanceSinks_ASinkThatDeliversTwiceIsCaught",
+            "TestToolingConformanceSinks_ASinkThatDropsItsBatchIsCaught",
+            "TestToolingConformanceSinks_ASinkThatWritesThroughIsCaught",
+            "TestToolingConformanceSinks_ASkippedVerdictEmitsNoMarker",
+            "TestToolingConformanceSinks_ASubjectMissingReadBackIsRejected",
+            "TestToolingConformanceSinks_ASubjectWithBreakAndNoHealIsRejected",
+            "TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped",
+            "TestToolingConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected",
+            "TestToolingConformanceSinks_JudgesOnlyDeclaredInvariants"
+          ]
+        },
+        "integration": {
+          "status": "not_required"
+        },
+        "release": {
+          "status": "not_required"
+        }
+      }
+    },
+    {
+      "id": "tooling.coverage",
+      "description": "Tests attribute to features and invariants, and the registries match the code.",
+      "requires": [
+        "unit"
+      ],
+      "levels": {
+        "unit": {
+          "status": "covered",
+          "tests": [
+            "TestToolingCoverageCovers_EmitsOneLinePerFeature",
+            "TestToolingCoverageHandlerRegistry_EveryConfigTypeHasABuilder",
+            "TestToolingCoverageHandlerRegistry_MatchesTheConstructorSwitch",
+            "TestToolingCoverageInvariant_DoesNotLookLikeAFeatureMarker",
+            "TestToolingCoverageInvariant_EmitsTheStructuredMarker",
+            "TestToolingCoverageRegistry_ListsHandlers",
+            "TestToolingCoverageRegistry_ListsSinksByBareName",
+            "TestToolingCoverageRegistry_ListsSources",
+            "TestToolingCoverageRegistry_RejectsAKindNothingConstructs",
+            "TestToolingCoverageRegistry_RejectsAnUnknownKind",
+            "TestToolingCoverageSinkRegistry_MatchesTheConstructorSwitch",
+            "TestToolingCoverageSourceRegistry_MatchesTheConstructorSwitch"
+          ]
+        },
+        "integration": {
+          "status": "not_required"
+        },
+        "release": {
+          "status": "not_required"
+        }
+      }
     }
   ],
   "gaps": [],
@@ -1238,7 +1313,12 @@
     "integration": [],
     "release": []
   },
-  "unknown_markers": [],
+  "unknown_markers": [
+    {
+      "test": "TestToolingConformanceSinks_ACorrectSinkPasses",
+      "feature": "sink.noop"
+    }
+  ],
   "invariants": [
     {
       "id": "sink.write.buffers_only",
@@ -1268,8 +1348,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Conformance/sink.write.buffers_only"
+            ]
           },
           "release": {
             "status": "missing",
@@ -1320,16 +1402,16 @@
         },
         "sink.noop": {
           "unit": {
-            "status": "missing",
-            "tests": []
+            "status": "exempt",
+            "reason": "discards every row by design, so there is no destination for a write to reach and nothing a read-back could show\n"
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "exempt",
+            "reason": "discards every row by design, so there is no destination for a write to reach and nothing a read-back could show\n"
           },
           "release": {
-            "status": "missing",
-            "tests": []
+            "status": "exempt",
+            "reason": "discards every row by design, so there is no destination for a write to reach and nothing a read-back could show\n"
           }
         }
       }
@@ -1362,8 +1444,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Conformance/sink.flush.keeps_batch"
+            ]
           },
           "release": {
             "status": "missing",
