@@ -90,17 +90,23 @@ def match(name, prefixes):
     return best
 
 
-COVERS = re.compile(r"COVERS ([a-z0-9_.]+)")
+# A plain marker names an extra feature. A structured one names an invariant
+# and the integration it was proven on; the harness emits those, and a test
+# name cannot carry two ids.
+COVERS = re.compile(r"COVERS ([a-z0-9_.]+)(?:\s|$)")
+COVERS_INVARIANT = re.compile(
+    r"COVERS invariant=([a-z0-9_.]+) integration=([a-z0-9_.]+)")
 
 
 def parse_go(path):
-    """Read `go test -json` into ({test: outcome}, {test: [extra features]}).
+    """Read `go test -json` into ({test: outcome}, {test: [features]},
+    {test: [(invariant, integration)]}).
 
-    Extras come from coverage.Covers, which writes a COVERS line to the test
-    log. `go test -json` carries that as an output event, so the marker is
+    Markers come from coverage.Covers and coverage.Invariant, which write to
+    the test log. `go test -json` carries that as an output event, so both are
     read from ordinary suite output with no plugin and no build tag.
     """
-    results, covers = {}, {}
+    results, covers, invariants = {}, {}, {}
     with open(path) as fh:
         for line in fh:
             line = line.strip()
@@ -114,7 +120,12 @@ def parse_go(path):
             if not name:
                 continue
             if action == "output":
-                found = COVERS.findall(event.get("Output", ""))
+                out = event.get("Output", "")
+                structured = COVERS_INVARIANT.findall(out)
+                if structured:
+                    invariants.setdefault(name, []).extend(structured)
+                    continue
+                found = COVERS.findall(out)
                 if found:
                     covers.setdefault(name, []).extend(found)
             # Subtests report their own outcome; the parent aggregates them.
@@ -124,11 +135,16 @@ def parse_go(path):
                 results[name] = SKIP if results.get(name) != PASS else PASS
             elif action == "fail":
                 results[name] = FAIL
-    return results, covers
+    return results, covers, invariants
 
 
 def parse_pytest(path):
-    """Read the conftest report into ({test: outcome}, {test: [extras]})."""
+    """Read the conftest report into ({test: outcome}, {test: [extras]}, {}).
+
+    The third value is the invariant map, empty here: the harness is Go, and
+    the release suite carries no structured markers. It is returned so both
+    parsers have one shape.
+    """
     with open(path) as fh:
         report = json.load(fh)
 
@@ -140,7 +156,7 @@ def parse_pytest(path):
         }.get(test.get("outcome"), FAIL)
         if test.get("covers"):
             covers[name] = list(test["covers"])
-    return results, covers
+    return results, covers, {}
 
 
 def build(features, go_results, py_results, go_covers=None, py_covers=None,
@@ -392,15 +408,15 @@ def main():
     args = ap.parse_args()
 
     features = load_features()
-    go_results, go_covers = (
-        parse_go(args.go) if args.go and os.path.exists(args.go) else ({}, {}))
-    it_results, it_covers = (
+    go_results, go_covers, go_invariants = (
+        parse_go(args.go) if args.go and os.path.exists(args.go) else ({}, {}, {}))
+    it_results, it_covers, it_invariants = (
         parse_go(args.go_integration)
         if args.go_integration and os.path.exists(args.go_integration)
-        else ({}, {}))
-    py_results, py_covers = (
+        else ({}, {}, {}))
+    py_results, py_covers, py_invariants = (
         parse_pytest(args.pytest)
-        if args.pytest and os.path.exists(args.pytest) else ({}, {}))
+        if args.pytest and os.path.exists(args.pytest) else ({}, {}, {}))
 
     coverage, secondary, unmatched, unknown = build(
         features, go_results, py_results, go_covers, py_covers,
