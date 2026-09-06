@@ -44,10 +44,16 @@ test-image: sqlflow-image
 # Depends on the image because the release suite runs against it. Without
 # that dependency every release test errors in collection, and the `-` below
 # swallows it: the matrix regenerates with every release row marked failing.
+#
+# The Go run is -short, so the matrix is a function of the repo rather than of
+# the machine that generated it. The Kafka-backed tests skip when no dev-stack
+# broker answers; without -short the file records them as passing for whoever
+# has the stack up and skipping for CI, and the staleness gate below then fails
+# over which laptop ran last.
 .PHONY: coverage-matrix
 coverage-matrix: sqlflow-image
 	@mkdir -p .coverage
-	-CGO_ENABLED=1 go test -json ./... > .coverage/go.json 2>&1
+	-CGO_ENABLED=1 go test -short -json ./... > .coverage/go.json 2>&1
 	-SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
 		SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 		TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \

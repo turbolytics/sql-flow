@@ -16,8 +16,17 @@ import (
 // brokerOrSkip returns the dev-stack broker, skipping the test when none is
 // reachable rather than failing a local `go test`. Kafka-backed tests are
 // deliberately not part of CI's unit run.
+//
+// -short skips before dialing, and the coverage matrix is generated that way.
+// Reachability is a property of the machine, so without -short the matrix
+// records these tests as passing for whoever has the dev stack up and skipping
+// for CI. The staleness gate then fails on which laptop regenerated the file,
+// which tells a reader nothing about coverage.
 func brokerOrSkip(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("kafka-backed test: -short skips before dialing a broker")
+	}
 	broker := os.Getenv("SQLFLOW_KAFKA_BROKERS")
 	if broker == "" {
 		broker = "localhost:9092"

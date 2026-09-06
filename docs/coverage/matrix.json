@@ -14,12 +14,12 @@
           "tests": [
             {
               "name": "TestSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
-              "outcome": "pass",
+              "outcome": "skip",
               "attribution": "name"
             },
             {
               "name": "TestSourceKafka_MessagesCarryHighWatermark",
-              "outcome": "pass",
+              "outcome": "skip",
               "attribution": "name"
             },
             {
@@ -79,22 +79,22 @@
             },
             {
               "name": "TestSourceKafka_SeekToEmptyIsANoop",
-              "outcome": "pass",
+              "outcome": "skip",
               "attribution": "name"
             },
             {
               "name": "TestSourceKafka_SeekToIssuesNoCommit",
-              "outcome": "pass",
+              "outcome": "skip",
               "attribution": "name"
             },
             {
               "name": "TestSourceKafka_SeekToResumesFromDurableOffsets",
-              "outcome": "pass",
+              "outcome": "skip",
               "attribution": "name"
             },
             {
               "name": "TestSourceKafka_SeekToResumesFromStoredOffsets",
-              "outcome": "pass",
+              "outcome": "skip",
               "attribution": "name"
             },
             {
