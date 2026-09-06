@@ -16,6 +16,52 @@ import (
 // never carries that kind and asking for it is a mistake.
 var constructedKinds = map[string]bool{"sink": true, "source": true, "handler": true}
 
+// Invariants returns every id invariants.yml declares, as a set.
+//
+// The conformance harness judges invariants by id, and an id nothing declares
+// reports as an unknown marker rather than as a cell -- the claim would be
+// tested and invisible. A test in the harness holds every id it judges to
+// this set.
+func Invariants() (map[string]bool, error) {
+	raw, err := readRegistry("invariants.yml")
+	if err != nil {
+		return nil, err
+	}
+
+	var doc struct {
+		Invariants []struct {
+			ID string `yaml:"id"`
+		} `yaml:"invariants"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("coverage: parse invariants.yml: %w", err)
+	}
+
+	out := make(map[string]bool, len(doc.Invariants))
+	for _, invariant := range doc.Invariants {
+		out[invariant.ID] = true
+	}
+	return out, nil
+}
+
+// readRegistry reads one file from docs/coverage.
+//
+// Located relative to this source file, not the working directory: `go test
+// ./...` runs each package from its own directory.
+func readRegistry(name string) ([]byte, error) {
+	_, self, _, ok := runtime.Caller(0)
+	if !ok {
+		return nil, fmt.Errorf("coverage: cannot locate %s", name)
+	}
+	path := filepath.Join(filepath.Dir(self), "..", "..", "docs", "coverage", name)
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("coverage: read %s: %w", path, err)
+	}
+	return raw, nil
+}
+
 // Integrations returns the bare type names integrations.yml declares for one
 // kind, sorted.
 //
@@ -29,18 +75,9 @@ func Integrations(kind string) ([]string, error) {
 		return nil, fmt.Errorf("coverage: nothing constructs a %q", kind)
 	}
 
-	// Located relative to this file, not the working directory: `go test ./...`
-	// runs each package from its own directory.
-	_, self, _, ok := runtime.Caller(0)
-	if !ok {
-		return nil, fmt.Errorf("coverage: cannot locate the registry")
-	}
-	path := filepath.Join(filepath.Dir(self), "..", "..",
-		"docs", "coverage", "integrations.yml")
-
-	raw, err := os.ReadFile(path)
+	raw, err := readRegistry("integrations.yml")
 	if err != nil {
-		return nil, fmt.Errorf("coverage: read %s: %w", path, err)
+		return nil, err
 	}
 
 	var doc struct {
@@ -50,7 +87,7 @@ func Integrations(kind string) ([]string, error) {
 		} `yaml:"integrations"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("coverage: parse %s: %w", path, err)
+		return nil, fmt.Errorf("coverage: parse integrations.yml: %w", err)
 	}
 
 	out := []string{}
