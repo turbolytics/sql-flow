@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "features": [
     {
       "id": "source.kafka",
@@ -1238,5 +1238,1821 @@
     "integration": [],
     "release": []
   },
-  "unknown_markers": []
+  "unknown_markers": [],
+  "invariants": [
+    {
+      "id": "sink.write.buffers_only",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "WriteTable does not reach the destination. Only Flush does.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
+    },
+    {
+      "id": "sink.flush.keeps_batch",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "exempt",
+            "reason": "writes through the pipeline's own DuckDB connection, so a failure is not a network blip. retriesHelp already excludes it.\n"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "writes through the pipeline's own DuckDB connection, so a failure is not a network blip. retriesHelp already excludes it.\n"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "writes through the pipeline's own DuckDB connection, so a failure is not a network blip. retriesHelp already excludes it.\n"
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "exempt",
+            "reason": "stdout cannot be temporarily unavailable. retriesHelp already excludes it.\n"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "stdout cannot be temporarily unavailable. retriesHelp already excludes it.\n"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "stdout cannot be temporarily unavailable. retriesHelp already excludes it.\n"
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "discards every row by design; it exists for benchmarking"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "discards every row by design; it exists for benchmarking"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "discards every row by design; it exists for benchmarking"
+          }
+        }
+      },
+      "violated_once": [
+        "#221"
+      ]
+    },
+    {
+      "id": "sink.flush.no_hollow_success",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "Flush returns nil only when every row since the last success was acknowledged by the destination.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "discards every row by design"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "discards every row by design"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "discards every row by design"
+          }
+        }
+      },
+      "violated_once": [
+        "#221"
+      ]
+    },
+    {
+      "id": "sink.flush.preserves_order",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "Rows reach the destination in WriteTable order, across a retry.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "discards every row by design"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "discards every row by design"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "discards every row by design"
+          }
+        }
+      }
+    },
+    {
+      "id": "sink.flush.honours_context",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "Flush returns ctx.Err() when the context ends. Rows stay buffered.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "exempt",
+            "reason": "nothing to wait on that a context could cut short"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "nothing to wait on that a context could cut short"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "nothing to wait on that a context could cut short"
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "exempt",
+            "reason": "nothing to wait on that a context could cut short"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "nothing to wait on that a context could cut short"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "nothing to wait on that a context could cut short"
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "nothing to wait on"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "nothing to wait on"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "nothing to wait on"
+          }
+        }
+      },
+      "violated_once": [
+        "#219"
+      ]
+    },
+    {
+      "id": "sink.flush.empty_is_noop",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "Flush with nothing buffered returns nil and touches nothing.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
+    },
+    {
+      "id": "sink.batch.reports_buffer",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "Batch returns what is buffered, and nil when nothing is.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "buffers nothing by design"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "buffers nothing by design"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "buffers nothing by design"
+          }
+        }
+      }
+    },
+    {
+      "id": "sink.error.classifies",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no network, so nothing to classify as unreachable"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no network, so nothing to classify as unreachable"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no network, so nothing to classify as unreachable"
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no network, so nothing to classify as unreachable"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no network, so nothing to classify as unreachable"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no network, so nothing to classify as unreachable"
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "never fails"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "never fails"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "never fails"
+          }
+        }
+      }
+    },
+    {
+      "id": "sink.probe.fails_start",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "A Prober whose destination is unreachable fails the start once, without retrying.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "nothing to dial"
+          }
+        }
+      }
+    },
+    {
+      "id": "pipeline.commit.after_flush",
+      "family": "checkpoint",
+      "applies_to": "pipeline",
+      "claim": "Offsets and state commit only after Flush returned nil.",
+      "verified_by": "named",
+      "requires": [],
+      "integrations": {}
+    },
+    {
+      "id": "pipeline.commit.nothing_on_failure",
+      "family": "checkpoint",
+      "applies_to": "pipeline",
+      "claim": "A failed flush commits nothing. Not offsets, not state.",
+      "verified_by": "named",
+      "requires": [],
+      "integrations": {}
+    },
+    {
+      "id": "pipeline.state.with_offsets",
+      "family": "checkpoint",
+      "applies_to": "pipeline",
+      "claim": "Window state and the offsets that produced it commit atomically.",
+      "verified_by": "named",
+      "requires": [],
+      "integrations": {}
+    },
+    {
+      "id": "source.commit.only_processed",
+      "family": "checkpoint",
+      "applies_to": "source",
+      "claim": "A source commits the marks the pipeline processed, never what it fetched.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "source.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "source.websocket": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          }
+        },
+        "source.webhook": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          }
+        }
+      },
+      "violated_once": [
+        "#154"
+      ]
+    },
+    {
+      "id": "source.resume.from_committed",
+      "family": "checkpoint",
+      "applies_to": "source",
+      "claim": "Restart resumes at the committed position. No gap, and no replay before it.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "source.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "source.websocket": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          }
+        },
+        "source.webhook": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no replayable position; at-most-once by construction"
+          }
+        }
+      }
+    },
+    {
+      "id": "source.marks.never_regress",
+      "family": "checkpoint",
+      "applies_to": "source",
+      "claim": "A committed position never moves backwards.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "source.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "source.websocket": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no marks"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no marks"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no marks"
+          }
+        },
+        "source.webhook": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no marks"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no marks"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no marks"
+          }
+        }
+      }
+    },
+    {
+      "id": "source.commit.on_revoke",
+      "family": "checkpoint",
+      "applies_to": "source",
+      "claim": "Marks commit when a partition is revoked, before the rebalance completes.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "source.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "source.websocket": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no partitions to revoke"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no partitions to revoke"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no partitions to revoke"
+          }
+        },
+        "source.webhook": {
+          "unit": {
+            "status": "exempt",
+            "reason": "no partitions to revoke"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "no partitions to revoke"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "no partitions to revoke"
+          }
+        }
+      },
+      "tracked_by": "#183"
+    },
+    {
+      "id": "type.roundtrip",
+      "family": "types",
+      "applies_to": "sink",
+      "claim": "Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error.",
+      "verified_by": "typetable",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      },
+      "violated_once": [
+        "#147",
+        "#150",
+        "#151"
+      ]
+    },
+    {
+      "id": "type.null",
+      "family": "types",
+      "applies_to": "sink",
+      "claim": "A null in every declared type reads back as declared.",
+      "verified_by": "typetable",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
+    },
+    {
+      "id": "type.timestamp.instant",
+      "family": "types",
+      "applies_to": "sink",
+      "claim": "A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type.",
+      "verified_by": "typetable",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      },
+      "violated_once": [
+        "#153"
+      ]
+    },
+    {
+      "id": "type.nested",
+      "family": "types",
+      "applies_to": "sink",
+      "claim": "list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened.",
+      "verified_by": "typetable",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
+    },
+    {
+      "id": "type.string.fidelity",
+      "family": "types",
+      "applies_to": "sink",
+      "claim": "Unicode, escapes and the empty string round-trip byte for byte.",
+      "verified_by": "typetable",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      },
+      "violated_once": [
+        "#149"
+      ]
+    },
+    {
+      "id": "type.undeclared.fails_loud",
+      "family": "types",
+      "applies_to": "sink",
+      "claim": "An Arrow type absent from the table fails the batch with a coded error. Never coerced silently.",
+      "verified_by": "typetable",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
+    },
+    {
+      "id": "lifecycle.drain.on_cancel",
+      "family": "lifecycle",
+      "applies_to": "pipeline",
+      "claim": "Cancel or SIGTERM flushes the buffered batch, then commits.",
+      "verified_by": "named",
+      "requires": [],
+      "integrations": {}
+    },
+    {
+      "id": "lifecycle.drain.bounded",
+      "family": "lifecycle",
+      "applies_to": "pipeline",
+      "claim": "The drain finishes or fails inside its deadline.",
+      "verified_by": "named",
+      "requires": [],
+      "integrations": {},
+      "tracked_by": "#161"
+    },
+    {
+      "id": "lifecycle.close.idempotent",
+      "family": "lifecycle",
+      "applies_to": "sink",
+      "claim": "Close twice is safe.",
+      "verified_by": "harness",
+      "requires": [],
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
+    },
+    {
+      "id": "pipeline.batch.timeout",
+      "family": "lifecycle",
+      "applies_to": "pipeline",
+      "claim": "A batch whose query exceeds the timeout fails the batch, not the process.",
+      "verified_by": "named",
+      "requires": [],
+      "integrations": {},
+      "tracked_by": "#163"
+    },
+    {
+      "id": "error.dlq.carries_provenance",
+      "family": "errors",
+      "applies_to": "pipeline",
+      "claim": "A DLQ record carries the payload, offset, partition and reason.",
+      "verified_by": "named",
+      "requires": [],
+      "integrations": {},
+      "tracked_by": "#166"
+    },
+    {
+      "id": "error.bad_record.threshold",
+      "family": "errors",
+      "applies_to": "pipeline",
+      "claim": "N bad records in a window fail the pipeline rather than discarding forever.",
+      "verified_by": "named",
+      "requires": [],
+      "integrations": {},
+      "tracked_by": "#166"
+    }
+  ],
+  "invariant_gaps": [],
+  "unknown_invariant_markers": []
 }

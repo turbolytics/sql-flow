@@ -276,7 +276,11 @@ def build(features, go_results, py_results, go_covers=None, py_covers=None,
             feature_id = match(strip_level_prefix(name), prefixes)
             if feature_id:
                 coverage[feature_id][level].append((name, outcome))
-            else:
+            elif not extras.get(name):
+                # A test carrying a marker is attributed by it. Listing it here
+                # would tell the reader to rename a test that already says what
+                # it covers, and the conformance harness attributes only by
+                # marker: its runner's name matches no feature at all.
                 unmatched[level].append(name)
 
             for extra in extras.get(name, []):
@@ -289,6 +293,121 @@ def build(features, go_results, py_results, go_covers=None, py_covers=None,
                 secondary[extra][level].append(name)
 
     return coverage, secondary, unmatched, unknown_markers
+
+
+def build_invariants(invariants, integrations, results, evidence):
+    """Attribute harness markers to (invariant, integration, level) cells.
+
+    results:  {level: {test: outcome}}
+    evidence: {level: {test: [(invariant, integration)]}}
+
+    A marker is only ever emitted by a passing subtest, but the parent that
+    ran it can still fail or be skipped afterwards, and that verdict is the
+    one `go test` reports. The outcome recorded here is the test's, not the
+    marker's presence.
+    """
+    known_inv = {i["id"] for i in invariants}
+    known_integ = {i["id"] for i in integrations}
+
+    cells = {}   # (invariant, integration, level) -> [(test, outcome)]
+    unknown = []  # (test, invariant, integration)
+
+    for level in LEVELS:
+        # Insertion order, not sorted: snapshot_invariants sorts each cell, and
+        # sorting twice hides which sort the output actually depends on.
+        for test, pairs in evidence.get(level, {}).items():
+            # A marker with no result means the event stream lost the verdict.
+            # Treat that as a failure rather than as coverage.
+            outcome = results.get(level, {}).get(test, FAIL)
+            for inv, integ in pairs:
+                if inv not in known_inv or integ not in known_integ:
+                    unknown.append((test, inv, integ))
+                    continue
+                cells.setdefault((inv, integ, level), []).append((test, outcome))
+
+    return {"cells": cells, "unknown": unknown}
+
+
+def snapshot_invariants(invariants, integrations, built):
+    """The invariant half of matrix.json.
+
+    Same bare-name encoding as the feature half. An exempt cell carries its
+    reason, so a reader never has to open a second file to learn why a cell is
+    blank.
+    """
+    by_kind = {}
+    for integ in integrations:
+        by_kind.setdefault(integ["kind"], []).append(integ)
+
+    exemptions = {
+        (ex["invariant"], integ["id"]): ex["reason"]
+        for integ in integrations
+        for ex in integ.get("exempt", [])
+    }
+
+    out = {"invariants": [], "invariant_gaps": [], "unknown_invariant_markers": []}
+
+    for inv in invariants:
+        required = set(inv.get("requires", []))
+        entry = {
+            "id": inv["id"],
+            "family": inv["family"],
+            "applies_to": inv["applies_to"],
+            # The YAML folds long claims onto several lines; one space between
+            # words keeps the JSON diff stable when the wrapping changes.
+            "claim": " ".join(inv["claim"].split()),
+            "verified_by": inv["verified_by"],
+            "requires": sorted(required),
+            "integrations": {},
+        }
+        if inv.get("tracked_by"):
+            entry["tracked_by"] = inv["tracked_by"]
+        if inv.get("violated_once"):
+            entry["violated_once"] = list(inv["violated_once"])
+
+        # A pipeline invariant attaches to core, so it has no subjects.
+        for integ in by_kind.get(inv["applies_to"], []):
+            reason = exemptions.get((inv["id"], integ["id"]))
+            levels = {}
+            for level in LEVELS:
+                if reason is not None:
+                    levels[level] = {"status": "exempt", "reason": reason}
+                    continue
+
+                # No not_required here, unlike the feature half. Every
+                # non-exempt integration is expected to prove every invariant
+                # of its kind; `requires` decides only whether the absence
+                # fails the build. A cell with no evidence is missing, and
+                # saying so is the whole point before anything is enforced.
+                tests = sorted(built["cells"].get((inv["id"], integ["id"], level), []))
+                state = status(tests)
+                cell = {"status": state, "tests": [n for n, _ in tests]}
+                for key, members in (
+                    ("skipped", [n for n, o in tests if o == SKIP]),
+                    ("failing", [n for n, o in tests if o == FAIL]),
+                ):
+                    if members:
+                        cell[key] = members
+                levels[level] = cell
+
+                if level in required and state != "covered":
+                    out["invariant_gaps"].append({
+                        "invariant": inv["id"],
+                        "integration": integ["id"],
+                        "level": level,
+                        "status": state,
+                    })
+            entry["integrations"][integ["id"]] = levels
+
+        out["invariants"].append(entry)
+
+    # Sorted as tuples. Sorting dicts raises TypeError past one element, which
+    # is what the feature half's unknown_markers does today.
+    out["unknown_invariant_markers"] = [
+        {"test": t, "invariant": i, "integration": g}
+        for t, i, g in sorted(set(built["unknown"]))
+    ]
+    return out
 
 
 def status(entries):
@@ -333,7 +452,7 @@ def snapshot(features, coverage, secondary, unmatched, unknown_markers):
     agents answering questions about coverage. It came to 100KB, and 459 of its
     489 entries said nothing but `"outcome": "pass", "attribution": "name"`.
     """
-    out = {"version": 2, "features": [], "gaps": [],
+    out = {"version": 3, "features": [], "gaps": [],
            "unattributed": {}, "unknown_markers": []}
 
     for feature in features:
@@ -485,6 +604,102 @@ def render(snap):
     return "\n".join(lines) + "\n"
 
 
+INV_MARK = {
+    "covered": "✅",
+    "skipped": "⚠️ skipped",
+    "missing": "❌ missing",
+    "failing": "🔥 failing",
+    "exempt": "— exempt",
+}
+
+# Worst first. A cell shows the weakest status across the levels it is judged
+# on, so a green row means green everywhere it was asked.
+STATUS_RANK = ("failing", "missing", "skipped", "covered", "exempt")
+
+
+def render_invariants(snap):
+    """Render the invariant half. One table per family, one column per
+    integration the family's invariants apply to."""
+    lines = [
+        "# Invariant matrix",
+        "",
+        "Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.",
+        "Do not edit by hand.",
+        "",
+        "Invariants are declared in `docs/coverage/invariants.yml`, integrations",
+        "in `docs/coverage/integrations.yml`. A cell is proven by the conformance",
+        "harness in `internal/conformance`, which emits a marker naming both",
+        "ids -- a harness test's name says nothing, because the same code runs",
+        "for every integration.",
+        "",
+        "**exempt** carries its reason in the JSON. **missing** means no",
+        "evidence. Nothing here fails the build until an invariant's `requires`",
+        "is filled in, and none is yet.",
+        "",
+    ]
+
+    def worst(levels, required):
+        judged = required or list(levels)
+        states = [levels[lvl]["status"] for lvl in judged if lvl in levels]
+        return min(states, key=STATUS_RANK.index) if states else "missing"
+
+    families = []
+    for inv in snap["invariants"]:
+        if inv["family"] not in families:
+            families.append(inv["family"])
+
+    for family in families:
+        rows = [i for i in snap["invariants"] if i["family"] == family]
+        columns = []
+        for inv in rows:
+            for integ in inv["integrations"]:
+                if integ not in columns:
+                    columns.append(integ)
+
+        lines += [f"## Invariants: {family}", ""]
+        if columns:
+            lines.append("| Invariant | Claim | "
+                         + " | ".join(f"`{c}`" for c in columns) + " |")
+            lines.append("| --- | --- | "
+                         + " | ".join("---" for _ in columns) + " |")
+        else:
+            # pipeline invariants have no per-integration column.
+            lines.append("| Invariant | Claim | Verified by |")
+            lines.append("| --- | --- | --- |")
+
+        for inv in rows:
+            claim = inv["claim"]
+            if inv.get("tracked_by"):
+                claim += f" *(declared, tracked by {inv['tracked_by']})*"
+            if columns:
+                cells = " | ".join(
+                    INV_MARK[worst(inv["integrations"][c], inv["requires"])]
+                    if c in inv["integrations"] else "·"
+                    for c in columns)
+                lines.append(f"| `{inv['id']}` | {claim} | {cells} |")
+            else:
+                lines.append(f"| `{inv['id']}` | {claim} | {inv['verified_by']} |")
+        lines.append("")
+
+    if snap["invariant_gaps"]:
+        lines += ["## Invariant gaps", "",
+                  "These fail `make coverage-check`.", ""]
+        for gap in snap["invariant_gaps"]:
+            lines.append(
+                f"- `{gap['invariant']}` on `{gap['integration']}` requires "
+                f"**{gap['level']}** and is *{gap['status']}*.")
+        lines.append("")
+
+    if snap["unknown_invariant_markers"]:
+        lines += ["## Markers naming an unknown invariant or integration", ""]
+        for entry in snap["unknown_invariant_markers"]:
+            lines.append(f"- `{entry['test']}` marks `{entry['invariant']}` "
+                         f"on `{entry['integration']}`")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--go", help="go test -short -json output")
@@ -497,6 +712,17 @@ def main():
     args = ap.parse_args()
 
     features = load_features()
+    invariants = load_invariants()
+    integrations = load_integrations()
+
+    # Before any test result is read: a registry typo would otherwise reach
+    # the matrix as a missing cell.
+    problems = validate_registries(invariants, integrations, features)
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        return 2
+
     go_results, go_covers, go_invariants = (
         parse_go(args.go) if args.go and os.path.exists(args.go) else ({}, {}, {}))
     it_results, it_covers, it_invariants = (
@@ -511,7 +737,15 @@ def main():
         features, go_results, py_results, go_covers, py_covers,
         it_results, it_covers)
     snap = snapshot(features, coverage, secondary, unmatched, unknown)
-    rendered = render(snap)
+
+    built = build_invariants(
+        invariants, integrations,
+        {"unit": go_results, "integration": it_results, "release": py_results},
+        {"unit": go_invariants, "integration": it_invariants,
+         "release": py_invariants})
+    snap.update(snapshot_invariants(invariants, integrations, built))
+
+    rendered = render(snap) + "\n" + render_invariants(snap)
 
     if args.write:
         os.makedirs(os.path.dirname(MATRIX_JSON), exist_ok=True)
@@ -525,11 +759,15 @@ def main():
     else:
         print(rendered)
 
-    if args.check and snap["gaps"]:
-        print(f"\n{len(snap['gaps'])} coverage gap(s):", file=sys.stderr)
+    gaps = snap["gaps"] + snap["invariant_gaps"]
+    if args.check and gaps:
+        print(f"\n{len(gaps)} coverage gap(s):", file=sys.stderr)
         for gap in snap["gaps"]:
             print(f"  {gap['feature']}: {gap['level']} is {gap['status']}",
                   file=sys.stderr)
+        for gap in snap["invariant_gaps"]:
+            print(f"  {gap['invariant']} on {gap['integration']}: "
+                  f"{gap['level']} is {gap['status']}", file=sys.stderr)
         return 1
     return 0
 

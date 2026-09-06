@@ -72,3 +72,72 @@ that deserves its own test.
 - `config.templating` (release) — via `test_config_validation_accepts_a_shipped_example`
 - `cli.dev_invoke` (release) — via `test_handler_inferred_mem_invoke_renders_rows`
 
+
+# Invariant matrix
+
+Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.
+Do not edit by hand.
+
+Invariants are declared in `docs/coverage/invariants.yml`, integrations
+in `docs/coverage/integrations.yml`. A cell is proven by the conformance
+harness in `internal/conformance`, which emits a marker naming both
+ids -- a harness test's name says nothing, because the same code runs
+for every integration.
+
+**exempt** carries its reason in the JSON. **missing** means no
+evidence. Nothing here fails the build until an invariant's `requires`
+is filled in, and none is yet.
+
+## Invariants: resilience
+
+| Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
+| `sink.flush.preserves_order` | Rows reach the destination in WriteTable order, across a retry. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
+| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `sink.batch.reports_buffer` | Batch returns what is buffered, and nil when nothing is. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
+| `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+
+## Invariants: checkpoint
+
+| Invariant | Claim | `source.kafka` | `source.websocket` | `source.webhook` |
+| --- | --- | --- | --- | --- |
+| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | · | · | · |
+| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | · | · | · |
+| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | · | · | · |
+| `source.commit.only_processed` | A source commits the marks the pipeline processed, never what it fetched. | ❌ missing | — exempt | — exempt |
+| `source.resume.from_committed` | Restart resumes at the committed position. No gap, and no replay before it. | ❌ missing | — exempt | — exempt |
+| `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt |
+| `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt |
+
+## Invariants: types
+
+| Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `type.roundtrip` | Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.null` | A null in every declared type reads back as declared. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.timestamp.instant` | A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.nested` | list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.string.fidelity` | Unicode, escapes and the empty string round-trip byte for byte. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.undeclared.fails_loud` | An Arrow type absent from the table fails the batch with a coded error. Never coerced silently. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+
+## Invariants: lifecycle
+
+| Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | · | · | · | · | · | · |
+| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | · | · | · | · | · | · |
+| `lifecycle.close.idempotent` | Close twice is safe. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | · | · | · | · | · | · |
+
+## Invariants: errors
+
+| Invariant | Claim | Verified by |
+| --- | --- | --- |
+| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | named |
+| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | named |
+
