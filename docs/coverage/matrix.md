@@ -25,12 +25,12 @@ names every one of them.
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | — | ✅ | 7 |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | — | ✅ | 14 |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | — | ✅ | 16 |
 | `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 13 |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
 | `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 10 |
 | `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 3 |
-| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 69 |
+| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 71 |
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
 | `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 8 |

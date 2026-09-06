@@ -180,6 +180,7 @@
           "tests": [
             "TestSinkClickhouse_BatchIsNil",
             "TestSinkClickhouse_EmptyTableIsNoop",
+            "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
             "TestSinkClickhouse_InsertsArrays",
             "TestSinkClickhouse_InsertsNestedArrays",
             "TestSinkClickhouse_InsertsRows",
@@ -190,16 +191,19 @@
             "TestSinkClickhouse_OptionsNative",
             "TestSinkClickhouse_OptionsPythonDSN",
             "TestSinkClickhouse_OptionsSecure",
-            "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone"
+            "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone",
+            "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer"
           ],
           "skipped": [
             "TestSinkClickhouse_BatchIsNil",
             "TestSinkClickhouse_EmptyTableIsNoop",
+            "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
             "TestSinkClickhouse_InsertsArrays",
             "TestSinkClickhouse_InsertsNestedArrays",
             "TestSinkClickhouse_InsertsRows",
             "TestSinkClickhouse_NullsBecomeDefaults",
-            "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone"
+            "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone",
+            "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer"
           ]
         },
         "integration": {
@@ -367,6 +371,7 @@
             "TestSinkRetry_DoesNotRetryAConfigError",
             "TestSinkRetry_DoesNotRetryARejectedWrite",
             "TestSinkRetry_ExhaustedAttemptsReportUnreachable",
+            "TestSinkRetry_ExhaustedLadderReportsTheFailure",
             "TestSinkRetry_HelpsOnlyForSinksThatCrossANetwork",
             "TestSinkRetry_MetricsCountRequestsByStatusCode",
             "TestSinkRetry_MetricsCountsEveryRetry",
@@ -403,6 +408,7 @@
             "TestSinkRetry_ProbeRespectsACancelledContext",
             "TestSinkRetry_ProbeSinksWithNothingToDialAreSkipped",
             "TestSinkRetry_ProbeUnreachableSinkFailsTheStart",
+            "TestSinkRetry_RetriedFlushDeliversTheBatch",
             "TestSinkRetry_RetriesAnUncodedError",
             "TestSinkRetry_RetriesAnUnreachableSink",
             "TestSinkRetry_SinkErrorCodesByCause",
