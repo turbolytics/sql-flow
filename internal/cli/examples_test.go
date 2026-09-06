@@ -42,9 +42,9 @@ func exampleConfigs(t *testing.T) []string {
 	return paths
 }
 
-// probeTimeout bounds the sink probe. sinks.New probes with a background
-// context, so a config naming a host that drops packets rather than refusing
-// them would hang this test until the kernel gave up.
+// probeTimeout bounds the sink probe. A config naming a host that drops
+// packets rather than refusing them would otherwise hang this test until the
+// kernel gave up.
 const probeTimeout = 2 * time.Second
 
 // denyExternalAccess stops DuckDB reaching the network for the rest of the
@@ -163,7 +163,7 @@ func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
 			// nothing the commands above may have failed to create. Building
 			// it second meant a handler that skipped for a missing ATTACHed
 			// table took the sink check down with it.
-			_, err = sinks.NewWithContext(ctx, conf.Pipeline.Sink, conn)
+			_, err = sinks.New(ctx, conf.Pipeline.Sink, conn)
 			checkBuildError(t, "sink", err)
 
 			if conf.Tables != nil {
@@ -171,7 +171,7 @@ func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
 					if table.Manager == nil {
 						continue
 					}
-					_, err := sinks.NewWithContext(ctx, table.Manager.Sink, conn)
+					_, err := sinks.New(ctx, table.Manager.Sink, conn)
 					checkBuildError(t, "manager sink for "+table.Name, err)
 				}
 			}

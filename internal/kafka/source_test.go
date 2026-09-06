@@ -3,8 +3,6 @@ package kafka
 import (
 	"context"
 	"fmt"
-	"net"
-	"os"
 	"testing"
 	"time"
 
@@ -12,23 +10,6 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/zeebo/assert"
 )
-
-// brokerOrSkip returns the dev-stack broker, skipping the test when none is
-// reachable rather than failing a local `go test`. Kafka-backed tests are
-// deliberately not part of CI's unit run.
-func brokerOrSkip(t *testing.T) string {
-	t.Helper()
-	broker := os.Getenv("SQLFLOW_KAFKA_BROKERS")
-	if broker == "" {
-		broker = "localhost:9092"
-	}
-	conn, err := net.DialTimeout("tcp", broker, time.Second)
-	if err != nil {
-		t.Skipf("kafka unavailable at %s: %v", broker, err)
-	}
-	conn.Close()
-	return broker
-}
 
 func newTestClient(t *testing.T, broker, topic, group string, extra ...kgo.Opt) *kgo.Client {
 	t.Helper()
@@ -62,8 +43,8 @@ func produce(t *testing.T, client *kgo.Client, topic string, n int) {
 // fetched to -- the latter is how 20,000 processed messages came to commit
 // offset 70,086 and how a batch that never reached ClickHouse had already been
 // committed.
-func TestSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-commit-marks-%d", time.Now().UnixNano())
 	client := newTestClient(t, broker, topic, topic)
 	defer client.Close()
@@ -107,8 +88,8 @@ func TestSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
 // Lag is only meaningful against the broker's high watermark, which arrives
 // on the fetch itself. Without it, an operator cannot tell a healthy pipeline
 // from one falling behind.
-func TestSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-hwm-%d", time.Now().UnixNano())
 
 	// A plain producer, not the group-consumer client newTestClient builds:
@@ -142,8 +123,8 @@ func TestSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
 // A restart must resume from the offsets recorded in the state database, not
 // from wherever the consumer group happens to sit. The state file is the
 // source of truth; Kafka's committed offsets are advisory.
-func TestSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-%d", time.Now().UnixNano())
 
 	// Produced with a plain client, before the group consumer exists: a
@@ -184,8 +165,8 @@ func TestSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
 // No stored offsets means no seek, so auto_offset_reset still governs the
 // first run against a fresh state file. Seeking to zero here would be wrong:
 // "nothing recorded" and "recorded position zero" are different facts.
-func TestSourceKafka_SeekToEmptyIsANoop(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_SeekToEmptyIsANoop(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-empty-%d", time.Now().UnixNano())
 
 	producer, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.AllowAutoTopicCreation())

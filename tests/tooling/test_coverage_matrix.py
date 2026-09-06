@@ -29,11 +29,12 @@ FEATURES = [
 
 
 def snap(go_results=None, py_results=None, go_covers=None, py_covers=None,
-         features=None):
+         integration_results=None, integration_covers=None, features=None):
     features = features or FEATURES
     coverage, secondary, unmatched, unknown = cm.build(
         features, go_results or {}, py_results or {},
-        go_covers or {}, py_covers or {})
+        go_covers or {}, py_covers or {},
+        integration_results or {}, integration_covers or {})
     return cm.snapshot(features, coverage, secondary, unmatched, unknown)
 
 
@@ -124,6 +125,61 @@ def test_coverage_beyond_what_is_required_still_shows():
     dropping it later should be visible."""
     s = snap(py_results={"test_sink_console_writes_rows": cm.PASS})
     assert level(s, "sink.console", "release")["status"] == "covered"
+
+
+# --- The integration level -------------------------------------------------
+
+def test_levels_run_from_cheapest_to_most_real():
+    assert cm.LEVELS == ("unit", "integration", "release")
+
+
+def test_an_integration_result_lands_at_the_integration_level():
+    s = snap(
+        integration_results={"TestIntegrationSourceKafka_Commits": cm.PASS},
+        features=[{"id": "source.kafka", "description": "kafka",
+                   "requires": ["integration"]}],
+    )
+    assert level(s, "source.kafka", "integration")["status"] == "covered"
+
+
+def test_the_integration_prefix_does_not_decide_the_feature():
+    """Level and feature stay separate axes. The prefix selects which pass runs
+    a test; the rest of the name still says which feature it covers."""
+    assert (cm.strip_level_prefix("TestIntegrationSourceKafka_Commits")
+            == "TestSourceKafka_Commits")
+    assert (cm.strip_level_prefix("TestSourceKafka_Commits")
+            == "TestSourceKafka_Commits")
+
+
+def test_an_integration_test_does_not_manufacture_unit_coverage():
+    """The same names appear in the unit pass, skipped by -short. A skip is not
+    coverage there just because the integration pass ran it for real."""
+    s = snap(
+        go_results={"TestIntegrationSourceKafka_Commits": cm.SKIP},
+        integration_results={"TestIntegrationSourceKafka_Commits": cm.PASS},
+        features=[{"id": "source.kafka", "description": "kafka",
+                   "requires": ["unit", "integration"]}],
+    )
+    assert level(s, "source.kafka", "unit")["status"] == "skipped"
+    assert level(s, "source.kafka", "integration")["status"] == "covered"
+
+
+def test_a_skipped_integration_test_is_a_gap():
+    """An integration suite that skips itself when its service is absent is the
+    sink.iceberg failure one level up. It must not read as coverage."""
+    s = snap(
+        integration_results={"TestIntegrationSourceKafka_Commits": cm.SKIP},
+        features=[{"id": "source.kafka", "description": "kafka",
+                   "requires": ["integration"]}],
+    )
+    assert {"feature": "source.kafka", "level": "integration",
+            "status": "skipped"} in s["gaps"]
+
+
+def test_render_carries_a_column_per_level():
+    s = snap(integration_results={"TestSourceKafka_Commits": cm.PASS})
+    assert "| Feature | What it does | unit | integration | release | Tests |" \
+        in cm.render(s)
 
 
 # --- Markers ---------------------------------------------------------------
@@ -283,7 +339,7 @@ def test_every_declared_feature_is_well_formed():
         assert feature.get("description"), feature["id"]
         assert feature.get("requires"), f"{feature['id']} requires nothing"
         for lvl in feature["requires"]:
-            assert lvl in ("unit", "release"), f"{feature['id']}: {lvl}"
+            assert lvl in cm.LEVELS, f"{feature['id']}: {lvl}"
 
 
 def test_feature_ids_are_unique():

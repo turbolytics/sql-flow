@@ -1,8 +1,8 @@
 name: CI
 on: [push]
 jobs:
-  # The Go engine (sqlflow). Unit tests only: anything that needs a Kafka broker
-  # stays out of CI and runs from the dev stack.
+  # The Go engine (sqlflow), unit pass only. Fast feedback with no Docker: the
+  # integration tests start containers, and the job below runs those.
   go:
     name: Go
     runs-on: ubuntu-latest
@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go 1.24
+      - name: Set up Go 1.25
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
@@ -42,8 +42,56 @@ jobs:
       # ./... rather than ./internal/...: the narrower form covers 16 of the 17
       # packages, and the 17th has no tests today. That makes the gap silent
       # rather than absent -- the first test added under cmd/ would not run.
+      #
+      # -json so the coverage job can read this run instead of repeating it.
+      # tee keeps the events in the log, where a failure is the line carrying
+      # "Action":"fail" and its test name.
       - name: Test Unit
-        run: go test ./...
+        run: |
+          mkdir -p .coverage
+          set -o pipefail
+          go test -short -json ./... | tee .coverage/go.json
+
+      # always(): a failing suite is exactly when the matrix needs this report,
+      # so it can name the feature that broke rather than reporting nothing.
+      - name: Upload the unit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-unit
+          path: .coverage/go.json
+
+  # The Go tests that need a real service. They start their own containers, so
+  # this job installs nothing beyond the toolchain.
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    env:
+      SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install libduckdb
+        run: ./scripts/install-libduckdb.sh bin
+
+      - name: Test Integration
+        run: |
+          mkdir -p .coverage
+          set -o pipefail
+          go test -json -run '^TestIntegration' ./... | tee .coverage/go-integration.json
+
+      - name: Upload the integration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-integration
+          path: .coverage/go-integration.json
 
   # The coverage matrix generator. It gates every merge, so a wrong generator
   # is a wrong gate. Pure Python: no Docker, no image, seconds to run.
@@ -65,10 +113,10 @@ jobs:
         run: pytest tests/tooling -q
 
   # Functional tests against the built image: entrypoint, CLI surface, the
-  # baked-in libduckdb, and a real pipeline through Kafka. The Go job above
-  # tests the code; this tests the artifact users actually run, which is a
-  # different failure class -- a broken entrypoint or a missing libduckdb
-  # passes every unit test.
+  # baked-in libduckdb, and a real pipeline through Kafka. The Go job tests the
+  # code; this tests the artifact users actually run, which is a different
+  # failure class -- a broken entrypoint or a missing libduckdb passes every
+  # unit test.
   #
   # Single-arch and native, so it stays fast; the multi-arch build happens at
   # release time in release.yml.
@@ -96,3 +144,56 @@ jobs:
       # case brings its own broker up through testcontainers.
       - name: Test image
         run: make test-release
+
+      - name: Upload the release report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-release
+          path: .coverage/pytest.json
+
+  # The merge gate on feature coverage, and the last job to run.
+  #
+  # It runs no tests. Every suite above already ran and uploaded its report,
+  # and this reads them -- so coverage costs seconds, not a second build and a
+  # second release run. That was the earlier shape and it duplicated ~175s of
+  # work per push.
+  #
+  # always(): a failing suite is when the matrix is most worth reading, because
+  # it names the feature that broke. The gate still fails -- on the failure
+  # itself, through the report -- but it fails saying which feature lost
+  # coverage rather than saying nothing at all.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    needs: [go, integration, image]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip PyYAML
+
+      - name: Download every suite report
+        uses: actions/download-artifact@v4
+        with:
+          path: .coverage
+          pattern: report-*
+          merge-multiple: true
+
+      - name: Check the coverage matrix
+        run: make coverage-check
+
+      # The matrix is the diff a reviewer reads. When the check fails because
+      # it is stale, the regenerated file is more useful than the log line.
+      - name: Upload the regenerated matrix
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-matrix
+          path: docs/coverage/

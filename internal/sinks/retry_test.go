@@ -227,7 +227,7 @@ func TestSinkRetry_NewLocalSinksAreNotWrapped(t *testing.T) {
 		{Type: "console"},
 		{Type: ""},
 	} {
-		built, err := New(s, nil)
+		built, err := New(context.Background(), s, nil)
 		assert.NoError(t, err)
 		assert.That(t, !isRetrying(built))
 	}

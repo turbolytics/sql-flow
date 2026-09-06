@@ -5,20 +5,23 @@ Two axes, deliberately independent:
 
   Feature  what sqlflow does, e.g. sink.iceberg. Declared in
            docs/coverage/features.yml. Never encodes a test level.
-  Level    where the test ran: `unit` for go test, `release` for the image
+  Level    where the test ran: `unit` for go test -short, `integration` for
+           the Go tests that need a real service, `release` for the image
            suite. Derived from which file the result came out of, never
            declared, so it cannot drift from reality.
 
 Keeping them separate is what lets the matrix answer the question that went
 unanswered for months: which features are covered by a unit test but never
-proven against the shipped image.
+proven against a real broker or the shipped image.
 
 A skipped test does not cover its feature. It reports as SKIP, because a skip
 that reads as coverage is exactly how sink.iceberg shipped untested.
 
 Usage:
-    coverage_matrix.py --go go.json --pytest pytest.json --write
-    coverage_matrix.py --go go.json --pytest pytest.json --check
+    coverage_matrix.py --go go.json --go-integration it.json \
+        --pytest pytest.json --write
+    coverage_matrix.py --go go.json --go-integration it.json \
+        --pytest pytest.json --check
 
 `--check` exits non-zero when a feature is missing a level it requires.
 """
@@ -39,6 +42,14 @@ MATRIX_MD = os.path.join(REPO, "docs", "coverage", "matrix.md")
 
 PASS, SKIP, FAIL = "pass", "skip", "fail"
 
+# Ordered cheapest to most real, which is the order they run in and the order
+# the matrix reads left to right.
+LEVELS = ("unit", "integration", "release")
+
+# Go's integration pass selects its tests by name, because `go test -run` is
+# the only selector that needs no build tag and no second package.
+INTEGRATION_PREFIX = "TestIntegration"
+
 
 def load_features():
     with open(REGISTRY) as fh:
@@ -54,6 +65,18 @@ def go_prefix(feature_id):
 def py_prefix(feature_id):
     """sink.clickhouse -> test_sink_clickhouse"""
     return "test_" + feature_id.replace(".", "_")
+
+
+def strip_level_prefix(name):
+    """TestIntegrationSourceKafka_Commits -> TestSourceKafka_Commits
+
+    The prefix says which pass runs the test. It must not also say which
+    feature the test covers, or every integration test would attribute to
+    nothing and land in the unattributed list.
+    """
+    if name.startswith(INTEGRATION_PREFIX):
+        return "Test" + name[len(INTEGRATION_PREFIX):]
+    return name
 
 
 def match(name, prefixes):
@@ -120,7 +143,8 @@ def parse_pytest(path):
     return results, covers
 
 
-def build(features, go_results, py_results, go_covers=None, py_covers=None):
+def build(features, go_results, py_results, go_covers=None, py_covers=None,
+          it_results=None, it_covers=None):
     """Attribute tests to features.
 
     The name is the primary attribution and stays the cheap default: rename a
@@ -133,17 +157,18 @@ def build(features, go_results, py_results, go_covers=None, py_covers=None):
     go_prefixes = {f["id"]: go_prefix(f["id"]) for f in features}
     py_prefixes = {f["id"]: py_prefix(f["id"]) for f in features}
 
-    coverage = {f["id"]: {"unit": [], "release": []} for f in features}
-    secondary = {f["id"]: {"unit": [], "release": []} for f in features}
-    unmatched = {"unit": [], "release": []}
+    coverage = {f["id"]: {lvl: [] for lvl in LEVELS} for f in features}
+    secondary = {f["id"]: {lvl: [] for lvl in LEVELS} for f in features}
+    unmatched = {lvl: [] for lvl in LEVELS}
     unknown_markers = []
 
     for level, results, prefixes, extras in (
         ("unit", go_results, go_prefixes, go_covers or {}),
+        ("integration", it_results or {}, go_prefixes, it_covers or {}),
         ("release", py_results, py_prefixes, py_covers or {}),
     ):
         for name, outcome in sorted(results.items()):
-            feature_id = match(name, prefixes)
+            feature_id = match(strip_level_prefix(name), prefixes)
             if feature_id:
                 coverage[feature_id][level].append((name, outcome))
             else:
@@ -205,7 +230,7 @@ def snapshot(features, coverage, secondary, unmatched, unknown_markers):
             "levels": {},
         }
 
-        for level in ("unit", "release"):
+        for level in LEVELS:
             tests = sorted(coverage[fid][level])
             if level not in required and not tests:
                 entry["levels"][level] = {"status": "not_required", "tests": []}
@@ -249,31 +274,33 @@ def render(snap):
         "test and it is attributed, with no import and no marker.",
         "",
         "Levels are derived from where a test ran, never declared, so they",
-        "cannot drift. A **skipped** test is not coverage: a skip that reads as",
+        "cannot drift. `unit` is `go test -short`, `integration` is the Go",
+        "tests that need a real service, `release` is the image suite. A",
+        "**skipped** test is not coverage at any of them: a skip that reads as",
         "a pass is how `sink.iceberg` shipped for months without ever being",
         "written to.",
         "",
-        "| Feature | What it does | unit | release | Tests |",
-        "| --- | --- | --- | --- | --- |",
+        "| Feature | What it does | " + " | ".join(LEVELS) + " | Tests |",
+        "| --- | --- | " + " | ".join("---" for _ in LEVELS) + " | --- |",
     ]
 
     for feature in snap["features"]:
-        cells = {lvl: MARK[feature["levels"][lvl]["status"]]
-                 for lvl in ("unit", "release")}
-        names = [t["name"] for lvl in ("unit", "release")
+        cells = " | ".join(MARK[feature["levels"][lvl]["status"]]
+                           for lvl in LEVELS)
+        names = [t["name"] for lvl in LEVELS
                  for t in feature["levels"][lvl]["tests"]]
         shown = ", ".join(f"`{n}`" for n in names[:3])
         if len(names) > 3:
             shown += f" +{len(names) - 3} more"
         lines.append(
             f"| `{feature['id']}` | {feature['description']} | "
-            f"{cells['unit']} | {cells['release']} | {shown or '—'} |"
+            f"{cells} | {shown or '—'} |"
         )
 
     covered = sum(
         1 for f in snap["features"]
         if all(f["levels"][lvl]["status"] in ("covered", "not_required")
-               for lvl in ("unit", "release"))
+               for lvl in LEVELS)
     )
     lines += [
         "",
@@ -298,7 +325,7 @@ def render(snap):
     # its own, and this is where that shows.
     by_marker = []
     for feature in snap["features"]:
-        for level in ("unit", "release"):
+        for level in LEVELS:
             tests = feature["levels"][level]["tests"]
             if tests and all(t["attribution"] == "marker" for t in tests):
                 by_marker.append((feature["id"], level, [t["name"] for t in tests]))
@@ -315,7 +342,7 @@ def render(snap):
             lines.append(f"- `{fid}` ({level}) — via {', '.join(f'`{n}`' for n in names)}")
         lines.append("")
 
-    for level in ("unit", "release"):
+    for level in LEVELS:
         names = snap["unattributed"].get(level, [])
         if names:
             lines += [
@@ -339,7 +366,9 @@ def render(snap):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--go", help="go test -json output")
+    ap.add_argument("--go", help="go test -short -json output")
+    ap.add_argument("--go-integration",
+                    help="go test -json output from the integration pass")
     ap.add_argument("--pytest", help="pytest result json from the conftest hook")
     ap.add_argument("--write", action="store_true",
                     help="write matrix.json and matrix.md")
@@ -349,12 +378,17 @@ def main():
     features = load_features()
     go_results, go_covers = (
         parse_go(args.go) if args.go and os.path.exists(args.go) else ({}, {}))
+    it_results, it_covers = (
+        parse_go(args.go_integration)
+        if args.go_integration and os.path.exists(args.go_integration)
+        else ({}, {}))
     py_results, py_covers = (
         parse_pytest(args.pytest)
         if args.pytest and os.path.exists(args.pytest) else ({}, {}))
 
     coverage, secondary, unmatched, unknown = build(
-        features, go_results, py_results, go_covers, py_covers)
+        features, go_results, py_results, go_covers, py_covers,
+        it_results, it_covers)
     snap = snapshot(features, coverage, secondary, unmatched, unknown)
     rendered = render(snap)
 

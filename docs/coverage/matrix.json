@@ -5,6 +5,7 @@
       "id": "source.kafka",
       "description": "Consumes a Kafka topic, tracking offsets and leader epochs.",
       "requires": [
+        "integration",
         "release",
         "unit"
       ],
@@ -13,13 +14,33 @@
           "status": "covered",
           "tests": [
             {
-              "name": "TestSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
-              "outcome": "pass",
+              "name": "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
+              "outcome": "skip",
               "attribution": "name"
             },
             {
-              "name": "TestSourceKafka_MessagesCarryHighWatermark",
-              "outcome": "pass",
+              "name": "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
+              "outcome": "skip",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
+              "outcome": "skip",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
+              "outcome": "skip",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
+              "outcome": "skip",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets",
+              "outcome": "skip",
               "attribution": "name"
             },
             {
@@ -78,26 +99,6 @@
               "attribution": "name"
             },
             {
-              "name": "TestSourceKafka_SeekToEmptyIsANoop",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SeekToIssuesNoCommit",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SeekToResumesFromDurableOffsets",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SeekToResumesFromStoredOffsets",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
               "name": "TestSourceKafka_TLSConfigDisablesHostnameVerification",
               "outcome": "pass",
               "attribution": "name"
@@ -109,6 +110,41 @@
             },
             {
               "name": "TestSourceKafka_TLSConfigRequiresBothCertAndKey",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
+        },
+        "integration": {
+          "status": "covered",
+          "tests": [
+            {
+              "name": "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets",
               "outcome": "pass",
               "attribution": "name"
             }
@@ -218,6 +254,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -262,6 +302,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -283,7 +327,42 @@
       ],
       "levels": {
         "unit": {
-          "status": "missing",
+          "status": "covered",
+          "tests": [
+            {
+              "name": "TestSinkKafka_BatchIsTheLastWrite",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_FlushHonoursItsContext",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_FlushReportsProduceErrors",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_NewRejectsAnUnknownSecurityProtocol",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_NewRequiresATopic",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_WriteTableHonoursItsContext",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
+        },
+        "integration": {
+          "status": "not_required",
           "tests": []
         },
         "release": {
@@ -376,6 +455,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -397,7 +480,72 @@
       ],
       "levels": {
         "unit": {
-          "status": "missing",
+          "status": "covered",
+          "tests": [
+            {
+              "name": "TestSinkIceberg_AddsPyicebergsMissingTypeColumn",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_AppendsEveryRow",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_BatchIsTheLastWrite",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_CatalogPropertiesEnvOverridesFile",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_CatalogPropertiesFromPyicebergFile",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_CatalogPropertiesRequireAURI",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_EmptyBatchAppendsNothing",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_FlushWithNothingPendingAppendsNothing",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_MissingTableFailsTheStart",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_NewRequiresCatalogAndTable",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_TypeColumnSkipsAnEmptyCatalog",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
+        },
+        "integration": {
+          "status": "not_required",
           "tests": []
         },
         "release": {
@@ -423,6 +571,10 @@
           "status": "not_required",
           "tests": []
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -443,7 +595,62 @@
       ],
       "levels": {
         "unit": {
-          "status": "missing",
+          "status": "covered",
+          "tests": [
+            {
+              "name": "TestSinkSqlcommand_AccumulatesUntilFlush",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_BatchIsTheLastWrite",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_EachFlushReplacesTheBatchTable",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_EmptyBatchStillRunsTheSQL",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_FlushWithNothingPendingIsANoop",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_NewRequiresSQL",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_RejectsAnUnknownSubstitution",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_ReportsASQLError",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_RunsSQLAgainstTheBatch",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_SubstitutesUUID4",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
+        },
+        "integration": {
+          "status": "not_required",
           "tests": []
         },
         "release": {
@@ -474,6 +681,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -844,6 +1055,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -1068,6 +1283,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -1157,6 +1376,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -1210,6 +1433,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1285,6 +1512,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1416,6 +1647,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -1466,6 +1701,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -1495,6 +1734,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1555,6 +1798,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1649,6 +1896,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "not_required",
@@ -1748,6 +1999,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -1770,6 +2025,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "not_required",
@@ -1810,6 +2069,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -1844,6 +2107,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1949,6 +2216,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -2193,6 +2464,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -2579,6 +2854,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -2638,6 +2917,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -2690,6 +2973,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "not_required",
@@ -2774,6 +3061,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -2833,6 +3124,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -2844,30 +3139,40 @@
           ]
         }
       }
-    }
-  ],
-  "gaps": [
-    {
-      "feature": "sink.kafka",
-      "level": "unit",
-      "status": "missing"
     },
     {
-      "feature": "sink.iceberg",
-      "level": "unit",
-      "status": "missing"
-    },
-    {
-      "feature": "sink.sqlcommand",
-      "level": "unit",
-      "status": "missing"
+      "id": "cli.version",
+      "description": "The shipped binary reports the version it was built from.",
+      "requires": [
+        "release"
+      ],
+      "levels": {
+        "unit": {
+          "status": "not_required",
+          "tests": []
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
+        "release": {
+          "status": "covered",
+          "tests": [
+            {
+              "name": "test_cli_version_is_stamped_into_the_image",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
+        }
+      }
     }
   ],
+  "gaps": [],
   "unattributed": {
     "unit": [],
-    "release": [
-      "test_sqlflow_docker_version"
-    ]
+    "integration": [],
+    "release": []
   },
   "unknown_markers": []
 }
