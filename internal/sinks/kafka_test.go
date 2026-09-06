@@ -1,0 +1,150 @@
+package sinks
+
+// The Kafka sink needs no broker to be tested where it matters. Construction
+// validates config without dialing, and the context tests below are about what
+// the sink does when the destination is *not* there -- which is exactly the
+// case a live broker cannot produce.
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/zeebo/assert"
+)
+
+// unreachableBroker is a port nothing listens on. Port 1 is privileged and
+// unbound, so a dial fails at once rather than hanging on a firewall.
+const unreachableBroker = "127.0.0.1:1"
+
+func newUnreachableKafkaSink(t *testing.T) *KafkaSink {
+	t.Helper()
+
+	s, err := NewKafkaSink(config.KafkaSink{
+		Brokers: []string{unreachableBroker},
+		Topic:   "sink-test",
+	})
+	assert.NoError(t, err)
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+// flushWithin runs Flush off the test goroutine and fails if it has not
+// returned within limit.
+//
+// Calling Flush directly would be simpler and much worse: a sink that stopped
+// honouring its context blocks forever, so the regression these tests exist to
+// catch would surface as a ten-minute package timeout with no failing test
+// name. Here it surfaces in a second, pointing at the sink.
+func flushWithin(t *testing.T, s *KafkaSink, ctx context.Context, limit time.Duration) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() { done <- s.Flush(ctx) }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("Flush did not return within %s, so it ignored its context", limit)
+		return nil
+	}
+}
+
+func TestSinkKafka_NewRequiresATopic(t *testing.T) {
+	_, err := NewKafkaSink(config.KafkaSink{Brokers: []string{unreachableBroker}})
+	assert.Error(t, err)
+}
+
+// A security block turbine cannot honour must fail the start. Building the
+// client anyway produces a sink that connects in the clear, which is worse
+// than not starting.
+func TestSinkKafka_NewRejectsAnUnknownSecurityProtocol(t *testing.T) {
+	_, err := NewKafkaSink(config.KafkaSink{
+		Brokers:          []string{unreachableBroker},
+		Topic:            "sink-test",
+		SecurityProtocol: "SASL_CARRIER_PIGEON",
+	})
+	assert.Error(t, err)
+}
+
+// Flush must return when its context is done.
+//
+// The pipeline's drain already hands the sink a context stripped of
+// cancellation, precisely so a SIGTERM cannot fail the write the drain exists
+// to finish. That care is wasted on a sink that ignores the context it is
+// given: every other caller -- a flush interval that elapsed, a cancelled run
+// -- has no way to stop a flush against a broker that is not answering, and
+// franz-go retries a produce indefinitely by default. The process hangs on
+// shutdown and a supervisor eventually kills it.
+func TestSinkKafka_FlushHonoursItsContext(t *testing.T) {
+	s := newUnreachableKafkaSink(t)
+
+	table := newTestTable(t, []string{"nyc"}, []int64{1})
+	defer table.Release()
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := flushWithin(t, s, ctx, 10*time.Second)
+	assert.Error(t, err)
+	assert.That(t, errors.Is(err, context.DeadlineExceeded))
+}
+
+// A write whose context is already done must fail rather than buffer. The
+// records would otherwise sit in the client until some later flush, and be
+// reported against a batch that has nothing to do with them.
+func TestSinkKafka_WriteTableHonoursItsContext(t *testing.T) {
+	s := newUnreachableKafkaSink(t)
+
+	table := newTestTable(t, []string{"nyc"}, []int64{1})
+	defer table.Release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	assert.NoError(t, s.WriteTable(ctx, table))
+
+	// Produce is asynchronous, so the context error arrives at the promise and
+	// Flush is what reports it. The flush context is deliberately live: what
+	// is being asserted is that the *write's* context failed these records.
+	err := flushWithin(t, s, context.Background(), 10*time.Second)
+	assert.Error(t, err)
+	assert.That(t, errors.Is(err, context.Canceled))
+}
+
+// Produce errors must not be swallowed. The pipeline commits its offsets only
+// after a flush returns clean, so a flush that hides a failed produce loses
+// the batch and every offset behind it.
+func TestSinkKafka_FlushReportsProduceErrors(t *testing.T) {
+	s := newUnreachableKafkaSink(t)
+
+	table := newTestTable(t, []string{"nyc", "sfo"}, []int64{1, 2})
+	defer table.Release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+	assert.Error(t, flushWithin(t, s, ctx, 10*time.Second))
+}
+
+// Batch is what the tumbling-window manager reads back after a write.
+func TestSinkKafka_BatchIsTheLastWrite(t *testing.T) {
+	s := newUnreachableKafkaSink(t)
+
+	batch, err := s.Batch()
+	assert.NoError(t, err)
+	assert.Nil(t, batch)
+
+	table := newTestTable(t, []string{"nyc", "sfo"}, []int64{1, 2})
+	defer table.Release()
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+
+	batch, err = s.Batch()
+	assert.NoError(t, err)
+	assert.Equal(t, int64(2), batch.NumRows())
+}

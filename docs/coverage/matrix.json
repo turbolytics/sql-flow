@@ -283,8 +283,39 @@
       ],
       "levels": {
         "unit": {
-          "status": "missing",
-          "tests": []
+          "status": "covered",
+          "tests": [
+            {
+              "name": "TestSinkKafka_BatchIsTheLastWrite",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_FlushHonoursItsContext",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_FlushReportsProduceErrors",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_NewRejectsAnUnknownSecurityProtocol",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_NewRequiresATopic",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkKafka_WriteTableHonoursItsContext",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
         },
         "release": {
           "status": "covered",
@@ -397,8 +428,69 @@
       ],
       "levels": {
         "unit": {
-          "status": "missing",
-          "tests": []
+          "status": "covered",
+          "tests": [
+            {
+              "name": "TestSinkIceberg_AddsPyicebergsMissingTypeColumn",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_AppendsEveryRow",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_BatchIsTheLastWrite",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_CatalogPropertiesEnvOverridesFile",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_CatalogPropertiesFromPyicebergFile",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_CatalogPropertiesRequireAURI",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_EmptyBatchAppendsNothing",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_FlushWithNothingPendingAppendsNothing",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_MissingTableFailsTheStart",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_NewRequiresCatalogAndTable",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkIceberg_TypeColumnSkipsAnEmptyCatalog",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
         },
         "release": {
           "status": "covered",
@@ -443,8 +535,59 @@
       ],
       "levels": {
         "unit": {
-          "status": "missing",
-          "tests": []
+          "status": "covered",
+          "tests": [
+            {
+              "name": "TestSinkSqlcommand_AccumulatesUntilFlush",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_BatchIsTheLastWrite",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_EachFlushReplacesTheBatchTable",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_EmptyBatchStillRunsTheSQL",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_FlushWithNothingPendingIsANoop",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_NewRequiresSQL",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_RejectsAnUnknownSubstitution",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_ReportsASQLError",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_RunsSQLAgainstTheBatch",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestSinkSqlcommand_SubstitutesUUID4",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
         },
         "release": {
           "status": "not_required",
@@ -2844,30 +2987,35 @@
           ]
         }
       }
-    }
-  ],
-  "gaps": [
-    {
-      "feature": "sink.kafka",
-      "level": "unit",
-      "status": "missing"
     },
     {
-      "feature": "sink.iceberg",
-      "level": "unit",
-      "status": "missing"
-    },
-    {
-      "feature": "sink.sqlcommand",
-      "level": "unit",
-      "status": "missing"
+      "id": "cli.version",
+      "description": "The shipped binary reports the version it was built from.",
+      "requires": [
+        "release"
+      ],
+      "levels": {
+        "unit": {
+          "status": "not_required",
+          "tests": []
+        },
+        "release": {
+          "status": "covered",
+          "tests": [
+            {
+              "name": "test_cli_version_is_stamped_into_the_image",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
+        }
+      }
     }
   ],
+  "gaps": [],
   "unattributed": {
     "unit": [],
-    "release": [
-      "test_sqlflow_docker_version"
-    ]
+    "release": []
   },
   "unknown_markers": []
 }

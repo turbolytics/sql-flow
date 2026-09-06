@@ -152,3 +152,10 @@ features:
   - id: cli.dev_invoke
     description: Runs a pipeline against a fixture file, without a source.
     requires: [unit, release]
+
+  # Release only. The defect this catches -- build args that never reached the
+  # -ldflags symbol path, so the binary reports "dev" -- exists only in a built
+  # image, and no unit test can see it.
+  - id: cli.version
+    description: The shipped binary reports the version it was built from.
+    requires: [release]

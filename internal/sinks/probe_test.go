@@ -70,7 +70,7 @@ func TestSinkRetry_ProbeSinksWithNothingToDialAreSkipped(t *testing.T) {
 		{Type: "console"},
 		{Type: ""},
 	} {
-		built, err := NewWithContext(context.Background(), s, nil)
+		built, err := New(context.Background(), s, nil)
 		assert.NoError(t, err)
 		assert.That(t, built != nil)
 	}

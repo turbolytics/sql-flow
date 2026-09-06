@@ -42,11 +42,7 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 	return func(o *options) { o.meterProvider = mp }
 }
 
-func New(sink config.Sink, conn adbc.Connection, opts ...Option) (core.Sink, error) {
-	return NewWithContext(context.Background(), sink, conn, opts...)
-}
-
-// NewWithContext builds a sink and wraps it in a retry ladder where one helps.
+// New builds a sink and wraps it in a retry ladder where one helps.
 //
 // Not every sink is wrapped. The Kafka sink hands records to franz-go, which
 // already retries a produce with its own backoff; a second ladder on top of
@@ -56,7 +52,12 @@ func New(sink config.Sink, conn adbc.Connection, opts ...Option) (core.Sink, err
 // failure there is not a network blip.
 //
 // That leaves the sinks that cross a network to somebody else's server.
-func NewWithContext(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Option) (core.Sink, error) {
+//
+// The context is required rather than optional. It bounds the probe below,
+// which dials, and a convenience overload that supplied context.Background()
+// was how two of the three call sites came to start a pipeline that could hang
+// forever against a host dropping packets rather than refusing them.
+func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Option) (core.Sink, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)

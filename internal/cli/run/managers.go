@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 // buildManagedTables constructs a manager per table that declares one. Each
 // manager gets its own sink and shares the pipeline's DuckDB lock.
 func buildManagedTables(
+	ctx context.Context,
 	conf *config.Conf,
 	conn adbc.Connection,
 	lock *sync.Mutex,
@@ -32,7 +34,7 @@ func buildManagedTables(
 		if table.Manager.TumblingWindow == nil {
 			return nil, fmt.Errorf("table %q: only tumbling_window managers are supported", table.Name)
 		}
-		sink, err := sinks.New(table.Manager.Sink, conn)
+		sink, err := sinks.New(ctx, table.Manager.Sink, conn)
 		if err != nil {
 			return nil, fmt.Errorf("table %q manager sink: %w", table.Name, err)
 		}

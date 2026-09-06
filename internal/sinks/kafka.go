@@ -62,7 +62,7 @@ func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 
 	for _, row := range rows {
 		s.client.Produce(
-			context.Background(),
+			ctx,
 			&kgo.Record{Topic: s.topic, Value: row},
 			func(_ *kgo.Record, err error) {
 				if err != nil {
@@ -78,8 +78,16 @@ func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 
 // Flush blocks until every buffered record has been acknowledged, so a
 // batch is durable before its source offsets are committed.
+//
+// It waits on ctx, not on a background context. franz-go retries a produce
+// indefinitely by default, so against a broker that stopped answering a
+// background context has nothing to stop it: the flush interval elapsing, a
+// cancelled run and a SIGTERM all wait for a broker that may never come back,
+// and the supervisor kills the process instead. The pipeline's drain already
+// hands the sink a context stripped of cancellation, so honouring the context
+// here cannot cut the final write short.
 func (s *KafkaSink) Flush(ctx context.Context) error {
-	if err := s.client.Flush(context.Background()); err != nil {
+	if err := s.client.Flush(ctx); err != nil {
 		return err
 	}
 

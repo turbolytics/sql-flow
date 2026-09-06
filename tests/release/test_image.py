@@ -280,7 +280,7 @@ def test_handler_inferred_mem_invoke_renders_rows(image):
     ], f"unexpected output: {stdout!r} stderr={stderr!r}"
 
 
-def test_sqlflow_docker_version(image):
+def test_cli_version_is_stamped_into_the_image(image):
     """The entrypoint resolves and the binary is stamped.
 
     A `dev` version means the build args never reached the -ldflags symbol

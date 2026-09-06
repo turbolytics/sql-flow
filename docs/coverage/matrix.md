@@ -18,11 +18,11 @@ written to.
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | `TestSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition`, `TestSourceKafka_MessagesCarryHighWatermark`, `TestSourceKafka_SecurityOptionsPlaintextNeedsNoOptions` +19 more |
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | `TestSourceWebhook_BackpressureHoldsSecondRequest`, `TestSourceWebhook_CloseIsIdempotent`, `TestSourceWebhook_CloseReleasesBlockedRequest` +12 more |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | ✅ | `TestSourceWebsocket_CloseEndsStream`, `TestSourceWebsocket_ReadsLargeMessages`, `TestSourceWebsocket_ReconnectsAfterDrop` +3 more |
-| `sink.kafka` | Publishes result rows to a Kafka topic. | ❌ **missing** | ✅ | `test_handler_inferred_mem_aggregates_every_message` |
+| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | `TestSinkKafka_BatchIsTheLastWrite`, `TestSinkKafka_FlushHonoursItsContext`, `TestSinkKafka_FlushReportsProduceErrors` +4 more |
 | `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | `TestSinkClickhouse_BatchIsNil`, `TestSinkClickhouse_EmptyTableIsNoop`, `TestSinkClickhouse_InsertsArrays` +11 more |
-| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ❌ **missing** | ✅ | `test_sink_iceberg_writes_every_row` |
+| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | ✅ | `TestSinkIceberg_AddsPyicebergsMissingTypeColumn`, `TestSinkIceberg_AppendsEveryRow`, `TestSinkIceberg_BatchIsTheLastWrite` +10 more |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | ✅ | `test_sink_parquet_writes_every_row` |
-| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ❌ **missing** | — | — |
+| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | `TestSinkSqlcommand_AccumulatesUntilFlush`, `TestSinkSqlcommand_BatchIsTheLastWrite`, `TestSinkSqlcommand_EachFlushReplacesTheBatchTable` +7 more |
 | `sink.console` | Writes result rows to stdout as JSON. | ✅ | ✅ | `TestSinkConsole_RowsAsJSONEmptyTable`, `TestSinkConsole_RowsAsJSONOneObjectPerRow`, `test_handler_inferred_mem_invoke_renders_rows` |
 | `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | `TestSinkRetry_BackoffGrowsAndIsCapped`, `TestSinkRetry_BoundsCancellationMidLadderStops`, `TestSinkRetry_BoundsErrorSaysAttemptsWereExhausted` +66 more |
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | ✅ | `TestHandlerInferredMem_BatchAfterEmptyBatch`, `TestHandlerInferredMem_ColumnsComeFromFirstRow`, `TestHandlerInferredMem_ConflictingListElementTypesError` +43 more |
@@ -45,18 +45,9 @@ written to.
 | `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | `TestObservabilityDebugApi_HandlerRejectsMissingQuery`, `TestObservabilityDebugApi_HandlerReportsQueryErrors`, `TestObservabilityDebugApi_HandlerReturnsEmptyArrayForNoRows` +4 more |
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | `TestCliInvocation_NewCommandConfigFlagIsNotRequired`, `TestCliInvocation_NewCommandHasPythonMaxMsgsFlag`, `TestCliInvocation_NewCommandRejectsTwoPositionalArgs` +10 more |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | ✅ | `TestCliDevInvoke_BlueskyFirehose`, `TestCliDevInvoke_EmptyFixture`, `TestCliDevInvoke_FixtureOfOnlyBlankLines` +6 more |
+| `cli.version` | The shipped binary reports the version it was built from. | — | ✅ | `test_cli_version_is_stamped_into_the_image` |
 
-**30 features declared, 27 fully covered, 3 gap(s).**
-
-## Gaps
-
-These fail `make coverage-matrix`. There is no baseline: a gap
-is closed by a test, or by the registry honestly no longer
-requiring that level.
-
-- `sink.kafka` requires **unit** coverage and is *missing*.
-- `sink.iceberg` requires **unit** coverage and is *missing*.
-- `sink.sqlcommand` requires **unit** coverage and is *missing*.
+**31 features declared, 31 fully covered, 0 gap(s).**
 
 ## Covered only by another test's marker
 
@@ -74,11 +65,4 @@ that deserves its own test.
 - `manager.tumbling_window` (release) — via `test_state_durability_survives_a_restart`
 - `config.templating` (release) — via `test_config_validation_accepts_a_shipped_example`
 - `cli.dev_invoke` (release) — via `test_handler_inferred_mem_invoke_renders_rows`
-
-## Unattributed release tests (1)
-
-These match no declared feature. Either rename them to the
-convention, or add the feature to `features.yml`.
-
-- `test_sqlflow_docker_version`
 

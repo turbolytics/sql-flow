@@ -30,7 +30,7 @@ import (
 
 // newErrorPolicies resolves pipeline.on_error, building the DLQ sink when the
 // policy calls for one.
-func newErrorPolicies(conf *config.Conf, conn adbc.Connection) (core.PipelineErrorPolicies, error) {
+func newErrorPolicies(ctx context.Context, conf *config.Conf, conn adbc.Connection) (core.PipelineErrorPolicies, error) {
 	var policies core.PipelineErrorPolicies
 
 	onError := conf.Pipeline.OnError
@@ -48,7 +48,7 @@ func newErrorPolicies(conf *config.Conf, conn adbc.Connection) (core.PipelineErr
 		if onError.DLQ == nil {
 			return policies, fmt.Errorf("pipeline.on_error: policy DLQ requires a dlq sink")
 		}
-		dlqSink, err := sinks.New(*onError.DLQ, conn)
+		dlqSink, err := sinks.New(ctx, *onError.DLQ, conn)
 		if err != nil {
 			return policies, fmt.Errorf("pipeline.on_error dlq: %w", err)
 		}
@@ -290,7 +290,7 @@ func NewCommand() *cobra.Command {
 
 			// The signal context, so a SIGTERM arriving while the sink dials
 			// its destination stops the start instead of waiting it out.
-			sink, err := sinks.NewWithContext(ctx, conf.Pipeline.Sink, conn,
+			sink, err := sinks.New(ctx, conf.Pipeline.Sink, conn,
 				sinks.WithMeterProvider(meterProvider))
 			if err != nil {
 				return err
@@ -314,7 +314,7 @@ func NewCommand() *cobra.Command {
 				}()
 			}
 
-			errorPolicies, err := newErrorPolicies(conf, conn)
+			errorPolicies, err := newErrorPolicies(ctx, conf, conn)
 			if err != nil {
 				return err
 			}
@@ -339,7 +339,7 @@ func NewCommand() *cobra.Command {
 				}, turbineOpts...)...,
 			)
 
-			managedTables, err := buildManagedTables(conf, conn, lock, l)
+			managedTables, err := buildManagedTables(ctx, conf, conn, lock, l)
 			if err != nil {
 				return err
 			}

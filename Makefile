@@ -55,28 +55,32 @@ coverage-matrix: sqlflow-image
 	python3 scripts/coverage_matrix.py \
 		--go .coverage/go.json --pytest .coverage/pytest.json --write
 
-# The merge gate, in two parts.
-#
-# Stale: the checked-in matrix must match what the suites just reported, the
-# way a golden file does. That is what makes a coverage change show up in
-# review rather than nowhere.
+# The merge gate, in two parts. Wired into CI as the Coverage job.
 #
 # Gaps: a feature missing a level it requires fails the build. There is no
 # baseline and no escape hatch -- a gap is closed by a test, or by the
 # registry honestly no longer requiring that level.
 #
-# Not yet wired into CI: three sinks have no unit test file, and turning this
-# on before they do would land a red build. The follow-up closes them.
+# Stale: the checked-in matrix must match what the suites just reported, the
+# way a golden file does. That is what makes a coverage change show up in
+# review rather than nowhere.
+#
+# Gaps are checked first, and the order carries information. A suite failure
+# reaches both checks: the run above swallows pytest's exit code so the matrix
+# still regenerates, and a failing test lands in the matrix as a failing
+# feature. Checked in this order that reports as "sink.kafka: release is
+# failing", which is the truth. The other order reports it as a stale matrix,
+# which sends the reader to regenerate a file that was never the problem.
 .PHONY: coverage-matrix-check
 coverage-matrix-check: coverage-matrix
+	python3 scripts/coverage_matrix.py \
+		--go .coverage/go.json --pytest .coverage/pytest.json --check
 	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md || { \
 		echo ""; \
 		echo "The coverage matrix is out of date."; \
 		echo "Run 'make coverage-matrix' and commit the result."; \
 		exit 1; \
 	}
-	python3 scripts/coverage_matrix.py \
-		--go .coverage/go.json --pytest .coverage/pytest.json --check
 
 .PHONY: test-release
 test-release: sqlflow-image
