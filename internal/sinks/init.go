@@ -2,6 +2,7 @@ package sinks
 
 import (
 	"context"
+	"sort"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -104,42 +105,71 @@ func retriesHelp(sinkType string) bool {
 	}
 }
 
-// buildSink constructs the sink itself. Whether a retry ladder belongs around
-// it is retriesHelp's decision, not this one's.
-func buildSink(ctx context.Context, sink config.Sink, conn adbc.Connection) (core.Sink, error) {
-	switch sink.Type {
-	case "noop":
+// builders constructs each sink type.
+//
+// A map rather than a switch so Kinds can list it. A registry test holds that
+// list equal to integrations.yml, and a sink the engine can build but nothing
+// declares has no invariant cells at all.
+var builders = map[string]func(ctx context.Context, sink config.Sink, conn adbc.Connection) (core.Sink, error){
+	"noop": func(context.Context, config.Sink, adbc.Connection) (core.Sink, error) {
 		return &NoopSink{}, nil
+	},
 
-	case "console", "":
-		// The Python engine falls back to console for an unset type.
+	"console": func(context.Context, config.Sink, adbc.Connection) (core.Sink, error) {
 		return NewConsoleSink(), nil
+	},
 
-	case "kafka":
+	"kafka": func(_ context.Context, sink config.Sink, _ adbc.Connection) (core.Sink, error) {
 		if sink.Kafka == nil {
 			return nil, errs.New(errs.CodeSinkInvalid, "sink: kafka sink requires a kafka block")
 		}
 		return NewKafkaSink(*sink.Kafka)
+	},
 
-	case "sqlcommand":
+	"sqlcommand": func(_ context.Context, sink config.Sink, conn adbc.Connection) (core.Sink, error) {
 		if sink.SQLCommand == nil {
 			return nil, errs.New(errs.CodeSinkInvalid, "sink: sqlcommand sink requires a sqlcommand block")
 		}
 		return NewSQLCommandSink(conn, sink.SQLCommand.SQL, sink.SQLCommand.Substitutions)
+	},
 
-	case "clickhouse":
+	"clickhouse": func(_ context.Context, sink config.Sink, _ adbc.Connection) (core.Sink, error) {
 		if sink.Clickhouse == nil {
 			return nil, errs.New(errs.CodeSinkInvalid, "sink: clickhouse sink requires a clickhouse block")
 		}
 		return NewClickhouseSink(*sink.Clickhouse)
+	},
 
-	case "iceberg":
+	"iceberg": func(ctx context.Context, sink config.Sink, _ adbc.Connection) (core.Sink, error) {
 		if sink.Iceberg == nil {
 			return nil, errs.New(errs.CodeSinkInvalid, "sink: iceberg sink requires an iceberg block")
 		}
 		return NewIcebergSink(ctx, sink.Iceberg.CatalogName, sink.Iceberg.TableName)
+	},
+}
 
-	default:
+// Kinds lists every sink type the engine can build, sorted.
+func Kinds() []string {
+	out := make([]string, 0, len(builders))
+	for kind := range builders {
+		out = append(out, kind)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// buildSink constructs the sink itself. Whether a retry ladder belongs around
+// it is retriesHelp's decision, not this one's.
+func buildSink(ctx context.Context, sink config.Sink, conn adbc.Connection) (core.Sink, error) {
+	kind := sink.Type
+	if kind == "" {
+		// The Python engine falls back to console for an unset type.
+		kind = "console"
+	}
+
+	build, ok := builders[kind]
+	if !ok {
 		return nil, errs.New(errs.CodeSinkInvalid, "sink: %q not supported", sink.Type)
 	}
+	return build(ctx, sink, conn)
 }

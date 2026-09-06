@@ -2,6 +2,8 @@ package sources
 
 import (
 	"fmt"
+	"sort"
+
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -13,11 +15,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// New builds the configured source. A nil meter provider leaves sources that
-// record metrics recording nothing.
-func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error) {
-	switch c.Type {
-	case "kafka":
+// builders constructs each source type.
+//
+// A map rather than a switch so Kinds can list it. A registry test holds that
+// list equal to integrations.yml, and a source the engine can build but
+// nothing declares has no invariant cells at all.
+var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error){
+	"kafka": func(c config.Source, l *zap.Logger, _ metric.MeterProvider) (core.Source, error) {
 		l.Info(
 			"initializing kafka source",
 			zap.String("topics", fmt.Sprintf("%v", c.Kafka.Topics)),
@@ -67,16 +71,18 @@ func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, 
 
 		k, err := tkafka.NewSource(client, tkafka.WithLogger(l), tkafka.WithSeeker(seeker))
 		return k, err
+	},
 
-	case "websocket":
+	"websocket": func(c config.Source, l *zap.Logger, _ metric.MeterProvider) (core.Source, error) {
 		if c.Websocket == nil {
 			return nil, errs.New(errs.CodeSourceInvalid, "websocket source: missing websocket configuration")
 		}
 		l.Info("initializing websocket source", zap.String("uri", c.Websocket.URI))
 
 		return websocket.NewSource(c.Websocket.URI, websocket.WithLogger(l))
+	},
 
-	case "webhook":
+	"webhook": func(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error) {
 		opts := []webhook.Option{
 			webhook.WithLogger(l),
 			webhook.WithMeterProvider(mp),
@@ -96,8 +102,25 @@ func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, 
 		}
 
 		return webhook.NewSource(opts...)
+	},
+}
 
-	default:
+// Kinds lists every source type the engine can build, sorted.
+func Kinds() []string {
+	out := make([]string, 0, len(builders))
+	for kind := range builders {
+		out = append(out, kind)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// New builds the configured source. A nil meter provider leaves sources that
+// record metrics recording nothing.
+func New(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error) {
+	build, ok := builders[c.Type]
+	if !ok {
 		return nil, errs.New(errs.CodeSourceInvalid, "source: %q not supported", c.Type)
 	}
+	return build(c, l, mp)
 }

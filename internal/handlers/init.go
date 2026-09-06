@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"sort"
+
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
@@ -10,9 +12,24 @@ import (
 	"go.uber.org/zap"
 )
 
-func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
-	switch c.Type {
-	case "handlers.StructuredBatch":
+// configTypes maps the config's Python-era handler names to the registry's.
+//
+// The config keeps the long form because every shipped example carries it.
+// integrations.yml uses the short one, which is what an id like
+// handler.inferred_mem reads as.
+var configTypes = map[string]string{
+	"handlers.StructuredBatch":   "structured",
+	"handlers.InferredMemBatch":  "inferred_mem",
+	"handlers.InferredDiskBatch": "inferred_disk",
+}
+
+// builders constructs each handler type.
+//
+// A map rather than a switch so Kinds can list it. A registry test holds that
+// list equal to integrations.yml, and a handler the engine can build but
+// nothing declares has no invariant cells at all.
+var builders = map[string]func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error){
+	"structured": func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
 		// Derive the Arrow schema from the DuckDB table definition
 		stmt, err := conn.NewStatement()
 		if err != nil {
@@ -41,8 +58,9 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create StructuredBatchHandler")
 		}
 		return h, nil
+	},
 
-	case "handlers.InferredMemBatch":
+	"inferred_mem": func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
 		h, err := NewInferredMemBatchHandler(
 			conn,
 			c.SQL,
@@ -52,8 +70,9 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create InferredMemBatchHandler")
 		}
 		return h, nil
+	},
 
-	case "handlers.InferredDiskBatch":
+	"inferred_disk": func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
 		cacheDir := c.SQLResultsCacheDir
 		if cacheDir == "" {
 			cacheDir = config.SQLResultsCacheDir()
@@ -69,8 +88,24 @@ func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, e
 			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create InferredDiskBatchHandler")
 		}
 		return h, nil
+	},
+}
 
-	default:
+// Kinds lists every handler type the engine can build, sorted. The registry's
+// short names, not the config's.
+func Kinds() []string {
+	out := make([]string, 0, len(builders))
+	for kind := range builders {
+		out = append(out, kind)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
+	kind, ok := configTypes[c.Type]
+	if !ok {
 		return nil, errs.New(errs.CodeSQLInvalid, "handler: %q not supported", c.Type)
 	}
+	return builders[kind](conn, c, l)
 }
