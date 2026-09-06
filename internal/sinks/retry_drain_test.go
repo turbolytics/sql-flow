@@ -1,13 +1,14 @@
 package sinks
 
-// Every real sink buffers in WriteTable and drains that buffer in Flush. The
-// retry ladder calls Flush again after a failure, and the second call finds
-// the buffer already empty, so it reports success for a batch that was never
-// delivered. The pipeline then commits the offsets and the rows are gone with
-// no error anywhere.
+// A sink that discards its buffer when the write fails cannot be retried: the
+// ladder calls Flush again, the second call finds nothing to send and returns
+// nil, and the caller is told a flush happened that delivered no rows. The
+// pipeline then commits those offsets and the batch is gone with no error.
 //
-// flakySink in retry_test.go cannot catch this: its Flush holds no buffer, so
-// a retry legitimately succeeds. These tests model the drain.
+// The ladder cannot compensate for this -- only the sink knows what it failed
+// to deliver -- so the invariant is tested here, on the sinks themselves:
+//
+//	a failed Flush leaves the batch buffered for the next attempt.
 
 import (
 	"context"
@@ -15,71 +16,89 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/zeebo/assert"
 )
 
-// bufferingSink is the shape every real sink has: rows accumulate in
-// WriteTable and are drained by Flush, whether or not the delivery succeeds.
-type bufferingSink struct {
-	buffered  int // rows handed to WriteTable and not yet delivered
-	delivered int // rows that actually reached the destination
-	attempts  int
-	failures  int // fail this many Flush calls before succeeding
-	err       error
+// mismatchedTable carries a column the target table does not have, which the
+// server rejects. Any reliable flush failure would do.
+func mismatchedTable(t *testing.T) arrow.Table {
+	t.Helper()
+
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "no_such_column", Type: arrow.PrimitiveTypes.Int64},
+	}, nil)
+
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	defer b.Release()
+	b.Field(0).(*array.Int64Builder).Append(1)
+
+	rec := b.NewRecord()
+	defer rec.Release()
+	return array.NewTableFromRecords(schema, []arrow.Record{rec})
 }
 
-func (s *bufferingSink) WriteTable(ctx context.Context, batch arrow.Table) error {
-	s.buffered++
-	return nil
+func TestClickhouseSink_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (id UInt64) ENGINE = MergeTree() ORDER BY id`)
+
+	ctx := context.Background()
+	table := mismatchedTable(t)
+	defer table.Release()
+
+	assert.NoError(t, s.WriteTable(ctx, table))
+	assert.Error(t, s.Flush(ctx))
+
+	// Still buffered, so the next attempt sends these rows rather than
+	// finding an empty buffer and reporting a success that delivered nothing.
+	assert.Equal(t, 1, len(s.tables))
+
+	// And the retry genuinely re-attempts them: it fails the same way rather
+	// than returning nil.
+	assert.Error(t, s.Flush(ctx))
+	assert.Equal(t, 1, len(s.tables))
 }
 
-func (s *bufferingSink) Batch() (arrow.Table, error) { return nil, nil }
+func TestClickhouseSink_SuccessfulFlushClearsTheBuffer(t *testing.T) {
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
+		timestamp DateTime,
+		user_id   Int64,
+		action    String,
+		browser   String,
+		score     Float64,
+		active    Bool
+	) ENGINE = MergeTree() ORDER BY user_id`)
 
-func (s *bufferingSink) Flush(ctx context.Context) error {
-	s.attempts++
+	ctx := context.Background()
+	table := clickhouseFixtureTable(t)
+	defer table.Release()
 
-	// The drain happens first, exactly as ClickhouseSink.Flush takes
-	// s.tables and sets it to nil before attempting the insert.
-	pending := s.buffered
-	s.buffered = 0
-
-	if pending == 0 {
-		return nil
-	}
-	if s.attempts <= s.failures {
-		return s.err
-	}
-	s.delivered += pending
-	return nil
+	assert.NoError(t, s.WriteTable(ctx, table))
+	assert.NoError(t, s.Flush(ctx))
+	assert.Equal(t, 0, len(s.tables))
 }
 
-// A retried flush must not report success for a batch it never delivered.
-func TestRetry_RetriedFlushDoesNotLoseTheBatch(t *testing.T) {
-	sink := &bufferingSink{failures: 1, err: errors.New("connection reset by peer")}
+// The ladder's half of the contract: given a sink that keeps what it could not
+// deliver, a retried flush delivers it rather than reporting a hollow success.
+func TestRetry_RetriedFlushDeliversTheBatch(t *testing.T) {
+	sink := &flakySink{failures: 1, err: errors.New("connection reset by peer")}
 	r := newRetrying(sink, testPolicy())
 
 	ctx := context.Background()
 	assert.NoError(t, r.WriteTable(ctx, nil))
+	assert.NoError(t, r.Flush(ctx))
 
-	err := r.Flush(ctx)
-
-	// Either the ladder delivers the batch, or it reports the failure. What it
-	// must never do is return nil having delivered nothing.
-	if err == nil {
-		assert.Equal(t, 1, sink.delivered)
-	}
+	assert.Equal(t, 2, sink.attempts)
+	assert.Equal(t, 1, sink.delivered)
 }
 
-// The same defect stated as the caller sees it: a flush that returns nil is a
-// promise that the rows reached the destination.
-func TestRetry_SuccessfulFlushMeansRowsWereDelivered(t *testing.T) {
-	sink := &bufferingSink{failures: 1, err: errors.New("connection reset by peer")}
+// A flush that gives up must not claim the rows were delivered.
+func TestRetry_ExhaustedLadderReportsTheFailure(t *testing.T) {
+	sink := &flakySink{failures: 99, err: errors.New("connection reset by peer")}
 	r := newRetrying(sink, testPolicy())
 
 	ctx := context.Background()
 	assert.NoError(t, r.WriteTable(ctx, nil))
-
-	if err := r.Flush(ctx); err == nil {
-		assert.That(t, sink.delivered > 0)
-	}
+	assert.Error(t, r.Flush(ctx))
+	assert.Equal(t, 0, sink.delivered)
 }

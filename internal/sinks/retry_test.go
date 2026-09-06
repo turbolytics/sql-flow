@@ -15,20 +15,36 @@ import (
 
 // flakySink fails a set number of times, then succeeds. It records how many
 // attempts it saw so a test can assert the ladder ran the expected length.
+//
+// It buffers, because every real sink does: rows accumulate in WriteTable and
+// a Flush attempt drains them. An earlier version of this fake held no buffer,
+// so a retry against it always succeeded and the suite could not see a sink
+// that dropped the batch it failed to deliver. `delivered` is what actually
+// reached the destination, and is the only honest measure of a flush.
 type flakySink struct {
 	failures int
 	err      error
 	attempts int
+
+	buffered  int
+	delivered int
 }
 
-func (s *flakySink) WriteTable(ctx context.Context, batch arrow.Table) error { return nil }
-func (s *flakySink) Batch() (arrow.Table, error)                             { return nil, nil }
+func (s *flakySink) WriteTable(ctx context.Context, batch arrow.Table) error {
+	s.buffered++
+	return nil
+}
+func (s *flakySink) Batch() (arrow.Table, error) { return nil, nil }
 
 func (s *flakySink) Flush(ctx context.Context) error {
 	s.attempts++
 	if s.attempts <= s.failures {
+		// The batch stays buffered: a sink that discarded it here would
+		// report success on the next attempt having delivered nothing.
 		return s.err
 	}
+	s.delivered += s.buffered
+	s.buffered = 0
 	return nil
 }
 

@@ -78,6 +78,16 @@ func (s *IcebergSink) Batch() (arrow.Table, error) {
 	return s.tables[len(s.tables)-1], nil
 }
 
+// Flush appends the buffered batches, and keeps whatever it could not append.
+//
+// The retry ladder calls Flush again after a retryable failure. Discarding the
+// buffer on the way in made that second call find nothing to append and return
+// nil, so the ladder reported success for rows that were never written and the
+// pipeline committed their offsets.
+//
+// Each batch is a separate append, so a failure part-way through has already
+// committed the batches before it. Only the ones still undelivered are kept;
+// requeueing all of them would append the earlier ones twice.
 func (s *IcebergSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	tables := s.tables
@@ -87,23 +97,30 @@ func (s *IcebergSink) Flush(ctx context.Context) error {
 	if len(tables) == 0 {
 		return nil
 	}
-	defer func() {
-		for _, t := range tables {
-			t.Release()
-		}
-	}()
 
-	for _, t := range tables {
+	for i, t := range tables {
 		if t.NumRows() == 0 {
+			t.Release()
 			continue
 		}
 		updated, err := s.table.AppendTable(ctx, t, icebergAppendBatchSize, nil)
 		if err != nil {
+			s.requeue(tables[i:])
 			return fmt.Errorf("iceberg sink: append: %w", err)
 		}
 		s.table = updated
+		t.Release()
 	}
 	return nil
+}
+
+// requeue returns undelivered batches to the head of the buffer, ahead of
+// anything written while the failed flush was in flight, so a retry appends
+// them in the order they arrived.
+func (s *IcebergSink) requeue(tables []arrow.Table) {
+	s.mu.Lock()
+	s.tables = append(tables, s.tables...)
+	s.mu.Unlock()
 }
 
 // ensureIcebergTypeColumn reconciles a schema difference between the two

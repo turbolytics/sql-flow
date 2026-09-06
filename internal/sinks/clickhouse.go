@@ -150,6 +150,13 @@ func (s *ClickhouseSink) Batch() (arrow.Table, error) {
 	return nil, nil
 }
 
+// Flush delivers the buffered batches, and keeps them buffered if it cannot.
+//
+// The retry ladder calls Flush again after a retryable failure. Discarding the
+// buffer on the way in made that second call find nothing to send and return
+// nil, so the ladder reported success for rows that never left the process and
+// the pipeline committed their offsets. Batches are released only once
+// ClickHouse has acknowledged them.
 func (s *ClickhouseSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	tables := s.tables
@@ -159,12 +166,30 @@ func (s *ClickhouseSink) Flush(ctx context.Context) error {
 	if len(tables) == 0 {
 		return nil
 	}
-	defer func() {
-		for _, t := range tables {
-			t.Release()
-		}
-	}()
 
+	if err := s.send(ctx, tables); err != nil {
+		s.requeue(tables)
+		return err
+	}
+
+	for _, t := range tables {
+		t.Release()
+	}
+	return nil
+}
+
+// requeue returns undelivered batches to the head of the buffer, ahead of
+// anything written while the failed flush was in flight, so a retry sends them
+// in the order they arrived.
+func (s *ClickhouseSink) requeue(tables []arrow.Table) {
+	s.mu.Lock()
+	s.tables = append(tables, s.tables...)
+	s.mu.Unlock()
+}
+
+// send is one delivery attempt. It releases nothing: whether these batches can
+// be dropped is the caller's decision, and it depends on this error.
+func (s *ClickhouseSink) send(ctx context.Context, tables []arrow.Table) error {
 	// A handler whose query matched nothing yields an empty, column-less
 	// table; there is no INSERT to build from it.
 	tables = withRows(tables)
