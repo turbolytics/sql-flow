@@ -11,6 +11,13 @@ GO_MODULE := github.com/turbolytics/sql-flow
 GO_LDFLAGS := -X $(GO_MODULE)/internal/cli.Version=$(VERSION) \
 	-X $(GO_MODULE)/internal/cli.Commit=$(GIT_COMMIT)
 
+# Every Python entry point goes through uv, so the release suite and the
+# coverage generator run against the versions in uv.lock rather than whatever
+# the ambient interpreter happens to have. --locked fails instead of silently
+# re-resolving, which is what makes the lock a lock.
+UV ?= uv
+PY := $(UV) run --locked
+
 .PHONY: install-tools
 install-tools:
 	@echo "Installing tools..."
@@ -32,7 +39,7 @@ test: test-go test-release
 # another tag to test that one instead.
 .PHONY: test-image
 test-image: sqlflow-image
-	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) pytest tests/release
+	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) $(PY) pytest tests/release
 
 # Runs every suite and regenerates the matrix from what they report.
 #
@@ -57,13 +64,13 @@ coverage-matrix: sqlflow-image
 	-SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
 		SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 		TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
-		pytest tests/release -q
+		$(PY) pytest tests/release -q
 	@$(MAKE) --no-print-directory coverage-write
 
 # Renders the matrix from reports that already exist. Runs no tests.
 .PHONY: coverage-write
 coverage-write:
-	python3 scripts/coverage_matrix.py \
+	$(PY) python scripts/coverage_matrix.py \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--pytest .coverage/pytest.json --write
@@ -86,7 +93,7 @@ coverage-write:
 # declared feature reaches neither check, and the last part is its backstop.
 .PHONY: coverage-check
 coverage-check: coverage-write
-	python3 scripts/coverage_matrix.py \
+	$(PY) python scripts/coverage_matrix.py \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--pytest .coverage/pytest.json --check
@@ -127,7 +134,7 @@ test-release: sqlflow-image
 	SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
 	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 	TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
-	pytest tests/release
+	$(PY) pytest tests/release
 
 .PHONY: start-backing-services
 start-backing-services:

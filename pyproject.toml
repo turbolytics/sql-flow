@@ -1,0 +1,38 @@
+[project]
+name = "sqlflow"
+version = "0.1.0"
+description = "Test and tooling support for the sqlflow Go engine"
+requires-python = ">=3.11,<3.13"
+
+# The shipped artifact is a Go binary; see Dockerfile. Python remains for the
+# release suite, the coverage matrix generator, and the Kafka fixtures those
+# two share.
+dependencies = [
+    "confluent-kafka==2.3.0",
+]
+
+[dependency-groups]
+dev = [
+    # cmd/publish-test-data.py and cmd/websocket-test.py, the dev scripts the
+    # README's quickstart drives the pipeline with.
+    "click==8.1.7",
+    "websockets==14.1",
+
+    "duckdb==1.5.2",
+    # pyarrow 14 is built against the numpy 1.x C ABI. Left to the resolver,
+    # numpy 2 wins and `import pyarrow` dies on "_ARRAY_API not found".
+    "numpy==1.26.2",
+    "pyarrow==14.0.1",
+    "pyiceberg[sql-sqlite]==0.8.1",
+    "pytest==7.4.3",
+    "pyyaml==6.0.1",
+    "requests==2.32.3",
+    "testcontainers==4.9.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sqlflow*"]
