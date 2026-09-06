@@ -3,8 +3,6 @@ package kafka
 import (
 	"context"
 	"fmt"
-	"net"
-	"os"
 	"testing"
 	"time"
 
@@ -12,35 +10,6 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/zeebo/assert"
 )
-
-// brokerOrFail returns the dev-stack broker, failing the test when none
-// answers.
-//
-// -short is the only way out, and it is what the unit pass runs. Everywhere
-// else a missing broker is a failure, not a skip: these tests are the only
-// thing that exercises commit semantics, offset resume and the high watermark,
-// and for months they skipped wherever no dev stack happened to be up. That
-// reads as "ok" in the log and as coverage in the matrix, which is exactly how
-// the Iceberg sink shipped untested. An integration test that excuses itself
-// when its service is absent is not an integration test.
-func brokerOrFail(t *testing.T) string {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("integration test: -short runs the unit pass only")
-	}
-	broker := os.Getenv("SQLFLOW_KAFKA_BROKERS")
-	if broker == "" {
-		broker = "localhost:9092"
-	}
-	conn, err := net.DialTimeout("tcp", broker, time.Second)
-	if err != nil {
-		t.Fatalf("kafka unreachable at %s: %v\n"+
-			"start it with `make start-backing-services`, "+
-			"or point SQLFLOW_KAFKA_BROKERS at a broker", broker, err)
-	}
-	conn.Close()
-	return broker
-}
 
 func newTestClient(t *testing.T, broker, topic, group string, extra ...kgo.Opt) *kgo.Client {
 	t.Helper()

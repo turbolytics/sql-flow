@@ -1,8 +1,8 @@
 name: CI
 on: [push]
 jobs:
-  # The Go engine (sqlflow). Unit tests only: anything that needs a Kafka broker
-  # stays out of CI and runs from the dev stack.
+  # The Go engine (sqlflow), unit pass only. Fast feedback with no Docker: the
+  # integration tests start containers, and the Image job runs those.
   go:
     name: Go
     runs-on: ubuntu-latest
@@ -43,9 +43,9 @@ jobs:
       # packages, and the 17th has no tests today. That makes the gap silent
       # rather than absent -- the first test added under cmd/ would not run.
       #
-      # -short is the unit pass. This job has no broker on purpose: it is the
-      # fast feedback, and the integration tests fail rather than skip without
-      # their service. The Coverage job runs those against a real one.
+      # -short is the unit pass. The integration tests provision a broker and
+      # take ~25s doing it, which is the wrong trade for the job whose whole
+      # job is speed. The Image job runs them.
       - name: Test Unit
         run: go test -short ./...
 
@@ -68,16 +68,19 @@ jobs:
       - name: Test the coverage matrix generator
         run: pytest tests/tooling -q
 
-  # The merge gate on feature coverage. It regenerates docs/coverage/matrix.json
-  # from both suites and fails on either half of the contract: a checked-in
-  # matrix that no longer matches what the suites report, or a feature missing a
-  # level features.yml says it requires.
+  # One job builds the image, runs every suite against it, and gates on the
+  # result. It used to be two: a Coverage job and an Image job, each building
+  # the same image and each running the same 16 release tests, ~175s of
+  # duplicated work per push.
   #
-  # It runs both suites, so it needs both toolchains and the image. That is the
-  # cost of a gate that cannot be satisfied by a skip -- a skipped test reports
-  # as SKIP, and SKIP is not coverage.
-  coverage:
-    name: Coverage
+  # The image tests a different failure class from the Go job -- a broken
+  # entrypoint or a missing libduckdb passes every unit test -- and the matrix
+  # needs their results, so they belong in one place.
+  #
+  # Single-arch and native, so it stays fast; the multi-arch build happens at
+  # release time in release.yml.
+  image:
+    name: Image
     runs-on: ubuntu-latest
     env:
       SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
@@ -107,62 +110,18 @@ jobs:
           if [ -f requirements.dev.txt ]; then pip install -r requirements.dev.txt; fi
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # The integration pass fails without a broker, deliberately: a test that
-      # excuses itself when its service is absent reports "ok" and covers
-      # nothing. Only zoo1 and kafka1 -- the rest of the dev stack is postgres,
-      # minio and clickhouse, which nothing in this pass touches.
-      - name: Start Kafka
-        run: |
-          docker compose -f dev/kafka-single.yml up -d zoo1 kafka1
-          for _ in $(seq 1 60); do
-            if nc -z localhost 9092; then echo "broker up"; exit 0; fi
-            sleep 2
-          done
-          echo "kafka never came up" >&2
-          docker compose -f dev/kafka-single.yml logs kafka1 >&2
-          exit 1
-
-      - name: Check the coverage matrix
+      # Builds the image, runs the unit, integration and release passes against
+      # it, regenerates the matrix and gates on it. No broker step: the
+      # integration tests start their own container, so a contributor runs the
+      # same command locally without reading this file first.
+      - name: Test the image and check the coverage matrix
         run: make coverage-matrix-check
 
-      # The matrix is the diff a reviewer reads. When the check fails because it
-      # is stale, the regenerated file is more useful than the log line.
+      # The matrix is the diff a reviewer reads. When the check fails because
+      # it is stale, the regenerated file is more useful than the log line.
       - name: Upload the regenerated matrix
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-matrix
           path: docs/coverage/
-
-  # Functional tests against the built image: entrypoint, CLI surface, the
-  # baked-in libduckdb, and a real pipeline through Kafka. The Go job above
-  # tests the code; this tests the artifact users actually run, which is a
-  # different failure class -- a broken entrypoint or a missing libduckdb
-  # passes every unit test.
-  #
-  # Single-arch and native, so it stays fast; the multi-arch build happens at
-  # release time in release.yml.
-  image:
-    name: Image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # VERSION comes from `git describe`, which needs tags and history.
-          fetch-depth: 0
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.dev.txt ]; then pip install -r requirements.dev.txt; fi
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
-      # Builds the image, then runs tests/release against it. The Kafka-backed
-      # case brings its own broker up through testcontainers.
-      - name: Test image
-        run: make test-release

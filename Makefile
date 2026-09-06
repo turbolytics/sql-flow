@@ -94,6 +94,14 @@ coverage-matrix-check: coverage-matrix
 		echo "Run 'make coverage-matrix' and commit the result."; \
 		exit 1; \
 	}
+	@# A failing test that belongs to a declared feature already fails the gap
+	@# check above. One that matches no feature would otherwise pass silently,
+	@# because coverage-matrix swallows each suite's exit code to keep the
+	@# matrix regenerating. This is the backstop for that case.
+	@! grep -lq '"Action":"fail"' .coverage/go.json .coverage/go-integration.json || { \
+		echo "a Go test failed; see .coverage/go*.json" >&2; exit 1; }
+	@! grep -q '"outcome": "failed"' .coverage/pytest.json || { \
+		echo "a release test failed; see .coverage/pytest.json" >&2; exit 1; }
 
 .PHONY: test-release
 test-release: sqlflow-image
