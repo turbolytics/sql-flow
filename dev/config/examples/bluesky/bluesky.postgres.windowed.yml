@@ -51,9 +51,18 @@ tables:
         sink:
           type: sqlcommand
           sqlcommand:
+            # ON CONFLICT is what keeps at-least-once delivery survivable. The
+            # manager deletes a window only after the sink accepts it, so a
+            # crash between the two republishes that window on the next poll.
+            # Against the target table's primary key on (bucket, lang), a bare
+            # INSERT fails that republish -- and because the failed flush also
+            # blocks the delete, every later poll collects the same rows and
+            # fails the same way. One duplicate stops the pipeline publishing
+            # anything, ever again.
             sql: |
               INSERT INTO pg.posts_per_minute_by_lang (bucket, lang, posts)
               SELECT bucket, lang, posts FROM sqlflow_sink_batch
+              ON CONFLICT (bucket, lang) DO UPDATE SET posts = EXCLUDED.posts
 
 pipeline:
   name: bluesky-posts-per-minute-by-lang
