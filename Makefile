@@ -34,23 +34,20 @@ test: test-go test-release
 test-image: sqlflow-image
 	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) pytest tests/release
 
-# Regenerates docs/coverage/matrix.md from both suites' output.
+# Runs every suite and regenerates the matrix from what they report.
 #
-# The matrix is checked in, and CI regenerates it and diffs. That is what makes
-# a coverage change visible in review: adding a feature without a test, or a
-# test quietly starting to skip, both show up as a diff on a tracked file
-# rather than as nothing at all.
+# This is the local convenience target: one command, everything runs, the
+# matrix is current. CI does not use it. There the jobs that own the tests
+# write their reports and `coverage-check` reads them, so coverage costs
+# seconds instead of a second image build and a second release run.
 #
-# Depends on the image because the release suite runs against it. Without
-# that dependency every release test errors in collection, and the `-` below
-# swallows it: the matrix regenerates with every release row marked failing.
+# Depends on the image because the release suite runs against it. Without that
+# dependency every release test errors in collection, and the `-` prefixes
+# swallow it: the matrix regenerates with every release row marked failing.
 #
 # Three passes, one per level. -short is the unit pass and runs anywhere; the
-# integration pass runs the tests that need a real broker and fails without
-# one. Splitting them is what makes the matrix a function of the repo rather
-# than of the machine: before the split the Kafka tests passed for whoever had
-# the dev stack up and skipped everywhere else, so the file recorded whichever
-# laptop regenerated it last.
+# integration pass runs the tests that provision a real service; the release
+# pass runs against the built image.
 .PHONY: coverage-matrix
 coverage-matrix: sqlflow-image
 	@mkdir -p .coverage
@@ -61,50 +58,73 @@ coverage-matrix: sqlflow-image
 		SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 		TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
 		pytest tests/release -q
+	@$(MAKE) --no-print-directory coverage-write
+
+# Renders the matrix from reports that already exist. Runs no tests.
+.PHONY: coverage-write
+coverage-write:
 	python3 scripts/coverage_matrix.py \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--pytest .coverage/pytest.json --write
 
-# The merge gate, in two parts. Wired into CI as the Coverage job.
+# The merge gate, in three parts. Runs no tests either: it reads the reports
+# the suites already wrote, which is what lets CI run it last and in seconds.
 #
 # Gaps: a feature missing a level it requires fails the build. There is no
-# baseline and no escape hatch -- a gap is closed by a test, or by the
-# registry honestly no longer requiring that level.
+# baseline and no escape hatch -- a gap is closed by a test, or by the registry
+# honestly no longer requiring that level.
 #
 # Stale: the checked-in matrix must match what the suites just reported, the
 # way a golden file does. That is what makes a coverage change show up in
 # review rather than nowhere.
 #
-# Gaps are checked first, and the order carries information. A suite failure
-# reaches both checks: the run above swallows pytest's exit code so the matrix
-# still regenerates, and a failing test lands in the matrix as a failing
-# feature. Checked in this order that reports as "sink.kafka: release is
-# failing", which is the truth. The other order reports it as a stale matrix,
-# which sends the reader to regenerate a file that was never the problem.
-.PHONY: coverage-matrix-check
-coverage-matrix-check: coverage-matrix
+# Failures: a suite failure reaches the gap check as a failing feature, so gaps
+# are checked first and the order carries information -- "sink.kafka: release
+# is failing" is the truth, where a stale-matrix error would send the reader to
+# regenerate a file that was never the problem. A failing test matching no
+# declared feature reaches neither check, and the last part is its backstop.
+.PHONY: coverage-check
+coverage-check: coverage-write
 	python3 scripts/coverage_matrix.py \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--pytest .coverage/pytest.json --check
+	@! grep -hq '"Action":"fail"' .coverage/go.json .coverage/go-integration.json || { \
+		echo "" >&2; \
+		echo "A Go test failed:" >&2; \
+		grep -ho '"Action":"fail","Test":"[^"]*"' \
+			.coverage/go.json .coverage/go-integration.json \
+			| sed 's/.*"Test":"/  /; s/"$$//' | sort -u >&2; \
+		exit 1; \
+	}
+	@! grep -q '"outcome": "failed"' .coverage/pytest.json || { \
+		echo "" >&2; \
+		echo "A release test failed; see .coverage/pytest.json" >&2; \
+		exit 1; \
+	}
+	@# Last, because it is the least specific. A failing test changes the
+	@# matrix too, so checking staleness first reports "regenerate the file"
+	@# for a problem no regeneration fixes.
 	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md || { \
 		echo ""; \
 		echo "The coverage matrix is out of date."; \
 		echo "Run 'make coverage-matrix' and commit the result."; \
 		exit 1; \
 	}
-	@# A failing test that belongs to a declared feature already fails the gap
-	@# check above. One that matches no feature would otherwise pass silently,
-	@# because coverage-matrix swallows each suite's exit code to keep the
-	@# matrix regenerating. This is the backstop for that case.
-	@! grep -lq '"Action":"fail"' .coverage/go.json .coverage/go-integration.json || { \
-		echo "a Go test failed; see .coverage/go*.json" >&2; exit 1; }
-	@! grep -q '"outcome": "failed"' .coverage/pytest.json || { \
-		echo "a release test failed; see .coverage/pytest.json" >&2; exit 1; }
 
+# Everything, then the gate. The local equivalent of a full CI run.
+.PHONY: coverage-matrix-check
+coverage-matrix-check: coverage-matrix coverage-check
+
+# Writes its report alongside running, so the coverage gate can read this run
+# rather than repeat it. The file is cheap and unconditional: a suite whose
+# report exists only when someone remembered a flag is a suite the gate
+# silently stops seeing.
 .PHONY: test-release
 test-release: sqlflow-image
+	@mkdir -p .coverage
+	SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
 	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 	TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
 	pytest tests/release
