@@ -216,8 +216,19 @@ def snapshot(features, coverage, secondary, unmatched, unknown_markers):
     a coverage change cannot hide inside a reflowed table.
 
     Everything is sorted so the same tree always produces the same bytes.
+
+    A test is recorded as a bare name, and the two facts that are almost never
+    true -- it did not pass, it was attributed by a marker rather than by its
+    name -- are named in `skipped`, `failing` and `by_marker` beside it. Those
+    lists narrow `tests`; they never extend it. Empty ones are omitted.
+
+    Recording the outcome and the attribution on every entry instead cost five
+    lines and 124 bytes per test to carry about fifty bytes of fact, and the
+    artifact is read far more often than it is written -- in review, and by
+    agents answering questions about coverage. It came to 100KB, and 459 of its
+    489 entries said nothing but `"outcome": "pass", "attribution": "name"`.
     """
-    out = {"version": 1, "features": [], "gaps": [],
+    out = {"version": 2, "features": [], "gaps": [],
            "unattributed": {}, "unknown_markers": []}
 
     for feature in features:
@@ -233,19 +244,22 @@ def snapshot(features, coverage, secondary, unmatched, unknown_markers):
         for level in LEVELS:
             tests = sorted(coverage[fid][level])
             if level not in required and not tests:
-                entry["levels"][level] = {"status": "not_required", "tests": []}
+                entry["levels"][level] = {"status": "not_required"}
                 continue
 
             state = status(tests)
             secondaries = set(secondary[fid][level])
-            entry["levels"][level] = {
-                "status": state,
-                "tests": [
-                    {"name": name, "outcome": outcome,
-                     "attribution": "marker" if name in secondaries else "name"}
-                    for name, outcome in tests
-                ],
-            }
+            names = [name for name, _ in tests]
+            cell = {"status": state, "tests": names}
+            for key, members in (
+                ("skipped", [n for n, o in tests if o == SKIP]),
+                ("failing", [n for n, o in tests if o == FAIL]),
+                ("by_marker", [n for n in names if n in secondaries]),
+            ):
+                if members:
+                    cell[key] = members
+            entry["levels"][level] = cell
+
             if level in required and state != "covered":
                 out["gaps"].append(
                     {"feature": fid, "level": level, "status": state})
@@ -280,6 +294,10 @@ def render(snap):
         "a pass is how `sink.iceberg` shipped for months without ever being",
         "written to.",
         "",
+        "The Tests column counts what attributes to the feature, so a thinly",
+        "covered one is visible at a glance. `docs/coverage/matrix.json`",
+        "names every one of them.",
+        "",
         "| Feature | What it does | " + " | ".join(LEVELS) + " | Tests |",
         "| --- | --- | " + " | ".join("---" for _ in LEVELS) + " | --- |",
     ]
@@ -287,14 +305,11 @@ def render(snap):
     for feature in snap["features"]:
         cells = " | ".join(MARK[feature["levels"][lvl]["status"]]
                            for lvl in LEVELS)
-        names = [t["name"] for lvl in LEVELS
-                 for t in feature["levels"][lvl]["tests"]]
-        shown = ", ".join(f"`{n}`" for n in names[:3])
-        if len(names) > 3:
-            shown += f" +{len(names) - 3} more"
+        count = sum(len(feature["levels"][lvl].get("tests", []))
+                    for lvl in LEVELS)
         lines.append(
             f"| `{feature['id']}` | {feature['description']} | "
-            f"{cells} | {shown or '—'} |"
+            f"{cells} | {count or '—'} |"
         )
 
     covered = sum(
@@ -326,9 +341,10 @@ def render(snap):
     by_marker = []
     for feature in snap["features"]:
         for level in LEVELS:
-            tests = feature["levels"][level]["tests"]
-            if tests and all(t["attribution"] == "marker" for t in tests):
-                by_marker.append((feature["id"], level, [t["name"] for t in tests]))
+            cell = feature["levels"][level]
+            tests = cell.get("tests", [])
+            if tests and len(cell.get("by_marker", [])) == len(tests):
+                by_marker.append((feature["id"], level, tests))
     if by_marker:
         lines += [
             "## Covered only by another test's marker",

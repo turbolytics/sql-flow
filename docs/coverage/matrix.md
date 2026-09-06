@@ -15,39 +15,43 @@ tests that need a real service, `release` is the image suite. A
 a pass is how `sink.iceberg` shipped for months without ever being
 written to.
 
+The Tests column counts what attributes to the feature, so a thinly
+covered one is visible at a glance. `docs/coverage/matrix.json`
+names every one of them.
+
 | Feature | What it does | unit | integration | release | Tests |
 | --- | --- | --- | --- | --- | --- |
-| `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | `TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition`, `TestIntegrationSourceKafka_MessagesCarryHighWatermark`, `TestIntegrationSourceKafka_SeekToEmptyIsANoop` +25 more |
-| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | `TestSourceWebhook_BackpressureHoldsSecondRequest`, `TestSourceWebhook_CloseIsIdempotent`, `TestSourceWebhook_CloseReleasesBlockedRequest` +12 more |
-| `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | `TestSourceWebsocket_CloseEndsStream`, `TestSourceWebsocket_ReadsLargeMessages`, `TestSourceWebsocket_ReconnectsAfterDrop` +3 more |
-| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | — | ✅ | `TestSinkKafka_BatchIsTheLastWrite`, `TestSinkKafka_FlushHonoursItsContext`, `TestSinkKafka_FlushReportsProduceErrors` +4 more |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | — | ✅ | `TestSinkClickhouse_BatchIsNil`, `TestSinkClickhouse_EmptyTableIsNoop`, `TestSinkClickhouse_InsertsArrays` +11 more |
-| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | `TestSinkIceberg_AddsPyicebergsMissingTypeColumn`, `TestSinkIceberg_AppendsEveryRow`, `TestSinkIceberg_BatchIsTheLastWrite` +10 more |
-| `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | `test_sink_parquet_writes_every_row` |
-| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | `TestSinkSqlcommand_AccumulatesUntilFlush`, `TestSinkSqlcommand_BatchIsTheLastWrite`, `TestSinkSqlcommand_EachFlushReplacesTheBatchTable` +7 more |
-| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | `TestSinkConsole_RowsAsJSONEmptyTable`, `TestSinkConsole_RowsAsJSONOneObjectPerRow`, `test_handler_inferred_mem_invoke_renders_rows` |
-| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | `TestSinkRetry_BackoffGrowsAndIsCapped`, `TestSinkRetry_BoundsCancellationMidLadderStops`, `TestSinkRetry_BoundsErrorSaysAttemptsWereExhausted` +66 more |
-| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | `TestHandlerInferredMem_BatchAfterEmptyBatch`, `TestHandlerInferredMem_ColumnsComeFromFirstRow`, `TestHandlerInferredMem_ConflictingListElementTypesError` +43 more |
-| `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | `TestHandlerInferredDisk_BatchTableDroppedAfterInvoke`, `TestHandlerInferredDisk_CloseRemovesFiles`, `TestHandlerInferredDisk_CreatesCacheDir` +6 more |
-| `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | `TestHandlerStructured_ExplicitNullStringIsNull`, `TestHandlerStructured_FilterSeesRowsIngestedAfterPrepare`, `TestHandlerStructured_LargeBatch` +5 more |
-| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | `TestStateDurability_DBSecondConnectionSeesOnlyCommittedState`, `TestStateDurability_OpenPathEmptyPathIsInMemory`, `TestStateDurability_OpenPathPersistsAcrossProcesses` +8 more |
-| `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ | `TestStateOffsets_InitAcceptsAFreshDatabase`, `TestStateOffsets_InitAcceptsAPriorRunAndKeepsItsRows`, `TestStateOffsets_InitIsIdempotent` +19 more |
-| `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ | `TestStateCorruption_CreatesAMissingFile`, `TestStateCorruption_LeavesADamagedFileOnDisk`, `TestStateCorruption_RejectsAFileThatIsNotADatabase` +3 more |
-| `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ | `TestLifecycleDrain_CancelDrainsTheBufferedBatch`, `test_lifecycle_drain_writes_the_buffered_batch_on_sigterm` |
-| `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ | `TestLifecycleExitCodes_CorruptStateFileExitsTerminal`, `TestLifecycleExitCodes_MalformedConfigIsTerminal`, `TestLifecycleExitCodes_MissingConfigIsTerminal` +5 more |
-| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | `TestCoreConsumeLoop_CommitsOnlyProcessedMarks`, `TestCoreConsumeLoop_FlushesFinalBatchWhenMaxMsgsReached`, `TestCoreConsumeLoop_FlushesPartialBatchOnFlushInterval` +11 more |
-| `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — | `TestErrorTaxonomy_CodeSplitsIntoThreeParts`, `TestErrorTaxonomy_CodeStaysOnTheFirstLineOfAMultiLineCause`, `TestErrorTaxonomy_CodeSurvivesWrapping` +13 more |
-| `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | `TestErrorRaise_ConsumeLoopStopsOnWriteError` |
-| `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ | `TestErrorIgnore_BatchOfOnlyBadMessagesIsNotAHandlerError`, `TestErrorIgnore_ConsumeLoopContinuesAfterInvokeError`, `TestErrorIgnore_ConsumeLoopSkipsBadMessage` +2 more |
-| `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ | `TestErrorDlq_ConsumeLoopRoutesInvokeError`, `TestErrorDlq_ConsumeLoopRoutesWriteError`, `test_error_dlq_diverts_a_batch_the_handler_cannot_query` +1 more |
-| `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | `TestManagerTumblingWindow__ClockAdvancesOnlyAcrossACommit`, `TestManagerTumblingWindow__DeleteFailureIsReported`, `TestManagerTumblingWindow__DeleteJoinsThePipelineTransaction` +13 more |
-| `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | `TestConfigTemplating_Load_AllExampleConfigs`, `TestConfigTemplating_Load_AllExampleConfigs/attach-geoip.yml`, `TestConfigTemplating_Load_AllExampleConfigs/basic.agg.mem.yml` +42 more |
-| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | `TestConfigValidation_AcceptsStatePath`, `TestConfigValidation_ExampleConfigsBuildRealComponents`, `TestConfigValidation_ExampleConfigsBuildRealComponents/attach-geoip.yml` +70 more |
-| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | `TestObservabilityMetrics_StateGaugesNoProviderRecordsNothing`, `TestObservabilityMetrics_StateGaugesReportsSizeAndRows`, `TestObservabilityMetrics_StateGaugesSurvivesCollectionFailure` +4 more |
-| `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — | `TestObservabilityDebugApi_HandlerRejectsMissingQuery`, `TestObservabilityDebugApi_HandlerReportsQueryErrors`, `TestObservabilityDebugApi_HandlerReturnsEmptyArrayForNoRows` +4 more |
-| `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | `TestCliInvocation_NewCommandConfigFlagIsNotRequired`, `TestCliInvocation_NewCommandHasPythonMaxMsgsFlag`, `TestCliInvocation_NewCommandRejectsTwoPositionalArgs` +10 more |
-| `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | `TestCliDevInvoke_BlueskyFirehose`, `TestCliDevInvoke_EmptyFixture`, `TestCliDevInvoke_FixtureOfOnlyBlankLines` +6 more |
-| `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | `test_cli_version_is_stamped_into_the_image` |
+| `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | 28 |
+| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
+| `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
+| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | — | ✅ | 7 |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | — | ✅ | 14 |
+| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 13 |
+| `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
+| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 10 |
+| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 3 |
+| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 69 |
+| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
+| `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
+| `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 8 |
+| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 11 |
+| `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ | 22 |
+| `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ | 6 |
+| `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ | 2 |
+| `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ | 8 |
+| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 14 |
+| `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — | 16 |
+| `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | 1 |
+| `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ | 5 |
+| `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ | 4 |
+| `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | 16 |
+| `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 45 |
+| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 73 |
+| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 7 |
+| `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — | 7 |
+| `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
+| `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
+| `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
 
 **31 features declared, 31 fully covered, 0 gap(s).**
 

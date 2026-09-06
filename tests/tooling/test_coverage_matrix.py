@@ -201,8 +201,8 @@ def test_a_marker_is_recorded_as_secondary_attribution():
         features=FEATURES + [{"id": "handler.inferred_mem", "description": "h",
                               "requires": ["release"]}],
     )
-    tests = level(s, "source.kafka", "release")["tests"]
-    assert [t["attribution"] for t in tests] == ["marker"]
+    lvl = level(s, "source.kafka", "release")
+    assert lvl["by_marker"] == ["test_handler_inferred_mem_aggregates"]
 
 
 def test_a_marker_carries_the_outcome_not_just_the_name():
@@ -230,7 +230,8 @@ def test_a_marker_for_the_feature_the_name_already_claims_is_not_doubled():
         go_results={"TestSinkClickhouse_InsertsRows": cm.PASS},
         go_covers={"TestSinkClickhouse_InsertsRows": ["sink.clickhouse"]},
     )
-    assert len(level(s, "sink.clickhouse", "unit")["tests"]) == 1
+    assert level(s, "sink.clickhouse", "unit")["tests"] == [
+        "TestSinkClickhouse_InsertsRows"]
 
 
 # --- Parsing ---------------------------------------------------------------
@@ -302,8 +303,69 @@ def test_the_snapshot_is_deterministic():
 def test_the_snapshot_orders_tests_stably():
     s = snap(go_results={"TestSinkClickhouse_B": cm.PASS,
                          "TestSinkClickhouse_A": cm.PASS})
-    names = [t["name"] for t in level(s, "sink.clickhouse", "unit")["tests"]]
+    names = level(s, "sink.clickhouse", "unit")["tests"]
     assert names == sorted(names)
+
+
+# --- The encoding ----------------------------------------------------------
+#
+# The artifact is read far more often than it is written, by people and by
+# agents, and every byte of it is a byte someone pays for. So a test is a name
+# and nothing else, and the two facts that are almost never true -- a test did
+# not pass, a test was attributed by marker -- are named in their own lists
+# rather than repeated on all 489 entries as the default they usually carry.
+
+def test_a_test_is_recorded_as_a_bare_name():
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS})
+    assert level(s, "sink.clickhouse", "unit")["tests"] == [
+        "TestSinkClickhouse_InsertsRows"]
+
+
+def test_a_level_with_nothing_exceptional_carries_only_status_and_tests():
+    """The common case pays for nothing it does not use."""
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS})
+    assert set(level(s, "sink.clickhouse", "unit")) == {"status", "tests"}
+
+
+def test_an_empty_list_is_omitted_entirely():
+    s = snap()
+    assert level(s, "sink.console", "release") == {"status": "not_required"}
+
+
+def test_a_skipped_test_is_named_in_the_skipped_list():
+    """Status alone cannot say which of several tests skipped."""
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS,
+                         "TestSinkClickhouse_InsertsArrays": cm.SKIP})
+    lvl = level(s, "sink.clickhouse", "unit")
+
+    assert lvl["status"] == "covered"
+    assert lvl["skipped"] == ["TestSinkClickhouse_InsertsArrays"]
+    assert "failing" not in lvl
+
+
+def test_a_failing_test_is_named_in_the_failing_list():
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS,
+                         "TestSinkClickhouse_InsertsArrays": cm.FAIL})
+    lvl = level(s, "sink.clickhouse", "unit")
+
+    assert lvl["failing"] == ["TestSinkClickhouse_InsertsArrays"]
+    assert "skipped" not in lvl
+
+
+def test_every_exceptional_name_also_appears_in_tests():
+    """The lists narrow the test list. They never extend it."""
+    s = snap(go_results={"TestSinkClickhouse_A": cm.PASS,
+                         "TestSinkClickhouse_B": cm.SKIP,
+                         "TestSinkClickhouse_C": cm.FAIL})
+    lvl = level(s, "sink.clickhouse", "unit")
+
+    for key in ("skipped", "failing", "by_marker"):
+        assert set(lvl.get(key, [])) <= set(lvl["tests"]), key
+
+
+def test_the_snapshot_declares_its_schema_version():
+    """A reader that expects per-test objects must be able to tell."""
+    assert snap()["version"] == 2
 
 
 def test_render_agrees_with_the_snapshot():
@@ -315,6 +377,31 @@ def test_render_agrees_with_the_snapshot():
     assert "sink.clickhouse" in out
     assert "skipped" in out
     assert "1 gap(s)" in out or "gap(s)" in out
+
+
+def test_render_counts_the_tests_rather_than_sampling_them():
+    """The table is the cheap view. Three arbitrary names out of seventy-three
+    answer nobody's question and cost every reader the width; the count answers
+    "is this feature thinly covered" and matrix.json names them all."""
+    s = snap(go_results={f"TestSinkClickhouse_{i}": cm.PASS for i in range(4)})
+    row = next(line for line in cm.render(s).splitlines()
+               if line.startswith("| `sink.clickhouse`"))
+
+    assert row.rstrip().endswith("| 4 |")
+    assert "TestSinkClickhouse_0" not in row
+
+
+def test_render_leaves_the_count_blank_when_nothing_covers_the_feature():
+    s = snap()
+    row = next(line for line in cm.render(s).splitlines()
+               if line.startswith("| `sink.console`"))
+    assert row.rstrip().endswith("| — |")
+
+
+def test_render_points_at_the_json_for_the_test_names():
+    """Dropping the names without saying where they went sends the reader to
+    grep the repo, or to open the 49KB artifact to find out it was that."""
+    assert "names every one of them" in cm.render(snap())
 
 
 def test_render_reports_a_feature_covered_only_by_a_marker():
