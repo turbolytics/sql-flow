@@ -1,4 +1,0 @@
-pytest==7.4.3
-ipython==8.18.1
-testcontainers==4.9.0
-httpx==0.28.1

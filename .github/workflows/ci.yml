@@ -101,16 +101,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
+          version: '0.6.10'
+          enable-cache: true
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip pytest PyYAML
+        run: uv sync --locked
 
       - name: Test the coverage matrix generator
-        run: pytest tests/tooling -q
+        run: uv run --locked pytest tests/tooling -q
 
   # Functional tests against the built image: entrypoint, CLI surface, the
   # baked-in libduckdb, and a real pipeline through Kafka. The Go job tests the
@@ -129,16 +130,14 @@ jobs:
           # VERSION comes from `git describe`, which needs tags and history.
           fetch-depth: 0
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
+          version: '0.6.10'
+          enable-cache: true
 
       - name: Install python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.dev.txt ]; then pip install -r requirements.dev.txt; fi
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        run: uv sync --locked
 
       # Builds the image, then runs tests/release against it. The Kafka-backed
       # case brings its own broker up through testcontainers.
@@ -171,13 +170,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
+          version: '0.6.10'
+          enable-cache: true
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip PyYAML
+        run: uv sync --locked
 
       - name: Download every suite report
         uses: actions/download-artifact@v4

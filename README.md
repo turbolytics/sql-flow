@@ -33,13 +33,14 @@ make sqlflow
 docker-compose -f dev/kafka-single.yml up -d
 ```
 
-4. Publish test messages. The publisher is a Python script, so install its
-   dependencies once:
+4. Publish test messages. The publisher is a Python script. [uv][uv] reads
+   `uv.lock` and builds the environment on first run:
 
 ```
-pip install -r requirements.txt
-python3 cmd/publish-test-data.py --num-messages=10000 --topic="input-simple-agg-mem"
+uv run python cmd/publish-test-data.py --num-messages=10000 --topic="input-simple-agg-mem"
 ```
+
+[uv]: https://docs.astral.sh/uv/
 
 5. Start a Kafka consumer to watch the output:
 
@@ -911,7 +912,7 @@ The following configuration writes to an Iceberg table using a local SQLite cata
   at the directory holding `.pyiceberg.yaml`, which defines the `sqlflow_test`
   catalog the example config expects:
 ```
-PYICEBERG_HOME=$(pwd)/dev/config/iceberg python3 cmd/setup-iceberg-local.py setup
+PYICEBERG_HOME=$(pwd)/dev/config/iceberg uv run python cmd/setup-iceberg-local.py setup
 created default.city_events
 created default.bluesky_post_events
 Catalog setup complete.
@@ -924,7 +925,7 @@ docker-compose -f dev/kafka-single.yml up -d
 
 - Publish Test Messages to Kafka
 ```
-python3 cmd/publish-test-data.py --num-messages=5000 --topic="input-kafka-mem-iceberg"
+uv run python cmd/publish-test-data.py --num-messages=5000 --topic="input-kafka-mem-iceberg"
 ```
 
 - Run sqlflow, which reads from Kafka and writes to the iceberg table locally
@@ -984,6 +985,10 @@ make sqlflow        # build bin/sqlflow
 make test-go        # build, vet, gofmt check, unit tests
 make test-image     # build the image and run tests/release against it
 ```
+
+`tests/release` and the coverage matrix are Python. Both run through [uv][uv],
+which builds the environment from `uv.lock` on first use. There is no
+`pip install` step, and no dependency is resolved at install time.
 
 `make test-go` and `make test-image` are what CI runs on every push.
 Kafka-backed integration tests are deliberately excluded from `test-go`; they

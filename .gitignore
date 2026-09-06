@@ -1,4 +1,8 @@
 *.egg-info/
+__pycache__/
+.pytest_cache/
+# `uv sync` builds this from uv.lock, which is committed.
+.venv/
 dev/volume/
 bin/
 dist/
