@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "features": [
     {
       "id": "source.kafka",
@@ -13,156 +13,56 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsPlaintextNeedsNoOptions",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsRejectsUnknownMechanism",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsRejectsUnknownProtocol",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsSASLMechanisms",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsSASLMechanisms/PLAIN",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsSASLMechanisms/SCRAM-SHA-256",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsSASLMechanisms/SCRAM-SHA-512",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsSASLMechanisms/scram-sha-512",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsSASLProtocolRequiresSASLBlock",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsSASLSSLAddsBoth",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SecurityOptionsSSLAddsDialer",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_TLSConfigDisablesHostnameVerification",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_TLSConfigReportsMissingCAFile",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_TLSConfigRequiresBothCertAndKey",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
+            "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
+            "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
+            "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
+            "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
+            "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets",
+            "TestSourceKafka_SecurityOptionsPlaintextNeedsNoOptions",
+            "TestSourceKafka_SecurityOptionsRejectsUnknownMechanism",
+            "TestSourceKafka_SecurityOptionsRejectsUnknownProtocol",
+            "TestSourceKafka_SecurityOptionsSASLMechanisms",
+            "TestSourceKafka_SecurityOptionsSASLMechanisms/PLAIN",
+            "TestSourceKafka_SecurityOptionsSASLMechanisms/SCRAM-SHA-256",
+            "TestSourceKafka_SecurityOptionsSASLMechanisms/SCRAM-SHA-512",
+            "TestSourceKafka_SecurityOptionsSASLMechanisms/scram-sha-512",
+            "TestSourceKafka_SecurityOptionsSASLProtocolRequiresSASLBlock",
+            "TestSourceKafka_SecurityOptionsSASLSSLAddsBoth",
+            "TestSourceKafka_SecurityOptionsSSLAddsDialer",
+            "TestSourceKafka_TLSConfigDisablesHostnameVerification",
+            "TestSourceKafka_TLSConfigReportsMissingCAFile",
+            "TestSourceKafka_TLSConfigRequiresBothCertAndKey"
+          ],
+          "skipped": [
+            "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
+            "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
+            "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
+            "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
+            "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
+            "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets"
           ]
         },
         "integration": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
+            "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
+            "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
+            "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
+            "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
+            "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets"
           ]
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_handler_inferred_mem_aggregates_every_message",
-              "outcome": "pass",
-              "attribution": "marker"
-            },
-            {
-              "name": "test_state_durability_survives_a_restart",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_handler_inferred_mem_aggregates_every_message",
+            "test_state_durability_survives_a_restart"
+          ],
+          "by_marker": [
+            "test_handler_inferred_mem_aggregates_every_message",
+            "test_state_durability_survives_a_restart"
           ]
         }
       }
@@ -177,90 +77,28 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestSourceWebhook_BackpressureHoldsSecondRequest",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_CloseIsIdempotent",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_CloseReleasesBlockedRequest",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_DefaultsToPythonHostAndPort",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_DeliversBodyToStream",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_EventsHMACValidation",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_EventsHMACValidation/digest_without_the_sha256=_prefix",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_EventsHMACValidation/invalid_signature",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_EventsHMACValidation/missing_signature_header",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_EventsHMACValidation/no_hmac_configured",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_EventsHMACValidation/signature_computed_with_the_wrong_secret",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_EventsHMACValidation/valid_signature",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_RoutesOnlyPostEvents",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_StartReportsBindFailure",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebhook_StartServesOnItsOwnListener",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestSourceWebhook_BackpressureHoldsSecondRequest",
+            "TestSourceWebhook_CloseIsIdempotent",
+            "TestSourceWebhook_CloseReleasesBlockedRequest",
+            "TestSourceWebhook_DefaultsToPythonHostAndPort",
+            "TestSourceWebhook_DeliversBodyToStream",
+            "TestSourceWebhook_EventsHMACValidation",
+            "TestSourceWebhook_EventsHMACValidation/digest_without_the_sha256=_prefix",
+            "TestSourceWebhook_EventsHMACValidation/invalid_signature",
+            "TestSourceWebhook_EventsHMACValidation/missing_signature_header",
+            "TestSourceWebhook_EventsHMACValidation/no_hmac_configured",
+            "TestSourceWebhook_EventsHMACValidation/signature_computed_with_the_wrong_secret",
+            "TestSourceWebhook_EventsHMACValidation/valid_signature",
+            "TestSourceWebhook_RoutesOnlyPostEvents",
+            "TestSourceWebhook_StartReportsBindFailure",
+            "TestSourceWebhook_StartServesOnItsOwnListener"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -275,45 +113,23 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestSourceWebsocket_CloseEndsStream",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebsocket_ReadsLargeMessages",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebsocket_ReconnectsAfterDrop",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebsocket_StartReportsDialFailure",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceWebsocket_StreamsMessages",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestSourceWebsocket_CloseEndsStream",
+            "TestSourceWebsocket_ReadsLargeMessages",
+            "TestSourceWebsocket_ReconnectsAfterDrop",
+            "TestSourceWebsocket_StartReportsDialFailure",
+            "TestSourceWebsocket_StreamsMessages"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_handler_inferred_mem_preserves_arrays_and_unioned_fields",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_handler_inferred_mem_preserves_arrays_and_unioned_fields"
+          ],
+          "by_marker": [
+            "test_handler_inferred_mem_preserves_arrays_and_unioned_fields"
           ]
         }
       }
@@ -329,50 +145,24 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestSinkKafka_BatchIsTheLastWrite",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkKafka_FlushHonoursItsContext",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkKafka_FlushReportsProduceErrors",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkKafka_NewRejectsAnUnknownSecurityProtocol",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkKafka_NewRequiresATopic",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkKafka_WriteTableHonoursItsContext",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestSinkKafka_BatchIsTheLastWrite",
+            "TestSinkKafka_FlushHonoursItsContext",
+            "TestSinkKafka_FlushReportsProduceErrors",
+            "TestSinkKafka_NewRejectsAnUnknownSecurityProtocol",
+            "TestSinkKafka_NewRequiresATopic",
+            "TestSinkKafka_WriteTableHonoursItsContext"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_handler_inferred_mem_aggregates_every_message",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_handler_inferred_mem_aggregates_every_message"
+          ],
+          "by_marker": [
+            "test_handler_inferred_mem_aggregates_every_message"
           ]
         }
       }
@@ -388,85 +178,37 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestSinkClickhouse_BatchIsNil",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_EmptyTableIsNoop",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_InsertsArrays",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_InsertsNestedArrays",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_InsertsRows",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_NewRequiresTable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_NullsBecomeDefaults",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_OptionsCredentials",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_OptionsInvalid",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_OptionsNative",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_OptionsPythonDSN",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_OptionsSecure",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone",
-              "outcome": "skip",
-              "attribution": "name"
-            }
+            "TestSinkClickhouse_BatchIsNil",
+            "TestSinkClickhouse_EmptyTableIsNoop",
+            "TestSinkClickhouse_InsertsArrays",
+            "TestSinkClickhouse_InsertsNestedArrays",
+            "TestSinkClickhouse_InsertsRows",
+            "TestSinkClickhouse_NewRequiresTable",
+            "TestSinkClickhouse_NullsBecomeDefaults",
+            "TestSinkClickhouse_OptionsCredentials",
+            "TestSinkClickhouse_OptionsInvalid",
+            "TestSinkClickhouse_OptionsNative",
+            "TestSinkClickhouse_OptionsPythonDSN",
+            "TestSinkClickhouse_OptionsSecure",
+            "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone"
+          ],
+          "skipped": [
+            "TestSinkClickhouse_BatchIsNil",
+            "TestSinkClickhouse_EmptyTableIsNoop",
+            "TestSinkClickhouse_InsertsArrays",
+            "TestSinkClickhouse_InsertsNestedArrays",
+            "TestSinkClickhouse_InsertsRows",
+            "TestSinkClickhouse_NullsBecomeDefaults",
+            "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_sink_clickhouse_inserts_rows",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_sink_clickhouse_inserts_rows"
           ]
         }
       }
@@ -482,80 +224,27 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestSinkIceberg_AddsPyicebergsMissingTypeColumn",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_AppendsEveryRow",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_BatchIsTheLastWrite",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_CatalogPropertiesEnvOverridesFile",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_CatalogPropertiesFromPyicebergFile",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_CatalogPropertiesRequireAURI",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_EmptyBatchAppendsNothing",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_FlushWithNothingPendingAppendsNothing",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_MissingTableFailsTheStart",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_NewRequiresCatalogAndTable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkIceberg_TypeColumnSkipsAnEmptyCatalog",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestSinkIceberg_AddsPyicebergsMissingTypeColumn",
+            "TestSinkIceberg_AppendsEveryRow",
+            "TestSinkIceberg_BatchIsTheLastWrite",
+            "TestSinkIceberg_CatalogPropertiesEnvOverridesFile",
+            "TestSinkIceberg_CatalogPropertiesFromPyicebergFile",
+            "TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme",
+            "TestSinkIceberg_CatalogPropertiesRequireAURI",
+            "TestSinkIceberg_EmptyBatchAppendsNothing",
+            "TestSinkIceberg_FlushWithNothingPendingAppendsNothing",
+            "TestSinkIceberg_MissingTableFailsTheStart",
+            "TestSinkIceberg_NewRequiresCatalogAndTable",
+            "TestSinkIceberg_TypeColumnSkipsAnEmptyCatalog"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_sink_iceberg_writes_every_row",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_sink_iceberg_writes_every_row"
           ]
         }
       }
@@ -568,21 +257,15 @@
       ],
       "levels": {
         "unit": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_sink_parquet_writes_every_row",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_sink_parquet_writes_every_row"
           ]
         }
       }
@@ -597,65 +280,23 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestSinkSqlcommand_AccumulatesUntilFlush",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_BatchIsTheLastWrite",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_EachFlushReplacesTheBatchTable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_EmptyBatchStillRunsTheSQL",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_FlushWithNothingPendingIsANoop",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_NewRequiresSQL",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_RejectsAnUnknownSubstitution",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_ReportsASQLError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_RunsSQLAgainstTheBatch",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkSqlcommand_SubstitutesUUID4",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestSinkSqlcommand_AccumulatesUntilFlush",
+            "TestSinkSqlcommand_BatchIsTheLastWrite",
+            "TestSinkSqlcommand_EachFlushReplacesTheBatchTable",
+            "TestSinkSqlcommand_EmptyBatchStillRunsTheSQL",
+            "TestSinkSqlcommand_FlushWithNothingPendingIsANoop",
+            "TestSinkSqlcommand_NewRequiresSQL",
+            "TestSinkSqlcommand_RejectsAnUnknownSubstitution",
+            "TestSinkSqlcommand_ReportsASQLError",
+            "TestSinkSqlcommand_RunsSQLAgainstTheBatch",
+            "TestSinkSqlcommand_SubstitutesUUID4"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -670,30 +311,20 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestSinkConsole_RowsAsJSONEmptyTable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkConsole_RowsAsJSONOneObjectPerRow",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestSinkConsole_RowsAsJSONEmptyTable",
+            "TestSinkConsole_RowsAsJSONOneObjectPerRow"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_handler_inferred_mem_invoke_renders_rows",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_handler_inferred_mem_invoke_renders_rows"
+          ],
+          "by_marker": [
+            "test_handler_inferred_mem_invoke_renders_rows"
           ]
         }
       }
@@ -708,360 +339,82 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestSinkRetry_BackoffGrowsAndIsCapped",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsCancellationMidLadderStops",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsErrorSaysAttemptsWereExhausted",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsErrorSaysTheDeadlineStoppedIt",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsExhaustedErrorWrapsTheCause",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsHugeBackoffDoesNotOverflow",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsInitialBackoffAboveTheCapIsCapped",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsMaxAttemptsNegativeStillFlushesOnce",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsMaxAttemptsOneMakesExactlyOneAttempt",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsMaxAttemptsTwoSleepsExactlyOnce",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsMaxAttemptsZeroReportsTheFailure",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsMaxAttemptsZeroStillFlushesOnce",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsNegativeBackoffIsTreatedAsZero",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsNegativeDeadlineMakesOneAttempt",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsNeverSleepsAfterTheFinalAttempt",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsNonRetryableStopsUnderAnyPolicy",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsSuccessOnTheFinalAttempt",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsTotalSleepNeverExceedsTheDeadline",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsZeroBackoffRetriesImmediately",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_BoundsZeroDeadlineMakesOneAttempt",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_CancellationStopsTheLadder",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ClassifyNetworkFailuresAreUnreachable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ClassifyNilIsNotUnreachable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ClassifyServerRejectionsAreNotUnreachable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_DeadlineStopsTheLadder",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_DoesNotRetryAConfigError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_DoesNotRetryARejectedWrite",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ExhaustedAttemptsReportUnreachable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_HelpsOnlyForSinksThatCrossANetwork",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsCountRequestsByStatusCode",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsCountsEveryRetry",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsExhaustedLadderCountsItsRetries",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsMatchPythonInstruments",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsNilProviderIsSafe",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsNoProviderRecordsNothing",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsNonRetryableCountsNoRetries",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsRecordRequestDuration",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_MetricsSuccessCountsNoRetries",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewDefaultsToInfo",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewHonorsEnvVar",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewHonorsEnvVar/CRITICAL",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewHonorsEnvVar/DEBUG",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewHonorsEnvVar/WARNING",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewHonorsEnvVar/_warn_",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewHonorsEnvVar/debug",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewHonorsEnvVar/error",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewHonorsEnvVar/info",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewLocalSinksAreNotWrapped",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewMaxAttemptsOneDisablesRetrying",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewReportsUnknownLevel",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewUnsupportedSource",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewWebhook",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewWebhookRecordsRequestMetrics",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewWebhookWithoutSignatureType",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewWebsocket",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_NewWebsocketRequiresURI",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_PolicyFromDefaultsAreOn",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_PolicyFromOverridesOnlyWhatIsSet",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ProbeAuthFailureIsAUserError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ProbeDialsOnceAndDoesNotRetry",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ProbeReachableSinkStarts",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ProbeRespectsACancelledContext",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ProbeSinksWithNothingToDialAreSkipped",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_ProbeUnreachableSinkFailsTheStart",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_RetriesAnUncodedError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_RetriesAnUnreachableSink",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_SinkErrorCodesByCause",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_SinkErrorDrivesTheRetryDecision",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSinkRetry_SuccessDoesNotSleep",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestSinkRetry_BackoffGrowsAndIsCapped",
+            "TestSinkRetry_BoundsCancellationMidLadderStops",
+            "TestSinkRetry_BoundsErrorSaysAttemptsWereExhausted",
+            "TestSinkRetry_BoundsErrorSaysTheDeadlineStoppedIt",
+            "TestSinkRetry_BoundsExhaustedErrorWrapsTheCause",
+            "TestSinkRetry_BoundsHugeBackoffDoesNotOverflow",
+            "TestSinkRetry_BoundsInitialBackoffAboveTheCapIsCapped",
+            "TestSinkRetry_BoundsMaxAttemptsNegativeStillFlushesOnce",
+            "TestSinkRetry_BoundsMaxAttemptsOneMakesExactlyOneAttempt",
+            "TestSinkRetry_BoundsMaxAttemptsTwoSleepsExactlyOnce",
+            "TestSinkRetry_BoundsMaxAttemptsZeroReportsTheFailure",
+            "TestSinkRetry_BoundsMaxAttemptsZeroStillFlushesOnce",
+            "TestSinkRetry_BoundsNegativeBackoffIsTreatedAsZero",
+            "TestSinkRetry_BoundsNegativeDeadlineMakesOneAttempt",
+            "TestSinkRetry_BoundsNeverSleepsAfterTheFinalAttempt",
+            "TestSinkRetry_BoundsNonRetryableStopsUnderAnyPolicy",
+            "TestSinkRetry_BoundsSuccessOnTheFinalAttempt",
+            "TestSinkRetry_BoundsTotalSleepNeverExceedsTheDeadline",
+            "TestSinkRetry_BoundsZeroBackoffRetriesImmediately",
+            "TestSinkRetry_BoundsZeroDeadlineMakesOneAttempt",
+            "TestSinkRetry_CancellationStopsTheLadder",
+            "TestSinkRetry_ClassifyNetworkFailuresAreUnreachable",
+            "TestSinkRetry_ClassifyNilIsNotUnreachable",
+            "TestSinkRetry_ClassifyServerRejectionsAreNotUnreachable",
+            "TestSinkRetry_DeadlineStopsTheLadder",
+            "TestSinkRetry_DoesNotRetryAConfigError",
+            "TestSinkRetry_DoesNotRetryARejectedWrite",
+            "TestSinkRetry_ExhaustedAttemptsReportUnreachable",
+            "TestSinkRetry_HelpsOnlyForSinksThatCrossANetwork",
+            "TestSinkRetry_MetricsCountRequestsByStatusCode",
+            "TestSinkRetry_MetricsCountsEveryRetry",
+            "TestSinkRetry_MetricsExhaustedLadderCountsItsRetries",
+            "TestSinkRetry_MetricsMatchPythonInstruments",
+            "TestSinkRetry_MetricsNilProviderIsSafe",
+            "TestSinkRetry_MetricsNoProviderRecordsNothing",
+            "TestSinkRetry_MetricsNonRetryableCountsNoRetries",
+            "TestSinkRetry_MetricsRecordRequestDuration",
+            "TestSinkRetry_MetricsSuccessCountsNoRetries",
+            "TestSinkRetry_NewDefaultsToInfo",
+            "TestSinkRetry_NewHonorsEnvVar",
+            "TestSinkRetry_NewHonorsEnvVar/CRITICAL",
+            "TestSinkRetry_NewHonorsEnvVar/DEBUG",
+            "TestSinkRetry_NewHonorsEnvVar/WARNING",
+            "TestSinkRetry_NewHonorsEnvVar/_warn_",
+            "TestSinkRetry_NewHonorsEnvVar/debug",
+            "TestSinkRetry_NewHonorsEnvVar/error",
+            "TestSinkRetry_NewHonorsEnvVar/info",
+            "TestSinkRetry_NewLocalSinksAreNotWrapped",
+            "TestSinkRetry_NewMaxAttemptsOneDisablesRetrying",
+            "TestSinkRetry_NewReportsUnknownLevel",
+            "TestSinkRetry_NewUnsupportedSource",
+            "TestSinkRetry_NewWebhook",
+            "TestSinkRetry_NewWebhookRecordsRequestMetrics",
+            "TestSinkRetry_NewWebhookWithoutSignatureType",
+            "TestSinkRetry_NewWebsocket",
+            "TestSinkRetry_NewWebsocketRequiresURI",
+            "TestSinkRetry_PolicyFromDefaultsAreOn",
+            "TestSinkRetry_PolicyFromOverridesOnlyWhatIsSet",
+            "TestSinkRetry_ProbeAuthFailureIsAUserError",
+            "TestSinkRetry_ProbeDialsOnceAndDoesNotRetry",
+            "TestSinkRetry_ProbeReachableSinkStarts",
+            "TestSinkRetry_ProbeRespectsACancelledContext",
+            "TestSinkRetry_ProbeSinksWithNothingToDialAreSkipped",
+            "TestSinkRetry_ProbeUnreachableSinkFailsTheStart",
+            "TestSinkRetry_RetriesAnUncodedError",
+            "TestSinkRetry_RetriesAnUnreachableSink",
+            "TestSinkRetry_SinkErrorCodesByCause",
+            "TestSinkRetry_SinkErrorDrivesTheRetryDecision",
+            "TestSinkRetry_SuccessDoesNotSleep"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -1076,245 +429,60 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestHandlerInferredMem_BatchAfterEmptyBatch",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_ColumnsComeFromFirstRow",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_ConflictingListElementTypesError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_ConflictingTypesError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesEscapesInNestedValues",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes/backslash",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes/newline",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes/plain_ascii",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes/quote",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes/raw_utf8",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes/surrogate_pair",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes/tab",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_DecodesJSONStringEscapes/unicode_escape",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_EmptyBatchIsNoOp",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_EmptyListInEveryMessage",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_EmptyListTakesTypeFromLaterMessage",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_ExplicitNullInFirstRowIsNull",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_ExplicitNullListElementIsNull",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_ExplicitNullStringIsNull",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_ExplicitNullStructIsANullStruct",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_FieldMissingFromLaterRowIsNull",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_InfersListInsideStruct",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_InfersListOfStrings",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_InfersListOfStructs",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_InfersNestedLists",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_InfersNumericAndBoolTypes",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_InjectsKafkaMetadata",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_InsertIntoManagedTable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_InvalidJSONIsWriteError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_MissingListIsNull",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_NestedStructAggregation",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_NoMetadataColumnsWithoutSource",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_PromotesIntToFloat",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_PromotesListElementTypeAcrossBatch",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_SingleRecord",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_SuccessiveBatches",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_TopLevelColumnsStillComeFromFirstRow",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_UnionsDeeplyNestedStructFields",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_UnionsNestedStructFieldsAcrossMessages",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredMem_UnionsStructValuedFieldAddedLater",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestHandlerInferredMem_BatchAfterEmptyBatch",
+            "TestHandlerInferredMem_ColumnsComeFromFirstRow",
+            "TestHandlerInferredMem_ConflictingListElementTypesError",
+            "TestHandlerInferredMem_ConflictingTypesError",
+            "TestHandlerInferredMem_DecodesEscapesInNestedValues",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes/backslash",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes/newline",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes/plain_ascii",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes/quote",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes/raw_utf8",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes/surrogate_pair",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes/tab",
+            "TestHandlerInferredMem_DecodesJSONStringEscapes/unicode_escape",
+            "TestHandlerInferredMem_EmptyBatchIsNoOp",
+            "TestHandlerInferredMem_EmptyListInEveryMessage",
+            "TestHandlerInferredMem_EmptyListTakesTypeFromLaterMessage",
+            "TestHandlerInferredMem_ExplicitNullInFirstRowIsNull",
+            "TestHandlerInferredMem_ExplicitNullListElementIsNull",
+            "TestHandlerInferredMem_ExplicitNullStringIsNull",
+            "TestHandlerInferredMem_ExplicitNullStructIsANullStruct",
+            "TestHandlerInferredMem_FieldMissingFromLaterRowIsNull",
+            "TestHandlerInferredMem_InfersListInsideStruct",
+            "TestHandlerInferredMem_InfersListOfStrings",
+            "TestHandlerInferredMem_InfersListOfStructs",
+            "TestHandlerInferredMem_InfersNestedLists",
+            "TestHandlerInferredMem_InfersNumericAndBoolTypes",
+            "TestHandlerInferredMem_InjectsKafkaMetadata",
+            "TestHandlerInferredMem_InsertIntoManagedTable",
+            "TestHandlerInferredMem_InvalidJSONIsWriteError",
+            "TestHandlerInferredMem_MissingListIsNull",
+            "TestHandlerInferredMem_NestedStructAggregation",
+            "TestHandlerInferredMem_NoMetadataColumnsWithoutSource",
+            "TestHandlerInferredMem_PromotesIntToFloat",
+            "TestHandlerInferredMem_PromotesListElementTypeAcrossBatch",
+            "TestHandlerInferredMem_SingleRecord",
+            "TestHandlerInferredMem_SuccessiveBatches",
+            "TestHandlerInferredMem_TopLevelColumnsStillComeFromFirstRow",
+            "TestHandlerInferredMem_UnionsDeeplyNestedStructFields",
+            "TestHandlerInferredMem_UnionsNestedStructFieldsAcrossMessages",
+            "TestHandlerInferredMem_UnionsStructValuedFieldAddedLater"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_handler_inferred_mem_aggregates_every_message",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "test_handler_inferred_mem_enriches_every_row",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "test_handler_inferred_mem_invoke_renders_rows",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "test_handler_inferred_mem_joins_against_a_csv",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "test_handler_inferred_mem_preserves_arrays_and_unioned_fields",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_handler_inferred_mem_aggregates_every_message",
+            "test_handler_inferred_mem_enriches_every_row",
+            "test_handler_inferred_mem_invoke_renders_rows",
+            "test_handler_inferred_mem_joins_against_a_csv",
+            "test_handler_inferred_mem_preserves_arrays_and_unioned_fields"
           ]
         }
       }
@@ -1329,60 +497,22 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestHandlerInferredDisk_BatchTableDroppedAfterInvoke",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredDisk_CloseRemovesFiles",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredDisk_CreatesCacheDir",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredDisk_EmptyBatchIsNoOp",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredDisk_EmptyResult",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredDisk_NestedReturn",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredDisk_RejectsInvalidJSON",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredDisk_ResetsBetweenBatches",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerInferredDisk_SingleRowReturn",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestHandlerInferredDisk_BatchTableDroppedAfterInvoke",
+            "TestHandlerInferredDisk_CloseRemovesFiles",
+            "TestHandlerInferredDisk_CreatesCacheDir",
+            "TestHandlerInferredDisk_EmptyBatchIsNoOp",
+            "TestHandlerInferredDisk_EmptyResult",
+            "TestHandlerInferredDisk_NestedReturn",
+            "TestHandlerInferredDisk_RejectsInvalidJSON",
+            "TestHandlerInferredDisk_ResetsBetweenBatches",
+            "TestHandlerInferredDisk_SingleRowReturn"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -1397,55 +527,25 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestHandlerStructured_ExplicitNullStringIsNull",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerStructured_FilterSeesRowsIngestedAfterPrepare",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerStructured_LargeBatch",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerStructured_ListElementSeesRowsIngestedAfterPrepare",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerStructured_MultipleRecords",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerStructured_NestedStruct",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestHandlerStructured_SingleRecord",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestHandlerStructured_ExplicitNullStringIsNull",
+            "TestHandlerStructured_FilterSeesRowsIngestedAfterPrepare",
+            "TestHandlerStructured_LargeBatch",
+            "TestHandlerStructured_ListElementSeesRowsIngestedAfterPrepare",
+            "TestHandlerStructured_MultipleRecords",
+            "TestHandlerStructured_NestedStruct",
+            "TestHandlerStructured_SingleRecord"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_handler_inferred_mem_preserves_arrays_and_unioned_fields",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_handler_inferred_mem_preserves_arrays_and_unioned_fields"
+          ],
+          "by_marker": [
+            "test_handler_inferred_mem_preserves_arrays_and_unioned_fields"
           ]
         }
       }
@@ -1461,70 +561,25 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestStateDurability_DBSecondConnectionSeesOnlyCommittedState",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_OpenPathEmptyPathIsInMemory",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_OpenPathPersistsAcrossProcesses",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_OpenReturnsAConnection",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_Stats",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_Stats_DoesNotSeeUncommittedWrites",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_Stats_EmptyState",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_Stats_ExcludesTheBatchTable",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_Stats_IsDeterministicallyOrdered",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateDurability_Stats_TableNamesSurviveReaderRelease",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestStateDurability_DBSecondConnectionSeesOnlyCommittedState",
+            "TestStateDurability_OpenPathEmptyPathIsInMemory",
+            "TestStateDurability_OpenPathPersistsAcrossProcesses",
+            "TestStateDurability_OpenReturnsAConnection",
+            "TestStateDurability_Stats",
+            "TestStateDurability_Stats_DoesNotSeeUncommittedWrites",
+            "TestStateDurability_Stats_EmptyState",
+            "TestStateDurability_Stats_ExcludesTheBatchTable",
+            "TestStateDurability_Stats_IsDeterministicallyOrdered",
+            "TestStateDurability_Stats_TableNamesSurviveReaderRelease"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_state_durability_survives_a_restart",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_state_durability_survives_a_restart"
           ]
         }
       }
@@ -1540,125 +595,39 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestStateOffsets_InitAcceptsAFreshDatabase",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_InitAcceptsAPriorRunAndKeepsItsRows",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_InitIsIdempotent",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_InitLeavesADamagedTableUntouched",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_InitNamesWhatIsWrong",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_InitRejectsWrongColumns",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_InitRejectsWrongTypes",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_LoadEmptyIsEmptyNotZero",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_MarksAdvanceMovesForward",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_MarksAdvanceNeverGoesBackwards",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_MarksEachIteratesInSortedOrder",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_MarksEachOverEmptyIsANoop",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_MarksEmptyAndMissing",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_MarksTracksPartitionsIndependently",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_MarksZeroOffsetIsAPosition",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_RoundTrip",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_SaveIsAnUpsert",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_SeekerMarkOverridesTheGroupOffset",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_SeekerNeverAddsAnUnassignedPartition",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_SeekerNoMarksLeavesTheGroupOffsetsAlone",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateOffsets_SeekerUnmarkedPartitionKeepsTheGroupOffset",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestStateOffsets_InitAcceptsAFreshDatabase",
+            "TestStateOffsets_InitAcceptsAPriorRunAndKeepsItsRows",
+            "TestStateOffsets_InitIsIdempotent",
+            "TestStateOffsets_InitLeavesADamagedTableUntouched",
+            "TestStateOffsets_InitNamesWhatIsWrong",
+            "TestStateOffsets_InitRejectsWrongColumns",
+            "TestStateOffsets_InitRejectsWrongTypes",
+            "TestStateOffsets_LoadEmptyIsEmptyNotZero",
+            "TestStateOffsets_MarksAdvanceMovesForward",
+            "TestStateOffsets_MarksAdvanceNeverGoesBackwards",
+            "TestStateOffsets_MarksEachIteratesInSortedOrder",
+            "TestStateOffsets_MarksEachOverEmptyIsANoop",
+            "TestStateOffsets_MarksEmptyAndMissing",
+            "TestStateOffsets_MarksTracksPartitionsIndependently",
+            "TestStateOffsets_MarksZeroOffsetIsAPosition",
+            "TestStateOffsets_RoundTrip",
+            "TestStateOffsets_SaveIsAnUpsert",
+            "TestStateOffsets_SeekerMarkOverridesTheGroupOffset",
+            "TestStateOffsets_SeekerNeverAddsAnUnassignedPartition",
+            "TestStateOffsets_SeekerNoMarksLeavesTheGroupOffsetsAlone",
+            "TestStateOffsets_SeekerUnmarkedPartitionKeepsTheGroupOffset"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_state_durability_survives_a_restart",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_state_durability_survives_a_restart"
+          ],
+          "by_marker": [
+            "test_state_durability_survives_a_restart"
           ]
         }
       }
@@ -1674,45 +643,23 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestStateCorruption_CreatesAMissingFile",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateCorruption_LeavesADamagedFileOnDisk",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateCorruption_RejectsAFileThatIsNotADatabase",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateCorruption_RejectsAZeroByteFile",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestStateCorruption_ReportsADirectoryAsAConfigError",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestStateCorruption_CreatesAMissingFile",
+            "TestStateCorruption_LeavesADamagedFileOnDisk",
+            "TestStateCorruption_RejectsAFileThatIsNotADatabase",
+            "TestStateCorruption_RejectsAZeroByteFile",
+            "TestStateCorruption_ReportsADirectoryAsAConfigError"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_lifecycle_exit_codes_carry_the_error_code",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_lifecycle_exit_codes_carry_the_error_code"
+          ],
+          "by_marker": [
+            "test_lifecycle_exit_codes_carry_the_error_code"
           ]
         }
       }
@@ -1728,25 +675,16 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestLifecycleDrain_CancelDrainsTheBufferedBatch",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestLifecycleDrain_CancelDrainsTheBufferedBatch"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_lifecycle_drain_writes_the_buffered_batch_on_sigterm",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_lifecycle_drain_writes_the_buffered_batch_on_sigterm"
           ]
         }
       }
@@ -1762,55 +700,22 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestLifecycleExitCodes_CorruptStateFileExitsTerminal",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestLifecycleExitCodes_MalformedConfigIsTerminal",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestLifecycleExitCodes_MissingConfigIsTerminal",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestLifecycleExitCodes_NoFlagList",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestLifecycleExitCodes_SuccessExitsZero",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestLifecycleExitCodes_SurvivesCobra",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestLifecycleExitCodes_UsageErrorStillPrintsUsage",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestLifecycleExitCodes_CorruptStateFileExitsTerminal",
+            "TestLifecycleExitCodes_MalformedConfigIsTerminal",
+            "TestLifecycleExitCodes_MissingConfigIsTerminal",
+            "TestLifecycleExitCodes_NoFlagList",
+            "TestLifecycleExitCodes_SuccessExitsZero",
+            "TestLifecycleExitCodes_SurvivesCobra",
+            "TestLifecycleExitCodes_UsageErrorStillPrintsUsage"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_lifecycle_exit_codes_carry_the_error_code",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_lifecycle_exit_codes_carry_the_error_code"
           ]
         }
       }
@@ -1825,85 +730,27 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestCoreConsumeLoop_CommitsOnlyProcessedMarks",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_FlushesFinalBatchWhenMaxMsgsReached",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_FlushesPartialBatchOnFlushInterval",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_FlushesPartialBatchWhenStreamEnds",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_IdleTickCommitsTheStateTransaction",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_IdleTickIsANoopWithoutState",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_MarksTrackEachPartition",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_ProcessBatchCommitFailureDoesNotCommitSource",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_ProcessBatchFlushesSinkBeforeCommittingState",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_ProcessBatchNoStateStoreIsUnchanged",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_ProcessBatchRollsBackWhenOffsetSaveFails",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_ProcessBatchRollsBackWhenSinkFails",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_ProcessBatchSavesTheProcessedOffsets",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCoreConsumeLoop_WritesEveryMessageAcrossManyBatches",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestCoreConsumeLoop_CommitsOnlyProcessedMarks",
+            "TestCoreConsumeLoop_FlushesFinalBatchWhenMaxMsgsReached",
+            "TestCoreConsumeLoop_FlushesPartialBatchOnFlushInterval",
+            "TestCoreConsumeLoop_FlushesPartialBatchWhenStreamEnds",
+            "TestCoreConsumeLoop_IdleTickCommitsTheStateTransaction",
+            "TestCoreConsumeLoop_IdleTickIsANoopWithoutState",
+            "TestCoreConsumeLoop_MarksTrackEachPartition",
+            "TestCoreConsumeLoop_ProcessBatchCommitFailureDoesNotCommitSource",
+            "TestCoreConsumeLoop_ProcessBatchFlushesSinkBeforeCommittingState",
+            "TestCoreConsumeLoop_ProcessBatchNoStateStoreIsUnchanged",
+            "TestCoreConsumeLoop_ProcessBatchRollsBackWhenOffsetSaveFails",
+            "TestCoreConsumeLoop_ProcessBatchRollsBackWhenSinkFails",
+            "TestCoreConsumeLoop_ProcessBatchSavesTheProcessedOffsets",
+            "TestCoreConsumeLoop_WritesEveryMessageAcrossManyBatches"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -1917,95 +764,29 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestErrorTaxonomy_CodeSplitsIntoThreeParts",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_CodeStaysOnTheFirstLineOfAMultiLineCause",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_CodeSurvivesWrapping",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_ErrorPrefixesTheCode",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_EveryCodeIsWellFormed",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_EveryDomainHasACatchAll",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_ExitCodeMapsEveryCode",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_ExitCodeResolvesUnknown",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_ExitCodeUsesTheSpecificRemedy",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_LookupReportsUnknown",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_MalformedCodeHasNoClass",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_NoExitCodeUsesTwo",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_OutermostCodeWins",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_PositionSurvivesWrapping",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_RegistryIsAppendOnly",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorTaxonomy_UncodedIsInternal",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestErrorTaxonomy_CodeSplitsIntoThreeParts",
+            "TestErrorTaxonomy_CodeStaysOnTheFirstLineOfAMultiLineCause",
+            "TestErrorTaxonomy_CodeSurvivesWrapping",
+            "TestErrorTaxonomy_ErrorPrefixesTheCode",
+            "TestErrorTaxonomy_EveryCodeIsWellFormed",
+            "TestErrorTaxonomy_EveryDomainHasACatchAll",
+            "TestErrorTaxonomy_ExitCodeMapsEveryCode",
+            "TestErrorTaxonomy_ExitCodeResolvesUnknown",
+            "TestErrorTaxonomy_ExitCodeUsesTheSpecificRemedy",
+            "TestErrorTaxonomy_LookupReportsUnknown",
+            "TestErrorTaxonomy_MalformedCodeHasNoClass",
+            "TestErrorTaxonomy_NoExitCodeUsesTwo",
+            "TestErrorTaxonomy_OutermostCodeWins",
+            "TestErrorTaxonomy_PositionSurvivesWrapping",
+            "TestErrorTaxonomy_RegistryIsAppendOnly",
+            "TestErrorTaxonomy_UncodedIsInternal"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -2019,20 +800,14 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestErrorRaise_ConsumeLoopStopsOnWriteError",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestErrorRaise_ConsumeLoopStopsOnWriteError"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -2047,40 +822,19 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestErrorIgnore_BatchOfOnlyBadMessagesIsNotAHandlerError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorIgnore_ConsumeLoopContinuesAfterInvokeError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorIgnore_ConsumeLoopSkipsBadMessage",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorIgnore_CountsRejectedMessagesAsConsumed",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestErrorIgnore_BatchOfOnlyBadMessagesIsNotAHandlerError",
+            "TestErrorIgnore_ConsumeLoopContinuesAfterInvokeError",
+            "TestErrorIgnore_ConsumeLoopSkipsBadMessage",
+            "TestErrorIgnore_CountsRejectedMessagesAsConsumed"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_error_ignore_drops_bad_records_and_keeps_going",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_error_ignore_drops_bad_records_and_keeps_going"
           ]
         }
       }
@@ -2096,35 +850,18 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestErrorDlq_ConsumeLoopRoutesInvokeError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestErrorDlq_ConsumeLoopRoutesWriteError",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestErrorDlq_ConsumeLoopRoutesInvokeError",
+            "TestErrorDlq_ConsumeLoopRoutesWriteError"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_error_dlq_diverts_a_batch_the_handler_cannot_query",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "test_error_dlq_diverts_a_record_the_handler_cannot_parse",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_error_dlq_diverts_a_batch_the_handler_cannot_query",
+            "test_error_dlq_diverts_a_record_the_handler_cannot_parse"
           ]
         }
       }
@@ -2140,95 +877,33 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestManagerTumblingWindow__ClockAdvancesOnlyAcrossACommit",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__DeleteFailureIsReported",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__DeleteJoinsThePipelineTransaction",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__DeleteRollsBackWithTheBatch",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__FinalPollOnShutdownPublishesAClosedWindow",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__NoClosedWindowsIsANoop",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__OpenWindowsAreNeitherPublishedNorDeleted",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__PublishesAWindowThatClosesBetweenPolls",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__PublishesAndDeletesClosedWindows",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__RepeatedPollsDoNotRepublish",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__RetriesAfterAFailedPoll",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__SinkFlushFailureLeavesTheWindow",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__SinkWriteFailureLeavesTheWindow",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__StartPollsUntilContextCancelled",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestManagerTumblingWindow__StartSurvivesAFailedPoll",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestManagerTumblingWindow__ClockAdvancesOnlyAcrossACommit",
+            "TestManagerTumblingWindow__DeleteFailureIsReported",
+            "TestManagerTumblingWindow__DeleteJoinsThePipelineTransaction",
+            "TestManagerTumblingWindow__DeleteRollsBackWithTheBatch",
+            "TestManagerTumblingWindow__FinalPollOnShutdownPublishesAClosedWindow",
+            "TestManagerTumblingWindow__NoClosedWindowsIsANoop",
+            "TestManagerTumblingWindow__OpenWindowsAreNeitherPublishedNorDeleted",
+            "TestManagerTumblingWindow__PublishesAWindowThatClosesBetweenPolls",
+            "TestManagerTumblingWindow__PublishesAndDeletesClosedWindows",
+            "TestManagerTumblingWindow__RepeatedPollsDoNotRepublish",
+            "TestManagerTumblingWindow__RetriesAfterAFailedPoll",
+            "TestManagerTumblingWindow__SinkFlushFailureLeavesTheWindow",
+            "TestManagerTumblingWindow__SinkWriteFailureLeavesTheWindow",
+            "TestManagerTumblingWindow__StartPollsUntilContextCancelled",
+            "TestManagerTumblingWindow__StartSurvivesAFailedPoll"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_state_durability_survives_a_restart",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_state_durability_survives_a_restart"
+          ],
+          "by_marker": [
+            "test_state_durability_survives_a_restart"
           ]
         }
       }
@@ -2243,240 +918,62 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/attach-geoip.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/basic.agg.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/basic.agg.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/benchmark.inferred.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/benchmark.stateful.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/benchmark.structured.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/bluesky.kafka.raw.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/bluesky.kafka.transformed.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/bluesky.kafka.windowed.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/bluesky.postgres.windowed.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/bluesky.raw.stdout.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/csv.filesystem.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/csv.mem.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/enrich.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/github.motherduck.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.clickhouse.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.dlq.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.ducklake.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.mem.iceberg.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.motherduck.idempotent.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.motherduck.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.postgres.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.postgres.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.sasl-tls.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.stateful.window.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.structured.disk.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/kafka.structured.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/local.parquet.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/s3.parquet.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/tumbling.window.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_AllExampleConfigs/udf.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_RejectsUnknownKeys",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_StateAbsentIsNil",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_StatePath",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Load_WebhookSourceKeys",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Render_JinjaDefaultFilter",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Render_JinjaDefaultFilter/default_applies_when_var_is_absent",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Render_JinjaDefaultFilter/double-quoted_default",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Render_JinjaDefaultFilter/numeric_default",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Render_JinjaDefaultFilter/override_wins_over_default",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Render_JinjaDefaultFilter/plain_substitution",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Render_ProvidesSettingsVars",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigTemplating_Render_SettingsVarsHonorEnvOverrides",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestConfigTemplating_Load_AllExampleConfigs",
+            "TestConfigTemplating_Load_AllExampleConfigs/attach-geoip.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/basic.agg.mem.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/basic.agg.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/benchmark.inferred.mem.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/benchmark.stateful.mem.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/benchmark.structured.mem.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/bluesky.kafka.raw.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/bluesky.kafka.transformed.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/bluesky.kafka.windowed.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/bluesky.postgres.windowed.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/bluesky.raw.stdout.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/csv.filesystem.join.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/csv.mem.join.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/enrich.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/github.motherduck.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.clickhouse.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.dlq.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.ducklake.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.mem.iceberg.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.motherduck.idempotent.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.motherduck.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.postgres.join.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.postgres.sink.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.sasl-tls.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.stateful.window.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.structured.disk.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/kafka.structured.mem.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/local.parquet.sink.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/s3.parquet.sink.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/tumbling.window.yml",
+            "TestConfigTemplating_Load_AllExampleConfigs/udf.yml",
+            "TestConfigTemplating_Load_RejectsUnknownKeys",
+            "TestConfigTemplating_Load_StateAbsentIsNil",
+            "TestConfigTemplating_Load_StatePath",
+            "TestConfigTemplating_Load_WebhookSourceKeys",
+            "TestConfigTemplating_Render_JinjaDefaultFilter",
+            "TestConfigTemplating_Render_JinjaDefaultFilter/default_applies_when_var_is_absent",
+            "TestConfigTemplating_Render_JinjaDefaultFilter/double-quoted_default",
+            "TestConfigTemplating_Render_JinjaDefaultFilter/numeric_default",
+            "TestConfigTemplating_Render_JinjaDefaultFilter/override_wins_over_default",
+            "TestConfigTemplating_Render_JinjaDefaultFilter/plain_substitution",
+            "TestConfigTemplating_Render_ProvidesSettingsVars",
+            "TestConfigTemplating_Render_SettingsVarsHonorEnvOverrides"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_config_validation_accepts_a_shipped_example",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_config_validation_accepts_a_shipped_example"
+          ],
+          "by_marker": [
+            "test_config_validation_accepts_a_shipped_example"
           ]
         }
       }
@@ -2492,380 +989,95 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestConfigValidation_AcceptsStatePath",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/attach-geoip.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/basic.agg.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/basic.agg.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/benchmark.inferred.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/benchmark.stateful.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/benchmark.structured.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.kafka.raw.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.kafka.transformed.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.kafka.windowed.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.postgres.windowed.yml",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.raw.stdout.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/csv.filesystem.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/csv.mem.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/enrich.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/github.motherduck.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.clickhouse.yml",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.dlq.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.ducklake.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.mem.iceberg.yml",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.motherduck.idempotent.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.motherduck.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.postgres.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.postgres.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.sasl-tls.yml",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.stateful.window.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.structured.disk.yml",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.structured.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/local.parquet.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/s3.parquet.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/tumbling.window.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleConfigsBuildRealComponents/udf.yml",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExampleMatchesPythonOutput",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/attach-geoip.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/basic.agg.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/basic.agg.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/benchmark.inferred.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/benchmark.stateful.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/benchmark.structured.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/bluesky.kafka.raw.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/bluesky.kafka.transformed.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/bluesky.kafka.windowed.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/bluesky.postgres.windowed.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/bluesky.raw.stdout.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/csv.filesystem.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/csv.mem.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/enrich.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/github.motherduck.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.clickhouse.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.dlq.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.ducklake.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.mem.iceberg.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.motherduck.idempotent.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.motherduck.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.postgres.join.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.postgres.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.sasl-tls.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.stateful.window.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.structured.disk.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/kafka.structured.mem.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/local.parquet.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/s3.parquet.sink.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/tumbling.window.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_Examples/udf.yml",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ExternalAccessIsDenied",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_RejectsBadEnum",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_RejectsMissingPipeline",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_RejectsMissingRequiredHandlerSQL",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_RendersTemplateBeforeValidating",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestConfigValidation_ReportsMissingFile",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestConfigValidation_AcceptsStatePath",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/attach-geoip.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/basic.agg.mem.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/basic.agg.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/benchmark.inferred.mem.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/benchmark.stateful.mem.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/benchmark.structured.mem.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.kafka.raw.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.kafka.transformed.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.kafka.windowed.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.postgres.windowed.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.raw.stdout.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/csv.filesystem.join.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/csv.mem.join.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/enrich.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/github.motherduck.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.clickhouse.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.dlq.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.ducklake.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.mem.iceberg.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.motherduck.idempotent.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.motherduck.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.postgres.join.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.postgres.sink.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.sasl-tls.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.stateful.window.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.structured.disk.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.structured.mem.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/local.parquet.sink.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/s3.parquet.sink.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/tumbling.window.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/udf.yml",
+            "TestConfigValidation_ExampleMatchesPythonOutput",
+            "TestConfigValidation_Examples",
+            "TestConfigValidation_Examples/attach-geoip.yml",
+            "TestConfigValidation_Examples/basic.agg.mem.yml",
+            "TestConfigValidation_Examples/basic.agg.yml",
+            "TestConfigValidation_Examples/benchmark.inferred.mem.yml",
+            "TestConfigValidation_Examples/benchmark.stateful.mem.yml",
+            "TestConfigValidation_Examples/benchmark.structured.mem.yml",
+            "TestConfigValidation_Examples/bluesky.kafka.raw.yml",
+            "TestConfigValidation_Examples/bluesky.kafka.transformed.yml",
+            "TestConfigValidation_Examples/bluesky.kafka.windowed.yml",
+            "TestConfigValidation_Examples/bluesky.postgres.windowed.yml",
+            "TestConfigValidation_Examples/bluesky.raw.stdout.yml",
+            "TestConfigValidation_Examples/csv.filesystem.join.yml",
+            "TestConfigValidation_Examples/csv.mem.join.yml",
+            "TestConfigValidation_Examples/enrich.yml",
+            "TestConfigValidation_Examples/github.motherduck.yml",
+            "TestConfigValidation_Examples/kafka.clickhouse.yml",
+            "TestConfigValidation_Examples/kafka.dlq.yml",
+            "TestConfigValidation_Examples/kafka.ducklake.yml",
+            "TestConfigValidation_Examples/kafka.mem.iceberg.yml",
+            "TestConfigValidation_Examples/kafka.motherduck.idempotent.yml",
+            "TestConfigValidation_Examples/kafka.motherduck.yml",
+            "TestConfigValidation_Examples/kafka.postgres.join.yml",
+            "TestConfigValidation_Examples/kafka.postgres.sink.yml",
+            "TestConfigValidation_Examples/kafka.sasl-tls.yml",
+            "TestConfigValidation_Examples/kafka.stateful.window.yml",
+            "TestConfigValidation_Examples/kafka.structured.disk.yml",
+            "TestConfigValidation_Examples/kafka.structured.mem.yml",
+            "TestConfigValidation_Examples/local.parquet.sink.yml",
+            "TestConfigValidation_Examples/s3.parquet.sink.yml",
+            "TestConfigValidation_Examples/tumbling.window.yml",
+            "TestConfigValidation_Examples/udf.yml",
+            "TestConfigValidation_ExternalAccessIsDenied",
+            "TestConfigValidation_RejectsBadEnum",
+            "TestConfigValidation_RejectsMissingPipeline",
+            "TestConfigValidation_RejectsMissingRequiredHandlerSQL",
+            "TestConfigValidation_RendersTemplateBeforeValidating",
+            "TestConfigValidation_ReportsMissingFile"
+          ],
+          "skipped": [
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.postgres.windowed.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.clickhouse.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.mem.iceberg.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.sasl-tls.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.structured.disk.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/udf.yml"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_config_validation_accepts_a_shipped_example",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_config_validation_accepts_a_shipped_example"
           ]
         }
       }
@@ -2880,50 +1092,20 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestObservabilityMetrics_StateGaugesNoProviderRecordsNothing",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityMetrics_StateGaugesReportsSizeAndRows",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityMetrics_StateGaugesSurvivesCollectionFailure",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityMetrics_StatsHandler_AbsentWithoutAProvider",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityMetrics_StatsHandler_ReportsState",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestObservabilityMetrics_StateGaugesNoProviderRecordsNothing",
+            "TestObservabilityMetrics_StateGaugesReportsSizeAndRows",
+            "TestObservabilityMetrics_StateGaugesSurvivesCollectionFailure",
+            "TestObservabilityMetrics_StatsHandler_AbsentWithoutAProvider",
+            "TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase",
+            "TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure",
+            "TestObservabilityMetrics_StatsHandler_ReportsState"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -2937,50 +1119,20 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestObservabilityDebugApi_HandlerRejectsMissingQuery",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityDebugApi_HandlerReportsQueryErrors",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityDebugApi_HandlerReturnsEmptyArrayForNoRows",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityDebugApi_HandlerReturnsRowsAsJSON",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityDebugApi_HandlerWaitsForThePipelineLock",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityDebugApi_ServerServesOnPythonPort",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestObservabilityDebugApi_ServerServesTheDebugRoute",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestObservabilityDebugApi_HandlerRejectsMissingQuery",
+            "TestObservabilityDebugApi_HandlerReportsQueryErrors",
+            "TestObservabilityDebugApi_HandlerReturnsEmptyArrayForNoRows",
+            "TestObservabilityDebugApi_HandlerReturnsRowsAsJSON",
+            "TestObservabilityDebugApi_HandlerWaitsForThePipelineLock",
+            "TestObservabilityDebugApi_ServerServesOnPythonPort",
+            "TestObservabilityDebugApi_ServerServesTheDebugRoute"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -2994,80 +1146,26 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestCliInvocation_NewCommandConfigFlagIsNotRequired",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_NewCommandHasPythonMaxMsgsFlag",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_NewCommandRejectsTwoPositionalArgs",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveConfigPathBothFormsAgreeing",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveConfigPathConflictingFormsError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveConfigPathGoFlagForm",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveConfigPathMissingConfigErrors",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveConfigPathPythonPositionalForm",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveMaxMsgsBothFormsAgreeing",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveMaxMsgsConflictingFormsError",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveMaxMsgsGoFlag",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveMaxMsgsPythonFlag",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliInvocation_ResolveMaxMsgsUnsetIsUnlimited",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestCliInvocation_NewCommandConfigFlagIsNotRequired",
+            "TestCliInvocation_NewCommandHasPythonMaxMsgsFlag",
+            "TestCliInvocation_NewCommandRejectsTwoPositionalArgs",
+            "TestCliInvocation_ResolveConfigPathBothFormsAgreeing",
+            "TestCliInvocation_ResolveConfigPathConflictingFormsError",
+            "TestCliInvocation_ResolveConfigPathGoFlagForm",
+            "TestCliInvocation_ResolveConfigPathMissingConfigErrors",
+            "TestCliInvocation_ResolveConfigPathPythonPositionalForm",
+            "TestCliInvocation_ResolveMaxMsgsBothFormsAgreeing",
+            "TestCliInvocation_ResolveMaxMsgsConflictingFormsError",
+            "TestCliInvocation_ResolveMaxMsgsGoFlag",
+            "TestCliInvocation_ResolveMaxMsgsPythonFlag",
+            "TestCliInvocation_ResolveMaxMsgsUnsetIsUnlimited"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         }
       }
     },
@@ -3082,60 +1180,26 @@
         "unit": {
           "status": "covered",
           "tests": [
-            {
-              "name": "TestCliDevInvoke_BlueskyFirehose",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliDevInvoke_EmptyFixture",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliDevInvoke_FixtureOfOnlyBlankLines",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliDevInvoke_InferredMemBatch",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliDevInvoke_LargeFixture",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliDevInvoke_ReportsMissingFixture",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliDevInvoke_SkipsBlankLines",
-              "outcome": "pass",
-              "attribution": "name"
-            },
-            {
-              "name": "TestCliDevInvoke_StructuredBatch",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "TestCliDevInvoke_BlueskyFirehose",
+            "TestCliDevInvoke_EmptyFixture",
+            "TestCliDevInvoke_FixtureOfOnlyBlankLines",
+            "TestCliDevInvoke_InferredMemBatch",
+            "TestCliDevInvoke_LargeFixture",
+            "TestCliDevInvoke_ReportsMissingFixture",
+            "TestCliDevInvoke_SkipsBlankLines",
+            "TestCliDevInvoke_StructuredBatch"
           ]
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_handler_inferred_mem_invoke_renders_rows",
-              "outcome": "pass",
-              "attribution": "marker"
-            }
+            "test_handler_inferred_mem_invoke_renders_rows"
+          ],
+          "by_marker": [
+            "test_handler_inferred_mem_invoke_renders_rows"
           ]
         }
       }
@@ -3148,21 +1212,15 @@
       ],
       "levels": {
         "unit": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "integration": {
-          "status": "not_required",
-          "tests": []
+          "status": "not_required"
         },
         "release": {
           "status": "covered",
           "tests": [
-            {
-              "name": "test_cli_version_is_stamped_into_the_image",
-              "outcome": "pass",
-              "attribution": "name"
-            }
+            "test_cli_version_is_stamped_into_the_image"
           ]
         }
       }
