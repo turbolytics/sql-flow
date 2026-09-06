@@ -39,7 +39,7 @@ func mismatchedTable(t *testing.T) arrow.Table {
 	return array.NewTableFromRecords(schema, []arrow.Record{rec})
 }
 
-func TestClickhouseSink_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
+func TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (id UInt64) ENGINE = MergeTree() ORDER BY id`)
 
 	ctx := context.Background()
@@ -59,7 +59,7 @@ func TestClickhouseSink_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
 	assert.Equal(t, 1, len(s.tables))
 }
 
-func TestClickhouseSink_SuccessfulFlushClearsTheBuffer(t *testing.T) {
+func TestSinkClickhouse_SuccessfulFlushClearsTheBuffer(t *testing.T) {
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		timestamp DateTime,
 		user_id   Int64,
@@ -80,7 +80,7 @@ func TestClickhouseSink_SuccessfulFlushClearsTheBuffer(t *testing.T) {
 
 // The ladder's half of the contract: given a sink that keeps what it could not
 // deliver, a retried flush delivers it rather than reporting a hollow success.
-func TestRetry_RetriedFlushDeliversTheBatch(t *testing.T) {
+func TestSinkRetry_RetriedFlushDeliversTheBatch(t *testing.T) {
 	sink := &flakySink{failures: 1, err: errors.New("connection reset by peer")}
 	r := newRetrying(sink, testPolicy())
 
@@ -93,7 +93,7 @@ func TestRetry_RetriedFlushDeliversTheBatch(t *testing.T) {
 }
 
 // A flush that gives up must not claim the rows were delivered.
-func TestRetry_ExhaustedLadderReportsTheFailure(t *testing.T) {
+func TestSinkRetry_ExhaustedLadderReportsTheFailure(t *testing.T) {
 	sink := &flakySink{failures: 99, err: errors.New("connection reset by peer")}
 	r := newRetrying(sink, testPolicy())
 
