@@ -13,8 +13,17 @@
 # `requires` lists the levels the feature must be covered at. A missing level
 # fails `make coverage-matrix`.
 #
-#   unit     go test ./...          the logic is right
-#   release  pytest tests/release   the shipped image does it
+#   unit         go test -short ./...              the logic is right
+#   integration  go test -run '^TestIntegration'   it works against the real
+#                                                  service, not a stand-in
+#   release      pytest tests/release              the shipped image does it
+#
+# An integration test is named TestIntegration<Feature>_<Behaviour>. The prefix
+# selects the pass; the rest of the name still says which feature it covers, so
+# level and feature stay independent. These tests fail without their service.
+# They must never skip: for months the Kafka source's only real tests skipped
+# wherever no broker answered, and `source.kafka` showed covered at unit on the
+# strength of its TLS option builders.
 #
 # Tests attach to a feature by name. `sink.clickhouse` is covered by any Go
 # test named TestSinkClickhouse* or any Python test named test_sink_clickhouse*.
@@ -25,7 +34,7 @@ features:
   # --- Sources ------------------------------------------------------------
   - id: source.kafka
     description: Consumes a Kafka topic, tracking offsets and leader epochs.
-    requires: [unit, release]
+    requires: [unit, integration, release]
 
   - id: source.webhook
     description: Accepts records over HTTP, with optional HMAC signature checks.

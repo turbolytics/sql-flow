@@ -86,8 +86,8 @@ func TestStateOffsets_SeekerUnmarkedPartitionKeepsTheGroupOffset(t *testing.T) {
 // UNKNOWN_MEMBER_ID, 3 times out of 3, and the pipeline crash-looped.
 //
 // SeekTo must therefore reach Kafka not at all.
-func TestSourceKafka_SeekToIssuesNoCommit(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_SeekToIssuesNoCommit(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-nocommit-%d", time.Now().UnixNano())
 	client := newTestClient(t, broker, topic, topic)
 	defer client.Close()
@@ -108,8 +108,8 @@ func TestSourceKafka_SeekToIssuesNoCommit(t *testing.T) {
 
 // End to end: the state database disagrees with the consumer group, and the
 // state database wins.
-func TestSourceKafka_SeekToResumesFromDurableOffsets(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-resume-%d", time.Now().UnixNano())
 
 	producer := newTestClient(t, broker, topic, topic+"-producer")

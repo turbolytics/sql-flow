@@ -5,6 +5,7 @@
       "id": "source.kafka",
       "description": "Consumes a Kafka topic, tracking offsets and leader epochs.",
       "requires": [
+        "integration",
         "release",
         "unit"
       ],
@@ -13,12 +14,32 @@
           "status": "covered",
           "tests": [
             {
-              "name": "TestSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
+              "name": "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
               "outcome": "skip",
               "attribution": "name"
             },
             {
-              "name": "TestSourceKafka_MessagesCarryHighWatermark",
+              "name": "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
+              "outcome": "skip",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
+              "outcome": "skip",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
+              "outcome": "skip",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
+              "outcome": "skip",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets",
               "outcome": "skip",
               "attribution": "name"
             },
@@ -78,26 +99,6 @@
               "attribution": "name"
             },
             {
-              "name": "TestSourceKafka_SeekToEmptyIsANoop",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SeekToIssuesNoCommit",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SeekToResumesFromDurableOffsets",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
-              "name": "TestSourceKafka_SeekToResumesFromStoredOffsets",
-              "outcome": "skip",
-              "attribution": "name"
-            },
-            {
               "name": "TestSourceKafka_TLSConfigDisablesHostnameVerification",
               "outcome": "pass",
               "attribution": "name"
@@ -109,6 +110,41 @@
             },
             {
               "name": "TestSourceKafka_TLSConfigRequiresBothCertAndKey",
+              "outcome": "pass",
+              "attribution": "name"
+            }
+          ]
+        },
+        "integration": {
+          "status": "covered",
+          "tests": [
+            {
+              "name": "TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_MessagesCarryHighWatermark",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToEmptyIsANoop",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToIssuesNoCommit",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets",
+              "outcome": "pass",
+              "attribution": "name"
+            },
+            {
+              "name": "TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets",
               "outcome": "pass",
               "attribution": "name"
             }
@@ -218,6 +254,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -261,6 +301,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -316,6 +360,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -407,6 +455,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -492,6 +544,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -512,6 +568,10 @@
       ],
       "levels": {
         "unit": {
+          "status": "not_required",
+          "tests": []
+        },
+        "integration": {
           "status": "not_required",
           "tests": []
         },
@@ -589,6 +649,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -617,6 +681,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -987,6 +1055,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -1211,6 +1283,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -1300,6 +1376,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -1353,6 +1433,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1428,6 +1512,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1559,6 +1647,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -1609,6 +1701,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -1638,6 +1734,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1698,6 +1798,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -1792,6 +1896,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "not_required",
@@ -1891,6 +1999,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -1913,6 +2025,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "not_required",
@@ -1953,6 +2069,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -1987,6 +2107,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -2092,6 +2216,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -2336,6 +2464,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "covered",
@@ -2722,6 +2854,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -2781,6 +2917,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -2833,6 +2973,10 @@
               "attribution": "name"
             }
           ]
+        },
+        "integration": {
+          "status": "not_required",
+          "tests": []
         },
         "release": {
           "status": "not_required",
@@ -2917,6 +3061,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "not_required",
           "tests": []
@@ -2976,6 +3124,10 @@
             }
           ]
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -2999,6 +3151,10 @@
           "status": "not_required",
           "tests": []
         },
+        "integration": {
+          "status": "not_required",
+          "tests": []
+        },
         "release": {
           "status": "covered",
           "tests": [
@@ -3015,6 +3171,7 @@
   "gaps": [],
   "unattributed": {
     "unit": [],
+    "integration": [],
     "release": []
   },
   "unknown_markers": []

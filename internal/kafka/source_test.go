@@ -13,19 +13,20 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// brokerOrSkip returns the dev-stack broker, skipping the test when none is
-// reachable rather than failing a local `go test`. Kafka-backed tests are
-// deliberately not part of CI's unit run.
+// brokerOrFail returns the dev-stack broker, failing the test when none
+// answers.
 //
-// -short skips before dialing, and the coverage matrix is generated that way.
-// Reachability is a property of the machine, so without -short the matrix
-// records these tests as passing for whoever has the dev stack up and skipping
-// for CI. The staleness gate then fails on which laptop regenerated the file,
-// which tells a reader nothing about coverage.
-func brokerOrSkip(t *testing.T) string {
+// -short is the only way out, and it is what the unit pass runs. Everywhere
+// else a missing broker is a failure, not a skip: these tests are the only
+// thing that exercises commit semantics, offset resume and the high watermark,
+// and for months they skipped wherever no dev stack happened to be up. That
+// reads as "ok" in the log and as coverage in the matrix, which is exactly how
+// the Iceberg sink shipped untested. An integration test that excuses itself
+// when its service is absent is not an integration test.
+func brokerOrFail(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("kafka-backed test: -short skips before dialing a broker")
+		t.Skip("integration test: -short runs the unit pass only")
 	}
 	broker := os.Getenv("SQLFLOW_KAFKA_BROKERS")
 	if broker == "" {
@@ -33,7 +34,9 @@ func brokerOrSkip(t *testing.T) string {
 	}
 	conn, err := net.DialTimeout("tcp", broker, time.Second)
 	if err != nil {
-		t.Skipf("kafka unavailable at %s: %v", broker, err)
+		t.Fatalf("kafka unreachable at %s: %v\n"+
+			"start it with `make start-backing-services`, "+
+			"or point SQLFLOW_KAFKA_BROKERS at a broker", broker, err)
 	}
 	conn.Close()
 	return broker
@@ -71,8 +74,8 @@ func produce(t *testing.T, client *kgo.Client, topic string, n int) {
 // fetched to -- the latter is how 20,000 processed messages came to commit
 // offset 70,086 and how a batch that never reached ClickHouse had already been
 // committed.
-func TestSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-commit-marks-%d", time.Now().UnixNano())
 	client := newTestClient(t, broker, topic, topic)
 	defer client.Close()
@@ -116,8 +119,8 @@ func TestSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
 // Lag is only meaningful against the broker's high watermark, which arrives
 // on the fetch itself. Without it, an operator cannot tell a healthy pipeline
 // from one falling behind.
-func TestSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-hwm-%d", time.Now().UnixNano())
 
 	// A plain producer, not the group-consumer client newTestClient builds:
@@ -151,8 +154,8 @@ func TestSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
 // A restart must resume from the offsets recorded in the state database, not
 // from wherever the consumer group happens to sit. The state file is the
 // source of truth; Kafka's committed offsets are advisory.
-func TestSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-%d", time.Now().UnixNano())
 
 	// Produced with a plain client, before the group consumer exists: a
@@ -193,8 +196,8 @@ func TestSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
 // No stored offsets means no seek, so auto_offset_reset still governs the
 // first run against a fresh state file. Seeking to zero here would be wrong:
 // "nothing recorded" and "recorded position zero" are different facts.
-func TestSourceKafka_SeekToEmptyIsANoop(t *testing.T) {
-	broker := brokerOrSkip(t)
+func TestIntegrationSourceKafka_SeekToEmptyIsANoop(t *testing.T) {
+	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-empty-%d", time.Now().UnixNano())
 
 	producer, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.AllowAutoTopicCreation())

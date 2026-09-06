@@ -103,6 +103,21 @@ jobs:
           if [ -f requirements.dev.txt ]; then pip install -r requirements.dev.txt; fi
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      # The integration pass fails without a broker, deliberately: a test that
+      # excuses itself when its service is absent reports "ok" and covers
+      # nothing. Only zoo1 and kafka1 -- the rest of the dev stack is postgres,
+      # minio and clickhouse, which nothing in this pass touches.
+      - name: Start Kafka
+        run: |
+          docker compose -f dev/kafka-single.yml up -d zoo1 kafka1
+          for _ in $(seq 1 60); do
+            if nc -z localhost 9092; then echo "broker up"; exit 0; fi
+            sleep 2
+          done
+          echo "kafka never came up" >&2
+          docker compose -f dev/kafka-single.yml logs kafka1 >&2
+          exit 1
+
       - name: Check the coverage matrix
         run: make coverage-matrix-check
 

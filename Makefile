@@ -45,21 +45,26 @@ test-image: sqlflow-image
 # that dependency every release test errors in collection, and the `-` below
 # swallows it: the matrix regenerates with every release row marked failing.
 #
-# The Go run is -short, so the matrix is a function of the repo rather than of
-# the machine that generated it. The Kafka-backed tests skip when no dev-stack
-# broker answers; without -short the file records them as passing for whoever
-# has the stack up and skipping for CI, and the staleness gate below then fails
-# over which laptop ran last.
+# Three passes, one per level. -short is the unit pass and runs anywhere; the
+# integration pass runs the tests that need a real broker and fails without
+# one. Splitting them is what makes the matrix a function of the repo rather
+# than of the machine: before the split the Kafka tests passed for whoever had
+# the dev stack up and skipped everywhere else, so the file recorded whichever
+# laptop regenerated it last.
 .PHONY: coverage-matrix
 coverage-matrix: sqlflow-image
 	@mkdir -p .coverage
 	-CGO_ENABLED=1 go test -short -json ./... > .coverage/go.json 2>&1
+	-CGO_ENABLED=1 go test -json -run '^TestIntegration' ./... \
+		> .coverage/go-integration.json 2>&1
 	-SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
 		SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 		TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
 		pytest tests/release -q
 	python3 scripts/coverage_matrix.py \
-		--go .coverage/go.json --pytest .coverage/pytest.json --write
+		--go .coverage/go.json \
+		--go-integration .coverage/go-integration.json \
+		--pytest .coverage/pytest.json --write
 
 # The merge gate, in two parts. Wired into CI as the Coverage job.
 #
@@ -80,7 +85,9 @@ coverage-matrix: sqlflow-image
 .PHONY: coverage-matrix-check
 coverage-matrix-check: coverage-matrix
 	python3 scripts/coverage_matrix.py \
-		--go .coverage/go.json --pytest .coverage/pytest.json --check
+		--go .coverage/go.json \
+		--go-integration .coverage/go-integration.json \
+		--pytest .coverage/pytest.json --check
 	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md || { \
 		echo ""; \
 		echo "The coverage matrix is out of date."; \
