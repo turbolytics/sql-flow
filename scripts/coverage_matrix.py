@@ -36,6 +36,8 @@ import yaml
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REGISTRY = os.path.join(REPO, "docs", "coverage", "features.yml")
+INVARIANTS = os.path.join(REPO, "docs", "coverage", "invariants.yml")
+INTEGRATIONS = os.path.join(REPO, "docs", "coverage", "integrations.yml")
 # The JSON is the artifact CI diffs; the markdown is a view rendered from it.
 MATRIX_JSON = os.path.join(REPO, "docs", "coverage", "matrix.json")
 MATRIX_MD = os.path.join(REPO, "docs", "coverage", "matrix.md")
@@ -50,10 +52,97 @@ LEVELS = ("unit", "integration", "release")
 # the only selector that needs no build tag and no second package.
 INTEGRATION_PREFIX = "TestIntegration"
 
+# The closed vocabularies invariants.yml may use. A value outside one of them
+# is a typo, and a typo must not reach the matrix as a missing cell.
+FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors")
+KINDS = ("sink", "source", "handler", "pipeline")
+VERIFIERS = ("harness", "typetable", "named")
+
+# pipeline invariants attach to core, not to a constructor case, so no entry
+# in integrations.yml carries that kind.
+INTEGRATION_KINDS = ("sink", "source", "handler")
+
 
 def load_features():
     with open(REGISTRY) as fh:
         return yaml.safe_load(fh)["features"]
+
+
+def load_invariants():
+    with open(INVARIANTS) as fh:
+        return yaml.safe_load(fh)["invariants"]
+
+
+def load_integrations():
+    with open(INTEGRATIONS) as fh:
+        return yaml.safe_load(fh)["integrations"]
+
+
+def validate_registries(invariants, integrations, features):
+    """Every problem a human can fix, one line each. Empty when consistent.
+
+    Checked before any test result is read. A registry typo would otherwise
+    reach the matrix as a missing cell, and "missing" is the signal the matrix
+    exists to carry: it must not be spendable on typos.
+    """
+    problems = []
+
+    by_id = {}
+    for inv in invariants:
+        fid = inv.get("id")
+        if fid in by_id:
+            problems.append(f"invariants.yml: duplicate id {fid}")
+        by_id[fid] = inv
+
+        for key in ("family", "applies_to", "claim", "verified_by", "requires"):
+            if key not in inv:
+                problems.append(f"invariants.yml: {fid} has no {key}")
+        if inv.get("family") not in FAMILIES:
+            problems.append(
+                f"invariants.yml: {fid} family {inv.get('family')!r} is not one of {FAMILIES}")
+        if inv.get("applies_to") not in KINDS:
+            problems.append(
+                f"invariants.yml: {fid} applies_to {inv.get('applies_to')!r} is not one of {KINDS}")
+        if inv.get("verified_by") not in VERIFIERS:
+            problems.append(
+                f"invariants.yml: {fid} verified_by {inv.get('verified_by')!r} is not one of {VERIFIERS}")
+        for lvl in inv.get("requires", []):
+            if lvl not in LEVELS:
+                problems.append(
+                    f"invariants.yml: {fid} requires {lvl!r}, which is not a level")
+
+    feature_ids = {f["id"] for f in features}
+    seen = set()
+    for integ in integrations:
+        iid = integ.get("id")
+        if iid in seen:
+            problems.append(f"integrations.yml: duplicate id {iid}")
+        seen.add(iid)
+
+        if integ.get("kind") not in INTEGRATION_KINDS:
+            problems.append(
+                f"integrations.yml: {iid} kind {integ.get('kind')!r} is not one of {INTEGRATION_KINDS}")
+        if integ.get("feature") not in feature_ids:
+            problems.append(
+                f"integrations.yml: {iid} names feature {integ.get('feature')!r}, "
+                "which features.yml does not declare")
+
+        for ex in integ.get("exempt", []):
+            inv = by_id.get(ex.get("invariant"))
+            if inv is None:
+                problems.append(
+                    f"integrations.yml: {iid} is exempt from {ex.get('invariant')!r}, "
+                    "which invariants.yml does not declare")
+                continue
+            if not ex.get("reason"):
+                problems.append(
+                    f"integrations.yml: {iid} exemption from {inv['id']} has no reason")
+            if inv.get("applies_to") != integ.get("kind"):
+                problems.append(
+                    f"integrations.yml: {iid} is a {integ.get('kind')} but "
+                    f"{inv['id']} applies_to {inv.get('applies_to')}")
+
+    return problems
 
 
 def go_prefix(feature_id):

@@ -479,3 +479,83 @@ def test_the_check_exits_non_zero_on_a_gap(tmp_path):
 
     assert proc.returncode == 1, proc.stdout
     assert "coverage gap" in proc.stderr
+
+
+# --- Registries ------------------------------------------------------------
+
+INVARIANTS = [
+    {"id": "sink.flush.keeps_batch", "family": "resilience", "applies_to": "sink",
+     "claim": "kept", "verified_by": "harness", "requires": []},
+    {"id": "source.commit.only_processed", "family": "checkpoint",
+     "applies_to": "source", "claim": "c", "verified_by": "harness", "requires": []},
+]
+
+INTEGRATIONS = [
+    {"id": "sink.clickhouse", "kind": "sink", "implements": ["Sink"],
+     "feature": "sink.clickhouse", "exempt": []},
+    {"id": "sink.console", "kind": "sink", "implements": ["Sink"],
+     "feature": "sink.console",
+     "exempt": [{"invariant": "sink.flush.keeps_batch", "reason": "stdout"}]},
+    {"id": "source.kafka", "kind": "source", "implements": ["Source"],
+     "feature": "source.kafka", "exempt": []},
+]
+
+
+def test_the_committed_registries_load_and_validate():
+    """The real files, not fixtures: a typo in either fails here before it can
+    fail in CI."""
+    invariants = cm.load_invariants()
+    integrations = cm.load_integrations()
+    features = cm.load_features()
+
+    assert cm.validate_registries(invariants, integrations, features) == []
+    assert len(invariants) >= 20
+    assert {i["kind"] for i in integrations} == {"sink", "source", "handler"}
+
+
+def test_every_committed_invariant_is_unenforced_in_this_revision():
+    """This revision reports and fails nothing. Filling in a requires is a
+    later change, and legal only once every non-exempt integration has a
+    subject."""
+    for inv in cm.load_invariants():
+        assert inv["requires"] == [], inv["id"]
+
+
+def test_validate_rejects_an_exemption_naming_no_invariant():
+    bad = [dict(INTEGRATIONS[1], exempt=[
+        {"invariant": "sink.flush.nonexistent", "reason": "r"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("sink.flush.nonexistent" in p for p in problems)
+
+
+def test_validate_rejects_an_exemption_without_a_reason():
+    bad = [dict(INTEGRATIONS[1], exempt=[
+        {"invariant": "sink.flush.keeps_batch"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("reason" in p for p in problems)
+
+
+def test_validate_rejects_an_exemption_from_an_invariant_of_another_kind():
+    """A sink cannot be exempt from a source invariant; that is a typo."""
+    bad = [dict(INTEGRATIONS[0], exempt=[
+        {"invariant": "source.commit.only_processed", "reason": "r"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("applies_to" in p for p in problems)
+
+
+def test_validate_rejects_an_integration_naming_no_feature():
+    bad = [dict(INTEGRATIONS[0], feature="sink.nonexistent")]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("sink.nonexistent" in p for p in problems)
+
+
+def test_validate_rejects_a_duplicate_invariant_id():
+    problems = cm.validate_registries(
+        INVARIANTS + [INVARIANTS[0]], INTEGRATIONS, FEATURES)
+    assert any("duplicate" in p for p in problems)
+
+
+def test_validate_rejects_a_requires_level_that_does_not_exist():
+    bad = [dict(INVARIANTS[0], requires=["nightly"])]
+    problems = cm.validate_registries(bad, INTEGRATIONS, FEATURES)
+    assert any("nightly" in p for p in problems)
