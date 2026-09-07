@@ -1,0 +1,264 @@
+# The invariants every integration must hold, and the evidence each requires.
+#
+# This file is declared, not derived, for the reason features.yml gives: the
+# failure it catches is an integration with no evidence at all. Seven of these
+# have been violated and fixed since v1.0.4, and each of those rows names the
+# fix.
+#
+# `applies_to` is the interface the invariant is a property of. Every
+# integration of that kind must prove it, or be exempt in integrations.yml
+# with a reason.
+#
+# `verified_by` says how evidence attaches:
+#
+#   harness    internal/conformance emits COVERS invariant=... integration=...
+#   typetable  the generated type round-trip emits the same marker per type
+#   named      a test named Test<Invariant>_* attributes by prefix
+#
+# `requires` lists the levels evidence must exist at. Every entry is empty in
+# this revision: the matrix reports, and nothing fails. An invariant is
+# enforced by filling one in, which is legal only once every non-exempt
+# integration has a subject.
+#
+# `tracked_by` marks an invariant the code does not yet satisfy. It renders as
+# declared-unenforced until that issue lands.
+
+invariants:
+  # --- Resilience: the sink contract ---------------------------------------
+  - id: sink.write.buffers_only
+    family: resilience
+    applies_to: sink
+    claim: WriteTable does not reach the destination. Only Flush does.
+    verified_by: harness
+    requires: []
+
+  - id: sink.flush.keeps_batch
+    family: resilience
+    applies_to: sink
+    claim: >
+      A failed Flush leaves every undelivered row buffered. The next Flush
+      re-attempts them.
+    verified_by: harness
+    requires: []
+    violated_once: ["#221"]
+
+  - id: sink.flush.no_hollow_success
+    family: resilience
+    applies_to: sink
+    claim: >
+      Flush returns nil only when every row since the last success was
+      acknowledged by the destination.
+    verified_by: harness
+    requires: []
+    violated_once: ["#221"]
+
+  - id: sink.flush.preserves_order
+    family: resilience
+    applies_to: sink
+    claim: Rows reach the destination in WriteTable order, across a retry.
+    verified_by: harness
+    requires: []
+
+  - id: sink.flush.honours_context
+    family: resilience
+    applies_to: sink
+    claim: Flush returns ctx.Err() when the context ends. Rows stay buffered.
+    verified_by: harness
+    requires: []
+    violated_once: ["#219"]
+
+  - id: sink.flush.empty_is_noop
+    family: resilience
+    applies_to: sink
+    claim: Flush with nothing buffered returns nil and touches nothing.
+    verified_by: harness
+    requires: []
+
+  - id: sink.batch.reports_buffer
+    family: resilience
+    applies_to: sink
+    claim: Batch returns what is buffered, and nil when nothing is.
+    verified_by: harness
+    requires: []
+
+  - id: sink.error.classifies
+    family: resilience
+    applies_to: sink
+    claim: >
+      The sink's errors classify as unreachable or rejected, so the retry
+      ladder retries the right ones.
+    verified_by: harness
+    requires: []
+
+  - id: sink.probe.fails_start
+    family: resilience
+    applies_to: sink
+    claim: >
+      A Prober whose destination is unreachable fails the start once, without
+      retrying.
+    verified_by: harness
+    requires: []
+
+  # --- Checkpoint: the pipeline and source contract ------------------------
+  - id: pipeline.commit.after_flush
+    family: checkpoint
+    applies_to: pipeline
+    claim: Offsets and state commit only after Flush returned nil.
+    verified_by: named
+    requires: []
+
+  - id: pipeline.commit.nothing_on_failure
+    family: checkpoint
+    applies_to: pipeline
+    claim: A failed flush commits nothing. Not offsets, not state.
+    verified_by: named
+    requires: []
+
+  - id: pipeline.state.with_offsets
+    family: checkpoint
+    applies_to: pipeline
+    claim: Window state and the offsets that produced it commit atomically.
+    verified_by: named
+    requires: []
+
+  - id: source.commit.only_processed
+    family: checkpoint
+    applies_to: source
+    claim: >
+      A source commits the marks the pipeline processed, never what it
+      fetched.
+    verified_by: harness
+    requires: []
+    violated_once: ["#154"]
+
+  - id: source.resume.from_committed
+    family: checkpoint
+    applies_to: source
+    claim: >
+      Restart resumes at the committed position. No gap, and no replay before
+      it.
+    verified_by: harness
+    requires: []
+
+  - id: source.marks.never_regress
+    family: checkpoint
+    applies_to: source
+    claim: A committed position never moves backwards.
+    verified_by: harness
+    requires: []
+
+  - id: source.commit.on_revoke
+    family: checkpoint
+    applies_to: source
+    claim: >
+      Marks commit when a partition is revoked, before the rebalance
+      completes.
+    verified_by: harness
+    requires: []
+    tracked_by: "#183"
+
+  # --- Types: per integration, from its declared table ---------------------
+  - id: type.roundtrip
+    family: types
+    applies_to: sink
+    claim: >
+      Every declared Arrow type reads back with the declared outcome: exact,
+      coerced by the stated rule, or unsupported with a coded error.
+    verified_by: typetable
+    requires: []
+    violated_once: ["#147", "#150", "#151"]
+
+  - id: type.null
+    family: types
+    applies_to: sink
+    claim: A null in every declared type reads back as declared.
+    verified_by: typetable
+    requires: []
+
+  - id: type.timestamp.instant
+    family: types
+    applies_to: sink
+    claim: >
+      A timestamp reads back as the same instant. Zone-less is UTC, and the
+      host zone never leaks into the type.
+    verified_by: typetable
+    requires: []
+    violated_once: ["#153"]
+
+  - id: type.nested
+    family: types
+    applies_to: sink
+    claim: >
+      list, struct, list-of-struct and list-of-list read back, or are declared
+      unsupported. Never silently flattened.
+    verified_by: typetable
+    requires: []
+
+  - id: type.string.fidelity
+    family: types
+    applies_to: sink
+    claim: Unicode, escapes and the empty string round-trip byte for byte.
+    verified_by: typetable
+    requires: []
+    violated_once: ["#149"]
+
+  - id: type.undeclared.fails_loud
+    family: types
+    applies_to: sink
+    claim: >
+      An Arrow type absent from the table fails the batch with a coded error.
+      Never coerced silently.
+    verified_by: typetable
+    requires: []
+
+  # --- Lifecycle -----------------------------------------------------------
+  - id: lifecycle.drain.on_cancel
+    family: lifecycle
+    applies_to: pipeline
+    claim: Cancel or SIGTERM flushes the buffered batch, then commits.
+    verified_by: named
+    requires: []
+
+  - id: lifecycle.drain.bounded
+    family: lifecycle
+    applies_to: pipeline
+    claim: The drain finishes or fails inside its deadline.
+    verified_by: named
+    requires: []
+    tracked_by: "#161"
+
+  - id: lifecycle.close.idempotent
+    family: lifecycle
+    applies_to: sink
+    claim: Close twice is safe.
+    verified_by: harness
+    requires: []
+
+  - id: pipeline.batch.timeout
+    family: lifecycle
+    applies_to: pipeline
+    claim: >
+      A batch whose query exceeds the timeout fails the batch, not the
+      process.
+    verified_by: named
+    requires: []
+    tracked_by: "#163"
+
+  # --- Error policy --------------------------------------------------------
+  - id: error.dlq.carries_provenance
+    family: errors
+    applies_to: pipeline
+    claim: A DLQ record carries the payload, offset, partition and reason.
+    verified_by: named
+    requires: []
+    tracked_by: "#166"
+
+  - id: error.bad_record.threshold
+    family: errors
+    applies_to: pipeline
+    claim: >
+      N bad records in a window fail the pipeline rather than discarding
+      forever.
+    verified_by: named
+    requires: []
+    tracked_by: "#166"

@@ -252,7 +252,7 @@ def test_parse_go_reads_outcomes_and_markers(tmp_path):
         json.dumps({"Action": "fail", "Test": "TestC"}),
         "not json at all",
     ]))
-    results, covers = cm.parse_go(path)
+    results, covers, _ = cm.parse_go(path)
 
     assert results == {"TestA": cm.PASS, "TestB": cm.SKIP, "TestC": cm.FAIL}
     assert covers == {"TestA": ["sink.clickhouse"]}
@@ -262,8 +262,33 @@ def test_parse_go_ignores_package_level_events(tmp_path):
     """Events with no Test are the package summary, not a test result."""
     path = write(tmp_path, "go.json",
                  json.dumps({"Action": "pass", "Package": "x"}))
-    results, _ = cm.parse_go(path)
+    results, _, _ = cm.parse_go(path)
     assert results == {}
+
+
+def test_parse_go_reads_structured_invariant_markers(tmp_path):
+    """The harness emits one line per (invariant, integration). Both ids are
+    carried; the parser must not collapse them into the feature list."""
+    path = write(tmp_path, "go.json", "\n".join([
+        json.dumps({"Action": "output", "Test": "TestA",
+                    "Output": "    x.go:1: COVERS invariant=sink.flush.keeps_batch integration=sink.clickhouse\n"}),
+        json.dumps({"Action": "output", "Test": "TestA",
+                    "Output": "    x.go:2: COVERS sink.clickhouse\n"}),
+        json.dumps({"Action": "pass", "Test": "TestA"}),
+    ]))
+    results, covers, invariants = cm.parse_go(path)
+
+    assert results == {"TestA": cm.PASS}
+    assert covers == {"TestA": ["sink.clickhouse"]}
+    assert invariants == {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}
+
+
+def test_parse_pytest_returns_an_empty_invariant_map(tmp_path):
+    path = write(tmp_path, "pytest.json", json.dumps({"tests": [
+        {"nodeid": "test_a", "outcome": "passed", "covers": []},
+    ]}))
+    results, covers, invariants = cm.parse_pytest(path)
+    assert invariants == {}
 
 
 def test_parse_go_lets_a_pass_outrank_a_skipped_subtest():
@@ -278,7 +303,7 @@ def test_parse_pytest_reads_outcomes_and_markers(tmp_path):
         {"nodeid": "test_b", "outcome": "skipped", "covers": []},
         {"nodeid": "test_c", "outcome": "failed", "covers": []},
     ]}))
-    results, covers = cm.parse_pytest(path)
+    results, covers, _ = cm.parse_pytest(path)
 
     assert results == {"test_sink_clickhouse_x": cm.PASS,
                        "test_b": cm.SKIP, "test_c": cm.FAIL}
@@ -365,7 +390,7 @@ def test_every_exceptional_name_also_appears_in_tests():
 
 def test_the_snapshot_declares_its_schema_version():
     """A reader that expects per-test objects must be able to tell."""
-    assert snap()["version"] == 2
+    assert snap()["version"] == 3
 
 
 def test_render_agrees_with_the_snapshot():
@@ -454,3 +479,824 @@ def test_the_check_exits_non_zero_on_a_gap(tmp_path):
 
     assert proc.returncode == 1, proc.stdout
     assert "coverage gap" in proc.stderr
+
+
+# --- Registries ------------------------------------------------------------
+
+INVARIANTS = [
+    {"id": "sink.flush.keeps_batch", "family": "resilience", "applies_to": "sink",
+     "claim": "kept", "verified_by": "harness", "requires": []},
+    {"id": "source.commit.only_processed", "family": "checkpoint",
+     "applies_to": "source", "claim": "c", "verified_by": "harness", "requires": []},
+]
+
+INTEGRATIONS = [
+    {"id": "sink.clickhouse", "kind": "sink", "implements": ["Sink"],
+     "feature": "sink.clickhouse", "exempt": []},
+    {"id": "sink.console", "kind": "sink", "implements": ["Sink"],
+     "feature": "sink.console",
+     "exempt": [{"invariant": "sink.flush.keeps_batch", "reason": "stdout"}]},
+    {"id": "source.kafka", "kind": "source", "implements": ["Source"],
+     "feature": "source.kafka", "exempt": []},
+]
+
+
+def test_the_committed_registries_load_and_validate():
+    """The real files, not fixtures: a typo in either fails here before it can
+    fail in CI."""
+    invariants = cm.load_invariants()
+    integrations = cm.load_integrations()
+    features = cm.load_features()
+
+    assert cm.validate_registries(invariants, integrations, features) == []
+    assert len(invariants) >= 20
+    assert {i["kind"] for i in integrations} == {"sink", "source", "handler"}
+
+
+def test_every_committed_invariant_is_unenforced_in_this_revision():
+    """This revision reports and fails nothing. Filling in a requires is a
+    later change, and legal only once every non-exempt integration has a
+    subject."""
+    for inv in cm.load_invariants():
+        assert inv["requires"] == [], inv["id"]
+
+
+def test_validate_rejects_an_exemption_naming_no_invariant():
+    bad = [dict(INTEGRATIONS[1], exempt=[
+        {"invariant": "sink.flush.nonexistent", "reason": "r"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("sink.flush.nonexistent" in p for p in problems)
+
+
+def test_validate_rejects_an_exemption_without_a_reason():
+    bad = [dict(INTEGRATIONS[1], exempt=[
+        {"invariant": "sink.flush.keeps_batch"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("reason" in p for p in problems)
+
+
+def test_validate_rejects_an_exemption_from_an_invariant_of_another_kind():
+    """A sink cannot be exempt from a source invariant; that is a typo."""
+    bad = [dict(INTEGRATIONS[0], exempt=[
+        {"invariant": "source.commit.only_processed", "reason": "r"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("applies_to" in p for p in problems)
+
+
+def test_validate_rejects_an_integration_naming_no_feature():
+    bad = [dict(INTEGRATIONS[0], feature="sink.nonexistent")]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("sink.nonexistent" in p for p in problems)
+
+
+def test_validate_rejects_a_duplicate_invariant_id():
+    problems = cm.validate_registries(
+        INVARIANTS + [INVARIANTS[0]], INTEGRATIONS, FEATURES)
+    assert any("duplicate" in p for p in problems)
+
+
+def test_validate_rejects_a_requires_level_that_does_not_exist():
+    bad = [dict(INVARIANTS[0], requires=["nightly"])]
+    problems = cm.validate_registries(bad, INTEGRATIONS, FEATURES)
+    assert any("nightly" in p for p in problems)
+
+
+# --- The invariant axis ----------------------------------------------------
+
+def inv_snap(evidence=None, results=None, invariants=None, integrations=None):
+    """evidence: {level: {test: [(invariant, integration)]}}
+    results:    {level: {test: outcome}}"""
+    evidence = evidence or {}
+    results = results or {}
+    invariants = invariants or INVARIANTS
+    integrations = integrations or INTEGRATIONS
+    built = cm.build_invariants(
+        invariants, integrations,
+        {lvl: results.get(lvl, {}) for lvl in cm.LEVELS},
+        {lvl: evidence.get(lvl, {}) for lvl in cm.LEVELS})
+    return cm.snapshot_invariants(invariants, integrations, built)
+
+
+def cell(s, invariant, integration, lvl):
+    for inv in s["invariants"]:
+        if inv["id"] == invariant:
+            return inv["integrations"][integration][lvl]
+    raise AssertionError(f"{invariant} not in the snapshot")
+
+
+def test_a_passing_harness_case_covers_the_cell():
+    name = "TestIntegrationSinkClickhouse_Conformance/keeps_batch"
+    s = inv_snap(
+        evidence={"integration": {name: [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"integration": {name: cm.PASS}},
+    )
+    c = cell(s, "sink.flush.keeps_batch", "sink.clickhouse", "integration")
+    assert c["status"] == "covered"
+    assert c["tests"] == [name]
+
+
+def test_a_marker_from_a_failing_test_is_not_coverage():
+    """The harness emits the marker only on pass, but the parent that ran the
+    subtest can still fail afterwards, and that verdict is the reported one."""
+    s = inv_snap(
+        evidence={"integration": {"TestX": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"integration": {"TestX": cm.FAIL}},
+    )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "integration")["status"] == "failing"
+
+
+def test_a_marker_from_a_skipped_test_is_not_coverage():
+    s = inv_snap(
+        evidence={"integration": {"TestX": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"integration": {"TestX": cm.SKIP}},
+    )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "integration")["status"] == "skipped"
+
+
+def test_an_integration_with_no_evidence_is_missing():
+    s = inv_snap()
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "integration")["status"] == "missing"
+
+
+def test_an_exempt_integration_renders_exempt_with_its_reason():
+    s = inv_snap()
+    c = cell(s, "sink.flush.keeps_batch", "sink.console", "integration")
+    assert c["status"] == "exempt"
+    assert c["reason"] == "stdout"
+
+
+def test_an_invariant_applies_only_to_its_kind():
+    """A source has no cell under a sink invariant at all."""
+    s = inv_snap()
+    inv = next(i for i in s["invariants"] if i["id"] == "sink.flush.keeps_batch")
+    assert "source.kafka" not in inv["integrations"]
+    assert set(inv["integrations"]) == {"sink.clickhouse", "sink.console"}
+
+
+def test_an_unrequired_level_is_not_a_gap():
+    s = inv_snap()
+    assert s["invariant_gaps"] == []
+
+
+def test_a_required_level_with_no_evidence_is_a_gap():
+    required = [dict(INVARIANTS[0], requires=["integration"])]
+    s = inv_snap(invariants=required)
+    assert {"invariant": "sink.flush.keeps_batch", "integration": "sink.clickhouse",
+            "level": "integration", "status": "missing"} in s["invariant_gaps"]
+    # console is exempt, so it is not a gap even at a required level.
+    assert not any(g["integration"] == "sink.console" for g in s["invariant_gaps"])
+
+
+def test_a_marker_naming_an_unknown_invariant_or_integration_is_reported():
+    s = inv_snap(
+        evidence={"integration": {"TestX": [("sink.flush.bogus", "sink.clickhouse"),
+                                            ("sink.flush.keeps_batch", "sink.bogus")]}},
+        results={"integration": {"TestX": cm.PASS}},
+    )
+    assert {"test": "TestX", "invariant": "sink.flush.bogus",
+            "integration": "sink.clickhouse"} in s["unknown_invariant_markers"]
+    assert {"test": "TestX", "invariant": "sink.flush.keeps_batch",
+            "integration": "sink.bogus"} in s["unknown_invariant_markers"]
+
+
+def test_two_unknown_invariant_markers_do_not_crash_the_snapshot():
+    """Guard against the sorted()-over-dicts crash the feature snapshot has:
+    sort by tuple, never by dict."""
+    s = inv_snap(
+        evidence={"integration": {"TestX": [("a.b.c", "sink.clickhouse")],
+                                  "TestY": [("d.e.f", "sink.clickhouse")]}},
+        results={"integration": {"TestX": cm.PASS, "TestY": cm.PASS}},
+    )
+    assert len(s["unknown_invariant_markers"]) == 2
+
+
+def test_a_tracked_invariant_renders_as_declared_unenforced():
+    tracked = [dict(INVARIANTS[0], tracked_by="#183")]
+    s = inv_snap(invariants=tracked)
+    inv = next(i for i in s["invariants"] if i["id"] == "sink.flush.keeps_batch")
+    assert inv["tracked_by"] == "#183"
+
+
+def test_render_carries_one_table_per_family():
+    s = inv_snap()
+    md = cm.render_invariants(s)
+    assert "## Invariants: resilience" in md
+    assert "## Invariants: checkpoint" in md
+    assert "| `sink.flush.keeps_batch` |" in md
+
+
+def test_render_marks_an_exempt_cell():
+    s = inv_snap()
+    md = cm.render_invariants(s)
+    line = next(l for l in md.splitlines() if "`sink.flush.keeps_batch`" in l)
+    assert "exempt" in line
+
+
+def test_a_test_carrying_any_marker_is_not_unattributed():
+    """A marker-attributed test was listed under "match no declared feature".
+    The conformance harness attributes only by marker, and a shared runner's
+    name matches no feature prefix at all, so every one of its cases would
+    land there telling the reader to rename a test that already says what it
+    covers."""
+    name = "TestConformanceSinks_KeepsBatch"
+    s = snap(
+        integration_results={name: cm.PASS},
+        integration_covers={name: ["sink.clickhouse"]},
+    )
+    assert s["unattributed"]["integration"] == []
+    assert level(s, "sink.clickhouse", "integration")["status"] == "covered"
+
+
+def test_a_test_matching_nothing_and_carrying_no_marker_is_still_unattributed():
+    """The report still catches what it is for: #221's four misnamed tests."""
+    s = snap(integration_results={"TestNobodyDeclaredThis": cm.PASS})
+    assert s["unattributed"]["integration"] == ["TestNobodyDeclaredThis"]
+
+
+# --- build_invariants: attribution, in isolation ---------------------------
+#
+# The two functions below decide every invariant cell in the matrix, so they
+# are tested directly rather than only through the snapshot. A wrong cell is a
+# wrong gate: a covered cell that is not covered is the sink.iceberg failure
+# with more ceremony.
+
+def built(evidence=None, results=None, invariants=None, integrations=None):
+    evidence = evidence or {}
+    results = results or {}
+    return cm.build_invariants(
+        invariants or INVARIANTS, integrations or INTEGRATIONS,
+        {lvl: results.get(lvl, {}) for lvl in cm.LEVELS},
+        {lvl: evidence.get(lvl, {}) for lvl in cm.LEVELS})
+
+
+def test_build_keys_a_cell_by_invariant_integration_and_level():
+    b = built(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert b["cells"] == {
+        ("sink.flush.keeps_batch", "sink.clickhouse", "unit"): [("TestA", cm.PASS)]
+    }
+
+
+def test_build_records_the_same_invariant_at_each_level_separately():
+    """unit and integration are different evidence for the same claim, and the
+    matrix must be able to say 'proven with a fake, never against the real
+    thing'."""
+    pair = [("sink.flush.keeps_batch", "sink.clickhouse")]
+    b = built(
+        evidence={"unit": {"TestA": pair}, "integration": {"TestB": pair}},
+        results={"unit": {"TestA": cm.PASS}, "integration": {"TestB": cm.PASS}},
+    )
+    assert set(b["cells"]) == {
+        ("sink.flush.keeps_batch", "sink.clickhouse", "unit"),
+        ("sink.flush.keeps_batch", "sink.clickhouse", "integration"),
+    }
+
+
+def test_build_collects_every_test_that_proves_one_cell():
+    pair = [("sink.flush.keeps_batch", "sink.clickhouse")]
+    b = built(
+        evidence={"unit": {"TestB": pair, "TestA": pair}},
+        results={"unit": {"TestA": cm.PASS, "TestB": cm.PASS}},
+    )
+    key = ("sink.flush.keeps_batch", "sink.clickhouse", "unit")
+    # Order is the snapshot's business, not this function's.
+    assert sorted(b["cells"][key]) == [("TestA", cm.PASS), ("TestB", cm.PASS)]
+
+
+def test_build_takes_the_outcome_from_the_result_not_the_marker():
+    b = built(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.FAIL}},
+    )
+    key = ("sink.flush.keeps_batch", "sink.clickhouse", "unit")
+    assert b["cells"][key] == [("TestA", cm.FAIL)]
+
+
+def test_build_treats_a_marker_with_no_result_as_a_failure():
+    """A marker whose test has no verdict means the event stream lost it.
+    Reading that as coverage would report a cell nobody proved."""
+    b = built(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={},
+    )
+    key = ("sink.flush.keeps_batch", "sink.clickhouse", "unit")
+    assert b["cells"][key] == [("TestA", cm.FAIL)]
+
+
+def test_build_reports_an_unknown_id_rather_than_inventing_a_cell():
+    b = built(
+        evidence={"unit": {"TestA": [("nope.nope", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert b["cells"] == {}
+    assert b["unknown"] == [("TestA", "nope.nope", "sink.clickhouse")]
+
+
+def test_build_over_no_evidence_is_empty_not_an_error():
+    b = built()
+    assert b == {"cells": {}, "unknown": []}
+
+
+# --- snapshot_invariants: the encoding ------------------------------------
+
+def test_snapshot_carries_the_declaration_onto_every_invariant():
+    s = inv_snap()
+    inv = next(i for i in s["invariants"] if i["id"] == "sink.flush.keeps_batch")
+
+    assert inv["family"] == "resilience"
+    assert inv["applies_to"] == "sink"
+    assert inv["claim"] == "kept"
+    assert inv["verified_by"] == "harness"
+    assert inv["requires"] == []
+
+
+def test_snapshot_folds_a_wrapped_claim_onto_one_line():
+    """The YAML wraps long claims. Rewrapping one must not show up as a
+    coverage change in the JSON diff a reviewer reads."""
+    wrapped = [dict(INVARIANTS[0], claim="a claim\nwrapped over\nthree lines")]
+    s = inv_snap(invariants=wrapped)
+    assert s["invariants"][0]["claim"] == "a claim wrapped over three lines"
+
+
+def test_snapshot_omits_tracked_by_and_violated_once_when_absent():
+    """Same rule as the feature half: an absent fact costs no bytes."""
+    s = inv_snap()
+    inv = s["invariants"][0]
+    assert "tracked_by" not in inv
+    assert "violated_once" not in inv
+
+
+def test_snapshot_carries_violated_once_when_present():
+    s = inv_snap(invariants=[dict(INVARIANTS[0], violated_once=["#221"])])
+    assert s["invariants"][0]["violated_once"] == ["#221"]
+
+
+def test_snapshot_gives_every_level_a_cell():
+    s = inv_snap()
+    inv = next(i for i in s["invariants"] if i["id"] == "sink.flush.keeps_batch")
+    assert set(inv["integrations"]["sink.clickhouse"]) == set(cm.LEVELS)
+
+
+def test_snapshot_names_a_skipped_test_in_the_skipped_list():
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.SKIP}},
+    )
+    c = cell(s, "sink.flush.keeps_batch", "sink.clickhouse", "unit")
+    assert c["tests"] == ["TestA"]
+    assert c["skipped"] == ["TestA"]
+    assert "failing" not in c
+
+
+def test_snapshot_names_a_failing_test_in_the_failing_list():
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.FAIL}},
+    )
+    c = cell(s, "sink.flush.keeps_batch", "sink.clickhouse", "unit")
+    assert c["failing"] == ["TestA"]
+    assert "skipped" not in c
+
+
+def test_snapshot_omits_an_empty_exceptional_list():
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse", "unit") == {
+        "status": "covered", "tests": ["TestA"]}
+
+
+def test_snapshot_every_exceptional_name_also_appears_in_tests():
+    """skipped and failing narrow tests; they never extend it. The same
+    encoding rule the feature half follows."""
+    pair = [("sink.flush.keeps_batch", "sink.clickhouse")]
+    s = inv_snap(
+        evidence={"unit": {"TestA": pair, "TestB": pair, "TestC": pair}},
+        results={"unit": {"TestA": cm.PASS, "TestB": cm.SKIP, "TestC": cm.FAIL}},
+    )
+    c = cell(s, "sink.flush.keeps_batch", "sink.clickhouse", "unit")
+    for name in c.get("skipped", []) + c.get("failing", []):
+        assert name in c["tests"]
+
+
+def test_snapshot_one_pass_among_skips_covers_the_cell():
+    pair = [("sink.flush.keeps_batch", "sink.clickhouse")]
+    s = inv_snap(
+        evidence={"unit": {"TestA": pair, "TestB": pair}},
+        results={"unit": {"TestA": cm.PASS, "TestB": cm.SKIP}},
+    )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "unit")["status"] == "covered"
+
+
+def test_snapshot_one_failure_among_passes_fails_the_cell():
+    pair = [("sink.flush.keeps_batch", "sink.clickhouse")]
+    s = inv_snap(
+        evidence={"unit": {"TestA": pair, "TestB": pair}},
+        results={"unit": {"TestA": cm.PASS, "TestB": cm.FAIL}},
+    )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "unit")["status"] == "failing"
+
+
+def test_snapshot_an_exempt_cell_carries_no_tests_even_with_evidence():
+    """An exemption is a statement that the invariant cannot apply. Evidence
+    against it means the registry and the harness disagree, and the registry
+    is the declaration -- but the cell must not read as covered."""
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.console")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    c = cell(s, "sink.flush.keeps_batch", "sink.console", "unit")
+    assert c["status"] == "exempt"
+    assert "tests" not in c
+
+
+def test_snapshot_a_pipeline_invariant_has_no_integration_cells():
+    """It attaches to core, and no constructor case is a pipeline."""
+    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
+                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
+                 "requires": []}]
+    s = inv_snap(invariants=pipeline)
+    assert s["invariants"][0]["integrations"] == {}
+
+
+def test_snapshot_orders_tests_stably_whatever_order_they_arrived_in():
+    """`go test` reports in completion order, which varies run to run. The
+    same tree must still produce the same bytes, or the staleness check fails
+    on noise and a reader learns to ignore it."""
+    pair = [("sink.flush.keeps_batch", "sink.clickhouse")]
+    results = {"unit": {"TestA": cm.PASS, "TestB": cm.PASS, "TestC": cm.PASS}}
+
+    forwards = inv_snap(
+        evidence={"unit": {"TestA": pair, "TestB": pair, "TestC": pair}},
+        results=results)
+    backwards = inv_snap(
+        evidence={"unit": {"TestC": pair, "TestB": pair, "TestA": pair}},
+        results=results)
+
+    assert json.dumps(forwards) == json.dumps(backwards)
+    assert cell(forwards, "sink.flush.keeps_batch", "sink.clickhouse",
+                "unit")["tests"] == ["TestA", "TestB", "TestC"]
+
+
+def test_snapshot_orders_unknown_markers_stably():
+    pair_a = ("nope.a", "sink.clickhouse")
+    pair_b = ("nope.b", "sink.clickhouse")
+    results = {"unit": {"TestA": cm.PASS, "TestB": cm.PASS}}
+
+    forwards = inv_snap(
+        evidence={"unit": {"TestA": [pair_b], "TestB": [pair_a]}}, results=results)
+    backwards = inv_snap(
+        evidence={"unit": {"TestB": [pair_a], "TestA": [pair_b]}}, results=results)
+
+    assert forwards["unknown_invariant_markers"] == backwards["unknown_invariant_markers"]
+    assert [m["test"] for m in forwards["unknown_invariant_markers"]] == ["TestA", "TestB"]
+
+
+def test_snapshot_gap_records_the_status_that_caused_it():
+    """'sink.kafka: integration is skipped' sends the reader somewhere;
+    'is missing' sends them somewhere else."""
+    required = [dict(INVARIANTS[0], requires=["unit"])]
+    s = inv_snap(
+        invariants=required,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.SKIP}},
+    )
+    assert {"invariant": "sink.flush.keeps_batch", "integration": "sink.clickhouse",
+            "level": "unit", "status": "skipped"} in s["invariant_gaps"]
+
+
+def test_snapshot_a_covered_required_level_is_not_a_gap():
+    required = [dict(INVARIANTS[0], requires=["unit"])]
+    s = inv_snap(
+        invariants=required,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert not any(g["integration"] == "sink.clickhouse"
+                   for g in s["invariant_gaps"])
+
+
+def test_snapshot_requires_one_level_and_ignores_the_others():
+    """Requiring integration must not make a missing unit cell a gap."""
+    required = [dict(INVARIANTS[0], requires=["integration"])]
+    s = inv_snap(invariants=required)
+    levels = {g["level"] for g in s["invariant_gaps"]}
+    assert levels == {"integration"}
+
+
+def test_snapshot_deduplicates_an_unknown_marker_seen_twice():
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("nope.nope", "sink.clickhouse"),
+                                     ("nope.nope", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert s["unknown_invariant_markers"] == [
+        {"test": "TestA", "invariant": "nope.nope", "integration": "sink.clickhouse"}]
+
+
+# --- render_invariants -----------------------------------------------------
+
+def test_render_agrees_with_the_snapshot():
+    """The markdown is a view. It can never disagree with the JSON that gates
+    the build, and a cell the JSON calls covered must not read as missing."""
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "unit")["status"] == "covered"
+
+    md = cm.render_invariants(s)
+    line = next(l for l in md.splitlines() if "`sink.flush.keeps_batch`" in l)
+    assert "✅ u" in line
+
+
+def test_render_shows_covered_when_every_judged_level_is_covered():
+    required = [dict(INVARIANTS[0], requires=["unit"])]
+    s = inv_snap(
+        invariants=required,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    md = cm.render_invariants(s)
+    line = next(l for l in md.splitlines() if "`sink.flush.keeps_batch`" in l)
+    assert "✅ u" in line
+
+
+# --- invariant_cell: what a reader sees ------------------------------------
+#
+# The cell answers "proven with a fake, or against the real thing?", which a
+# bare tick cannot. These pin each shape it can take.
+
+def levels(**states):
+    return {lvl: {"status": states.get(lvl, "missing")} for lvl in cm.LEVELS}
+
+
+def test_cell_names_the_level_that_proved_it():
+    assert cm.invariant_cell(levels(integration="covered"), []) == "✅ i"
+    assert cm.invariant_cell(levels(unit="covered"), []) == "✅ u"
+
+
+def test_cell_names_every_level_that_proved_it():
+    """'covered at unit but never against the real thing' is the question the
+    matrix exists to answer, so both levels show."""
+    assert cm.invariant_cell(
+        levels(unit="covered", integration="covered"), []) == "✅ ui"
+
+
+def test_cell_with_no_evidence_is_missing():
+    assert cm.invariant_cell(levels(), []) == "❌ missing"
+
+
+def test_cell_reports_a_failure_over_anything_achieved():
+    assert cm.invariant_cell(
+        levels(unit="covered", integration="failing"), []) == "🔥 failing"
+
+
+def test_cell_reports_a_skip_rather_than_missing():
+    assert cm.invariant_cell(levels(unit="skipped"), []) == "⚠️ skipped"
+
+
+def test_cell_is_exempt_whatever_else_is_present():
+    assert cm.invariant_cell(
+        {lvl: {"status": "exempt", "reason": "r"} for lvl in cm.LEVELS},
+        []) == "— exempt"
+
+
+def test_cell_warns_when_a_required_level_is_not_the_one_proven():
+    """A tick beside an unmet requirement reads as done. The gap is listed
+    below the table, and the cell must not contradict it."""
+    assert cm.invariant_cell(
+        levels(unit="covered"), ["integration"]) == "⚠️ u, integration missing"
+
+
+def test_render_names_the_tracking_issue_of_an_unenforced_invariant():
+    s = inv_snap(invariants=[dict(INVARIANTS[0], tracked_by="#183")])
+    md = cm.render_invariants(s)
+    assert "tracked by #183" in md
+
+
+def test_render_lists_a_gap():
+    required = [dict(INVARIANTS[0], requires=["unit"])]
+    md = cm.render_invariants(inv_snap(invariants=required))
+    assert "## Invariant gaps" in md
+    assert "`sink.flush.keeps_batch` on `sink.clickhouse` requires **unit**" in md
+
+
+def test_render_omits_the_gap_section_when_there_are_none():
+    assert "## Invariant gaps" not in cm.render_invariants(inv_snap())
+
+
+def test_render_says_a_pipeline_invariant_has_no_evidence_rather_than_a_dot():
+    """A pipeline row among sink columns rendered as a line of dots, which
+    reads as "not applicable" when the truth is "nothing collects this yet".
+    verified_by: named is declared and not wired."""
+    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
+                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
+                 "requires": []}]
+    md = cm.render_invariants(inv_snap(invariants=pipeline))
+
+    assert "| Invariant | Claim | Evidence |" in md
+    assert "| `pipeline.commit.after_flush` | c | ❌ none collected (`named`) |" in md
+    assert "unmeasured, not passing" in md
+
+
+def test_render_separates_pipeline_rows_from_integration_rows_in_one_family():
+    """checkpoint holds both. Mixing them puts dots in a table of real cells."""
+    mixed = [
+        dict(INVARIANTS[1], family="checkpoint"),           # applies_to source
+        {"id": "pipeline.commit.after_flush", "family": "checkpoint",
+         "applies_to": "pipeline", "claim": "c", "verified_by": "named",
+         "requires": []},
+    ]
+    md = cm.render_invariants(inv_snap(invariants=mixed))
+
+    assert md.count("## Invariants: checkpoint") == 1
+    assert "| Invariant | Claim | `source.kafka` |" in md
+    assert "| Invariant | Claim | Evidence |" in md
+    # The pipeline row never appears in the integration table.
+    integration_table = md.split("| Invariant | Claim | Evidence |")[0]
+    assert "pipeline.commit.after_flush" not in integration_table
+
+
+# --- The summary a skimmer reads -------------------------------------------
+
+def test_the_feature_total_says_it_counts_attribution_not_proof():
+    """"33 fully covered" beside an almost empty invariant matrix reads as
+    proof. The reader who stops at the first bold line must not be misled."""
+    md = cm.render(snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS}))
+
+    assert "at least one passing test attributed at every level they require" in md
+    assert "counts attribution, not proof" in md
+
+
+def test_the_feature_total_omits_the_invariant_count_when_there_is_none():
+    """render() is called on feature-only snapshots in tests and by nothing
+    else; it must not require the second axis."""
+    md = cm.render(snap())
+    assert "invariants declared" not in md
+
+
+def test_the_invariant_count_sits_beside_the_feature_count():
+    s = snap()
+    s.update(inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}}))
+    md = cm.render(s)
+
+    assert "invariants declared" in md
+    assert "1 proven" in md
+    assert "exempt" in md
+
+
+def test_the_tally_counts_every_cell_by_state():
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}})
+    tally, unwired = cm.invariant_tally(s)
+
+    # keeps_batch: clickhouse covered, console exempt.
+    # only_processed: kafka missing.
+    assert tally["covered"] == 1
+    assert tally["exempt"] == 1
+    assert tally["missing"] == 1
+    assert unwired == 0
+
+
+def test_the_tally_counts_a_pipeline_invariant_as_unwired_not_as_zero():
+    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
+                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
+                 "requires": []}]
+    tally, unwired = cm.invariant_tally(inv_snap(invariants=pipeline))
+
+    assert unwired == 1
+    assert sum(tally.values()) == 0
+
+
+def test_the_page_pairs_the_most_tested_feature_with_the_least_proven_invariant():
+    """The argument for the file, generated so it cannot go stale. A feature
+    can carry dozens of tests while the invariant those tests depend on is
+    proven almost nowhere -- which is how a retry ladder passes every test
+    while the sink under it loses the batch."""
+    s = snap(go_results={
+        "TestSinkClickhouse_A": cm.PASS,
+        "TestSinkClickhouse_B": cm.PASS,
+        "TestSinkConsole_C": cm.PASS,
+    })
+    s.update(inv_snap())
+    md = cm.render(s)
+
+    assert "## Why invariants, and not the test count" in md
+    assert "`sink.clickhouse` carries 2 attributed tests" in md
+    assert "is proven on 0 of the" in md
+
+
+def test_the_argument_pairs_a_feature_and_an_invariant_of_the_same_layer():
+    """A heavily tested feature elsewhere in the engine says nothing about a
+    sink invariant. Only same-layer pairs are an argument."""
+    features = FEATURES + [
+        {"id": "config.validation", "description": "c", "requires": ["unit"]},
+        {"id": "sink.retry", "description": "r", "requires": ["unit"]},
+    ]
+    s = snap(features=features, go_results={
+        **{f"TestConfigValidation_{i}": cm.PASS for i in range(20)},
+        **{f"TestSinkRetry_{i}": cm.PASS for i in range(5)},
+    })
+    s.update(inv_snap())
+
+    feature, tests, invariant, _, _ = cm.strongest_argument(s)
+    # config.validation has four times the tests and no invariant of its own,
+    # so it is not the argument.
+    assert feature == "sink.retry"
+    assert tests == 5
+    assert invariant.startswith("sink.")
+
+
+def test_the_argument_needs_an_invariant_in_the_same_layer():
+    """A layer with tests and no invariants declared is not an argument."""
+    features = [{"id": "config.validation", "description": "c", "requires": ["unit"]}]
+    s = snap(features=features,
+             go_results={"TestConfigValidation_A": cm.PASS})
+    s.update(inv_snap())
+    assert cm.strongest_argument(s) is None
+
+
+def test_domain_names_the_subsystem():
+    assert cm.domain("sink.retry") == "sink"
+    assert cm.domain("sink.flush.keeps_batch") == "sink"
+    assert cm.domain("config.validation") == "config"
+
+
+def test_the_argument_is_omitted_when_no_feature_has_a_test():
+    s = snap()
+    s.update(inv_snap())
+    assert "## Why invariants, and not the test count" not in cm.render(s)
+
+
+def test_the_most_tested_feature_counts_across_every_level():
+    s = snap(
+        go_results={"TestSinkClickhouse_A": cm.PASS},
+        py_results={"test_sink_clickhouse_b": cm.PASS},
+        integration_results={"TestSinkConsole_C": cm.PASS},
+    )
+    assert cm.most_tested_feature(s) == ("sink.clickhouse", 2)
+
+
+def test_the_least_proven_invariant_ignores_exempt_integrations():
+    """console is exempt from keeps_batch, so it is neither proof nor a hole:
+    counting it as unproven would overstate the gap."""
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}})
+
+    invariant, proven, applicable, _ = cm.least_proven_invariant(s)
+    # only_processed applies to source.kafka alone and has no proof at all.
+    assert invariant == "source.commit.only_processed"
+    assert (proven, applicable) == (0, 1)
+
+
+def test_the_least_proven_invariant_prefers_the_smaller_share():
+    """Two invariants with no proof and different reach: the one covering more
+    integrations is the bigger hole, but share is what ranks them."""
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}})
+    _, proven, applicable, share = cm.least_proven_invariant(s)
+    assert share == proven / applicable
+
+
+def test_the_least_proven_invariant_is_none_when_nothing_is_applicable():
+    """Nothing to prove is not the same as nothing proven, and the page must
+    say nothing rather than invent a worst case."""
+    integrations = [dict(INTEGRATIONS[1])]  # console only, and it is exempt
+    s = inv_snap(integrations=integrations)
+    assert cm.least_proven_invariant(s) is None
+
+
+def test_the_argument_is_omitted_when_no_invariant_is_applicable():
+    s = snap(go_results={"TestSinkClickhouse_A": cm.PASS})
+    s.update(inv_snap(integrations=[dict(INTEGRATIONS[1])]))
+    assert "## Why invariants, and not the test count" not in cm.render(s)
+
+
+def test_cell_state_reports_the_worst_thing_that_happened():
+    assert cm.cell_state(levels(unit="covered", integration="failing")) == "failing"
+    assert cm.cell_state(levels(unit="covered", integration="missing")) == "covered"
+    assert cm.cell_state(levels(unit="skipped")) == "skipped"
+    assert cm.cell_state(levels()) == "missing"
+    assert cm.cell_state(
+        {lvl: {"status": "exempt", "reason": "r"} for lvl in cm.LEVELS}) == "exempt"
+
+
+def test_a_claim_carries_the_defect_that_proves_it_matters():
+    """violated_once is the difference between a rule and a scar."""
+    s = inv_snap(invariants=[dict(INVARIANTS[0], violated_once=["#221"])])
+    assert "violated once: #221" in cm.render_invariants(s)

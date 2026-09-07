@@ -8,6 +8,8 @@ SQLFlow is a stream processing engine that lets you define pipelines with just S
 - Sinks: Kafka, ClickHouse, Iceberg, the console, or anything DuckDB can `COPY` to (PostgreSQL, S3, parquet, MotherDuck, DuckLake).
 - Built on [DuckDB](https://duckdb.org/) and [Apache Arrow](https://arrow.apache.org/): ~900k messages/sec on a laptop, in about a quarter GiB of memory.
 - One Go binary, one Docker image, one YAML file per pipeline. No cluster.
+- [Coverage and invariant matrix](docs/coverage/matrix.md): what is tested, and
+  separately, what is *proven* — regenerated from the suites on every push.
 
 # Quick Start (Getting Started in 5 Minutes)
 
@@ -989,6 +991,10 @@ make test-image     # build the image and run tests/release against it
 `tests/release` and the coverage matrix are Python. Both run through [uv][uv],
 which builds the environment from `uv.lock` on first use. There is no
 `pip install` step, and no dependency is resolved at install time.
+
+[**Coverage and invariant matrix**](docs/coverage/matrix.md) — what is tested,
+and separately, what is proven. It is generated from the suites on every push
+and gates the merge.
 
 `make test-go` and `make test-image` are what CI runs on every push.
 Kafka-backed integration tests are deliberately excluded from `test-go`; they

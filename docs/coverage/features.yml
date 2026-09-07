@@ -32,6 +32,9 @@
 # test named TestSinkClickhouse* or any Python test named test_sink_clickhouse*.
 # Names are matched against this registry rather than parsed, so a name that
 # matches nothing is reported rather than silently inventing a feature.
+#
+# Invariants -- what every integration must hold, whatever it does -- are a
+# second axis. See invariants.yml and integrations.yml beside this file.
 
 features:
   # --- Sources ------------------------------------------------------------
@@ -171,3 +174,14 @@ features:
   - id: cli.version
     description: The shipped binary reports the version it was built from.
     requires: [release]
+
+  # --- The gate itself ----------------------------------------------------
+  # These are not shipped, and they are declared anyway: a wrong gate is worse
+  # than no gate, so losing its tests must show up here like any other gap.
+  - id: tooling.conformance
+    description: The harness proves the declared invariants for any integration.
+    requires: [unit]
+
+  - id: tooling.coverage
+    description: Tests attribute to features and invariants, and the registries match the code.
+    requires: [unit]

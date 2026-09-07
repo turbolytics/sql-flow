@@ -1,0 +1,149 @@
+# Every integration sqlflow can construct, and what each one claims.
+#
+# One entry per case in sinks.buildSink, sources.New and handlers.New. A test
+# in each of those packages holds Kinds() equal to the ids here, so a new case
+# without an entry fails `go test -short` in seconds. An integration the
+# engine can build and this file does not name has no invariant cells at all,
+# which is the sink.iceberg failure: nothing written down, so nothing can be
+# missing.
+#
+# `implements` lists the interfaces the integration satisfies beyond its
+# kind's base contract. Prober means the sink checks its destination before
+# the first batch arrives.
+#
+# `exempt` names invariants that cannot apply, each with a reason. An
+# exemption is one of two statements that must agree: the harness skips what
+# it cannot exercise, and this file excuses it. Either one alone leaves the
+# cell missing.
+#
+# `feature` ties the entry to features.yml.
+
+integrations:
+  # --- Sinks ---------------------------------------------------------------
+  - id: sink.kafka
+    kind: sink
+    implements: [Sink]
+    feature: sink.kafka
+    exempt: []
+
+  - id: sink.clickhouse
+    kind: sink
+    implements: [Sink, Prober]
+    feature: sink.clickhouse
+    exempt: []
+
+  - id: sink.iceberg
+    kind: sink
+    implements: [Sink, Prober]
+    feature: sink.iceberg
+    exempt: []
+
+  - id: sink.sqlcommand
+    kind: sink
+    implements: [Sink]
+    feature: sink.sqlcommand
+    exempt:
+      - invariant: sink.flush.keeps_batch
+        reason: >
+          writes through the pipeline's own DuckDB connection, so a failure is
+          not a network blip. retriesHelp already excludes it.
+      - invariant: sink.flush.honours_context
+        reason: nothing to wait on that a context could cut short
+      - invariant: sink.error.classifies
+        reason: no network, so nothing to classify as unreachable
+      - invariant: sink.probe.fails_start
+        reason: nothing to dial
+
+  - id: sink.console
+    kind: sink
+    implements: [Sink]
+    feature: sink.console
+    exempt:
+      - invariant: sink.flush.keeps_batch
+        reason: >
+          stdout cannot be temporarily unavailable. retriesHelp already
+          excludes it.
+      - invariant: sink.flush.honours_context
+        reason: nothing to wait on that a context could cut short
+      - invariant: sink.error.classifies
+        reason: no network, so nothing to classify as unreachable
+      - invariant: sink.probe.fails_start
+        reason: nothing to dial
+
+  - id: sink.noop
+    kind: sink
+    implements: [Sink]
+    feature: sink.console
+    exempt:
+      - invariant: sink.write.buffers_only
+        reason: >
+          discards every row by design, so there is no destination for a
+          write to reach and nothing a read-back could show
+      - invariant: sink.flush.keeps_batch
+        reason: discards every row by design; it exists for benchmarking
+      - invariant: sink.flush.no_hollow_success
+        reason: discards every row by design
+      - invariant: sink.flush.preserves_order
+        reason: discards every row by design
+      - invariant: sink.flush.honours_context
+        reason: nothing to wait on
+      - invariant: sink.batch.reports_buffer
+        reason: buffers nothing by design
+      - invariant: sink.error.classifies
+        reason: never fails
+      - invariant: sink.probe.fails_start
+        reason: nothing to dial
+
+  # --- Sources ---------------------------------------------------------------
+  - id: source.kafka
+    kind: source
+    implements: [Source, MarkCommitter]
+    feature: source.kafka
+    exempt: []
+
+  - id: source.websocket
+    kind: source
+    implements: [Source]
+    feature: source.websocket
+    exempt:
+      - invariant: source.commit.only_processed
+        reason: no replayable position; at-most-once by construction
+      - invariant: source.resume.from_committed
+        reason: no replayable position; at-most-once by construction
+      - invariant: source.marks.never_regress
+        reason: no marks
+      - invariant: source.commit.on_revoke
+        reason: no partitions to revoke
+
+  - id: source.webhook
+    kind: source
+    implements: [Source]
+    feature: source.webhook
+    exempt:
+      - invariant: source.commit.only_processed
+        reason: no replayable position; at-most-once by construction
+      - invariant: source.resume.from_committed
+        reason: no replayable position; at-most-once by construction
+      - invariant: source.marks.never_regress
+        reason: no marks
+      - invariant: source.commit.on_revoke
+        reason: no partitions to revoke
+
+  # --- Handlers --------------------------------------------------------------
+  - id: handler.structured
+    kind: handler
+    implements: [Handler]
+    feature: handler.structured
+    exempt: []
+
+  - id: handler.inferred_mem
+    kind: handler
+    implements: [Handler, MetadataWriter]
+    feature: handler.inferred_mem
+    exempt: []
+
+  - id: handler.inferred_disk
+    kind: handler
+    implements: [Handler]
+    feature: handler.inferred_disk
+    exempt: []

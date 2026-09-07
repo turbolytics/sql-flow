@@ -21,9 +21,20 @@ import "testing"
 // The marker goes to the test log, which `go test -json` carries as output
 // events, so the matrix reads it from ordinary suite output with no plugin
 // and no build tag.
-func Covers(t *testing.T, features ...string) {
+func Covers(t testing.TB, features ...string) {
 	t.Helper()
 	for _, feature := range features {
 		t.Logf("COVERS %s", feature)
 	}
+}
+
+// Invariant records that this test proved one invariant for one integration.
+//
+// A feature attributes by test name. An invariant cannot: the conformance
+// harness runs the same code for every integration, so the name says nothing
+// about which one this run was. Only the marker knows, so it carries both
+// ids.
+func Invariant(t testing.TB, invariant, integration string) {
+	t.Helper()
+	t.Logf("COVERS invariant=%s integration=%s", invariant, integration)
 }
