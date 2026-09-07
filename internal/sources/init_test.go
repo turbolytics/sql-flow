@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/webhook"
 	"github.com/turbolytics/sql-flow/internal/websocket"
 	"github.com/zeebo/assert"
@@ -17,6 +18,7 @@ import (
 )
 
 func TestSinkRetry_NewWebsocket(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s, err := New(config.Source{
 		Type:      "websocket",
 		Websocket: &config.WebsocketSource{URI: "ws://localhost:1234/subscribe"},
@@ -28,11 +30,13 @@ func TestSinkRetry_NewWebsocket(t *testing.T) {
 }
 
 func TestSinkRetry_NewWebsocketRequiresURI(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	_, err := New(config.Source{Type: "websocket"}, zap.NewNop(), nil)
 	assert.Error(t, err)
 }
 
 func TestSinkRetry_NewWebhook(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s, err := New(config.Source{
 		Type: "webhook",
 		Webhook: &config.WebhookSource{
@@ -54,6 +58,7 @@ func TestSinkRetry_NewWebhook(t *testing.T) {
 // signature_type is what turns HMAC verification on, matching
 // sqlflow/sources/__init__.py.
 func TestSinkRetry_NewWebhookWithoutSignatureType(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s, err := New(config.Source{
 		Type:    "webhook",
 		Webhook: &config.WebhookSource{},
@@ -68,6 +73,7 @@ func TestSinkRetry_NewWebhookWithoutSignatureType(t *testing.T) {
 // The webhook source is the only one that records its own metrics, so the
 // provider has to survive the trip through New.
 func TestSinkRetry_NewWebhookRecordsRequestMetrics(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	reader := sdkmetric.NewManualReader()
 	s, err := New(
 		config.Source{Type: "webhook", Webhook: &config.WebhookSource{}},
@@ -102,6 +108,7 @@ func TestSinkRetry_NewWebhookRecordsRequestMetrics(t *testing.T) {
 }
 
 func TestSinkRetry_NewUnsupportedSource(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	_, err := New(config.Source{Type: "carrier-pigeon"}, zap.NewNop(), nil)
 	assert.Error(t, err)
 }

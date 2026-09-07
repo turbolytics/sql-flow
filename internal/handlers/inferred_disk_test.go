@@ -9,6 +9,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -66,6 +67,7 @@ func newTestDiskHandler(t *testing.T, sql string) (*InferredDiskBatchHandler, st
 }
 
 func TestHandlerInferredDisk_SingleRowReturn(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
@@ -82,6 +84,7 @@ func TestHandlerInferredDisk_SingleRowReturn(t *testing.T) {
 }
 
 func TestHandlerInferredDisk_NestedReturn(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, _ := newTestDiskHandler(t, `
 SELECT
     {'city': city} as s1,
@@ -108,6 +111,7 @@ FROM batch`)
 // The cache dir is the handler's to manage: a fresh checkout has no
 // /tmp/sqlflow/resultscache, and the Python engine's open() would fail there.
 func TestHandlerInferredDisk_CreatesCacheDir(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, dir := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	info, err := os.Stat(dir)
@@ -127,6 +131,7 @@ func TestHandlerInferredDisk_CreatesCacheDir(t *testing.T) {
 // the second invoke sees only its own messages, and CREATE TABLE batch
 // would fail outright if the previous invoke had not dropped it.
 func TestHandlerInferredDisk_ResetsBetweenBatches(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
@@ -149,6 +154,7 @@ func TestHandlerInferredDisk_ResetsBetweenBatches(t *testing.T) {
 }
 
 func TestHandlerInferredDisk_BatchTableDroppedAfterInvoke(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
@@ -174,6 +180,7 @@ func TestHandlerInferredDisk_BatchTableDroppedAfterInvoke(t *testing.T) {
 // Malformed JSON is rejected per message, matching InferredMemBatch: a bad
 // line buffered to disk would otherwise fail the whole batch at read_json.
 func TestHandlerInferredDisk_RejectsInvalidJSON(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	assert.NoError(t, h.Init(context.Background()))
@@ -184,6 +191,7 @@ func TestHandlerInferredDisk_RejectsInvalidJSON(t *testing.T) {
 // message it consumed even when the handler rejected it, so a batch of
 // entirely malformed messages reaches Invoke with nothing buffered.
 func TestHandlerInferredDisk_EmptyBatchIsNoOp(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, _ := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()
@@ -198,6 +206,7 @@ func TestHandlerInferredDisk_EmptyBatchIsNoOp(t *testing.T) {
 // empty file, which must come back as an empty table rather than a read
 // failure that would fail the batch and stall the source offset.
 func TestHandlerInferredDisk_EmptyResult(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, _ := newTestDiskHandler(t, "SELECT city FROM batch WHERE city = 'Nowhere'")
 
 	ctx := context.Background()
@@ -215,6 +224,7 @@ func TestHandlerInferredDisk_EmptyResult(t *testing.T) {
 // Close removes the staged files; leaving a many-MB consumer_batch.json in
 // the cache dir after shutdown is a leak.
 func TestHandlerInferredDisk_CloseRemovesFiles(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_disk")
 	h, dir := newTestDiskHandler(t, "SELECT COUNT(*) as num_rows FROM batch")
 
 	ctx := context.Background()

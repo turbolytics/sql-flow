@@ -62,14 +62,12 @@ KINDS = ("sink", "source", "handler", "pipeline")
 # attribute the same claim.
 VERIFIERS = ("harness", "typetable")
 
-# A pipeline invariant is a property of the engine, not of anything a config
-# names, so its marker carries this in place of an integration id and it gets
-# one cell rather than a column per integration.
 PIPELINE = "pipeline"
 
-# pipeline is not among them: no constructor switch builds a pipeline, so no
-# entry in integrations.yml carries that kind.
-INTEGRATION_KINDS = ("sink", "source", "handler")
+# A pipeline configuration is an integration of the harness, though no
+# constructor switch builds one. `constructed: false` says so, and the Kinds()
+# agreement tests skip those entries.
+INTEGRATION_KINDS = ("sink", "source", "handler", "pipeline")
 
 
 def load_features():
@@ -166,40 +164,6 @@ def validate_registries(invariants, integrations, features):
     return problems
 
 
-def go_prefix(feature_id):
-    """sink.clickhouse -> TestSinkClickhouse"""
-    parts = re.split(r"[._]", feature_id)
-    return "Test" + "".join(p.capitalize() for p in parts)
-
-
-def py_prefix(feature_id):
-    """sink.clickhouse -> test_sink_clickhouse"""
-    return "test_" + feature_id.replace(".", "_")
-
-
-def strip_level_prefix(name):
-    """TestIntegrationSourceKafka_Commits -> TestSourceKafka_Commits
-
-    The prefix says which pass runs the test. It must not also say which
-    feature the test covers, or every integration test would attribute to
-    nothing and land in the unattributed list.
-    """
-    if name.startswith(INTEGRATION_PREFIX):
-        return "Test" + name[len(INTEGRATION_PREFIX):]
-    return name
-
-
-def match(name, prefixes):
-    """Longest matching prefix wins, so sink.iceberg does not swallow
-    sink.iceberg_merge."""
-    best = None
-    for feature_id, prefix in prefixes.items():
-        if name.startswith(prefix):
-            if best is None or len(prefix) > len(prefixes[best]):
-                best = feature_id
-    return best
-
-
 # A plain marker names an extra feature. A structured one names an invariant
 # and the integration it was proven on; the harness emits those, and a test
 # name cannot carry two ids.
@@ -269,49 +233,66 @@ def parse_pytest(path):
     return results, covers, {}
 
 
+def parent(name):
+    """TestParent/case -> TestParent. A subtest is part of its parent."""
+    return name.split("/", 1)[0]
+
+
 def build(features, go_results, py_results, go_covers=None, py_covers=None,
           it_results=None, it_covers=None):
-    """Attribute tests to features.
+    """Attribute tests to features, by marker and only by marker.
 
-    The name is the primary attribution and stays the cheap default: rename a
-    test and it is attributed, with no import and no marker. Markers add the
-    extra features an end-to-end test genuinely proves, which a single name
-    cannot express. A feature covered only by markers has no test of its own,
-    and the secondary-attribution section below says so.
+    A test used to attribute to the feature whose id its name happened to
+    prefix. That silently miscredited a test whose name merely started the same
+    way, and silently credited nothing when a name drifted: #221 landed four
+    tests that covered no feature and nothing said so until the matrix moved.
+
+    A test now says what it covers. A subtest inherits its parent, because a
+    subtest is part of that test rather than one of its own -- requiring a
+    marker inside every t.Run would put one in 149 closures to repeat what the
+    enclosing test already said.
     """
     known = {f["id"] for f in features}
-    go_prefixes = {f["id"]: go_prefix(f["id"]) for f in features}
-    py_prefixes = {f["id"]: py_prefix(f["id"]) for f in features}
 
     coverage = {f["id"]: {lvl: [] for lvl in LEVELS} for f in features}
     secondary = {f["id"]: {lvl: [] for lvl in LEVELS} for f in features}
     unmatched = {lvl: [] for lvl in LEVELS}
     unknown_markers = []
 
-    for level, results, prefixes, extras in (
-        ("unit", go_results, go_prefixes, go_covers or {}),
-        ("integration", it_results or {}, go_prefixes, it_covers or {}),
-        ("release", py_results, py_prefixes, py_covers or {}),
+    for level, results, extras in (
+        ("unit", go_results, go_covers or {}),
+        ("integration", it_results or {}, it_covers or {}),
+        ("release", py_results, py_covers or {}),
     ):
         for name, outcome in sorted(results.items()):
-            feature_id = match(strip_level_prefix(name), prefixes)
-            if feature_id:
-                coverage[feature_id][level].append((name, outcome))
-            elif not extras.get(name):
-                # A test carrying a marker is attributed by it. Listing it here
-                # would tell the reader to rename a test that already says what
-                # it covers, and the conformance harness attributes only by
-                # marker: its runner's name matches no feature at all.
-                unmatched[level].append(name)
+            # Deduped, order kept. A test can reach the same marker twice --
+            # the conformance entry points emit one before the -short skip and
+            # one when the harness finishes -- and counting both would put the
+            # same name in a cell twice.
+            claimed = extras.get(name) or extras.get(parent(name)) or []
+            marks, seen = [], set()
+            for feature_id in claimed:
+                if feature_id not in seen:
+                    seen.add(feature_id)
+                    marks.append(feature_id)
 
-            for extra in extras.get(name, []):
-                if extra not in known:
-                    unknown_markers.append((name, extra))
+            if not marks:
+                # Report the parent once rather than every subtest under it:
+                # naming the test is what a reader has to act on, and listing
+                # its cases buries that line.
+                if parent(name) not in unmatched[level]:
+                    unmatched[level].append(parent(name))
+                continue
+
+            for feature_id in marks:
+                if feature_id not in known:
+                    unknown_markers.append((name, feature_id))
                     continue
-                if extra == feature_id:
-                    continue
-                coverage[extra][level].append((name, outcome))
-                secondary[extra][level].append(name)
+                coverage[feature_id][level].append((name, outcome))
+                # Every attribution is a marker now, so "secondary" means the
+                # second and later features one test claims.
+                if feature_id != marks[0]:
+                    secondary[feature_id][level].append(name)
 
     return coverage, secondary, unmatched, unknown_markers
 
@@ -333,9 +314,6 @@ def build_invariants(invariants, integrations, results, evidence):
     kinds = {i["id"]: i["kind"] for i in integrations}
     allowed = {}
     for inv in invariants:
-        if inv["applies_to"] == PIPELINE:
-            allowed[inv["id"]] = {PIPELINE}
-            continue
         allowed[inv["id"]] = {
             iid for iid, kind in kinds.items() if kind == inv["applies_to"]
         }
@@ -402,14 +380,7 @@ def snapshot_invariants(invariants, integrations, built):
         if inv.get("violated_once"):
             entry["violated_once"] = list(inv["violated_once"])
 
-        # A pipeline invariant is a property of the engine rather than of
-        # anything a config names, so it gets one cell instead of a column per
-        # integration.
-        subjects = by_kind.get(inv["applies_to"], [])
-        if inv["applies_to"] == PIPELINE:
-            subjects = [{"id": PIPELINE}]
-
-        for integ in subjects:
+        for integ in by_kind.get(inv["applies_to"], []):
             exemption = exemptions.get((inv["id"], integ["id"]))
             reason = exemption  # None when the integration must prove it
             levels = {}
@@ -570,9 +541,10 @@ def render(snap):
         "Do not edit by hand.",
         "",
         "Features are declared in `docs/coverage/features.yml`. A test attaches",
-        "to one by name -- `sink.clickhouse` is covered by `TestSinkClickhouse*`",
-        "or `test_sink_clickhouse*` -- and that is the cheap default: rename a",
-        "test and it is attributed, with no import and no marker.",
+        "to one by saying so: `coverage.Covers(t, \"sink.clickhouse\")` in Go, or",
+        "the `covers` marker in pytest. A test used to attach by the shape of",
+        "its name, which credited a test whose name merely started the same way",
+        "and credited nothing when a name drifted.",
         "",
         "Levels are derived from where a test ran, never declared, so they",
         "cannot drift. `unit` is `go test -short`, `integration` is the Go",
@@ -671,8 +643,8 @@ def render(snap):
         lines.append("")
 
     # Secondary attribution is visible on purpose. One test per feature is the
-    # goal; a feature reached only through another test's marker has no test of
-    # its own, and this is where that shows.
+    # goal; a feature every test claims second is one no test is about, and
+    # this is where that shows.
     by_marker = []
     for feature in snap["features"]:
         for level in LEVELS:
@@ -684,9 +656,9 @@ def render(snap):
         lines += [
             "## Covered only by another test's marker",
             "",
-            "These features have no test named for them. That is legitimate for a",
-            "capability an end-to-end run proves in passing, and a smell for one",
-            "that deserves its own test.",
+            "Every test that covers these claims something else first. That is",
+            "legitimate for a capability an end-to-end run proves in passing, and",
+            "a smell for one that deserves a test of its own.",
             "",
         ]
         for fid, level, names in by_marker:
@@ -699,8 +671,8 @@ def render(snap):
             lines += [
                 f"## Unattributed {level} tests ({len(names)})",
                 "",
-                "These match no declared feature. Either rename them to the",
-                "convention, or add the feature to `features.yml`.",
+                "These carry no `coverage.Covers` marker, so they cover nothing.",
+                "Add the marker, or add the feature to `features.yml` first.",
                 "",
             ]
             lines += [f"- `{n}`" for n in names]
@@ -924,17 +896,30 @@ def render_invariants(snap):
 
         if per_pipeline:
             lines += [
-                f"These {family} invariants are properties of the engine rather",
-                "than of anything a config names, so they carry one cell instead",
-                "of a column per integration. A test proves one by calling",
-                "`coverage.PipelineInvariant`.",
+                f"These {family} invariants are properties of the consume loop",
+                "rather than of anything a config file names. The columns are",
+                "its configurations, and `internal/conformance` runs each one",
+                "through every path that reaches a batch: the batch filling, the",
+                "flush interval elapsing, the source closing, and a cancel that",
+                "drains. An invariant holds only if it holds on all four.",
                 "",
-                "| Invariant | Claim | Proven |",
-                "| --- | --- | --- |",
             ]
+            pipeline_columns = []
             for inv in per_pipeline:
-                cell = invariant_cell(inv["integrations"][PIPELINE], inv["requires"])
-                lines.append(f"| `{inv['id']}` | {describe_claim(inv)} | {cell} |")
+                for integ in inv["integrations"]:
+                    if integ not in pipeline_columns:
+                        pipeline_columns.append(integ)
+
+            lines.append("| Invariant | Claim | "
+                         + " | ".join(f"`{c}`" for c in pipeline_columns) + " |")
+            lines.append("| --- | --- | "
+                         + " | ".join("---" for _ in pipeline_columns) + " |")
+            for inv in per_pipeline:
+                cells = " | ".join(
+                    invariant_cell(inv["integrations"][c], inv["requires"])
+                    if c in inv["integrations"] else "·"
+                    for c in pipeline_columns)
+                lines.append(f"| `{inv['id']}` | {describe_claim(inv)} | {cells} |")
             lines.append("")
 
     if snap["invariant_gaps"]:

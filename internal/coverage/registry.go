@@ -177,9 +177,10 @@ func Integrations(kind string) ([]string, error) {
 
 	var doc struct {
 		Integrations []struct {
-			ID       string `yaml:"id"`
-			Kind     string `yaml:"kind"`
-			TestOnly bool   `yaml:"test_only"`
+			ID          string `yaml:"id"`
+			Kind        string `yaml:"kind"`
+			TestOnly    bool   `yaml:"test_only"`
+			Constructed *bool  `yaml:"constructed"`
 		} `yaml:"integrations"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -188,9 +189,13 @@ func Integrations(kind string) ([]string, error) {
 
 	out := []string{}
 	for _, integration := range doc.Integrations {
-		// A test-only integration has no constructor case, so it must not
-		// appear in the list Kinds() is held equal to.
+		// Neither a test-only integration nor an unconstructed one has a case
+		// in a constructor switch, so neither may appear in the list Kinds()
+		// is held equal to.
 		if integration.TestOnly {
+			continue
+		}
+		if integration.Constructed != nil && !*integration.Constructed {
 			continue
 		}
 		if integration.Kind == kind {

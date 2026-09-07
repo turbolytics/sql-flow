@@ -10,6 +10,7 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -40,6 +41,7 @@ func newTestADBCConn(t *testing.T) (adbc.Connection, func()) {
 // TestCliDevInvoke_InferredMemBatch mirrors the Python suite's basic.agg.mem
 // invoke case: two messages in, one aggregated row per city out.
 func TestCliDevInvoke_InferredMemBatch(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -65,6 +67,7 @@ func TestCliDevInvoke_InferredMemBatch(t *testing.T) {
 // and none of the other invoke tests has an array anywhere in its fixture,
 // which is how "unsupported json array value" reached a release.
 func TestCliDevInvoke_BlueskyFirehose(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -106,6 +109,7 @@ func TestCliDevInvoke_BlueskyFirehose(t *testing.T) {
 // TestCliDevInvoke_StructuredBatch covers the path where the handler's table is
 // created by a config command, which must run before the handler is built.
 func TestCliDevInvoke_StructuredBatch(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -129,6 +133,7 @@ func TestCliDevInvoke_StructuredBatch(t *testing.T) {
 // TestCliDevInvoke_SkipsBlankLines matches the Python invoke, which strips each
 // fixture line and writes only the non-empty ones.
 func TestCliDevInvoke_SkipsBlankLines(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -161,6 +166,7 @@ func TestCliDevInvoke_SkipsBlankLines(t *testing.T) {
 // bytes of lines already handed to the handler; a handler keeps those slices
 // until invoke, so any that were not copied out decode as garbage.
 func TestCliDevInvoke_LargeFixture(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -182,6 +188,7 @@ func TestCliDevInvoke_LargeFixture(t *testing.T) {
 }
 
 func TestCliDevInvoke_ReportsMissingFixture(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -201,6 +208,7 @@ func TestCliDevInvoke_ReportsMissingFixture(t *testing.T) {
 // users meet it first. It must report no rows rather than crash on the nil
 // table an empty batch produces.
 func TestCliDevInvoke_EmptyFixture(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -223,6 +231,7 @@ func TestCliDevInvoke_EmptyFixture(t *testing.T) {
 // A fixture of nothing but blank lines reaches the handler with no messages
 // by the same route.
 func TestCliDevInvoke_FixtureOfOnlyBlankLines(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 

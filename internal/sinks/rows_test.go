@@ -7,6 +7,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -33,6 +34,7 @@ func newTestTable(t *testing.T, cities []string, counts []int64) arrow.Table {
 }
 
 func TestSinkConsole_RowsAsJSONOneObjectPerRow(t *testing.T) {
+	coverage.Covers(t, "sink.console")
 	table := newTestTable(t, []string{"NYC", "SF"}, []int64{3, 1})
 	defer table.Release()
 
@@ -52,6 +54,7 @@ func TestSinkConsole_RowsAsJSONOneObjectPerRow(t *testing.T) {
 }
 
 func TestSinkConsole_RowsAsJSONEmptyTable(t *testing.T) {
+	coverage.Covers(t, "sink.console")
 	table := newTestTable(t, []string{}, []int64{})
 	defer table.Release()
 

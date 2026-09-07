@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -49,6 +50,7 @@ func newMeteredRetry(inner *flakySink, p RetryPolicy) (*retrying, sdkmetric.Read
 
 // Two failures then a success is two retries, counted before the batch lands.
 func TestSinkRetry_MetricsCountsEveryRetry(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := &flakySink{failures: 2, err: errs.New(errs.CodeSinkUnreachable, "refused")}
 	r, reader := newMeteredRetry(inner, testPolicy())
 
@@ -60,6 +62,7 @@ func TestSinkRetry_MetricsCountsEveryRetry(t *testing.T) {
 // A sink that works records nothing, so a nonzero counter always means the
 // destination is struggling.
 func TestSinkRetry_MetricsSuccessCountsNoRetries(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := &flakySink{}
 	r, reader := newMeteredRetry(inner, testPolicy())
 
@@ -70,6 +73,7 @@ func TestSinkRetry_MetricsSuccessCountsNoRetries(t *testing.T) {
 
 // A rejected write is not retried, so it must not inflate the retry counter.
 func TestSinkRetry_MetricsNonRetryableCountsNoRetries(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkWriteFailed, "no such column")}
 	r, reader := newMeteredRetry(inner, testPolicy())
 
@@ -81,6 +85,7 @@ func TestSinkRetry_MetricsNonRetryableCountsNoRetries(t *testing.T) {
 // An exhausted ladder counts every retry it made, which is one fewer than the
 // attempts: the last attempt is not followed by another.
 func TestSinkRetry_MetricsExhaustedLadderCountsItsRetries(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	p := testPolicy()
 	p.MaxAttempts = 4
 	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkUnreachable, "refused")}
@@ -94,6 +99,7 @@ func TestSinkRetry_MetricsExhaustedLadderCountsItsRetries(t *testing.T) {
 // A nil provider must not panic. A pipeline started without --metrics still
 // retries.
 func TestSinkRetry_MetricsNilProviderIsSafe(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := &flakySink{failures: 1, err: errs.New(errs.CodeSinkUnreachable, "refused")}
 	r, _ := newTestRetry(inner, testPolicy())
 	r.onRetry = retryCounter(nil, "clickhouse")

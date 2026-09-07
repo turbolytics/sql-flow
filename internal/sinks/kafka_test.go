@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -54,6 +55,7 @@ func flushWithin(t *testing.T, s *KafkaSink, ctx context.Context, limit time.Dur
 }
 
 func TestSinkKafka_NewRequiresATopic(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
 	_, err := NewKafkaSink(config.KafkaSink{Brokers: []string{unreachableBroker}})
 	assert.Error(t, err)
 }
@@ -62,6 +64,7 @@ func TestSinkKafka_NewRequiresATopic(t *testing.T) {
 // client anyway produces a sink that connects in the clear, which is worse
 // than not starting.
 func TestSinkKafka_NewRejectsAnUnknownSecurityProtocol(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
 	_, err := NewKafkaSink(config.KafkaSink{
 		Brokers:          []string{unreachableBroker},
 		Topic:            "sink-test",
@@ -80,6 +83,7 @@ func TestSinkKafka_NewRejectsAnUnknownSecurityProtocol(t *testing.T) {
 // franz-go retries a produce indefinitely by default. The process hangs on
 // shutdown and a supervisor eventually kills it.
 func TestSinkKafka_FlushHonoursItsContext(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
 	s := newUnreachableKafkaSink(t)
 
 	table := newTestTable(t, []string{"nyc"}, []int64{1})
@@ -109,6 +113,7 @@ func TestSinkKafka_FlushHonoursItsContext(t *testing.T) {
 // 127.0.0.1:1. The sink now buffers on the way in, so no context can fail a
 // write, and the guarantee that matters moved to Flush.
 func TestSinkKafka_WriteTableBuffersWhateverItsContextSays(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
 	s := newUnreachableKafkaSink(t)
 
 	table := newTestTable(t, []string{"nyc"}, []int64{1})
@@ -129,6 +134,7 @@ func TestSinkKafka_WriteTableBuffersWhateverItsContextSays(t *testing.T) {
 // after a flush returns clean, so a flush that hides a failed produce loses
 // the batch and every offset behind it.
 func TestSinkKafka_FlushReportsProduceErrors(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
 	s := newUnreachableKafkaSink(t)
 
 	table := newTestTable(t, []string{"nyc", "sfo"}, []int64{1, 2})
@@ -143,6 +149,7 @@ func TestSinkKafka_FlushReportsProduceErrors(t *testing.T) {
 
 // Batch is what the tumbling-window manager reads back after a write.
 func TestSinkKafka_BatchIsTheLastWrite(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
 	s := newUnreachableKafkaSink(t)
 
 	batch, err := s.Batch()

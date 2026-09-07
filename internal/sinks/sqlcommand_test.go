@@ -14,6 +14,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/zeebo/assert"
 )
@@ -97,6 +98,7 @@ func queryStrings(t *testing.T, conn adbc.Connection, sql string) []string {
 }
 
 func TestSinkSqlcommand_NewRequiresSQL(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 
 	_, err := NewSQLCommandSink(conn, "", nil)
@@ -110,6 +112,7 @@ func TestSinkSqlcommand_NewRequiresSQL(t *testing.T) {
 // The batch reaches the user's SQL under the name the Python sink registered
 // it as. A different name and every shipped sqlcommand config stops working.
 func TestSinkSqlcommand_RunsSQLAgainstTheBatch(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	exec(t, conn, "CREATE TABLE out (city VARCHAR, count BIGINT)")
 
@@ -129,6 +132,7 @@ func TestSinkSqlcommand_RunsSQLAgainstTheBatch(t *testing.T) {
 // Writes accumulate until a flush, so a batch split across several WriteTable
 // calls reaches the SQL as one table rather than as the last write.
 func TestSinkSqlcommand_AccumulatesUntilFlush(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	exec(t, conn, "CREATE TABLE out (city VARCHAR, count BIGINT)")
 
@@ -156,6 +160,7 @@ func TestSinkSqlcommand_AccumulatesUntilFlush(t *testing.T) {
 // rewrites them on every flush -- a pipeline that duplicates its whole history
 // once per interval.
 func TestSinkSqlcommand_EachFlushReplacesTheBatchTable(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	exec(t, conn, "CREATE TABLE out (city VARCHAR, count BIGINT)")
 
@@ -181,6 +186,7 @@ func TestSinkSqlcommand_EachFlushReplacesTheBatchTable(t *testing.T) {
 // an interval whether or not a batch arrived, so an INSERT that fired on an
 // empty flush would write the previous batch again every interval.
 func TestSinkSqlcommand_FlushWithNothingPendingIsANoop(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	exec(t, conn, "CREATE TABLE out (city VARCHAR, count BIGINT)")
 
@@ -204,6 +210,7 @@ func TestSinkSqlcommand_FlushWithNothingPendingIsANoop(t *testing.T) {
 // the COPY that writes a parquet file, an ATTACHed table's DELETE -- still
 // happens.
 func TestSinkSqlcommand_EmptyBatchStillRunsTheSQL(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	exec(t, conn, "CREATE TABLE runs (n BIGINT)")
 
@@ -222,6 +229,7 @@ func TestSinkSqlcommand_EmptyBatchStillRunsTheSQL(t *testing.T) {
 // Substitutions are how a config writes one file per flush instead of
 // overwriting a single path. Each flush must produce a different value.
 func TestSinkSqlcommand_SubstitutesUUID4(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	exec(t, conn, "CREATE TABLE out (name VARCHAR)")
 
@@ -251,6 +259,7 @@ func TestSinkSqlcommand_SubstitutesUUID4(t *testing.T) {
 // placeholder in the SQL, where it would be a syntax error whose message names
 // the wrong problem.
 func TestSinkSqlcommand_RejectsAnUnknownSubstitution(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 
 	s, err := NewSQLCommandSink(conn, "INSERT INTO out VALUES ('<x>')",
@@ -270,6 +279,7 @@ func TestSinkSqlcommand_RejectsAnUnknownSubstitution(t *testing.T) {
 // pipeline's error policy is what decides the consequence, and it can only
 // decide on an error it is handed.
 func TestSinkSqlcommand_ReportsASQLError(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 
 	s, err := NewSQLCommandSink(conn, "INSERT INTO no_such_table SELECT * FROM sqlflow_sink_batch", nil)
@@ -284,6 +294,7 @@ func TestSinkSqlcommand_ReportsASQLError(t *testing.T) {
 
 // Batch is what the tumbling-window manager reads back after a write.
 func TestSinkSqlcommand_BatchIsTheLastWrite(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 
 	s, err := NewSQLCommandSink(conn, "SELECT 1", nil)

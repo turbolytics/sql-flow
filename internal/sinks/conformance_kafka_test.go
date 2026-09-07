@@ -24,6 +24,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/conformance"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/zeebo/assert"
 )
@@ -33,6 +34,10 @@ import (
 const sinkBrokerImage = "confluentinc/confluent-local:7.5.0"
 
 func TestIntegrationSinkKafka_Conformance(t *testing.T) {
+	// Before the skip: the unit pass never reaches the harness, and a test
+	// that emits nothing there reads as covering no feature at all.
+	coverage.Covers(t, "sink.kafka")
+
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -16,6 +17,7 @@ import (
 // edit somewhere else.
 
 func TestConfigValidation_ExampleMatchesPythonOutput(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	golden, err := os.ReadFile("testdata/config_example.golden")
 	assert.NoError(t, err)
 
@@ -31,6 +33,7 @@ func TestConfigValidation_ExampleMatchesPythonOutput(t *testing.T) {
 // that is how `type: webhook` came to be rejected by `config validate` while
 // `run` accepted it.
 func TestConfigValidation_Examples(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	for _, path := range exampleConfigs(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			assert.NoError(t, validateConfig(path))
@@ -39,6 +42,7 @@ func TestConfigValidation_Examples(t *testing.T) {
 }
 
 func TestConfigValidation_RendersTemplateBeforeValidating(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	// batch_size arrives only through the Jinja2 default filter; validating
 	// the raw file would see a template expression where an integer is required.
 	path := writeTempConfig(t, `
@@ -61,6 +65,7 @@ pipeline:
 }
 
 func TestConfigValidation_RejectsMissingPipeline(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	path := writeTempConfig(t, "commands: []\n")
 
 	err := validateConfig(path)
@@ -69,6 +74,7 @@ func TestConfigValidation_RejectsMissingPipeline(t *testing.T) {
 }
 
 func TestConfigValidation_RejectsBadEnum(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	path := writeTempConfig(t, `
 pipeline:
   batch_size: 1
@@ -87,6 +93,7 @@ pipeline:
 }
 
 func TestConfigValidation_RejectsMissingRequiredHandlerSQL(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	path := writeTempConfig(t, `
 pipeline:
   batch_size: 1
@@ -109,11 +116,13 @@ pipeline:
 }
 
 func TestConfigValidation_ReportsMissingFile(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	err := validateConfig(filepath.Join(t.TempDir(), "nope.yml"))
 	assert.Error(t, err)
 }
 
 func TestConfigValidation_AcceptsStatePath(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	path := writeTempConfig(t, `
 pipeline:
   batch_size: 10

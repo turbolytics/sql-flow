@@ -21,12 +21,14 @@ import (
 // break it in the ways real sinks have.
 
 func TestToolingConformanceSinks_ACorrectSinkPasses(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	Sinks(t, subject(newMemSink()))
 }
 
 // #221's defect: a failed Flush discards the buffer, so the retry finds
 // nothing to send and reports a success that delivered no rows.
 func TestToolingConformanceSinks_ASinkThatDropsItsBatchIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	v := verdicts(t, subject(&dropSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, v.failure != "")
@@ -38,6 +40,7 @@ func TestToolingConformanceSinks_ASinkThatDropsItsBatchIsCaught(t *testing.T) {
 // after the retry finds the row and every downstream check passes for the
 // wrong reason. Only a read-back before the first Flush catches it.
 func TestToolingConformanceSinks_ASinkThatWritesThroughIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	vs := verdicts(t, subject(&writeThroughSink{memSink: newMemSink()}))
 
 	assert.True(t, vs[buffersOnly].failure != "")
@@ -51,6 +54,7 @@ func TestToolingConformanceSinks_ASinkThatWritesThroughIsCaught(t *testing.T) {
 // The two invariants are independent: a sink can buffer correctly and still
 // lose the batch, and the matrix must show which one broke.
 func TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	vs := verdicts(t, subject(&dropSink{memSink: newMemSink()}))
 
 	assert.Equal(t, "", vs[buffersOnly].failure)
@@ -59,6 +63,7 @@ func TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly(t *testing.T) {
 
 // A sink that keeps the batch but never clears it delivers the row twice.
 func TestToolingConformanceSinks_ASinkThatDeliversTwiceIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	v := verdicts(t, subject(&neverClearSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, strings.Contains(v.failure, "id=1, id=1"))
@@ -67,12 +72,14 @@ func TestToolingConformanceSinks_ASinkThatDeliversTwiceIsCaught(t *testing.T) {
 // A retry that fails is not the same defect, and the message must not blame
 // the buffer for it.
 func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	v := verdicts(t, subject(&staysDownSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
 }
 
 func TestToolingConformanceSinks_ASinkThatMisreportsItsDepthIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	vs := verdicts(t, subject(&lyingSink{memSink: newMemSink()}))
 
 	// It keeps its batch, so the other two hold. Only the gauge lies.
@@ -85,6 +92,7 @@ func TestToolingConformanceSinks_ASinkThatMisreportsItsDepthIsCaught(t *testing.
 // A sink that reports no depth at all is skipped rather than failed, and the
 // registry must then exempt it. Two statements that have to agree.
 func TestToolingConformanceSinks_ASinkThatReportsNoDepthIsSkipped(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	vs := verdicts(t, subject(&noDepthSink{inner: newMemSink()}))
 
 	assert.Equal(t, "", vs[keepsBatch].failure)
@@ -93,6 +101,7 @@ func TestToolingConformanceSinks_ASinkThatReportsNoDepthIsSkipped(t *testing.T) 
 }
 
 func TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	s := subject(newMemSink())
 	s.Break, s.Heal = nil, nil
 
@@ -108,6 +117,7 @@ func TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped(t *testing.
 // matrix would otherwise read a subject that exercises nothing as covered,
 // which is the sink.iceberg failure.
 func TestToolingConformanceSinks_ASkippedVerdictEmitsNoMarker(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	s := subject(newMemSink())
 	s.Break, s.Heal = nil, nil
 
@@ -118,6 +128,7 @@ func TestToolingConformanceSinks_ASkippedVerdictEmitsNoMarker(t *testing.T) {
 }
 
 func TestToolingConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	s := subject(newMemSink())
 	s.Integration = ""
 
@@ -127,6 +138,7 @@ func TestToolingConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected(t *tes
 // Break without Heal would leave the destination broken for whatever runs
 // next, which is a fault the next subject cannot explain.
 func TestToolingConformanceSinks_ASubjectWithBreakAndNoHealIsRejected(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	s := subject(newMemSink())
 	s.Heal = nil
 
@@ -134,6 +146,7 @@ func TestToolingConformanceSinks_ASubjectWithBreakAndNoHealIsRejected(t *testing
 }
 
 func TestToolingConformanceSinks_ASubjectMissingReadBackIsRejected(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	s := subject(newMemSink())
 	s.ReadBack = nil
 
@@ -143,6 +156,7 @@ func TestToolingConformanceSinks_ASubjectMissingReadBackIsRejected(t *testing.T)
 // The harness must not report a sink defect when the subject's own fault
 // injection did nothing: that sends the reader to the wrong file.
 func TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	s := subject(newMemSink())
 	s.Break = func(*testing.T) {} // does nothing
 	s.Heal = func(*testing.T) {}
@@ -154,6 +168,7 @@ func TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink
 // not be reported as a broken fault: buffers_only already showed that the
 // rows went out early, so the sink is at fault and the subject is not.
 func TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	vs := verdicts(t, subject(&writeThroughSink{memSink: newMemSink()}))
 
 	assert.True(t, vs[buffersOnly].failure != "")
@@ -161,6 +176,7 @@ func TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject(t *tes
 }
 
 func TestToolingConformanceDescribe_NamesTheRowsItFound(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	assert.Equal(t, "no rows", describe(nil))
 	assert.Equal(t, "rows [id=1]", describe([]Row{{"id": int64(1)}}))
 	assert.Equal(t, "rows [id=1, id=2]",
@@ -370,6 +386,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 // Every invariant the harness judges must be declared, or its marker reports
 // as unknown and the cell never appears.
 func TestToolingConformanceSinks_JudgesOnlyDeclaredInvariants(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	declared, err := coverage.Invariants()
 	assert.NoError(t, err)
 
@@ -435,6 +452,7 @@ func oneRow(t *testing.T, id int64) arrow.Table {
 // in-memory double that never touched NoopSink. The id the doubles use has to
 // be test_only, which is what keeps its markers off every cell.
 func TestToolingConformanceSinks_TheDoublesRunUnderATestOnlyIntegration(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	testOnly, err := coverage.IsTestOnly(fakeIntegration)
 	assert.NoError(t, err)
 	assert.True(t, testOnly)
@@ -444,10 +462,92 @@ func TestToolingConformanceSinks_TheDoublesRunUnderATestOnlyIntegration(t *testi
 // constructor switch also names would put a double's marker on a real sink
 // after all.
 func TestToolingConformanceSinks_TheDoublesIntegrationIsNotAShippedSink(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
 	shipped, err := coverage.Integrations("sink")
 	assert.NoError(t, err)
 
 	for _, kind := range shipped {
 		assert.That(t, "sink."+kind != fakeIntegration)
 	}
+}
+
+// --- The pipeline harness --------------------------------------------------
+
+// A pipeline that commits before it flushes moves the position past rows the
+// sink never took. The harness must catch that on every path, so this runs a
+// subject whose recorder reports the wrong order and holds that the verdict
+// names it.
+func TestToolingConformancePipelines_CatchesACommitBeforeTheFlush(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := pipelineVerdictsFor(t, PipelineSubject{
+		Integration: "pipeline.stateful",
+		KeepsState:  true,
+		Options: func(r *Recorder) []core.TurbineOption {
+			// A store that records its save before the sink has flushed is
+			// the defect: the events come out in the wrong order.
+			r.record("save-offsets")
+			return []core.TurbineOption{core.WithStateStore(r.Offsets(), r.Tx())}
+		},
+	})
+
+	assert.True(t, vs[commitAfterFlush].failure != "")
+	assert.True(t, strings.Contains(vs[commitAfterFlush].failure, "want"))
+}
+
+// A configuration that keeps no state cannot prove the invariant about
+// committing state with the offsets. It must skip rather than fail, and the
+// registry must exempt it: two statements that have to agree.
+func TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := pipelineVerdictsFor(t, PipelineSubject{
+		Integration: "pipeline.stateless",
+		KeepsState:  false,
+		Options:     func(*Recorder) []core.TurbineOption { return nil },
+	})
+
+	assert.True(t, strings.Contains(vs[stateWithOffsets].skipped, "no durable state"))
+	assert.Equal(t, "", vs[stateWithOffsets].failure)
+
+	// The other three still apply to a stateless pipeline.
+	assert.Equal(t, "", vs[commitAfterFlush].failure)
+	assert.Equal(t, "", vs[commitNothingOnFail].failure)
+	assert.Equal(t, "", vs[drainOnCancel].failure)
+}
+
+// Every invariant the pipeline harness judges must be declared, or its marker
+// reports as unknown and the cell never appears.
+func TestToolingConformancePipelines_JudgeOnlyDeclaredInvariants(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	declared, err := coverage.Invariants()
+	assert.NoError(t, err)
+
+	for id := range pipelineVerdictsFor(t, PipelineSubject{
+		Integration: "pipeline.stateful",
+		KeepsState:  true,
+		Options: func(r *Recorder) []core.TurbineOption {
+			return []core.TurbineOption{core.WithStateStore(r.Offsets(), r.Tx())}
+		},
+	}) {
+		assert.True(t, declared[id])
+	}
+}
+
+// The harness must exercise every path that reaches a batch. A trigger that
+// stopped firing would leave its path unproven while the matrix stayed green.
+func TestToolingConformancePipelines_RunsEveryTrigger(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	assert.DeepEqual(t, []Trigger{
+		TriggerBatchFull, TriggerInterval, TriggerSourceClosed, TriggerDrain,
+	}, Triggers)
+}
+
+func pipelineVerdictsFor(t *testing.T, s PipelineSubject) map[string]verdict {
+	t.Helper()
+
+	out := map[string]verdict{}
+	for _, v := range pipelineVerdicts(t, s) {
+		out[v.invariant] = v
+	}
+	assert.Equal(t, 4, len(out))
+	return out
 }

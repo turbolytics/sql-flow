@@ -8,6 +8,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
@@ -31,6 +32,7 @@ func (s *probeSink) Probe(ctx context.Context) error {
 }
 
 func TestSinkRetry_ProbeReachableSinkStarts(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s := &probeSink{}
 
 	assert.NoError(t, probe(context.Background(), s))
@@ -40,6 +42,7 @@ func TestSinkRetry_ProbeReachableSinkStarts(t *testing.T) {
 // A destination that is not there fails the start with the code whose exit
 // status tells a supervisor the dependency may come back.
 func TestSinkRetry_ProbeUnreachableSinkFailsTheStart(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s := &probeSink{err: syscall.ECONNREFUSED}
 
 	err := probe(context.Background(), s)
@@ -54,6 +57,7 @@ func TestSinkRetry_ProbeUnreachableSinkFailsTheStart(t *testing.T) {
 // A server that answers and refuses is the user's to fix. Reporting it as
 // unreachable would have a supervisor retry a pipeline that cannot start.
 func TestSinkRetry_ProbeAuthFailureIsAUserError(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s := &probeSink{err: errors.New("code: 516, message: Authentication failed")}
 
 	err := probe(context.Background(), s)
@@ -65,6 +69,7 @@ func TestSinkRetry_ProbeAuthFailureIsAUserError(t *testing.T) {
 
 // A sink with nothing to dial is not probed and must not fail the start.
 func TestSinkRetry_ProbeSinksWithNothingToDialAreSkipped(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	for _, s := range []config.Sink{
 		{Type: "noop"},
 		{Type: "console"},
@@ -83,6 +88,7 @@ func TestSinkRetry_ProbeSinksWithNothingToDialAreSkipped(t *testing.T) {
 // destination that is genuinely down, and it would run before the pipeline has
 // consumed anything, where there is nothing to lose by failing fast.
 func TestSinkRetry_ProbeDialsOnceAndDoesNotRetry(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s := &probeSink{err: syscall.ECONNREFUSED}
 
 	assert.Error(t, probe(context.Background(), s))
@@ -91,6 +97,7 @@ func TestSinkRetry_ProbeDialsOnceAndDoesNotRetry(t *testing.T) {
 
 // A cancelled context stops the start rather than dialing anyway.
 func TestSinkRetry_ProbeRespectsACancelledContext(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s := &probeSink{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

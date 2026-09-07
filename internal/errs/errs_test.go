@@ -8,12 +8,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
 const goldenPath = "testdata/codes.golden"
 
 func TestErrorTaxonomy_CodeSplitsIntoThreeParts(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	c := Code("user.sql.bind_failed")
 	assert.Equal(t, ClassUser, c.Class())
 	assert.Equal(t, "sql", c.Domain())
@@ -25,6 +27,7 @@ func TestErrorTaxonomy_CodeSplitsIntoThreeParts(t *testing.T) {
 // A malformed code must not report a class. Guessing one would route a
 // failure to the wrong audience.
 func TestErrorTaxonomy_MalformedCodeHasNoClass(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	for _, bad := range []Code{"", "nonsense", "user", "user.sql", "other.sql.x", "USER.sql.x"} {
 		assert.Equal(t, Class(""), bad.Class())
 		assert.False(t, bad.IsUser())
@@ -33,6 +36,7 @@ func TestErrorTaxonomy_MalformedCodeHasNoClass(t *testing.T) {
 }
 
 func TestErrorTaxonomy_EveryCodeIsWellFormed(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	for _, d := range All() {
 		if d.Code.Class() == "" {
 			t.Errorf("%q has no valid class", d.Code)
@@ -55,6 +59,7 @@ func TestErrorTaxonomy_EveryCodeIsWellFormed(t *testing.T) {
 // gives it a specific code. Without this, the next issue that adds an error
 // invents a code in a hurry and the space fragments.
 func TestErrorTaxonomy_EveryDomainHasACatchAll(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	catchAllReason := map[Class]string{ClassUser: "invalid", ClassSystem: "internal"}
 
 	seen := map[string]bool{}
@@ -79,6 +84,7 @@ func TestErrorTaxonomy_EveryDomainHasACatchAll(t *testing.T) {
 // class prefix. Removing one, or changing what it means, breaks a provider's
 // automation and the runbook their support team reads.
 func TestErrorTaxonomy_RegistryIsAppendOnly(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	current := map[Code]bool{}
 	lines := make([]string, 0, len(registry))
 	for _, d := range All() {
@@ -111,6 +117,7 @@ func TestErrorTaxonomy_RegistryIsAppendOnly(t *testing.T) {
 }
 
 func TestErrorTaxonomy_ErrorPrefixesTheCode(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	e := New(CodeConfigNotFound, "config file not found: %s", "/nope.yml")
 	assert.Equal(t, "[user.config.not_found] config file not found: /nope.yml", e.Error())
 
@@ -124,6 +131,7 @@ func TestErrorTaxonomy_ErrorPrefixesTheCode(t *testing.T) {
 // A multi-line cause is the normal case for YAML and SQL. The code has to
 // survive on the first line, where an operator actually sees it.
 func TestErrorTaxonomy_CodeStaysOnTheFirstLineOfAMultiLineCause(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	cause := errors.New("yaml: unmarshal errors:\n  line 3: field bad_key not found")
 	got := Wrap(CodeConfigParseFailed, cause, "parsing YAML failed").Error()
 
@@ -135,6 +143,7 @@ func TestErrorTaxonomy_CodeStaysOnTheFirstLineOfAMultiLineCause(t *testing.T) {
 // already does, or converting the codebase would mean touching all 220 raise
 // sites instead of the ~30 boundaries.
 func TestErrorTaxonomy_CodeSurvivesWrapping(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	base := New(CodeStateCorrupt, "state file has no offsets table")
 	wrapped := fmt.Errorf("opening state: %w", fmt.Errorf("loading offsets: %w", base))
 
@@ -147,6 +156,7 @@ func TestErrorTaxonomy_CodeSurvivesWrapping(t *testing.T) {
 // An uncoded error is ours until proven otherwise. Defaulting to a user error
 // would blame a customer for our bug.
 func TestErrorTaxonomy_UncodedIsInternal(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	assert.Equal(t, CodeInternalUnexpected, CodeOf(errors.New("bare")))
 	assert.Equal(t, ClassSystem, ClassOf(errors.New("bare")))
 	assert.Equal(t, Code(""), CodeOf(nil))
@@ -155,12 +165,14 @@ func TestErrorTaxonomy_UncodedIsInternal(t *testing.T) {
 // The boundary nearest the user decides how to describe the failure, so the
 // outermost code wins.
 func TestErrorTaxonomy_OutermostCodeWins(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	inner := New(CodeSinkWriteFailed, "rejected")
 	outer := Wrap(CodeSinkUnreachable, inner, "after retries")
 	assert.Equal(t, CodeSinkUnreachable, CodeOf(outer))
 }
 
 func TestErrorTaxonomy_PositionSurvivesWrapping(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	base := New(CodeSQLBindFailed, "unknown column").At("sql", 3, 9)
 	wrapped := fmt.Errorf("invoking handler: %w", base)
 
@@ -175,6 +187,7 @@ func TestErrorTaxonomy_PositionSurvivesWrapping(t *testing.T) {
 }
 
 func TestErrorTaxonomy_LookupReportsUnknown(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	d, ok := Lookup(CodeConfigNotFound)
 	assert.True(t, ok)
 	assert.Equal(t, CodeConfigNotFound, d.Code)
@@ -187,6 +200,7 @@ func TestErrorTaxonomy_LookupReportsUnknown(t *testing.T) {
 }
 
 func TestErrorTaxonomy_ExitCodeMapsEveryCode(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	for _, d := range All() {
 		exit := ExitCode(New(d.Code, "x"))
 		if exit == 0 {
@@ -201,6 +215,7 @@ func TestErrorTaxonomy_ExitCodeMapsEveryCode(t *testing.T) {
 }
 
 func TestErrorTaxonomy_ExitCodeUsesTheSpecificRemedy(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	assert.Equal(t, ExitOK, ExitCode(nil))
 	assert.Equal(t, ExitStateCorrupt, ExitCode(New(CodeStateCorrupt, "x")))
 	assert.Equal(t, ExitSinkUnreachable, ExitCode(New(CodeSinkUnreachable, "x")))
@@ -216,6 +231,7 @@ func TestErrorTaxonomy_ExitCodeUsesTheSpecificRemedy(t *testing.T) {
 // A code this build has never seen still has to resolve, or a newer component
 // crashes the mapping instead of exiting usefully.
 func TestErrorTaxonomy_ExitCodeResolvesUnknown(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	assert.Equal(t, ExitUserError, ExitCode(New(Code("user.sql.from_the_future"), "x")))
 	assert.Equal(t, ExitResourceLimit, ExitCode(New(Code("system.limit.disk_exhausted"), "x")))
 	assert.Equal(t, ExitInternal, ExitCode(New(Code("system.mystery.thing"), "x")))
@@ -224,6 +240,7 @@ func TestErrorTaxonomy_ExitCodeResolvesUnknown(t *testing.T) {
 // 2 collides with cobra's usage error and with the Go runtime's exit when a
 // signal cannot kill PID 1, which #159 measured.
 func TestErrorTaxonomy_NoExitCodeUsesTwo(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
 	for _, d := range All() {
 		assert.False(t, ExitCode(New(d.Code, "x")) == 2)
 	}

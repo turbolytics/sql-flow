@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/zeebo/assert"
 )
@@ -32,6 +33,7 @@ func execSQL(tb testing.TB, conn adbc.Connection, sql string) {
 // stream. It reports the user's tables and the stored offsets, and must not
 // leak the engine's own bookkeeping tables into either.
 func TestStateDurability_Stats(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 
@@ -65,6 +67,7 @@ func TestStateDurability_Stats(t *testing.T) {
 // A fresh state file reports zero tables rather than failing, so the endpoint
 // is useful on a pipeline that has not processed anything yet.
 func TestStateDurability_Stats_EmptyState(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	assert.NoError(t, NewOffsetStore(conn).Init(context.Background()))
@@ -80,6 +83,7 @@ func TestStateDurability_Stats_EmptyState(t *testing.T) {
 // machinery too; reporting it as user state would be noise that changes on
 // every batch.
 func TestStateDurability_Stats_ExcludesTheBatchTable(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	assert.NoError(t, NewOffsetStore(conn).Init(context.Background()))
@@ -96,6 +100,7 @@ func TestStateDurability_Stats_ExcludesTheBatchTable(t *testing.T) {
 // Tables and offsets are sorted so /stats output and CLI diffs stay stable
 // between runs; DuckDB's row order and map iteration are not guaranteed.
 func TestStateDurability_Stats_IsDeterministicallyOrdered(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 
@@ -129,6 +134,7 @@ func TestStateDurability_Stats_IsDeterministicallyOrdered(t *testing.T) {
 // rollback then erased -- a durability feature reporting numbers that never
 // survived anything.
 func TestStateDurability_Stats_DoesNotSeeUncommittedWrites(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	path := filepath.Join(t.TempDir(), "state.db")
 
 	db, err := duckdb.OpenPath(context.Background(), path)
@@ -170,6 +176,7 @@ func TestStateDurability_Stats_DoesNotSeeUncommittedWrites(t *testing.T) {
 // when the reader is released. Returning a string that aliases it would hand
 // callers memory that can be reused underneath them.
 func TestStateDurability_Stats_TableNamesSurviveReaderRelease(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	assert.NoError(t, NewOffsetStore(conn).Init(context.Background()))

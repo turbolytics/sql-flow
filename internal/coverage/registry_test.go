@@ -7,6 +7,7 @@ import (
 )
 
 func TestToolingCoverageRegistry_ListsSinksByBareName(t *testing.T) {
+	Covers(t, "tooling.coverage")
 	got, err := Integrations("sink")
 	assert.NoError(t, err)
 
@@ -18,12 +19,14 @@ func TestToolingCoverageRegistry_ListsSinksByBareName(t *testing.T) {
 }
 
 func TestToolingCoverageRegistry_ListsSources(t *testing.T) {
+	Covers(t, "tooling.coverage")
 	got, err := Integrations("source")
 	assert.NoError(t, err)
 	assert.DeepEqual(t, []string{"kafka", "webhook", "websocket"}, got)
 }
 
 func TestToolingCoverageRegistry_ListsHandlers(t *testing.T) {
+	Covers(t, "tooling.coverage")
 	got, err := Integrations("handler")
 	assert.NoError(t, err)
 	assert.DeepEqual(t, []string{"inferred_disk", "inferred_mem", "structured"}, got)
@@ -32,11 +35,13 @@ func TestToolingCoverageRegistry_ListsHandlers(t *testing.T) {
 // pipeline is a kind an invariant can apply to, but no constructor builds
 // one. Asking for its integrations is a mistake worth naming.
 func TestToolingCoverageRegistry_RejectsAKindNothingConstructs(t *testing.T) {
+	Covers(t, "tooling.coverage")
 	_, err := Integrations("pipeline")
 	assert.Error(t, err)
 }
 
 func TestToolingCoverageRegistry_RejectsAnUnknownKind(t *testing.T) {
+	Covers(t, "tooling.coverage")
 	_, err := Integrations("router")
 	assert.Error(t, err)
 }

@@ -4,10 +4,12 @@ import (
 	"testing"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
 func TestSourceKafka_SecurityOptionsPlaintextNeedsNoOptions(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	opts, err := SecurityOptions("", nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(opts))
@@ -18,6 +20,7 @@ func TestSourceKafka_SecurityOptionsPlaintextNeedsNoOptions(t *testing.T) {
 }
 
 func TestSourceKafka_SecurityOptionsSASLMechanisms(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	for _, mech := range []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "scram-sha-512"} {
 		t.Run(mech, func(t *testing.T) {
 			opts, err := SecurityOptions("SASL_PLAINTEXT", nil, &config.KafkaSASL{
@@ -30,6 +33,7 @@ func TestSourceKafka_SecurityOptionsSASLMechanisms(t *testing.T) {
 }
 
 func TestSourceKafka_SecurityOptionsRejectsUnknownMechanism(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	_, err := SecurityOptions("SASL_PLAINTEXT", nil, &config.KafkaSASL{
 		Mechanism: "GSSAPI", Username: "u", Password: "p",
 	})
@@ -37,22 +41,26 @@ func TestSourceKafka_SecurityOptionsRejectsUnknownMechanism(t *testing.T) {
 }
 
 func TestSourceKafka_SecurityOptionsRejectsUnknownProtocol(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	_, err := SecurityOptions("SASL_MAGIC", nil, nil)
 	assert.Error(t, err)
 }
 
 func TestSourceKafka_SecurityOptionsSASLProtocolRequiresSASLBlock(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	_, err := SecurityOptions("SASL_SSL", nil, nil)
 	assert.Error(t, err)
 }
 
 func TestSourceKafka_SecurityOptionsSSLAddsDialer(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	opts, err := SecurityOptions("SSL", nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(opts))
 }
 
 func TestSourceKafka_SecurityOptionsSASLSSLAddsBoth(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	opts, err := SecurityOptions("SASL_SSL", nil, &config.KafkaSASL{
 		Mechanism: "PLAIN", Username: "u", Password: "p",
 	})
@@ -61,6 +69,7 @@ func TestSourceKafka_SecurityOptionsSASLSSLAddsBoth(t *testing.T) {
 }
 
 func TestSourceKafka_TLSConfigDisablesHostnameVerification(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	cfg, err := tlsConfig(&config.KafkaSSL{EndpointIdentificationAlgorithm: "none"})
 	assert.NoError(t, err)
 	assert.That(t, cfg.InsecureSkipVerify)
@@ -71,11 +80,13 @@ func TestSourceKafka_TLSConfigDisablesHostnameVerification(t *testing.T) {
 }
 
 func TestSourceKafka_TLSConfigReportsMissingCAFile(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	_, err := tlsConfig(&config.KafkaSSL{CALocation: "/nonexistent/ca.pem"})
 	assert.Error(t, err)
 }
 
 func TestSourceKafka_TLSConfigRequiresBothCertAndKey(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	_, err := tlsConfig(&config.KafkaSSL{CertificateLocation: "/tmp/cert.pem"})
 	assert.Error(t, err)
 }

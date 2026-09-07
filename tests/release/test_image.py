@@ -262,6 +262,7 @@ def run_image(image, command, volumes=None, env=None):
 
 
 @pytest.mark.covers("cli.dev_invoke", "sink.console")
+@pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_invoke_renders_rows(image):
     """The README quickstart, run against the image.
 
@@ -280,6 +281,7 @@ def test_handler_inferred_mem_invoke_renders_rows(image):
     ], f"unexpected output: {stdout!r} stderr={stderr!r}"
 
 
+@pytest.mark.covers("cli.version")
 def test_cli_version_is_stamped_into_the_image(image):
     """The entrypoint resolves and the binary is stamped.
 
@@ -294,6 +296,7 @@ def test_cli_version_is_stamped_into_the_image(image):
 
 
 @pytest.mark.covers("config.templating")
+@pytest.mark.covers("config.validation")
 def test_config_validation_accepts_a_shipped_example(image):
     """config validate works with no libduckdb setup beyond the image."""
     stdout, stderr = run_docker_container(
@@ -314,6 +317,7 @@ def test_config_validation_accepts_a_shipped_example(image):
     '''
 
 @pytest.mark.covers("source.kafka", "sink.kafka")
+@pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_aggregates_every_message(image, stack):
     num_messages = 1000
     in_topic = unique('input-simple-agg-mem')
@@ -342,6 +346,7 @@ def test_handler_inferred_mem_aggregates_every_message(image, stack):
 
 
 @pytest.mark.covers("source.websocket", "handler.structured")
+@pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):
     """Arrays, unioned struct fields and decoded JSON escapes, via the image.
 
@@ -404,6 +409,7 @@ def _wait_for_clickhouse(url, timeout=90):
         f"clickhouse did not answer within {timeout}s; last attempt: {last}")
 
 
+@pytest.mark.covers("sink.clickhouse")
 def test_sink_clickhouse_inserts_rows(image, stack, request):
     """A sink other than console/kafka, exercised through the image.
 
@@ -493,6 +499,7 @@ def test_sink_clickhouse_inserts_rows(image, stack, request):
 
 
 @pytest.mark.covers("state.offsets", "manager.tumbling_window", "source.kafka")
+@pytest.mark.covers("state.durability")
 def test_state_durability_survives_a_restart(image, stack):
     """A crash mid-window must not lose the aggregate.
 
@@ -574,6 +581,7 @@ def test_state_durability_survives_a_restart(image, stack):
         f"stored offset should be the last processed message: {offset}")
 
 
+@pytest.mark.covers("lifecycle.drain")
 def test_lifecycle_drain_writes_the_buffered_batch_on_sigterm(image, stack):
     """A supervisor stops a pipeline with SIGTERM, so SIGTERM must drain it.
 
@@ -646,6 +654,7 @@ def test_lifecycle_drain_writes_the_buffered_batch_on_sigterm(image, stack):
 
 
 @pytest.mark.covers("state.corruption")
+@pytest.mark.covers("lifecycle.exit_codes")
 def test_lifecycle_exit_codes_carry_the_error_code(image):
     """A supervisor reads the process's exit status, so the image must set it.
 
@@ -702,6 +711,7 @@ def test_lifecycle_exit_codes_carry_the_error_code(image):
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.covers("sink.iceberg")
 def test_sink_iceberg_writes_every_row(image, stack):
     """Kafka to an Iceberg table, read back through pyiceberg.
 
@@ -750,6 +760,7 @@ def test_sink_iceberg_writes_every_row(image, stack):
         assert len(iceberg_table.scan().to_arrow()) == num_messages
 
 
+@pytest.mark.covers("sink.parquet")
 def test_sink_parquet_writes_every_row(image, stack):
     """Kafka to parquet files on disk, read back with pyarrow."""
     num_messages = 2000
@@ -780,6 +791,7 @@ def test_sink_parquet_writes_every_row(image, stack):
         assert total == num_messages, f"parquet holds {total} of {num_messages}"
 
 
+@pytest.mark.covers("error.ignore")
 def test_error_ignore_drops_bad_records_and_keeps_going(image, stack):
     """A malformed record must not stop the pipeline under policy IGNORE.
 
@@ -811,6 +823,7 @@ def test_error_ignore_drops_bad_records_and_keeps_going(image, stack):
     assert len(read_all_kafka_messages(stack.bootstrap, out_topic)) == 5
 
 
+@pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_joins_against_a_csv(image, stack):
     """A join against a CSV read from disk.
 
@@ -839,6 +852,7 @@ def test_handler_inferred_mem_joins_against_a_csv(image, stack):
     assert len(messages) == num_messages, f"joined {len(messages)} of {num_messages}"
 
 
+@pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_enriches_every_row(image, stack):
     """Per-record enrichment through the handler SQL."""
     num_messages = 1000
@@ -859,6 +873,7 @@ def test_handler_inferred_mem_enriches_every_row(image, stack):
     assert len(messages) == num_messages, f"enriched {len(messages)} of {num_messages}"
 
 
+@pytest.mark.covers("error.dlq")
 def test_error_dlq_diverts_a_record_the_handler_cannot_parse(image, stack):
     """A malformed record must reach the DLQ, not vanish.
 
@@ -896,6 +911,7 @@ def test_error_dlq_diverts_a_record_the_handler_cannot_parse(image, stack):
     assert record["timestamp"]
 
 
+@pytest.mark.covers("error.dlq")
 def test_error_dlq_diverts_a_batch_the_handler_cannot_query(image, stack):
     """A valid record the handler SQL cannot bind against still reaches the DLQ.
 

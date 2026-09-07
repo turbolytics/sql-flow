@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -47,6 +48,7 @@ func readBody(t *testing.T, resp *http.Response) string {
 // Status codes and response bodies are the Python engine's, see
 // tests/sources/test_webhook.py.
 func TestSourceWebhook_EventsHMACValidation(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	body := []byte(`{"key": "value"}`)
 	conf := &HMAC{Header: "X-HMAC-Signature", SigKey: "sha256", Secret: "test_secret"}
 
@@ -128,6 +130,7 @@ func TestSourceWebhook_EventsHMACValidation(t *testing.T) {
 }
 
 func TestSourceWebhook_DeliversBodyToStream(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	s, err := NewSource()
 	assert.NoError(t, err)
 	defer s.Close()
@@ -152,6 +155,7 @@ func TestSourceWebhook_DeliversBodyToStream(t *testing.T) {
 // The Python source queues at most one message, so a second delivery waits
 // for the pipeline to consume the first.
 func TestSourceWebhook_BackpressureHoldsSecondRequest(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	s, err := NewSource()
 	assert.NoError(t, err)
 	defer s.Close()
@@ -191,6 +195,7 @@ func TestSourceWebhook_BackpressureHoldsSecondRequest(t *testing.T) {
 }
 
 func TestSourceWebhook_CloseReleasesBlockedRequest(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	s, err := NewSource()
 	assert.NoError(t, err)
 
@@ -220,6 +225,7 @@ func TestSourceWebhook_CloseReleasesBlockedRequest(t *testing.T) {
 }
 
 func TestSourceWebhook_RoutesOnlyPostEvents(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	s, err := NewSource()
 	assert.NoError(t, err)
 	defer s.Close()
@@ -238,6 +244,7 @@ func TestSourceWebhook_RoutesOnlyPostEvents(t *testing.T) {
 }
 
 func TestSourceWebhook_StartServesOnItsOwnListener(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	s, err := NewSource(WithAddr("127.0.0.1:0"))
 	assert.NoError(t, err)
 	assert.NoError(t, s.Start())
@@ -257,6 +264,7 @@ func TestSourceWebhook_StartServesOnItsOwnListener(t *testing.T) {
 }
 
 func TestSourceWebhook_StartReportsBindFailure(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	first, err := NewSource(WithAddr("127.0.0.1:0"))
 	assert.NoError(t, err)
 	assert.NoError(t, first.Start())
@@ -268,12 +276,14 @@ func TestSourceWebhook_StartReportsBindFailure(t *testing.T) {
 }
 
 func TestSourceWebhook_DefaultsToPythonHostAndPort(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	s, err := NewSource()
 	assert.NoError(t, err)
 	assert.Equal(t, "0.0.0.0:8001", s.addr)
 }
 
 func TestSourceWebhook_CloseIsIdempotent(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
 	s, err := NewSource(WithAddr("127.0.0.1:0"))
 	assert.NoError(t, err)
 	assert.NoError(t, s.Start())

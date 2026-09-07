@@ -12,10 +12,12 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
 func TestSinkClickhouse_OptionsPythonDSN(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	// The dsn the Python configs carry. clickhouse_connect speaks only the
 	// HTTP interface, so 8123 is an HTTP port and must not be dialed with
 	// the native protocol.
@@ -31,6 +33,7 @@ func TestSinkClickhouse_OptionsPythonDSN(t *testing.T) {
 }
 
 func TestSinkClickhouse_OptionsCredentials(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	opts, err := clickhouseOptions("clickhouse://alice:s3cret@ch.example.com/analytics")
 	assert.NoError(t, err)
 
@@ -42,6 +45,7 @@ func TestSinkClickhouse_OptionsCredentials(t *testing.T) {
 }
 
 func TestSinkClickhouse_OptionsSecure(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	opts, err := clickhouseOptions("clickhouses://ch.example.com/analytics")
 	assert.NoError(t, err)
 
@@ -51,6 +55,7 @@ func TestSinkClickhouse_OptionsSecure(t *testing.T) {
 }
 
 func TestSinkClickhouse_OptionsNative(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	opts, err := clickhouseOptions("tcp://localhost:9000/test")
 	assert.NoError(t, err)
 
@@ -59,6 +64,7 @@ func TestSinkClickhouse_OptionsNative(t *testing.T) {
 }
 
 func TestSinkClickhouse_OptionsInvalid(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	_, err := clickhouseOptions("postgres://localhost:5432/test")
 	assert.Error(t, err)
 
@@ -67,6 +73,7 @@ func TestSinkClickhouse_OptionsInvalid(t *testing.T) {
 }
 
 func TestSinkClickhouse_NewRequiresTable(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	_, err := NewClickhouseSink(config.ClickhouseSink{DSN: "clickhouse://localhost:8123/test"})
 	assert.Error(t, err)
 }
@@ -75,6 +82,7 @@ func TestSinkClickhouse_NewRequiresTable(t *testing.T) {
 // returns nothing: the rows go straight to ClickHouse and are not held for a
 // downstream reader.
 func TestSinkClickhouse_BatchIsNil(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	s := newLiveClickhouseSink(t, "")
 
 	batch, err := s.Batch()
@@ -133,6 +141,7 @@ func clickhouseRowCount(t *testing.T, s *ClickhouseSink) uint64 {
 }
 
 func TestSinkClickhouse_InsertsRows(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		timestamp DateTime,
 		user_id UInt64,
@@ -160,6 +169,7 @@ func TestSinkClickhouse_InsertsRows(t *testing.T) {
 // Flushing it must be a no-op: the column list would otherwise be empty and
 // the INSERT malformed.
 func TestSinkClickhouse_EmptyTableIsNoop(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	s := newLiveClickhouseSink(t, "")
 
 	table := array.NewTable(arrow.NewSchema(nil, nil), nil, 0)
@@ -170,6 +180,7 @@ func TestSinkClickhouse_EmptyTableIsNoop(t *testing.T) {
 }
 
 func TestSinkClickhouse_NullsBecomeDefaults(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		user_id UInt64,
 		action Nullable(String)
@@ -243,6 +254,7 @@ func clickhouseFixtureTable(t *testing.T) arrow.Table {
 // ordinary config -- a Bluesky pipeline selecting commit.record.langs
 // produces exactly this shape.
 func TestSinkClickhouse_InsertsArrays(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		id UInt64,
 		langs Array(String),
@@ -314,6 +326,7 @@ func TestSinkClickhouse_InsertsArrays(t *testing.T) {
 // A list of lists must reach Array(Array(T)), since the handler infers
 // nested lists from nested JSON arrays.
 func TestSinkClickhouse_InsertsNestedArrays(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		id UInt64,
 		matrix Array(Array(Int64))
@@ -360,6 +373,7 @@ func TestSinkClickhouse_InsertsNestedArrays(t *testing.T) {
 // pinned to one far from UTC so the test means the same thing on a UTC CI
 // runner as on a laptop.
 func TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	tokyo, err := time.LoadLocation("Asia/Tokyo") // UTC+9, no DST
 	assert.NoError(t, err)
 	prev := time.Local

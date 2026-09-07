@@ -5,6 +5,7 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 	"os"
 	"testing"
@@ -55,6 +56,7 @@ func createTable(t *testing.T, conn adbc.Connection, ddl string) {
 }
 
 func TestHandlerStructured_SingleRecord(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -79,6 +81,7 @@ func TestHandlerStructured_SingleRecord(t *testing.T) {
 }
 
 func TestHandlerStructured_MultipleRecords(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -114,6 +117,7 @@ func TestHandlerStructured_MultipleRecords(t *testing.T) {
 }
 
 func TestHandlerStructured_NestedStruct(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -152,6 +156,7 @@ func TestHandlerStructured_NestedStruct(t *testing.T) {
 // field must still see the rows of the batch that arrives afterwards, not the
 // empty table the statement was planned against.
 func TestHandlerStructured_FilterSeesRowsIngestedAfterPrepare(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -189,6 +194,7 @@ func TestHandlerStructured_FilterSeesRowsIngestedAfterPrepare(t *testing.T) {
 // Same defect, different symptom: an expression over a list element inside a
 // struct folds to NULL when planned against the empty table.
 func TestHandlerStructured_ListElementSeesRowsIngestedAfterPrepare(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -224,6 +230,7 @@ func TestHandlerStructured_ListElementSeesRowsIngestedAfterPrepare(t *testing.T)
 }
 
 func TestHandlerStructured_LargeBatch(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 

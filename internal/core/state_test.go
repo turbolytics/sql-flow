@@ -10,6 +10,7 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
@@ -57,6 +58,7 @@ func columnsOf(t *testing.T, conn adbc.Connection) []string {
 // this build can read. Creating it fresh would restart from the beginning and
 // call that healthy.
 func TestStateOffsets_InitRejectsWrongColumns(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	exec(t, conn, `CREATE TABLE `+offsetsTable+` (topic VARCHAR, partition INTEGER)`)
 
@@ -69,6 +71,7 @@ func TestStateOffsets_InitRejectsWrongColumns(t *testing.T) {
 // Right names, wrong types. Load only notices this when the table happens to
 // hold rows, so the check has to happen at open.
 func TestStateOffsets_InitRejectsWrongTypes(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	exec(t, conn, `CREATE TABLE `+offsetsTable+` (
 		topic VARCHAR, partition VARCHAR, "offset" VARCHAR, leader_epoch VARCHAR)`)
@@ -82,6 +85,7 @@ func TestStateOffsets_InitRejectsWrongTypes(t *testing.T) {
 // The error has to name the table and say what was wrong, or an operator
 // cannot tell a damaged state file from any other startup failure.
 func TestStateOffsets_InitNamesWhatIsWrong(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	exec(t, conn, `CREATE TABLE `+offsetsTable+` (topic VARCHAR, partition INTEGER)`)
 
@@ -99,6 +103,7 @@ func TestStateOffsets_InitNamesWhatIsWrong(t *testing.T) {
 // Never truncate, recreate, or silently repair. A damaged table is evidence an
 // operator needs, and it is the only copy of the positions.
 func TestStateOffsets_InitLeavesADamagedTableUntouched(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	exec(t, conn, `CREATE TABLE `+offsetsTable+` (topic VARCHAR, partition INTEGER)`)
 	exec(t, conn, `INSERT INTO `+offsetsTable+` VALUES ('events', 3)`)
@@ -114,6 +119,7 @@ func TestStateOffsets_InitLeavesADamagedTableUntouched(t *testing.T) {
 
 // A fresh database is the normal first run and must still work.
 func TestStateOffsets_InitAcceptsAFreshDatabase(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	assert.NoError(t, NewOffsetStore(conn).Init(context.Background()))
 
@@ -124,6 +130,7 @@ func TestStateOffsets_InitAcceptsAFreshDatabase(t *testing.T) {
 
 // A healthy file from a previous run resumes, and Init does not disturb it.
 func TestStateOffsets_InitAcceptsAPriorRunAndKeepsItsRows(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	s := NewOffsetStore(conn)
@@ -145,6 +152,7 @@ func TestStateOffsets_InitAcceptsAPriorRunAndKeepsItsRows(t *testing.T) {
 // A path that exists but is not a DuckDB database is a damaged state file, not
 // a fresh one. Exit terminal so a supervisor stops rather than crash-looping.
 func TestStateCorruption_RejectsAFileThatIsNotADatabase(t *testing.T) {
+	coverage.Covers(t, "state.corruption")
 	path := filepath.Join(t.TempDir(), "state.db")
 	assert.NoError(t, os.WriteFile(path, []byte("not a duckdb database"), 0o644))
 
@@ -157,6 +165,7 @@ func TestStateCorruption_RejectsAFileThatIsNotADatabase(t *testing.T) {
 
 // A zero-byte file is the shape a crash between create and first write leaves.
 func TestStateCorruption_RejectsAZeroByteFile(t *testing.T) {
+	coverage.Covers(t, "state.corruption")
 	path := filepath.Join(t.TempDir(), "state.db")
 	assert.NoError(t, os.WriteFile(path, nil, 0o644))
 
@@ -169,6 +178,7 @@ func TestStateCorruption_RejectsAZeroByteFile(t *testing.T) {
 // A directory at the state path is a config mistake, not a damaged file. The
 // operator fixes the config, so it must not read as state corruption.
 func TestStateCorruption_ReportsADirectoryAsAConfigError(t *testing.T) {
+	coverage.Covers(t, "state.corruption")
 	path := filepath.Join(t.TempDir(), "state.db")
 	assert.NoError(t, os.MkdirAll(path, 0o755))
 
@@ -180,6 +190,7 @@ func TestStateCorruption_ReportsADirectoryAsAConfigError(t *testing.T) {
 
 // A missing file is the first run. It must open and create.
 func TestStateCorruption_CreatesAMissingFile(t *testing.T) {
+	coverage.Covers(t, "state.corruption")
 	path := filepath.Join(t.TempDir(), "nested", "state.db")
 
 	db, err := OpenState(context.Background(), path)
@@ -195,6 +206,7 @@ func TestStateCorruption_CreatesAMissingFile(t *testing.T) {
 // A damaged file must survive the failed start. It is the only copy of the
 // positions, and an operator needs it to recover them.
 func TestStateCorruption_LeavesADamagedFileOnDisk(t *testing.T) {
+	coverage.Covers(t, "state.corruption")
 	path := filepath.Join(t.TempDir(), "state.db")
 	content := []byte("not a duckdb database")
 	assert.NoError(t, os.WriteFile(path, content, 0o644))

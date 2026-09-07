@@ -17,6 +17,7 @@ import (
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
 	sqlcat "github.com/apache/iceberg-go/catalog/sql"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -44,6 +45,7 @@ func writePyicebergConfig(t *testing.T, body string) {
 }
 
 func TestSinkIceberg_NewRequiresCatalogAndTable(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	ctx := context.Background()
 
 	_, err := NewIcebergSink(ctx, "", "default.events")
@@ -57,6 +59,7 @@ func TestSinkIceberg_NewRequiresCatalogAndTable(t *testing.T) {
 // Resolving that name the way pyiceberg does is what lets the same config run
 // on either engine, so the translation is asserted key by key.
 func TestSinkIceberg_CatalogPropertiesFromPyicebergFile(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	writePyicebergConfig(t, `catalog:
   local:
     uri: sqlite:////tmp/wh/catalog.db
@@ -86,6 +89,7 @@ func TestSinkIceberg_CatalogPropertiesFromPyicebergFile(t *testing.T) {
 // file. Both forms must work, and the environment must win: it is how one
 // image runs against a different catalog per deployment.
 func TestSinkIceberg_CatalogPropertiesEnvOverridesFile(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	writePyicebergConfig(t, `catalog:
   local:
     uri: sqlite:////tmp/from-file/catalog.db
@@ -104,6 +108,7 @@ func TestSinkIceberg_CatalogPropertiesEnvOverridesFile(t *testing.T) {
 // empty property set instead would have iceberg-go fail later with a message
 // about a missing driver, which names the wrong problem.
 func TestSinkIceberg_CatalogPropertiesRequireAURI(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	isolateCatalogLookup(t)
 
 	_, err := icebergCatalogProperties("nowhere")
@@ -113,6 +118,7 @@ func TestSinkIceberg_CatalogPropertiesRequireAURI(t *testing.T) {
 // Only SQL-backed catalogs are supported so far. A REST catalog must be
 // rejected by name rather than half-configured as a SQL one.
 func TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	isolateCatalogLookup(t)
 	t.Setenv("PYICEBERG_CATALOG__REMOTE__URI", "https://catalog.example.com")
 
@@ -125,6 +131,7 @@ func TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme(t *testing.T) {
 // unreadable from Go until the column is added, and every table in it reads as
 // missing -- the exact failure a user migrating between engines hits first.
 func TestSinkIceberg_AddsPyicebergsMissingTypeColumn(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	path := filepath.Join(t.TempDir(), "catalog.db")
 
 	db, err := sql.Open("sqlite", path)
@@ -167,6 +174,7 @@ func TestSinkIceberg_AddsPyicebergsMissingTypeColumn(t *testing.T) {
 // A catalog with no iceberg_tables table at all is one turbine is about to
 // create itself, and creating it is iceberg-go's job, not this function's.
 func TestSinkIceberg_TypeColumnSkipsAnEmptyCatalog(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	path := filepath.Join(t.TempDir(), "catalog.db")
 
 	props := iceberg.Properties{sqlcat.DriverKey: "sqlite", "uri": path}
@@ -236,6 +244,7 @@ func icebergRowCount(t *testing.T, catalogName, tableName string) int64 {
 // The sink's whole job, proven against a committed snapshot rather than
 // against its own buffer.
 func TestSinkIceberg_AppendsEveryRow(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	catalogName, tableName := newLocalIcebergTable(t)
 
 	s, err := NewIcebergSink(context.Background(), catalogName, tableName)
@@ -262,6 +271,7 @@ func TestSinkIceberg_AppendsEveryRow(t *testing.T) {
 // flushes on an interval whether or not a batch arrived, so a sink that
 // re-appended its last batch would duplicate the table once per interval.
 func TestSinkIceberg_FlushWithNothingPendingAppendsNothing(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	catalogName, tableName := newLocalIcebergTable(t)
 
 	s, err := NewIcebergSink(context.Background(), catalogName, tableName)
@@ -283,6 +293,7 @@ func TestSinkIceberg_FlushWithNothingPendingAppendsNothing(t *testing.T) {
 // would commit a snapshot with no data files, so a table's history would fill
 // with empty commits on a quiet topic.
 func TestSinkIceberg_EmptyBatchAppendsNothing(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	catalogName, tableName := newLocalIcebergTable(t)
 
 	s, err := NewIcebergSink(context.Background(), catalogName, tableName)
@@ -300,6 +311,7 @@ func TestSinkIceberg_EmptyBatchAppendsNothing(t *testing.T) {
 
 // Batch is what the tumbling-window manager reads back after a write.
 func TestSinkIceberg_BatchIsTheLastWrite(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	catalogName, tableName := newLocalIcebergTable(t)
 
 	s, err := NewIcebergSink(context.Background(), catalogName, tableName)
@@ -321,6 +333,7 @@ func TestSinkIceberg_BatchIsTheLastWrite(t *testing.T) {
 // A table the catalog does not have must fail the start. Discovering it on the
 // first flush instead loses the batch and every offset behind it.
 func TestSinkIceberg_MissingTableFailsTheStart(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
 	catalogName, _ := newLocalIcebergTable(t)
 
 	_, err := NewIcebergSink(context.Background(), catalogName, "default.no_such_table")

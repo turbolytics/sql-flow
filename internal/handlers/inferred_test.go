@@ -8,6 +8,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -24,6 +25,7 @@ func invokeRows(t *testing.T, h *InferredMemBatchHandler, messages []string) arr
 }
 
 func TestHandlerInferredMem_NestedStructAggregation(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -43,6 +45,7 @@ func TestHandlerInferredMem_NestedStructAggregation(t *testing.T) {
 }
 
 func TestHandlerInferredMem_InfersNumericAndBoolTypes(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -70,6 +73,7 @@ func TestHandlerInferredMem_InfersNumericAndBoolTypes(t *testing.T) {
 // the same contract.
 
 func TestHandlerInferredMem_ColumnsComeFromFirstRow(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -89,6 +93,7 @@ func TestHandlerInferredMem_ColumnsComeFromFirstRow(t *testing.T) {
 }
 
 func TestHandlerInferredMem_FieldMissingFromLaterRowIsNull(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -109,6 +114,7 @@ func TestHandlerInferredMem_FieldMissingFromLaterRowIsNull(t *testing.T) {
 }
 
 func TestHandlerInferredMem_PromotesIntToFloat(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -123,6 +129,7 @@ func TestHandlerInferredMem_PromotesIntToFloat(t *testing.T) {
 }
 
 func TestHandlerInferredMem_ConflictingTypesError(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -140,6 +147,7 @@ func TestHandlerInferredMem_ConflictingTypesError(t *testing.T) {
 }
 
 func TestHandlerInferredMem_InvalidJSONIsWriteError(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -152,6 +160,7 @@ func TestHandlerInferredMem_InvalidJSONIsWriteError(t *testing.T) {
 }
 
 func TestHandlerInferredMem_SuccessiveBatches(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -170,6 +179,7 @@ func TestHandlerInferredMem_SuccessiveBatches(t *testing.T) {
 }
 
 func TestHandlerInferredMem_SingleRecord(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -189,6 +199,7 @@ func TestHandlerInferredMem_SingleRecord(t *testing.T) {
 // A handler SQL statement may be an INSERT that populates a managed table
 // rather than a SELECT that returns rows, as the tumbling window config does.
 func TestHandlerInferredMem_InsertIntoManagedTable(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -230,6 +241,7 @@ func TestHandlerInferredMem_InsertIntoManagedTable(t *testing.T) {
 // injects as kafka_topic / kafka_partition / kafka_offset columns. The
 // idempotent MotherDuck pattern reads them to skip already-ingested offsets.
 func TestHandlerInferredMem_InjectsKafkaMetadata(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -258,6 +270,7 @@ func TestHandlerInferredMem_InjectsKafkaMetadata(t *testing.T) {
 
 // Without metadata the columns must not appear, so a plain config is unchanged.
 func TestHandlerInferredMem_NoMetadataColumnsWithoutSource(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -276,6 +289,7 @@ func TestHandlerInferredMem_NoMetadataColumnsWithoutSource(t *testing.T) {
 // it is a batch with no rows -- and erroring turns an IGNORE policy into a
 // stream of spurious handler failures.
 func TestHandlerInferredMem_EmptyBatchIsNoOp(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -293,6 +307,7 @@ func TestHandlerInferredMem_EmptyBatchIsNoOp(t *testing.T) {
 // embed.images -- so a firehose config cannot run without these.
 
 func TestHandlerInferredMem_InfersListOfStrings(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -311,6 +326,7 @@ func TestHandlerInferredMem_InfersListOfStrings(t *testing.T) {
 }
 
 func TestHandlerInferredMem_InfersListOfStructs(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -330,6 +346,7 @@ func TestHandlerInferredMem_InfersListOfStructs(t *testing.T) {
 }
 
 func TestHandlerInferredMem_InfersListInsideStruct(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -347,6 +364,7 @@ func TestHandlerInferredMem_InfersListInsideStruct(t *testing.T) {
 }
 
 func TestHandlerInferredMem_PromotesListElementTypeAcrossBatch(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -363,6 +381,7 @@ func TestHandlerInferredMem_PromotesListElementTypeAcrossBatch(t *testing.T) {
 // list<item: null>; a later message that has elements must widen it rather
 // than fail the batch.
 func TestHandlerInferredMem_EmptyListTakesTypeFromLaterMessage(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -377,6 +396,7 @@ func TestHandlerInferredMem_EmptyListTakesTypeFromLaterMessage(t *testing.T) {
 }
 
 func TestHandlerInferredMem_EmptyListInEveryMessage(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -393,6 +413,7 @@ func TestHandlerInferredMem_EmptyListInEveryMessage(t *testing.T) {
 // A message missing the array leaves a null list, not an empty one, matching
 // the null a missing scalar produces.
 func TestHandlerInferredMem_MissingListIsNull(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -408,6 +429,7 @@ func TestHandlerInferredMem_MissingListIsNull(t *testing.T) {
 }
 
 func TestHandlerInferredMem_InfersNestedLists(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -423,6 +445,7 @@ func TestHandlerInferredMem_InfersNestedLists(t *testing.T) {
 // A list whose elements cannot be reconciled must fail the batch, the same way
 // a conflicting scalar column does, rather than silently nulling the value.
 func TestHandlerInferredMem_ConflictingListElementTypesError(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -444,6 +467,7 @@ func TestHandlerInferredMem_ConflictingListElementTypesError(t *testing.T) {
 // The Python engine decodes with json.loads, and a sink that stores the raw
 // bytes silently corrupts the value rather than failing.
 func TestHandlerInferredMem_DecodesJSONStringEscapes(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	cases := []struct {
 		name string
 		msg  string
@@ -480,6 +504,7 @@ func TestHandlerInferredMem_DecodesJSONStringEscapes(t *testing.T) {
 // The same decoding must apply wherever a string is built, not just at the top
 // level -- appendJSONValue is shared by struct fields and list elements.
 func TestHandlerInferredMem_DecodesEscapesInNestedValues(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -499,6 +524,7 @@ func TestHandlerInferredMem_DecodesEscapesInNestedValues(t *testing.T) {
 // on which message happens to arrive first in a batch.
 
 func TestHandlerInferredMem_UnionsNestedStructFieldsAcrossMessages(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -521,6 +547,7 @@ func TestHandlerInferredMem_UnionsNestedStructFieldsAcrossMessages(t *testing.T)
 // The Bluesky shape that made this non-deterministic on a live stream: whether
 // commit.record.langs exists depended on the first message in the batch.
 func TestHandlerInferredMem_UnionsDeeplyNestedStructFields(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -540,6 +567,7 @@ func TestHandlerInferredMem_UnionsDeeplyNestedStructFields(t *testing.T) {
 
 // A struct arriving later must not lose its own nested shape.
 func TestHandlerInferredMem_UnionsStructValuedFieldAddedLater(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -562,6 +590,7 @@ func TestHandlerInferredMem_UnionsStructValuedFieldAddedLater(t *testing.T) {
 // level down from a struct, where the first message defines the column but a
 // later one adds a sibling *column*, not a sibling field.
 func TestHandlerInferredMem_TopLevelColumnsStillComeFromFirstRow(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -580,6 +609,7 @@ func TestHandlerInferredMem_TopLevelColumnsStillComeFromFirstRow(t *testing.T) {
 
 // The batch that follows an empty one must still work.
 func TestHandlerInferredMem_BatchAfterEmptyBatch(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 

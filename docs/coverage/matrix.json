@@ -543,6 +543,9 @@
             "test_handler_inferred_mem_invoke_renders_rows",
             "test_handler_inferred_mem_joins_against_a_csv",
             "test_handler_inferred_mem_preserves_arrays_and_unioned_fields"
+          ],
+          "by_marker": [
+            "test_handler_inferred_mem_invoke_renders_rows"
           ]
         }
       }
@@ -621,6 +624,11 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestPipelineStateful_Conformance",
+            "TestPipelineStateful_Conformance/lifecycle.drain.on_cancel",
+            "TestPipelineStateful_Conformance/pipeline.commit.after_flush",
+            "TestPipelineStateful_Conformance/pipeline.commit.nothing_on_failure",
+            "TestPipelineStateful_Conformance/pipeline.state.with_offsets",
             "TestStateDurability_DBSecondConnectionSeesOnlyCommittedState",
             "TestStateDurability_OpenPathEmptyPathIsInMemory",
             "TestStateDurability_OpenPathPersistsAcrossProcesses",
@@ -639,6 +647,9 @@
         "release": {
           "status": "covered",
           "tests": [
+            "test_state_durability_survives_a_restart"
+          ],
+          "by_marker": [
             "test_state_durability_survives_a_restart"
           ]
         }
@@ -803,7 +814,16 @@
             "TestCoreConsumeLoop_ProcessBatchRollsBackWhenOffsetSaveFails",
             "TestCoreConsumeLoop_ProcessBatchRollsBackWhenSinkFails",
             "TestCoreConsumeLoop_ProcessBatchSavesTheProcessedOffsets",
-            "TestCoreConsumeLoop_WritesEveryMessageAcrossManyBatches"
+            "TestCoreConsumeLoop_WritesEveryMessageAcrossManyBatches",
+            "TestPipelineStateless_Conformance",
+            "TestPipelineStateless_Conformance/lifecycle.drain.on_cancel",
+            "TestPipelineStateless_Conformance/pipeline.commit.after_flush",
+            "TestPipelineStateless_Conformance/pipeline.commit.nothing_on_failure",
+            "TestPipelineStateless_Conformance/pipeline.state.with_offsets",
+            "TestPipelineStateless_KeepsNoDurableState"
+          ],
+          "skipped": [
+            "TestPipelineStateless_Conformance/pipeline.state.with_offsets"
           ]
         },
         "integration": {
@@ -961,9 +981,6 @@
           "status": "covered",
           "tests": [
             "test_state_durability_survives_a_restart"
-          ],
-          "by_marker": [
-            "test_state_durability_survives_a_restart"
           ]
         }
       }
@@ -1030,9 +1047,6 @@
         "release": {
           "status": "covered",
           "tests": [
-            "test_config_validation_accepts_a_shipped_example"
-          ],
-          "by_marker": [
             "test_config_validation_accepts_a_shipped_example"
           ]
         }
@@ -1137,6 +1151,9 @@
         "release": {
           "status": "covered",
           "tests": [
+            "test_config_validation_accepts_a_shipped_example"
+          ],
+          "by_marker": [
             "test_config_validation_accepts_a_shipped_example"
           ]
         }
@@ -1257,9 +1274,6 @@
           "status": "covered",
           "tests": [
             "test_handler_inferred_mem_invoke_renders_rows"
-          ],
-          "by_marker": [
-            "test_handler_inferred_mem_invoke_renders_rows"
           ]
         }
       }
@@ -1296,6 +1310,10 @@
           "status": "covered",
           "tests": [
             "TestToolingConformanceDescribe_NamesTheRowsItFound",
+            "TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants",
+            "TestToolingConformancePipelines_CatchesACommitBeforeTheFlush",
+            "TestToolingConformancePipelines_JudgeOnlyDeclaredInvariants",
+            "TestToolingConformancePipelines_RunsEveryTrigger",
             "TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink",
             "TestToolingConformanceSinks_ACorrectSinkPasses",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.buffer.reports_depth",
@@ -2399,11 +2417,27 @@
       "requires": [],
       "enforced": true,
       "integrations": {
-        "pipeline": {
+        "pipeline.stateful": {
           "unit": {
             "status": "covered",
             "tests": [
-              "TestCoreConsumeLoop_ProcessBatchFlushesSinkBeforeCommittingState"
+              "TestPipelineStateful_Conformance/pipeline.commit.after_flush"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestPipelineStateless_Conformance/pipeline.commit.after_flush"
             ]
           },
           "integration": {
@@ -2426,12 +2460,27 @@
       "requires": [],
       "enforced": true,
       "integrations": {
-        "pipeline": {
+        "pipeline.stateful": {
           "unit": {
             "status": "covered",
             "tests": [
-              "TestCoreConsumeLoop_ProcessBatchCommitFailureDoesNotCommitSource",
-              "TestCoreConsumeLoop_ProcessBatchRollsBackWhenSinkFails"
+              "TestPipelineStateful_Conformance/pipeline.commit.nothing_on_failure"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestPipelineStateless_Conformance/pipeline.commit.nothing_on_failure"
             ]
           },
           "integration": {
@@ -2454,11 +2503,11 @@
       "requires": [],
       "enforced": true,
       "integrations": {
-        "pipeline": {
+        "pipeline.stateful": {
           "unit": {
             "status": "covered",
             "tests": [
-              "TestCoreConsumeLoop_ProcessBatchRollsBackWhenOffsetSaveFails"
+              "TestPipelineStateful_Conformance/pipeline.state.with_offsets"
             ]
           },
           "integration": {
@@ -2468,6 +2517,23 @@
           "release": {
             "status": "missing",
             "tests": []
+          }
+        },
+        "pipeline.stateless": {
+          "unit": {
+            "status": "exempt",
+            "reason": "keeps no durable state, so there is nothing to commit with the offsets",
+            "proven_by": "TestPipelineStateless_KeepsNoDurableState"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "keeps no durable state, so there is nothing to commit with the offsets",
+            "proven_by": "TestPipelineStateless_KeepsNoDurableState"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "keeps no durable state, so there is nothing to commit with the offsets",
+            "proven_by": "TestPipelineStateless_KeepsNoDurableState"
           }
         }
       }
@@ -3302,11 +3368,27 @@
       "requires": [],
       "enforced": true,
       "integrations": {
-        "pipeline": {
+        "pipeline.stateful": {
           "unit": {
             "status": "covered",
             "tests": [
-              "TestLifecycleDrain_CancelDrainsTheBufferedBatch"
+              "TestPipelineStateful_Conformance/lifecycle.drain.on_cancel"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestPipelineStateless_Conformance/lifecycle.drain.on_cancel"
             ]
           },
           "integration": {
@@ -3329,7 +3411,21 @@
       "requires": [],
       "enforced": false,
       "integrations": {
-        "pipeline": {
+        "pipeline.stateful": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
           "unit": {
             "status": "missing",
             "tests": []
@@ -3450,7 +3546,21 @@
       "requires": [],
       "enforced": false,
       "integrations": {
-        "pipeline": {
+        "pipeline.stateful": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
           "unit": {
             "status": "missing",
             "tests": []
@@ -3476,7 +3586,21 @@
       "requires": [],
       "enforced": false,
       "integrations": {
-        "pipeline": {
+        "pipeline.stateful": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
           "unit": {
             "status": "missing",
             "tests": []
@@ -3502,7 +3626,21 @@
       "requires": [],
       "enforced": false,
       "integrations": {
-        "pipeline": {
+        "pipeline.stateful": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
           "unit": {
             "status": "missing",
             "tests": []

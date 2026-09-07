@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/zeebo/assert"
 )
@@ -53,6 +54,7 @@ func debugGet(t *testing.T, h http.Handler, sql string) *httptest.ResponseRecord
 // The Python endpoint jsonifies duckdb's fetchall(), a list of row tuples, so
 // rows arrive as arrays rather than objects.
 func TestObservabilityDebugApi_HandlerReturnsRowsAsJSON(t *testing.T) {
+	coverage.Covers(t, "observability.debug_api")
 	conn := newTestConn(t)
 	execSQL(t, conn, "CREATE TABLE t (id BIGINT, name VARCHAR)")
 	execSQL(t, conn, "INSERT INTO t VALUES (1, 'a'), (2, 'b')")
@@ -66,6 +68,7 @@ func TestObservabilityDebugApi_HandlerReturnsRowsAsJSON(t *testing.T) {
 }
 
 func TestObservabilityDebugApi_HandlerReturnsEmptyArrayForNoRows(t *testing.T) {
+	coverage.Covers(t, "observability.debug_api")
 	conn := newTestConn(t)
 	execSQL(t, conn, "CREATE TABLE empty (id BIGINT)")
 
@@ -77,6 +80,7 @@ func TestObservabilityDebugApi_HandlerReturnsEmptyArrayForNoRows(t *testing.T) {
 }
 
 func TestObservabilityDebugApi_HandlerRejectsMissingQuery(t *testing.T) {
+	coverage.Covers(t, "observability.debug_api")
 	h := newDebugHandler(newTestConn(t), &sync.Mutex{})
 	w := debugGet(t, h, "")
 
@@ -85,6 +89,7 @@ func TestObservabilityDebugApi_HandlerRejectsMissingQuery(t *testing.T) {
 }
 
 func TestObservabilityDebugApi_HandlerReportsQueryErrors(t *testing.T) {
+	coverage.Covers(t, "observability.debug_api")
 	h := newDebugHandler(newTestConn(t), &sync.Mutex{})
 	w := debugGet(t, h, "SELECT * FROM does_not_exist")
 
@@ -97,6 +102,7 @@ func TestObservabilityDebugApi_HandlerReportsQueryErrors(t *testing.T) {
 // The endpoint shares the pipeline's connection, so it must not touch it while
 // a handler holds the lock.
 func TestObservabilityDebugApi_HandlerWaitsForThePipelineLock(t *testing.T) {
+	coverage.Covers(t, "observability.debug_api")
 	conn := newTestConn(t)
 	execSQL(t, conn, "CREATE TABLE t (id BIGINT)")
 
@@ -126,10 +132,12 @@ func TestObservabilityDebugApi_HandlerWaitsForThePipelineLock(t *testing.T) {
 
 // Python serves the endpoint from Flask's default 127.0.0.1:5000.
 func TestObservabilityDebugApi_ServerServesOnPythonPort(t *testing.T) {
+	coverage.Covers(t, "observability.debug_api")
 	assert.Equal(t, "127.0.0.1:5000", debugAddr)
 }
 
 func TestObservabilityDebugApi_ServerServesTheDebugRoute(t *testing.T) {
+	coverage.Covers(t, "observability.debug_api")
 	conn := newTestConn(t)
 	execSQL(t, conn, "CREATE TABLE t (id BIGINT)")
 	execSQL(t, conn, "INSERT INTO t VALUES (7)")
