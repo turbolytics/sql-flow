@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -43,6 +44,7 @@ func drain(s *Source) {
 // Names, units and descriptions come from sqlflow/sources/webhook.py, where
 // the meter is created as 'sqlflow.sources.http'.
 func TestSinkRetry_MetricsMatchPythonInstruments(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	reader := sdkmetric.NewManualReader()
 	s, err := NewSource(WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
 	assert.NoError(t, err)
@@ -67,6 +69,7 @@ func TestSinkRetry_MetricsMatchPythonInstruments(t *testing.T) {
 // The Python middleware wraps the whole app and attributes every response by
 // its status code, so rejected and unrouted requests are counted too.
 func TestSinkRetry_MetricsCountRequestsByStatusCode(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	reader := sdkmetric.NewManualReader()
 	s, err := NewSource(
 		WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))),
@@ -106,6 +109,7 @@ func TestSinkRetry_MetricsCountRequestsByStatusCode(t *testing.T) {
 }
 
 func TestSinkRetry_MetricsRecordRequestDuration(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	reader := sdkmetric.NewManualReader()
 	s, err := NewSource(WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
 	assert.NoError(t, err)
@@ -134,6 +138,7 @@ func TestSinkRetry_MetricsRecordRequestDuration(t *testing.T) {
 // A source built without a provider must still serve, so the request path
 // needs no nil checks.
 func TestSinkRetry_MetricsNoProviderRecordsNothing(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	s, err := NewSource()
 	assert.NoError(t, err)
 	defer s.Close()

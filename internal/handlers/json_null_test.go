@@ -11,10 +11,12 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
 func TestHandlerInferredMem_ExplicitNullStringIsNull(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -37,6 +39,7 @@ func TestHandlerInferredMem_ExplicitNullStringIsNull(t *testing.T) {
 // untyped until a later message supplies the type, and the null row must still
 // be a null once it does.
 func TestHandlerInferredMem_ExplicitNullInFirstRowIsNull(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -57,6 +60,7 @@ func TestHandlerInferredMem_ExplicitNullInFirstRowIsNull(t *testing.T) {
 
 // List elements arrive through a different entry point than keyed fields.
 func TestHandlerInferredMem_ExplicitNullListElementIsNull(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -72,6 +76,7 @@ func TestHandlerInferredMem_ExplicitNullListElementIsNull(t *testing.T) {
 }
 
 func TestHandlerStructured_ExplicitNullStringIsNull(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 
@@ -110,6 +115,7 @@ func TestHandlerStructured_ExplicitNullStringIsNull(t *testing.T) {
 // children's separately with no check between them. A row after the null is
 // what proves the child stayed aligned with its parent.
 func TestHandlerInferredMem_ExplicitNullStructIsANullStruct(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, cleanup := newTestADBCConn(t)
 	defer cleanup()
 

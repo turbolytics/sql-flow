@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
@@ -41,6 +42,7 @@ func runWithCorruptState(t *testing.T) (error, string) {
 // reads. Exiting 1 marks the failure retryable, so the supervisor restarts
 // forever into the same bytes.
 func TestLifecycleExitCodes_CorruptStateFileExitsTerminal(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
 	cmd, _ := corruptStateCommand(t)
 
 	code := execute(cmd)
@@ -51,6 +53,7 @@ func TestLifecycleExitCodes_CorruptStateFileExitsTerminal(t *testing.T) {
 
 // A successful command exits zero.
 func TestLifecycleExitCodes_SuccessExitsZero(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{"version"})
 	cmd.SetOut(&bytes.Buffer{})
@@ -62,6 +65,7 @@ func TestLifecycleExitCodes_SuccessExitsZero(t *testing.T) {
 // Guards propagation rather than driving it: the code has to survive cobra's
 // error path to reach execute at all.
 func TestLifecycleExitCodes_SurvivesCobra(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
 	err, _ := runWithCorruptState(t)
 
 	assert.Error(t, err)
@@ -72,6 +76,7 @@ func TestLifecycleExitCodes_SurvivesCobra(t *testing.T) {
 // list for any error a command returns, which buries the one line that says
 // what went wrong.
 func TestLifecycleExitCodes_NoFlagList(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
 	_, output := runWithCorruptState(t)
 
 	if strings.Contains(output, "Flags:") {
@@ -93,6 +98,7 @@ func runArgs(t *testing.T, args ...string) (int, string) {
 // A config path that does not exist is the user's to fix. Exiting retryable
 // would have a supervisor restart until someone notices.
 func TestLifecycleExitCodes_MissingConfigIsTerminal(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
 	code, output := runArgs(t, "run", "/nope/does-not-exist.yml")
 
 	assert.Equal(t, errs.ExitUserError, code)
@@ -102,6 +108,7 @@ func TestLifecycleExitCodes_MissingConfigIsTerminal(t *testing.T) {
 
 // Unparseable YAML does not become parseable on a retry.
 func TestLifecycleExitCodes_MalformedConfigIsTerminal(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
 	path := filepath.Join(t.TempDir(), "bad.yml")
 	assert.NoError(t, os.WriteFile(path, []byte("pipeline:\n  name: [unclosed\n"), 0o644))
 
@@ -115,6 +122,7 @@ func TestLifecycleExitCodes_MalformedConfigIsTerminal(t *testing.T) {
 // Suppressing usage for runtime errors must not suppress it for the errors
 // usage actually answers.
 func TestLifecycleExitCodes_UsageErrorStillPrintsUsage(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
 	_, output := runArgs(t, "run", "--not-a-real-flag")
 
 	if !strings.Contains(output, "Flags:") {

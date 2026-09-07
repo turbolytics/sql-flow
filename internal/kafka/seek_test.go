@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/zeebo/assert"
 )
 
 func TestStateOffsets_SeekerNoMarksLeavesTheGroupOffsetsAlone(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	s := NewOffsetSeeker()
 	fetched := map[string]map[int32]kgo.Offset{
 		"events": {0: kgo.NewOffset().At(60)},
@@ -25,6 +27,7 @@ func TestStateOffsets_SeekerNoMarksLeavesTheGroupOffsetsAlone(t *testing.T) {
 // A stored mark names the last offset processed, so consumption resumes at the
 // next one.
 func TestStateOffsets_SeekerMarkOverridesTheGroupOffset(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	s := NewOffsetSeeker()
 	marks := core.NewMarks()
 	marks.Advance("events", 0, core.Mark{Offset: 9, LeaderEpoch: 4})
@@ -44,6 +47,7 @@ func TestStateOffsets_SeekerMarkOverridesTheGroupOffset(t *testing.T) {
 // here becomes a partition this member consumes without the group ever
 // assigning it -- two consumers reading the same partition.
 func TestStateOffsets_SeekerNeverAddsAnUnassignedPartition(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	s := NewOffsetSeeker()
 	marks := core.NewMarks()
 	marks.Advance("events", 0, core.Mark{Offset: 9})
@@ -64,6 +68,7 @@ func TestStateOffsets_SeekerNeverAddsAnUnassignedPartition(t *testing.T) {
 // A partition the pipeline holds no mark for keeps the group's own offset, so
 // a pipeline that gains a partition still follows auto_offset_reset for it.
 func TestStateOffsets_SeekerUnmarkedPartitionKeepsTheGroupOffset(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	s := NewOffsetSeeker()
 	marks := core.NewMarks()
 	marks.Advance("events", 0, core.Mark{Offset: 9})
@@ -87,6 +92,7 @@ func TestStateOffsets_SeekerUnmarkedPartitionKeepsTheGroupOffset(t *testing.T) {
 //
 // SeekTo must therefore reach Kafka not at all.
 func TestIntegrationSourceKafka_SeekToIssuesNoCommit(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-nocommit-%d", time.Now().UnixNano())
 	client := newTestClient(t, broker, topic, topic)
@@ -109,6 +115,7 @@ func TestIntegrationSourceKafka_SeekToIssuesNoCommit(t *testing.T) {
 // End to end: the state database disagrees with the consumer group, and the
 // state database wins.
 func TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-resume-%d", time.Now().UnixNano())
 

@@ -4,9 +4,10 @@ Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.
 Do not edit by hand.
 
 Features are declared in `docs/coverage/features.yml`. A test attaches
-to one by name -- `sink.clickhouse` is covered by `TestSinkClickhouse*`
-or `test_sink_clickhouse*` -- and that is the cheap default: rename a
-test and it is attributed, with no import and no marker.
+to one by saying so: `coverage.Covers(t, "sink.clickhouse")` in Go, or
+the `covers` marker in pytest. A test used to attach by the shape of
+its name, which credited a test whose name merely started the same way
+and credited nothing when a name drifted.
 
 Levels are derived from where a test ran, never declared, so they
 cannot drift. `unit` is `go test -short`, `integration` is the Go
@@ -83,20 +84,19 @@ covered. This one does not.
 
 ## Covered only by another test's marker
 
-These features have no test named for them. That is legitimate for a
-capability an end-to-end run proves in passing, and a smell for one
-that deserves its own test.
+Every test that covers these claims something else first. That is
+legitimate for a capability an end-to-end run proves in passing, and
+a smell for one that deserves a test of its own.
 
 - `source.kafka` (release) — via `test_handler_inferred_mem_aggregates_every_message`, `test_state_durability_survives_a_restart`
 - `source.websocket` (release) — via `test_handler_inferred_mem_preserves_arrays_and_unioned_fields`
 - `sink.kafka` (release) — via `test_handler_inferred_mem_aggregates_every_message`
 - `sink.console` (release) — via `test_handler_inferred_mem_invoke_renders_rows`
 - `handler.structured` (release) — via `test_handler_inferred_mem_preserves_arrays_and_unioned_fields`
+- `state.durability` (release) — via `test_state_durability_survives_a_restart`
 - `state.offsets` (release) — via `test_state_durability_survives_a_restart`
 - `state.corruption` (release) — via `test_lifecycle_exit_codes_carry_the_error_code`
-- `manager.tumbling_window` (release) — via `test_state_durability_survives_a_restart`
-- `config.templating` (release) — via `test_config_validation_accepts_a_shipped_example`
-- `cli.dev_invoke` (release) — via `test_handler_inferred_mem_invoke_renders_rows`
+- `config.validation` (release) — via `test_config_validation_accepts_a_shipped_example`
 
 
 # Invariant matrix

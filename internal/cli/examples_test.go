@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/turbolytics/sql-flow/internal/handlers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
@@ -76,6 +77,7 @@ func denyExternalAccess(conn adbc.Connection) error {
 // the only symptom would be a CI job three minutes slower than it should be.
 // So assert the block directly.
 func TestConfigValidation_ExternalAccessIsDenied(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	conn, err := duckdb.Open(context.Background())
 	if err != nil {
 		t.Fatalf("open duckdb: %v", err)
@@ -111,6 +113,7 @@ func TestConfigValidation_ExternalAccessIsDenied(t *testing.T) {
 // Nothing here reaches the network, and that is load-bearing rather than
 // tidiness. This test is in the job whose contract is "unit tests only".
 func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
+	coverage.Covers(t, "config.validation")
 	// Values the release tests supply. Every example now names its variables
 	// with the SQLFLOW_ prefix, which is the only form an environment can
 	// reach -- these are passed as overrides here only because this test never

@@ -18,6 +18,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -40,6 +41,7 @@ func mismatchedTable(t *testing.T) arrow.Table {
 }
 
 func TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (id UInt64) ENGINE = MergeTree() ORDER BY id`)
 
 	ctx := context.Background()
@@ -60,6 +62,7 @@ func TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
 }
 
 func TestSinkClickhouse_SuccessfulFlushClearsTheBuffer(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		timestamp DateTime,
 		user_id   Int64,
@@ -81,6 +84,7 @@ func TestSinkClickhouse_SuccessfulFlushClearsTheBuffer(t *testing.T) {
 // The ladder's half of the contract: given a sink that keeps what it could not
 // deliver, a retried flush delivers it rather than reporting a hollow success.
 func TestSinkRetry_RetriedFlushDeliversTheBatch(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	sink := &flakySink{failures: 1, err: errors.New("connection reset by peer")}
 	r := newRetrying(sink, testPolicy())
 
@@ -94,6 +98,7 @@ func TestSinkRetry_RetriedFlushDeliversTheBatch(t *testing.T) {
 
 // A flush that gives up must not claim the rows were delivered.
 func TestSinkRetry_ExhaustedLadderReportsTheFailure(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	sink := &flakySink{failures: 99, err: errors.New("connection reset by peer")}
 	r := newRetrying(sink, testPolicy())
 

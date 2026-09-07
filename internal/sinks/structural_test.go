@@ -8,6 +8,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -21,12 +22,14 @@ import (
 // now names one of these tests, and the generator rejects one that does not.
 
 func TestSinkConsole_ImplementsNoProber(t *testing.T) {
+	coverage.Covers(t, "sink.console")
 	var s core.Sink = NewConsoleSink()
 	_, ok := s.(Prober)
 	assert.That(t, !ok)
 }
 
 func TestSinkSqlcommand_ImplementsNoProber(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	built, err := NewSQLCommandSink(conn, "SELECT 1", nil)
 	assert.NoError(t, err)
@@ -37,6 +40,7 @@ func TestSinkSqlcommand_ImplementsNoProber(t *testing.T) {
 }
 
 func TestSinkNoop_ImplementsNoProber(t *testing.T) {
+	coverage.Covers(t, "sink.noop")
 	var s core.Sink = &NoopSink{}
 	_, ok := s.(Prober)
 	assert.That(t, !ok)
@@ -49,6 +53,7 @@ func TestSinkNoop_ImplementsNoProber(t *testing.T) {
 // legitimate exemption if discarding is deliberate and total, which is what
 // this asserts.
 func TestSinkNoop_DeliversNothingAndSaysSo(t *testing.T) {
+	coverage.Covers(t, "sink.noop")
 	s := &NoopSink{}
 	ctx := context.Background()
 

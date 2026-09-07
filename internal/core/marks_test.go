@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -12,6 +13,7 @@ import (
 // committed. The rule used to live inline in Turbine.mark; it belongs with
 // the data it constrains.
 func TestStateOffsets_MarksAdvanceNeverGoesBackwards(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	m := NewMarks()
 	m.Advance("events", 0, Mark{Offset: 10, LeaderEpoch: 1})
 	m.Advance("events", 0, Mark{Offset: 4, LeaderEpoch: 1})
@@ -22,6 +24,7 @@ func TestStateOffsets_MarksAdvanceNeverGoesBackwards(t *testing.T) {
 }
 
 func TestStateOffsets_MarksAdvanceMovesForward(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	m := NewMarks()
 	m.Advance("events", 0, Mark{Offset: 4, LeaderEpoch: 1})
 	m.Advance("events", 0, Mark{Offset: 10, LeaderEpoch: 2})
@@ -32,6 +35,7 @@ func TestStateOffsets_MarksAdvanceMovesForward(t *testing.T) {
 }
 
 func TestStateOffsets_MarksTracksPartitionsIndependently(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	m := NewMarks()
 	m.Advance("events", 0, Mark{Offset: 5})
 	m.Advance("events", 1, Mark{Offset: 99})
@@ -48,6 +52,7 @@ func TestStateOffsets_MarksTracksPartitionsIndependently(t *testing.T) {
 }
 
 func TestStateOffsets_MarksEmptyAndMissing(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	m := NewMarks()
 	assert.That(t, m.Empty())
 	assert.Equal(t, 0, m.Len())
@@ -63,6 +68,7 @@ func TestStateOffsets_MarksEmptyAndMissing(t *testing.T) {
 // Offset 0 is a real position, not "unset": a mark at 0 means the first
 // message was processed, and Advance must not treat it as absent.
 func TestStateOffsets_MarksZeroOffsetIsAPosition(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	m := NewMarks()
 	m.Advance("events", 0, Mark{Offset: 0, LeaderEpoch: 3})
 
@@ -76,6 +82,7 @@ func TestStateOffsets_MarksZeroOffsetIsAPosition(t *testing.T) {
 // Sorted iteration keeps /stats output and CLI diffs stable between runs; map
 // order would shuffle them for no reason.
 func TestStateOffsets_MarksEachIteratesInSortedOrder(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	m := NewMarks()
 	m.Advance("zeta", 0, Mark{Offset: 1})
 	m.Advance("alpha", 2, Mark{Offset: 2})
@@ -91,6 +98,7 @@ func TestStateOffsets_MarksEachIteratesInSortedOrder(t *testing.T) {
 }
 
 func TestStateOffsets_MarksEachOverEmptyIsANoop(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	m := NewMarks()
 	called := 0
 	m.Each(func(string, int32, Mark) { called++ })

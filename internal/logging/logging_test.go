@@ -3,6 +3,7 @@ package logging
 import (
 	"testing"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 	"go.uber.org/zap/zapcore"
 )
@@ -10,6 +11,7 @@ import (
 // sqlflow.settings defaults SQLFLOW_LOG_LEVEL to INFO, which is quieter than
 // zap's development logger.
 func TestSinkRetry_NewDefaultsToInfo(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	t.Setenv("SQLFLOW_LOG_LEVEL", "")
 
 	l, err := New()
@@ -19,6 +21,7 @@ func TestSinkRetry_NewDefaultsToInfo(t *testing.T) {
 }
 
 func TestSinkRetry_NewHonorsEnvVar(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	tests := []struct {
 		level string
 		want  zapcore.Level
@@ -54,6 +57,7 @@ func TestSinkRetry_NewHonorsEnvVar(t *testing.T) {
 // Python's logging.basicConfig raises on an unknown level; the returned logger
 // still works so callers that only log the failure are not left without one.
 func TestSinkRetry_NewReportsUnknownLevel(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	t.Setenv("SQLFLOW_LOG_LEVEL", "chatty")
 
 	_, err := Level()

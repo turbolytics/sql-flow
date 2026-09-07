@@ -8,6 +8,7 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -65,6 +66,7 @@ func queryInt64(tb testing.TB, conn adbc.Connection, sql string) int64 {
 // while its offsets are already committed -- silently, with the consumer group
 // reporting no lag.
 func TestStateDurability_OpenPathPersistsAcrossProcesses(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	path := filepath.Join(t.TempDir(), "state.db")
 
 	db, err := OpenPath(context.Background(), path)
@@ -94,6 +96,7 @@ func TestStateDurability_OpenPathPersistsAcrossProcesses(t *testing.T) {
 // An empty path keeps today's in-memory behaviour, so a config without a state
 // path is unaffected.
 func TestStateDurability_OpenPathEmptyPathIsInMemory(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	db, err := OpenPath(context.Background(), "")
 	assert.NoError(t, err)
 	defer db.Close()
@@ -110,6 +113,7 @@ func TestStateDurability_OpenPathEmptyPathIsInMemory(t *testing.T) {
 // is what lets stats be read without disturbing the writer. Each connection
 // has its own transaction state, so an uncommitted batch stays invisible.
 func TestStateDurability_DBSecondConnectionSeesOnlyCommittedState(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	path := filepath.Join(t.TempDir(), "state.db")
 
 	db, err := OpenPath(context.Background(), path)
@@ -146,6 +150,7 @@ func TestStateDurability_DBSecondConnectionSeesOnlyCommittedState(t *testing.T) 
 
 // Open keeps working for callers that want one connection and no handle.
 func TestStateDurability_OpenReturnsAConnection(t *testing.T) {
+	coverage.Covers(t, "state.durability")
 	conn, err := Open(context.Background())
 	assert.NoError(t, err)
 	defer conn.Close()

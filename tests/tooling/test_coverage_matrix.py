@@ -46,31 +46,10 @@ def level(s, feature_id, lvl):
     raise AssertionError(f"{feature_id} not in the snapshot")
 
 
-# --- Name-based attribution ------------------------------------------------
-
-def test_go_prefix_derives_from_the_feature_id():
-    assert cm.go_prefix("sink.clickhouse") == "TestSinkClickhouse"
-    assert cm.go_prefix("observability.debug_api") == "TestObservabilityDebugApi"
-
-
-def test_py_prefix_derives_from_the_feature_id():
-    assert cm.py_prefix("sink.clickhouse") == "test_sink_clickhouse"
-    assert cm.py_prefix("error.dlq") == "test_error_dlq"
-
-
 def test_a_test_attaches_to_the_feature_its_name_names():
-    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS})
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS},
+             go_covers={"TestSinkClickhouse_InsertsRows": ["sink.clickhouse"]})
     assert level(s, "sink.clickhouse", "unit")["status"] == "covered"
-
-
-def test_longest_prefix_wins():
-    """sink.console must not swallow a hypothetical sink.console_extra."""
-    features = FEATURES + [
-        {"id": "sink.console_extra", "description": "x", "requires": ["unit"]}]
-    s = snap(go_results={"TestSinkConsoleExtra_Thing": cm.PASS}, features=features)
-
-    assert level(s, "sink.console_extra", "unit")["status"] == "covered"
-    assert level(s, "sink.console", "unit")["status"] == "missing"
 
 
 def test_an_unmatched_test_is_reported_not_invented():
@@ -83,7 +62,8 @@ def test_an_unmatched_test_is_reported_not_invented():
 def test_a_skipped_test_does_not_cover_its_feature():
     """The whole reason this tool exists. sink.iceberg shipped for months
     behind a unit test that skipped and printed ok."""
-    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.SKIP})
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.SKIP},
+             go_covers={"TestSinkClickhouse_InsertsRows": ["sink.clickhouse"]})
 
     assert level(s, "sink.clickhouse", "unit")["status"] == "skipped"
     assert {"feature": "sink.clickhouse", "level": "unit",
@@ -94,6 +74,9 @@ def test_one_passing_test_covers_a_feature_others_skipped():
     s = snap(go_results={
         "TestSinkClickhouse_InsertsRows": cm.PASS,
         "TestSinkClickhouse_InsertsArrays": cm.SKIP,
+    }, go_covers={
+        "TestSinkClickhouse_InsertsRows": ["sink.clickhouse"],
+        "TestSinkClickhouse_InsertsArrays": ["sink.clickhouse"],
     })
     assert level(s, "sink.clickhouse", "unit")["status"] == "covered"
 
@@ -102,6 +85,9 @@ def test_a_failing_test_does_not_cover_its_feature():
     s = snap(go_results={
         "TestSinkClickhouse_InsertsRows": cm.PASS,
         "TestSinkClickhouse_InsertsArrays": cm.FAIL,
+    }, go_covers={
+        "TestSinkClickhouse_InsertsRows": ["sink.clickhouse"],
+        "TestSinkClickhouse_InsertsArrays": ["sink.clickhouse"],
     })
     assert level(s, "sink.clickhouse", "unit")["status"] == "failing"
 
@@ -124,7 +110,8 @@ def test_a_required_level_with_no_test_is_a_gap():
 def test_coverage_beyond_what_is_required_still_shows():
     """A test at a level the registry does not demand is reported, not hidden:
     dropping it later should be visible."""
-    s = snap(py_results={"test_sink_console_writes_rows": cm.PASS})
+    s = snap(py_results={"test_sink_console_writes_rows": cm.PASS},
+             py_covers={"test_sink_console_writes_rows": ["sink.console"]})
     assert level(s, "sink.console", "release")["status"] == "covered"
 
 
@@ -137,19 +124,11 @@ def test_levels_run_from_cheapest_to_most_real():
 def test_an_integration_result_lands_at_the_integration_level():
     s = snap(
         integration_results={"TestIntegrationSourceKafka_Commits": cm.PASS},
+        integration_covers={"TestIntegrationSourceKafka_Commits": ["source.kafka"]},
         features=[{"id": "source.kafka", "description": "kafka",
                    "requires": ["integration"]}],
     )
     assert level(s, "source.kafka", "integration")["status"] == "covered"
-
-
-def test_the_integration_prefix_does_not_decide_the_feature():
-    """Level and feature stay separate axes. The prefix selects which pass runs
-    a test; the rest of the name still says which feature it covers."""
-    assert (cm.strip_level_prefix("TestIntegrationSourceKafka_Commits")
-            == "TestSourceKafka_Commits")
-    assert (cm.strip_level_prefix("TestSourceKafka_Commits")
-            == "TestSourceKafka_Commits")
 
 
 def test_an_integration_test_does_not_manufacture_unit_coverage():
@@ -157,7 +136,9 @@ def test_an_integration_test_does_not_manufacture_unit_coverage():
     coverage there just because the integration pass ran it for real."""
     s = snap(
         go_results={"TestIntegrationSourceKafka_Commits": cm.SKIP},
+        go_covers={"TestIntegrationSourceKafka_Commits": ["source.kafka"]},
         integration_results={"TestIntegrationSourceKafka_Commits": cm.PASS},
+        integration_covers={"TestIntegrationSourceKafka_Commits": ["source.kafka"]},
         features=[{"id": "source.kafka", "description": "kafka",
                    "requires": ["unit", "integration"]}],
     )
@@ -170,6 +151,7 @@ def test_a_skipped_integration_test_is_a_gap():
     sink.iceberg failure one level up. It must not read as coverage."""
     s = snap(
         integration_results={"TestIntegrationSourceKafka_Commits": cm.SKIP},
+        integration_covers={"TestIntegrationSourceKafka_Commits": ["source.kafka"]},
         features=[{"id": "source.kafka", "description": "kafka",
                    "requires": ["integration"]}],
     )
@@ -196,9 +178,12 @@ def test_a_marker_attributes_a_second_feature():
 
 
 def test_a_marker_is_recorded_as_secondary_attribution():
+    """A test may claim more than one feature. The first is what it is for;
+    the rest are what it proves in passing, and the page names those."""
     s = snap(
         py_results={"test_handler_inferred_mem_aggregates": cm.PASS},
-        py_covers={"test_handler_inferred_mem_aggregates": ["source.kafka"]},
+        py_covers={"test_handler_inferred_mem_aggregates":
+                   ["handler.inferred_mem", "source.kafka"]},
         features=FEATURES + [{"id": "handler.inferred_mem", "description": "h",
                               "requires": ["release"]}],
     )
@@ -342,7 +327,8 @@ def test_the_snapshot_orders_tests_stably():
 # rather than repeated on all 489 entries as the default they usually carry.
 
 def test_a_test_is_recorded_as_a_bare_name():
-    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS})
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS},
+             go_covers={"TestSinkClickhouse_InsertsRows": ["sink.clickhouse"]})
     assert level(s, "sink.clickhouse", "unit")["tests"] == [
         "TestSinkClickhouse_InsertsRows"]
 
@@ -361,7 +347,9 @@ def test_an_empty_list_is_omitted_entirely():
 def test_a_skipped_test_is_named_in_the_skipped_list():
     """Status alone cannot say which of several tests skipped."""
     s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS,
-                         "TestSinkClickhouse_InsertsArrays": cm.SKIP})
+                         "TestSinkClickhouse_InsertsArrays": cm.SKIP},
+             go_covers={"TestSinkClickhouse_InsertsRows": ["sink.clickhouse"],
+                        "TestSinkClickhouse_InsertsArrays": ["sink.clickhouse"]})
     lvl = level(s, "sink.clickhouse", "unit")
 
     assert lvl["status"] == "covered"
@@ -371,7 +359,9 @@ def test_a_skipped_test_is_named_in_the_skipped_list():
 
 def test_a_failing_test_is_named_in_the_failing_list():
     s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS,
-                         "TestSinkClickhouse_InsertsArrays": cm.FAIL})
+                         "TestSinkClickhouse_InsertsArrays": cm.FAIL},
+             go_covers={"TestSinkClickhouse_InsertsRows": ["sink.clickhouse"],
+                        "TestSinkClickhouse_InsertsArrays": ["sink.clickhouse"]})
     lvl = level(s, "sink.clickhouse", "unit")
 
     assert lvl["failing"] == ["TestSinkClickhouse_InsertsArrays"]
@@ -409,7 +399,9 @@ def test_render_counts_the_tests_rather_than_sampling_them():
     """The table is the cheap view. Three arbitrary names out of seventy-three
     answer nobody's question and cost every reader the width; the count answers
     "is this feature thinly covered" and matrix.json names them all."""
-    s = snap(go_results={f"TestSinkClickhouse_{i}": cm.PASS for i in range(4)})
+    s = snap(go_results={f"TestSinkClickhouse_{i}": cm.PASS for i in range(4)},
+             go_covers={f"TestSinkClickhouse_{i}": ["sink.clickhouse"]
+                        for i in range(4)})
     row = next(line for line in cm.render(s).splitlines()
                if line.startswith("| `sink.clickhouse`"))
 
@@ -431,9 +423,12 @@ def test_render_points_at_the_json_for_the_test_names():
 
 
 def test_render_reports_a_feature_covered_only_by_a_marker():
+    """source.kafka is claimed second by a test that is about something else,
+    and by nothing that names it first."""
     s = snap(
         py_results={"test_handler_inferred_mem_aggregates": cm.PASS},
-        py_covers={"test_handler_inferred_mem_aggregates": ["source.kafka"]},
+        py_covers={"test_handler_inferred_mem_aggregates":
+                   ["handler.inferred_mem", "source.kafka"]},
         features=FEATURES + [{"id": "handler.inferred_mem", "description": "h",
                               "requires": ["release"]}],
     )
@@ -1205,6 +1200,10 @@ def test_the_page_pairs_the_most_tested_feature_with_the_least_proven_invariant(
         "TestSinkClickhouse_A": cm.PASS,
         "TestSinkClickhouse_B": cm.PASS,
         "TestSinkConsole_C": cm.PASS,
+    }, go_covers={
+        "TestSinkClickhouse_A": ["sink.clickhouse"],
+        "TestSinkClickhouse_B": ["sink.clickhouse"],
+        "TestSinkConsole_C": ["sink.console"],
     })
     s.update(inv_snap())
     md = cm.render(s)
@@ -1224,6 +1223,9 @@ def test_the_argument_pairs_a_feature_and_an_invariant_of_the_same_layer():
     s = snap(features=features, go_results={
         **{f"TestConfigValidation_{i}": cm.PASS for i in range(20)},
         **{f"TestSinkRetry_{i}": cm.PASS for i in range(5)},
+    }, go_covers={
+        **{f"TestConfigValidation_{i}": ["config.validation"] for i in range(20)},
+        **{f"TestSinkRetry_{i}": ["sink.retry"] for i in range(5)},
     })
     s.update(inv_snap())
 
@@ -1239,7 +1241,8 @@ def test_the_argument_needs_an_invariant_in_the_same_layer():
     """A layer with tests and no invariants declared is not an argument."""
     features = [{"id": "config.validation", "description": "c", "requires": ["unit"]}]
     s = snap(features=features,
-             go_results={"TestConfigValidation_A": cm.PASS})
+             go_results={"TestConfigValidation_A": cm.PASS},
+             go_covers={"TestConfigValidation_A": ["config.validation"]})
     s.update(inv_snap())
     assert cm.strongest_argument(s) is None
 
@@ -1259,8 +1262,11 @@ def test_the_argument_is_omitted_when_no_feature_has_a_test():
 def test_the_most_tested_feature_counts_across_every_level():
     s = snap(
         go_results={"TestSinkClickhouse_A": cm.PASS},
+        go_covers={"TestSinkClickhouse_A": ["sink.clickhouse"]},
         py_results={"test_sink_clickhouse_b": cm.PASS},
+        py_covers={"test_sink_clickhouse_b": ["sink.clickhouse"]},
         integration_results={"TestSinkConsole_C": cm.PASS},
+        integration_covers={"TestSinkConsole_C": ["sink.console"]},
     )
     assert cm.most_tested_feature(s) == ("sink.clickhouse", 2)
 
@@ -1567,3 +1573,32 @@ def test_a_test_with_neither_marker_nor_matching_name_is_still_unattributed():
         FEATURES, {}, {}, {}, {}, {"TestNobodyDeclaredThis": cm.PASS}, {})
     s = cm.snapshot(FEATURES, coverage, secondary, unmatched, unknown)
     assert s["unattributed"]["integration"] == ["TestNobodyDeclaredThis"]
+
+
+def test_a_skipped_test_still_reports_its_feature():
+    """A marker must fire before any early return. Under name attribution a
+    test kept its feature even when it skipped; a marker placed after a
+    `-short` guard fires never, and the test covers nothing.
+
+    The integration tests skip in the unit pass, so this is every one of
+    them."""
+    s = snap(
+        go_results={"TestIntegrationSinkClickhouse_Conformance": cm.SKIP},
+        go_covers={"TestIntegrationSinkClickhouse_Conformance": ["sink.clickhouse"]},
+    )
+    cell = level(s, "sink.clickhouse", "unit")
+
+    assert cell["status"] == "skipped"
+    assert cell["skipped"] == ["TestIntegrationSinkClickhouse_Conformance"]
+    assert s["unattributed"]["unit"] == []
+
+
+def test_a_feature_claimed_twice_by_one_test_counts_once():
+    """A test can reach the same marker twice: the conformance entry points
+    emit one before the -short skip and one when the harness finishes. Counting
+    both inflates the Tests column and puts the same name in a cell twice."""
+    s = snap(
+        go_results={"TestX": cm.PASS},
+        go_covers={"TestX": ["sink.clickhouse", "sink.clickhouse"]},
+    )
+    assert level(s, "sink.clickhouse", "unit")["tests"] == ["TestX"]

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -15,6 +16,7 @@ import (
 // cannot read it while the pipeline holds it -- not even read-only. A running
 // pipeline therefore has to serve its own stats.
 func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
+	coverage.Covers(t, "observability.metrics")
 	want := &core.StateStats{
 		Path:      "/state/state.db",
 		SizeBytes: 4096,
@@ -48,6 +50,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 // A pipeline with no state path still answers, with a null state block. The
 // endpoint stays useful for the counters even when nothing is durable.
 func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *testing.T) {
+	coverage.Covers(t, "observability.metrics")
 	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return nil, nil })
 
 	rec := httptest.NewRecorder()
@@ -63,6 +66,7 @@ func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *tes
 // success, so a monitoring system sees the problem instead of a healthy-looking
 // blank.
 func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T) {
+	coverage.Covers(t, "observability.metrics")
 	mux := newHTTPMux(nil, func() (*core.StateStats, error) {
 		return nil, errors.New("state database unreadable")
 	})
@@ -75,6 +79,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T
 // With no stats provider at all -- metrics enabled but state unwired -- the
 // endpoint must not be registered as a half-working route.
 func TestObservabilityMetrics_StatsHandler_AbsentWithoutAProvider(t *testing.T) {
+	coverage.Covers(t, "observability.metrics")
 	mux := newHTTPMux(nil, nil)
 
 	rec := httptest.NewRecorder()

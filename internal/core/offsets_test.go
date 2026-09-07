@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/zeebo/assert"
 )
@@ -27,6 +28,7 @@ func newStateConn(t *testing.T, path string) adbc.Connection {
 // Offsets round-trip through DuckDB, which is what lets a restart resume from
 // the position that produced the state currently in the database.
 func TestStateOffsets_RoundTrip(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	s := NewOffsetStore(conn)
 	assert.NoError(t, s.Init(context.Background()))
@@ -48,6 +50,7 @@ func TestStateOffsets_RoundTrip(t *testing.T) {
 
 // Saving the same partition again advances it rather than duplicating it.
 func TestStateOffsets_SaveIsAnUpsert(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	s := NewOffsetStore(conn)
 	assert.NoError(t, s.Init(context.Background()))
@@ -70,6 +73,7 @@ func TestStateOffsets_SaveIsAnUpsert(t *testing.T) {
 // A fresh state file has no offsets; the caller must treat that as "start
 // where auto_offset_reset says", not as offset zero.
 func TestStateOffsets_LoadEmptyIsEmptyNotZero(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	conn := newStateConn(t, filepath.Join(t.TempDir(), "state.db"))
 	s := NewOffsetStore(conn)
 	assert.NoError(t, s.Init(context.Background()))
@@ -81,6 +85,7 @@ func TestStateOffsets_LoadEmptyIsEmptyNotZero(t *testing.T) {
 
 // Init runs on every start, including against an existing state file.
 func TestStateOffsets_InitIsIdempotent(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
 	path := filepath.Join(t.TempDir(), "state.db")
 	conn := newStateConn(t, path)
 	s := NewOffsetStore(conn)

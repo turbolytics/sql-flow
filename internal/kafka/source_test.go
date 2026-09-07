@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/zeebo/assert"
 )
@@ -44,6 +45,7 @@ func produce(t *testing.T, client *kgo.Client, topic string, n int) {
 // offset 70,086 and how a batch that never reached ClickHouse had already been
 // committed.
 func TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-commit-marks-%d", time.Now().UnixNano())
 	client := newTestClient(t, broker, topic, topic)
@@ -89,6 +91,7 @@ func TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *te
 // on the fetch itself. Without it, an operator cannot tell a healthy pipeline
 // from one falling behind.
 func TestIntegrationSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-hwm-%d", time.Now().UnixNano())
 
@@ -124,6 +127,7 @@ func TestIntegrationSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
 // from wherever the consumer group happens to sit. The state file is the
 // source of truth; Kafka's committed offsets are advisory.
 func TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-%d", time.Now().UnixNano())
 
@@ -166,6 +170,7 @@ func TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
 // first run against a fresh state file. Seeking to zero here would be wrong:
 // "nothing recorded" and "recorded position zero" are different facts.
 func TestIntegrationSourceKafka_SeekToEmptyIsANoop(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
 	topic := fmt.Sprintf("turbine-seek-empty-%d", time.Now().UnixNano())
 

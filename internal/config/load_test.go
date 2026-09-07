@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -45,6 +46,7 @@ func loadString(t *testing.T, body string) *Conf {
 // The config spec is Jinja2: filter arguments are parenthesized. pongo2's
 // colon syntax is not interchangeable, and every example config uses Jinja.
 func TestConfigTemplating_Render_JinjaDefaultFilter(t *testing.T) {
+	coverage.Covers(t, "config.templating")
 	tests := []struct {
 		name      string
 		body      string
@@ -90,6 +92,7 @@ func TestConfigTemplating_Render_JinjaDefaultFilter(t *testing.T) {
 // The Python engine seeds the context with these, and configs reference them
 // unqualified.
 func TestConfigTemplating_Render_ProvidesSettingsVars(t *testing.T) {
+	coverage.Covers(t, "config.templating")
 	out := renderString(t, `root: {{ STATIC_ROOT }}/x.csv`, nil)
 	assert.Equal(t, "root: /tmp/sqlflow/static/x.csv", out)
 
@@ -98,6 +101,7 @@ func TestConfigTemplating_Render_ProvidesSettingsVars(t *testing.T) {
 }
 
 func TestConfigTemplating_Render_SettingsVarsHonorEnvOverrides(t *testing.T) {
+	coverage.Covers(t, "config.templating")
 	t.Setenv("SQLFLOW_STATIC_ROOT", "/data/static")
 	out := renderString(t, `root: {{ STATIC_ROOT }}`, nil)
 	assert.Equal(t, "root: /data/static", out)
@@ -106,6 +110,7 @@ func TestConfigTemplating_Render_SettingsVarsHonorEnvOverrides(t *testing.T) {
 // Every shipped config must render and parse, so a config written for the
 // Python engine runs on turbine unmodified.
 func TestConfigTemplating_Load_AllExampleConfigs(t *testing.T) {
+	coverage.Covers(t, "config.templating")
 	// Walked rather than globbed: a plain *.yml glob is not recursive, so it
 	// silently skipped every config under examples/bluesky/ -- the shipped
 	// configs least like the others, and the ones this test most needed to
@@ -142,6 +147,7 @@ func TestConfigTemplating_Load_AllExampleConfigs(t *testing.T) {
 // The webhook block's keys are the Python engine's, see the WebhookSource and
 // HMACConfig dataclasses in sqlflow/config.py.
 func TestConfigTemplating_Load_WebhookSourceKeys(t *testing.T) {
+	coverage.Covers(t, "config.templating")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "webhook.yml")
 	body := `
@@ -178,6 +184,7 @@ pipeline:
 // An unrecognized key is a typo, not a setting to drop silently: the config
 // schema sets additionalProperties: false.
 func TestConfigTemplating_Load_RejectsUnknownKeys(t *testing.T) {
+	coverage.Covers(t, "config.templating")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yml")
 
@@ -205,6 +212,7 @@ pipeline:
 // A pipeline may name a file for its DuckDB state. Absent, state stays in
 // memory and is lost on a crash.
 func TestConfigTemplating_Load_StatePath(t *testing.T) {
+	coverage.Covers(t, "config.templating")
 	conf := loadString(t, `
 pipeline:
   batch_size: 10
@@ -227,6 +235,7 @@ pipeline:
 }
 
 func TestConfigTemplating_Load_StateAbsentIsNil(t *testing.T) {
+	coverage.Covers(t, "config.templating")
 	conf := loadString(t, `
 pipeline:
   batch_size: 10

@@ -12,6 +12,7 @@ import (
 // silent loss of every cell the marker feeds, so the exact bytes are pinned
 // on this side too.
 func TestToolingCoverageInvariant_EmitsTheStructuredMarker(t *testing.T) {
+	Covers(t, "tooling.coverage")
 	rec := &recorder{}
 	Invariant(rec, "sink.flush.keeps_batch", "sink.clickhouse")
 
@@ -21,6 +22,7 @@ func TestToolingCoverageInvariant_EmitsTheStructuredMarker(t *testing.T) {
 }
 
 func TestToolingCoverageCovers_EmitsOneLinePerFeature(t *testing.T) {
+	Covers(t, "tooling.coverage")
 	rec := &recorder{}
 	Covers(rec, "sink.clickhouse", "source.kafka")
 
@@ -34,6 +36,7 @@ func TestToolingCoverageCovers_EmitsOneLinePerFeature(t *testing.T) {
 // the plain match when a structured one is present, and this is the other
 // half of that contract: the two lines cannot be confused for each other.
 func TestToolingCoverageInvariant_DoesNotLookLikeAFeatureMarker(t *testing.T) {
+	Covers(t, "tooling.coverage")
 	rec := &recorder{}
 	Invariant(rec, "sink.flush.keeps_batch", "sink.clickhouse")
 

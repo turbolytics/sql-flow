@@ -12,6 +12,7 @@ import (
 // down, so nothing can be missing. This runs in the unit pass, in
 // milliseconds, so the gap closes before the matrix is ever regenerated.
 func TestToolingCoverageSourceRegistry_MatchesTheConstructorSwitch(t *testing.T) {
+	coverage.Covers(t, "tooling.coverage")
 	declared, err := coverage.Integrations("source")
 	assert.NoError(t, err)
 	assert.DeepEqual(t, declared, Kinds())

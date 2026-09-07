@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
@@ -24,6 +25,7 @@ func alwaysFails() *flakySink {
 // The batch must reach the sink even under a nonsense policy. Skipping the
 // flush loses the batch, and the caller is told it succeeded.
 func TestSinkRetry_BoundsMaxAttemptsZeroStillFlushesOnce(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := &flakySink{}
 	p := testPolicy()
 	p.MaxAttempts = 0
@@ -36,6 +38,7 @@ func TestSinkRetry_BoundsMaxAttemptsZeroStillFlushesOnce(t *testing.T) {
 }
 
 func TestSinkRetry_BoundsMaxAttemptsNegativeStillFlushesOnce(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := &flakySink{}
 	p := testPolicy()
 	p.MaxAttempts = -3
@@ -47,6 +50,7 @@ func TestSinkRetry_BoundsMaxAttemptsNegativeStillFlushesOnce(t *testing.T) {
 
 // A failure under a zero policy still has to be reported, not swallowed.
 func TestSinkRetry_BoundsMaxAttemptsZeroReportsTheFailure(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 0
@@ -59,6 +63,7 @@ func TestSinkRetry_BoundsMaxAttemptsZeroReportsTheFailure(t *testing.T) {
 }
 
 func TestSinkRetry_BoundsMaxAttemptsOneMakesExactlyOneAttempt(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 1
@@ -70,6 +75,7 @@ func TestSinkRetry_BoundsMaxAttemptsOneMakesExactlyOneAttempt(t *testing.T) {
 }
 
 func TestSinkRetry_BoundsMaxAttemptsTwoSleepsExactlyOnce(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 2
@@ -82,6 +88,7 @@ func TestSinkRetry_BoundsMaxAttemptsTwoSleepsExactlyOnce(t *testing.T) {
 
 // The ladder sleeps between attempts, never after the last one.
 func TestSinkRetry_BoundsNeverSleepsAfterTheFinalAttempt(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	for attempts := 1; attempts <= 6; attempts++ {
 		inner := alwaysFails()
 		p := testPolicy()
@@ -104,6 +111,7 @@ func TestSinkRetry_BoundsNeverSleepsAfterTheFinalAttempt(t *testing.T) {
 // A cap below the initial backoff must bind on the first sleep. Applying it
 // only after the first sleep lets one wait exceed the cap the operator set.
 func TestSinkRetry_BoundsInitialBackoffAboveTheCapIsCapped(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 3
@@ -124,6 +132,7 @@ func TestSinkRetry_BoundsInitialBackoffAboveTheCapIsCapped(t *testing.T) {
 // Zero backoff means retry immediately, which is a legitimate ask. It must
 // stay bounded by MaxAttempts rather than spinning.
 func TestSinkRetry_BoundsZeroBackoffRetriesImmediately(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 4
@@ -141,6 +150,7 @@ func TestSinkRetry_BoundsZeroBackoffRetriesImmediately(t *testing.T) {
 
 // A negative backoff must not become a negative sleep or an endless one.
 func TestSinkRetry_BoundsNegativeBackoffIsTreatedAsZero(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 3
@@ -161,6 +171,7 @@ func TestSinkRetry_BoundsNegativeBackoffIsTreatedAsZero(t *testing.T) {
 // Doubling must not overflow into a negative duration, which would turn a
 // long backoff into a tight loop.
 func TestSinkRetry_BoundsHugeBackoffDoesNotOverflow(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 8
@@ -182,6 +193,7 @@ func TestSinkRetry_BoundsHugeBackoffDoesNotOverflow(t *testing.T) {
 // A zero deadline leaves no room to wait, so the ladder makes its one attempt
 // and reports. It must not skip the flush.
 func TestSinkRetry_BoundsZeroDeadlineMakesOneAttempt(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 10
@@ -194,6 +206,7 @@ func TestSinkRetry_BoundsZeroDeadlineMakesOneAttempt(t *testing.T) {
 }
 
 func TestSinkRetry_BoundsNegativeDeadlineMakesOneAttempt(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 10
@@ -208,6 +221,7 @@ func TestSinkRetry_BoundsNegativeDeadlineMakesOneAttempt(t *testing.T) {
 // rather than overrunning, because it runs inside the state transaction whose
 // clock the window depends on.
 func TestSinkRetry_BoundsTotalSleepNeverExceedsTheDeadline(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 50
@@ -233,6 +247,7 @@ func TestSinkRetry_BoundsTotalSleepNeverExceedsTheDeadline(t *testing.T) {
 // the deadline. Reporting "after N attempts" when the deadline stopped it
 // early sends them to the wrong knob.
 func TestSinkRetry_BoundsErrorSaysTheDeadlineStoppedIt(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 100
@@ -251,6 +266,7 @@ func TestSinkRetry_BoundsErrorSaysTheDeadlineStoppedIt(t *testing.T) {
 }
 
 func TestSinkRetry_BoundsErrorSaysAttemptsWereExhausted(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 3
@@ -265,6 +281,7 @@ func TestSinkRetry_BoundsErrorSaysAttemptsWereExhausted(t *testing.T) {
 
 // The cause has to survive so an operator sees what the destination said.
 func TestSinkRetry_BoundsExhaustedErrorWrapsTheCause(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	cause := errors.New("dial tcp 10.0.0.1:9000: connect: connection refused")
 	inner := &flakySink{failures: 1 << 30, err: cause}
 	p := testPolicy()
@@ -282,6 +299,7 @@ func TestSinkRetry_BoundsExhaustedErrorWrapsTheCause(t *testing.T) {
 
 // Succeeding on the final attempt is a success, not an exhausted ladder.
 func TestSinkRetry_BoundsSuccessOnTheFinalAttempt(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := &flakySink{failures: 3, err: errs.New(errs.CodeSinkUnreachable, "refused")}
 	p := testPolicy()
 	p.MaxAttempts = 4
@@ -295,6 +313,7 @@ func TestSinkRetry_BoundsSuccessOnTheFinalAttempt(t *testing.T) {
 
 // A context cancelled partway through stops the ladder there.
 func TestSinkRetry_BoundsCancellationMidLadderStops(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	inner := alwaysFails()
 	p := testPolicy()
 	p.MaxAttempts = 10
@@ -318,6 +337,7 @@ func TestSinkRetry_BoundsCancellationMidLadderStops(t *testing.T) {
 // A rejected write must stop after one attempt regardless of how generous the
 // policy is.
 func TestSinkRetry_BoundsNonRetryableStopsUnderAnyPolicy(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
 	for _, p := range []RetryPolicy{
 		{MaxAttempts: 0},
 		{MaxAttempts: 1},

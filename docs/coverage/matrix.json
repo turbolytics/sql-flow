@@ -543,6 +543,9 @@
             "test_handler_inferred_mem_invoke_renders_rows",
             "test_handler_inferred_mem_joins_against_a_csv",
             "test_handler_inferred_mem_preserves_arrays_and_unioned_fields"
+          ],
+          "by_marker": [
+            "test_handler_inferred_mem_invoke_renders_rows"
           ]
         }
       }
@@ -636,13 +639,6 @@
             "TestStateDurability_Stats_ExcludesTheBatchTable",
             "TestStateDurability_Stats_IsDeterministicallyOrdered",
             "TestStateDurability_Stats_TableNamesSurviveReaderRelease"
-          ],
-          "by_marker": [
-            "TestPipelineStateful_Conformance",
-            "TestPipelineStateful_Conformance/lifecycle.drain.on_cancel",
-            "TestPipelineStateful_Conformance/pipeline.commit.after_flush",
-            "TestPipelineStateful_Conformance/pipeline.commit.nothing_on_failure",
-            "TestPipelineStateful_Conformance/pipeline.state.with_offsets"
           ]
         },
         "integration": {
@@ -651,6 +647,9 @@
         "release": {
           "status": "covered",
           "tests": [
+            "test_state_durability_survives_a_restart"
+          ],
+          "by_marker": [
             "test_state_durability_survives_a_restart"
           ]
         }
@@ -825,14 +824,6 @@
           ],
           "skipped": [
             "TestPipelineStateless_Conformance/pipeline.state.with_offsets"
-          ],
-          "by_marker": [
-            "TestPipelineStateless_Conformance",
-            "TestPipelineStateless_Conformance/lifecycle.drain.on_cancel",
-            "TestPipelineStateless_Conformance/pipeline.commit.after_flush",
-            "TestPipelineStateless_Conformance/pipeline.commit.nothing_on_failure",
-            "TestPipelineStateless_Conformance/pipeline.state.with_offsets",
-            "TestPipelineStateless_KeepsNoDurableState"
           ]
         },
         "integration": {
@@ -990,9 +981,6 @@
           "status": "covered",
           "tests": [
             "test_state_durability_survives_a_restart"
-          ],
-          "by_marker": [
-            "test_state_durability_survives_a_restart"
           ]
         }
       }
@@ -1059,9 +1047,6 @@
         "release": {
           "status": "covered",
           "tests": [
-            "test_config_validation_accepts_a_shipped_example"
-          ],
-          "by_marker": [
             "test_config_validation_accepts_a_shipped_example"
           ]
         }
@@ -1166,6 +1151,9 @@
         "release": {
           "status": "covered",
           "tests": [
+            "test_config_validation_accepts_a_shipped_example"
+          ],
+          "by_marker": [
             "test_config_validation_accepts_a_shipped_example"
           ]
         }
@@ -1285,9 +1273,6 @@
         "release": {
           "status": "covered",
           "tests": [
-            "test_handler_inferred_mem_invoke_renders_rows"
-          ],
-          "by_marker": [
             "test_handler_inferred_mem_invoke_renders_rows"
           ]
         }
