@@ -919,13 +919,11 @@ def test_snapshot_an_exempt_cell_carries_no_tests_even_with_evidence():
     assert "tests" not in c
 
 
-def test_snapshot_a_pipeline_invariant_has_no_integration_cells():
-    """It attaches to core, and no constructor case is a pipeline."""
-    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
-                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
-                 "requires": []}]
-    s = inv_snap(invariants=pipeline)
-    assert s["invariants"][0]["integrations"] == {}
+def test_snapshot_a_pipeline_invariant_carries_exactly_one_cell():
+    """It is a property of the engine, not of anything a config names, so it
+    gets one cell rather than a column per integration."""
+    s = inv_snap(invariants=PIPELINE)
+    assert list(s["invariants"][0]["integrations"]) == ["pipeline"]
 
 
 def test_snapshot_orders_tests_stably_whatever_order_they_arrived_in():
@@ -1096,35 +1094,37 @@ def test_render_omits_the_gap_section_when_there_are_none():
     assert "## Invariant gaps" not in cm.render_invariants(inv_snap())
 
 
-def test_render_says_a_pipeline_invariant_has_no_evidence_rather_than_a_dot():
-    """A pipeline row among sink columns rendered as a line of dots, which
-    reads as "not applicable" when the truth is "nothing collects this yet".
-    verified_by: named is declared and not wired."""
-    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
-                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
-                 "requires": []}]
-    md = cm.render_invariants(inv_snap(invariants=pipeline))
+def test_render_shows_a_pipeline_invariant_as_missing_when_nothing_proves_it():
+    """A pipeline row among sink columns used to render as a line of dots,
+    which reads as "not applicable" when the truth is "unproven"."""
+    md = cm.render_invariants(inv_snap(invariants=PIPELINE))
 
-    assert "| Invariant | Claim | Evidence |" in md
-    assert "| `pipeline.commit.after_flush` | c | ❌ none collected (`named`) |" in md
-    assert "unmeasured, not passing" in md
+    assert "| Invariant | Claim | Proven |" in md
+    assert "| `pipeline.commit.after_flush` | c | ❌ missing |" in md
+
+
+def test_render_shows_a_pipeline_invariant_as_covered_once_proven():
+    s = inv_snap(
+        invariants=PIPELINE,
+        evidence={"unit": {"TestA": [("pipeline.commit.after_flush", "pipeline")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert "| `pipeline.commit.after_flush` | c | ✅ u |" in cm.render_invariants(s)
 
 
 def test_render_separates_pipeline_rows_from_integration_rows_in_one_family():
     """checkpoint holds both. Mixing them puts dots in a table of real cells."""
     mixed = [
         dict(INVARIANTS[1], family="checkpoint"),           # applies_to source
-        {"id": "pipeline.commit.after_flush", "family": "checkpoint",
-         "applies_to": "pipeline", "claim": "c", "verified_by": "named",
-         "requires": []},
+        PIPELINE[0],
     ]
     md = cm.render_invariants(inv_snap(invariants=mixed))
 
     assert md.count("## Invariants: checkpoint") == 1
     assert "| Invariant | Claim | `source.kafka` |" in md
-    assert "| Invariant | Claim | Evidence |" in md
+    assert "| Invariant | Claim | Proven |" in md
     # The pipeline row never appears in the integration table.
-    integration_table = md.split("| Invariant | Claim | Evidence |")[0]
+    integration_table = md.split("| Invariant | Claim | Proven |")[0]
     assert "pipeline.commit.after_flush" not in integration_table
 
 
@@ -1172,14 +1172,24 @@ def test_the_tally_counts_every_cell_by_state():
     assert unwired == 0
 
 
-def test_the_tally_counts_a_pipeline_invariant_as_unwired_not_as_zero():
-    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
-                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
-                 "requires": []}]
-    tally, unwired = cm.invariant_tally(inv_snap(invariants=pipeline))
+def test_the_tally_counts_a_pipeline_invariant_once():
+    """One cell, counted like any other. It used to carry none and be tallied
+    separately as unwired."""
+    tally, unwired = cm.invariant_tally(inv_snap(invariants=PIPELINE))
 
-    assert unwired == 1
-    assert sum(tally.values()) == 0
+    assert unwired == 0
+    assert tally["missing"] == 1
+    assert sum(tally.values()) == 1
+
+
+def test_no_committed_invariant_is_unwired():
+    """An invariant nothing can prove is a declaration with no path to
+    evidence."""
+    m = json.load(open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "docs", "coverage", "matrix.json")))
+    _, unwired = cm.invariant_tally(m)
+    assert unwired == 0
 
 
 def test_the_page_pairs_the_most_tested_feature_with_the_least_proven_invariant():
@@ -1468,3 +1478,75 @@ def test_a_shipped_integration_still_needs_a_feature():
 def test_the_committed_registry_marks_the_double_test_only():
     doubles = [i for i in cm.load_integrations() if i.get("test_only")]
     assert [i["id"] for i in doubles] == ["sink.conformance_double"]
+
+
+# --- Pipeline invariants prove themselves by marker -------------------------
+#
+# `named` was a third attribution mechanism: a test whose name matched the
+# invariant id. It was declared and never implemented, so eight invariants
+# collected nothing while six tests in internal/core proved three of them.
+# Markers replace it. Every invariant is now proven the same way, and a test
+# says what it covers instead of being read for it.
+
+PIPELINE = [
+    {"id": "pipeline.commit.after_flush", "family": "checkpoint",
+     "applies_to": "pipeline", "claim": "c", "verified_by": "harness",
+     "requires": []},
+]
+
+
+def test_a_pipeline_invariant_is_proven_by_a_marker():
+    s = inv_snap(
+        invariants=PIPELINE,
+        evidence={"unit": {"TestA": [("pipeline.commit.after_flush", "pipeline")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    inv = s["invariants"][0]
+    assert inv["integrations"]["pipeline"]["unit"]["status"] == "covered"
+
+
+def test_a_pipeline_invariant_with_no_marker_is_missing_not_absent():
+    """It used to render "none collected", which reads as "not applicable"."""
+    s = inv_snap(invariants=PIPELINE)
+    inv = s["invariants"][0]
+    assert inv["integrations"]["pipeline"]["unit"]["status"] == "missing"
+
+
+def test_a_pipeline_marker_naming_a_sink_is_unknown():
+    """applies_to is the guard. A pipeline invariant proven "on sink.kafka"
+    is a typo, and crediting it would invent a cell."""
+    s = inv_snap(
+        invariants=PIPELINE,
+        evidence={"unit": {"TestA": [("pipeline.commit.after_flush", "sink.kafka")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert {"test": "TestA", "invariant": "pipeline.commit.after_flush",
+            "integration": "sink.kafka"} in s["unknown_invariant_markers"]
+
+
+def test_a_sink_marker_naming_the_pipeline_is_unknown():
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "pipeline")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert {"test": "TestA", "invariant": "sink.flush.keeps_batch",
+            "integration": "pipeline"} in s["unknown_invariant_markers"]
+
+
+def test_a_sink_marker_naming_a_source_is_unknown():
+    """The same guard catches a sink invariant credited to a source."""
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "source.kafka")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert {"test": "TestA", "invariant": "sink.flush.keeps_batch",
+            "integration": "source.kafka"} in s["unknown_invariant_markers"]
+
+
+def test_named_is_no_longer_a_verifier():
+    assert "named" not in cm.VERIFIERS
+
+
+def test_no_committed_invariant_uses_named():
+    for inv in cm.load_invariants():
+        assert inv["verified_by"] != "named", inv["id"]

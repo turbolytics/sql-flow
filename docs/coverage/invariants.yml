@@ -119,22 +119,25 @@ invariants:
     family: checkpoint
     applies_to: pipeline
     claim: Offsets and state commit only after Flush returned nil.
-    verified_by: named
+    verified_by: harness
     requires: []
+    enforced: true
 
   - id: pipeline.commit.nothing_on_failure
     family: checkpoint
     applies_to: pipeline
     claim: A failed flush commits nothing. Not offsets, not state.
-    verified_by: named
+    verified_by: harness
     requires: []
+    enforced: true
 
   - id: pipeline.state.with_offsets
     family: checkpoint
     applies_to: pipeline
     claim: Window state and the offsets that produced it commit atomically.
-    verified_by: named
+    verified_by: harness
     requires: []
+    enforced: true
 
   - id: source.commit.only_processed
     family: checkpoint
@@ -231,14 +234,15 @@ invariants:
     family: lifecycle
     applies_to: pipeline
     claim: Cancel or SIGTERM flushes the buffered batch, then commits.
-    verified_by: named
+    verified_by: harness
     requires: []
+    enforced: true
 
   - id: lifecycle.drain.bounded
     family: lifecycle
     applies_to: pipeline
     claim: The drain finishes or fails inside its deadline.
-    verified_by: named
+    verified_by: harness
     requires: []
     tracked_by: "#161"
 
@@ -255,7 +259,7 @@ invariants:
     claim: >
       A batch whose query exceeds the timeout fails the batch, not the
       process.
-    verified_by: named
+    verified_by: harness
     requires: []
     tracked_by: "#163"
 
@@ -264,7 +268,7 @@ invariants:
     family: errors
     applies_to: pipeline
     claim: A DLQ record carries the payload, offset, partition and reason.
-    verified_by: named
+    verified_by: harness
     requires: []
     tracked_by: "#166"
 
@@ -274,6 +278,6 @@ invariants:
     claim: >
       N bad records in a window fail the pipeline rather than discarding
       forever.
-    verified_by: named
+    verified_by: harness
     requires: []
     tracked_by: "#166"

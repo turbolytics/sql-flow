@@ -64,12 +64,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**29 invariants declared. Of 114 (invariant, integration) cells: 15 proven, 80 missing, 0 skipped, 0 failing, 19 exempt. 0 gap(s), because no invariant requires a level yet.**
-
-A further 8 invariants attach to the pipeline rather than
-to any one integration. Nothing collects evidence for them yet, so
-they show no cells at all, which is worse than missing rather than
-better.
+**29 invariants declared. Of 122 (invariant, integration) cells: 19 proven, 84 missing, 0 skipped, 0 failing, 19 exempt. 0 gap(s), because no invariant requires a level yet.**
 
 ## Why invariants, and not the test count
 
@@ -146,18 +141,16 @@ invariant's `requires` is filled in, and none is yet.
 | `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt |
 | `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt |
 
-These checkpoint invariants are properties of the pipeline, not
-of any one integration, so they have no column. **No evidence is
-collected for them yet**: `verified_by: named` is declared and
-not wired, so an empty cell here means unmeasured, not passing.
-The feature table above may show the same ground as covered,
-and where the two disagree this one is the weaker claim.
+These checkpoint invariants are properties of the engine rather
+than of anything a config names, so they carry one cell instead
+of a column per integration. A test proves one by calling
+`coverage.PipelineInvariant`.
 
-| Invariant | Claim | Evidence |
+| Invariant | Claim | Proven |
 | --- | --- | --- |
-| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ❌ none collected (`named`) |
-| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ❌ none collected (`named`) |
-| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ❌ none collected (`named`) |
+| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ✅ u |
+| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u |
+| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u |
 
 ## Invariants: types
 
@@ -176,30 +169,26 @@ and where the two disagree this one is the weaker claim.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `lifecycle.close.idempotent` | Close twice is safe. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 
-These lifecycle invariants are properties of the pipeline, not
-of any one integration, so they have no column. **No evidence is
-collected for them yet**: `verified_by: named` is declared and
-not wired, so an empty cell here means unmeasured, not passing.
-The feature table above may show the same ground as covered,
-and where the two disagree this one is the weaker claim.
+These lifecycle invariants are properties of the engine rather
+than of anything a config names, so they carry one cell instead
+of a column per integration. A test proves one by calling
+`coverage.PipelineInvariant`.
 
-| Invariant | Claim | Evidence |
+| Invariant | Claim | Proven |
 | --- | --- | --- |
-| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | ❌ none collected (`named`) |
-| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ none collected (`named`) |
-| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ none collected (`named`) |
+| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | ✅ u |
+| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ missing |
+| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing |
 
 ## Invariants: errors
 
-These errors invariants are properties of the pipeline, not
-of any one integration, so they have no column. **No evidence is
-collected for them yet**: `verified_by: named` is declared and
-not wired, so an empty cell here means unmeasured, not passing.
-The feature table above may show the same ground as covered,
-and where the two disagree this one is the weaker claim.
+These errors invariants are properties of the engine rather
+than of anything a config names, so they carry one cell instead
+of a column per integration. A test proves one by calling
+`coverage.PipelineInvariant`.
 
-| Invariant | Claim | Evidence |
+| Invariant | Claim | Proven |
 | --- | --- | --- |
-| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ none collected (`named`) |
-| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ none collected (`named`) |
+| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ missing |
+| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ missing |
 

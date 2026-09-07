@@ -56,10 +56,19 @@ INTEGRATION_PREFIX = "TestIntegration"
 # is a typo, and a typo must not reach the matrix as a missing cell.
 FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors")
 KINDS = ("sink", "source", "handler", "pipeline")
-VERIFIERS = ("harness", "typetable", "named")
+# How an invariant collects evidence. Both are explicit markers: a test says
+# what it proves. `named` used to mean "a test whose name matches the id",
+# which was declared, never implemented, and would have been a third way to
+# attribute the same claim.
+VERIFIERS = ("harness", "typetable")
 
-# pipeline invariants attach to core, not to a constructor case, so no entry
-# in integrations.yml carries that kind.
+# A pipeline invariant is a property of the engine, not of anything a config
+# names, so its marker carries this in place of an integration id and it gets
+# one cell rather than a column per integration.
+PIPELINE = "pipeline"
+
+# pipeline is not among them: no constructor switch builds a pipeline, so no
+# entry in integrations.yml carries that kind.
 INTEGRATION_KINDS = ("sink", "source", "handler")
 
 
@@ -318,8 +327,18 @@ def build_invariants(invariants, integrations, results, evidence):
     one `go test` reports. The outcome recorded here is the test's, not the
     marker's presence.
     """
-    known_inv = {i["id"] for i in invariants}
-    known_integ = {i["id"] for i in integrations}
+    # The integrations each invariant may be proven on. A marker outside this
+    # set is a typo, and crediting it would invent a cell: a sink invariant
+    # "proven on source.kafka" says nothing about either.
+    kinds = {i["id"]: i["kind"] for i in integrations}
+    allowed = {}
+    for inv in invariants:
+        if inv["applies_to"] == PIPELINE:
+            allowed[inv["id"]] = {PIPELINE}
+            continue
+        allowed[inv["id"]] = {
+            iid for iid, kind in kinds.items() if kind == inv["applies_to"]
+        }
 
     cells = {}   # (invariant, integration, level) -> [(test, outcome)]
     unknown = []  # (test, invariant, integration)
@@ -332,7 +351,7 @@ def build_invariants(invariants, integrations, results, evidence):
             # Treat that as a failure rather than as coverage.
             outcome = results.get(level, {}).get(test, FAIL)
             for inv, integ in pairs:
-                if inv not in known_inv or integ not in known_integ:
+                if integ not in allowed.get(inv, set()):
                     unknown.append((test, inv, integ))
                     continue
                 cells.setdefault((inv, integ, level), []).append((test, outcome))
@@ -383,8 +402,14 @@ def snapshot_invariants(invariants, integrations, built):
         if inv.get("violated_once"):
             entry["violated_once"] = list(inv["violated_once"])
 
-        # A pipeline invariant attaches to core, so it has no subjects.
-        for integ in by_kind.get(inv["applies_to"], []):
+        # A pipeline invariant is a property of the engine rather than of
+        # anything a config names, so it gets one cell instead of a column per
+        # integration.
+        subjects = by_kind.get(inv["applies_to"], [])
+        if inv["applies_to"] == PIPELINE:
+            subjects = [{"id": PIPELINE}]
+
+        for integ in subjects:
             exemption = exemptions.get((inv["id"], integ["id"]))
             reason = exemption  # None when the integration must prove it
             levels = {}
@@ -607,10 +632,9 @@ def render(snap):
         ]
         if unwired:
             lines += [
-                f"A further {unwired} invariants attach to the pipeline rather than",
-                "to any one integration. Nothing collects evidence for them yet, so",
-                "they show no cells at all, which is worse than missing rather than",
-                "better.",
+                f"A further {unwired} invariants carry no cell at all, so nothing",
+                "can prove them. That is a declaration with no path to evidence,",
+                "and it is worse than missing rather than better.",
                 "",
             ]
 
@@ -755,10 +779,9 @@ def describe_claim(inv):
 def invariant_tally(snap):
     """Count every (invariant, integration) cell by state.
 
-    `cells` counts only invariants that have integrations. A pipeline
-    invariant attaches to core rather than to a constructor case, so it has
-    none, and `unwired` counts those separately rather than letting them read
-    as zero work.
+    A pipeline invariant carries one cell, so it counts once. `unwired` counts
+    invariants that carry no cell at all, which should be none: an invariant
+    nothing can prove is a declaration with no path to evidence.
     """
     tally = {s: 0 for s in ("covered", "missing", "skipped", "failing", "exempt")}
     unwired = 0
@@ -871,17 +894,18 @@ def render_invariants(snap):
 
     for family in families:
         rows = [i for i in snap["invariants"] if i["family"] == family]
+
+        # Split on what the invariant applies to. A pipeline row in a table of
+        # sink columns renders as a line of dots, which reads as "not
+        # applicable" when the truth is "unproven".
+        per_integration = [i for i in rows if i["applies_to"] != PIPELINE]
+        per_pipeline = [i for i in rows if i["applies_to"] == PIPELINE]
+
         columns = []
-        for inv in rows:
+        for inv in per_integration:
             for integ in inv["integrations"]:
                 if integ not in columns:
                     columns.append(integ)
-
-        # Split by whether the invariant has integrations. A pipeline row in a
-        # table of sink columns renders as a line of dots, which reads as "not
-        # applicable" when the truth is "nothing collects this yet".
-        per_integration = [i for i in rows if i["integrations"]]
-        per_pipeline = [i for i in rows if not i["integrations"]]
 
         lines += [f"## Invariants: {family}", ""]
 
@@ -900,19 +924,17 @@ def render_invariants(snap):
 
         if per_pipeline:
             lines += [
-                f"These {family} invariants are properties of the pipeline, not",
-                "of any one integration, so they have no column. **No evidence is",
-                "collected for them yet**: `verified_by: named` is declared and",
-                "not wired, so an empty cell here means unmeasured, not passing.",
-                "The feature table above may show the same ground as covered,",
-                "and where the two disagree this one is the weaker claim.",
+                f"These {family} invariants are properties of the engine rather",
+                "than of anything a config names, so they carry one cell instead",
+                "of a column per integration. A test proves one by calling",
+                "`coverage.PipelineInvariant`.",
                 "",
-                "| Invariant | Claim | Evidence |",
+                "| Invariant | Claim | Proven |",
                 "| --- | --- | --- |",
             ]
             for inv in per_pipeline:
-                lines.append(f"| `{inv['id']}` | {describe_claim(inv)} | "
-                             f"❌ none collected (`{inv['verified_by']}`) |")
+                cell = invariant_cell(inv["integrations"][PIPELINE], inv["requires"])
+                lines.append(f"| `{inv['id']}` | {describe_claim(inv)} | {cell} |")
             lines.append("")
 
     if snap["invariant_gaps"]:
