@@ -1095,12 +1095,208 @@ def test_render_omits_the_gap_section_when_there_are_none():
     assert "## Invariant gaps" not in cm.render_invariants(inv_snap())
 
 
-def test_render_gives_a_pipeline_family_a_verified_by_column():
-    """With no integrations there is no cell to show, so the table says how
-    the claim is proven instead of leaving an empty row."""
+def test_render_says_a_pipeline_invariant_has_no_evidence_rather_than_a_dot():
+    """A pipeline row among sink columns rendered as a line of dots, which
+    reads as "not applicable" when the truth is "nothing collects this yet".
+    verified_by: named is declared and not wired."""
     pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
                  "applies_to": "pipeline", "claim": "c", "verified_by": "named",
                  "requires": []}]
     md = cm.render_invariants(inv_snap(invariants=pipeline))
-    assert "| Invariant | Claim | Verified by |" in md
-    assert "| `pipeline.commit.after_flush` | c | named |" in md
+
+    assert "| Invariant | Claim | Evidence |" in md
+    assert "| `pipeline.commit.after_flush` | c | ❌ none collected (`named`) |" in md
+    assert "unmeasured, not passing" in md
+
+
+def test_render_separates_pipeline_rows_from_integration_rows_in_one_family():
+    """checkpoint holds both. Mixing them puts dots in a table of real cells."""
+    mixed = [
+        dict(INVARIANTS[1], family="checkpoint"),           # applies_to source
+        {"id": "pipeline.commit.after_flush", "family": "checkpoint",
+         "applies_to": "pipeline", "claim": "c", "verified_by": "named",
+         "requires": []},
+    ]
+    md = cm.render_invariants(inv_snap(invariants=mixed))
+
+    assert md.count("## Invariants: checkpoint") == 1
+    assert "| Invariant | Claim | `source.kafka` |" in md
+    assert "| Invariant | Claim | Evidence |" in md
+    # The pipeline row never appears in the integration table.
+    integration_table = md.split("| Invariant | Claim | Evidence |")[0]
+    assert "pipeline.commit.after_flush" not in integration_table
+
+
+# --- The summary a skimmer reads -------------------------------------------
+
+def test_the_feature_total_says_it_counts_attribution_not_proof():
+    """"33 fully covered" beside an almost empty invariant matrix reads as
+    proof. The reader who stops at the first bold line must not be misled."""
+    md = cm.render(snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS}))
+
+    assert "at least one passing test attributed at every level they require" in md
+    assert "counts attribution, not proof" in md
+
+
+def test_the_feature_total_omits_the_invariant_count_when_there_is_none():
+    """render() is called on feature-only snapshots in tests and by nothing
+    else; it must not require the second axis."""
+    md = cm.render(snap())
+    assert "invariants declared" not in md
+
+
+def test_the_invariant_count_sits_beside_the_feature_count():
+    s = snap()
+    s.update(inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}}))
+    md = cm.render(s)
+
+    assert "invariants declared" in md
+    assert "1 proven" in md
+    assert "exempt" in md
+
+
+def test_the_tally_counts_every_cell_by_state():
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}})
+    tally, unwired = cm.invariant_tally(s)
+
+    # keeps_batch: clickhouse covered, console exempt.
+    # only_processed: kafka missing.
+    assert tally["covered"] == 1
+    assert tally["exempt"] == 1
+    assert tally["missing"] == 1
+    assert unwired == 0
+
+
+def test_the_tally_counts_a_pipeline_invariant_as_unwired_not_as_zero():
+    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
+                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
+                 "requires": []}]
+    tally, unwired = cm.invariant_tally(inv_snap(invariants=pipeline))
+
+    assert unwired == 1
+    assert sum(tally.values()) == 0
+
+
+def test_the_page_pairs_the_most_tested_feature_with_the_least_proven_invariant():
+    """The argument for the file, generated so it cannot go stale. A feature
+    can carry dozens of tests while the invariant those tests depend on is
+    proven almost nowhere -- which is how a retry ladder passes every test
+    while the sink under it loses the batch."""
+    s = snap(go_results={
+        "TestSinkClickhouse_A": cm.PASS,
+        "TestSinkClickhouse_B": cm.PASS,
+        "TestSinkConsole_C": cm.PASS,
+    })
+    s.update(inv_snap())
+    md = cm.render(s)
+
+    assert "## Why invariants, and not the test count" in md
+    assert "`sink.clickhouse` carries 2 attributed tests" in md
+    assert "is proven on 0 of the" in md
+
+
+def test_the_argument_pairs_a_feature_and_an_invariant_of_the_same_layer():
+    """A heavily tested feature elsewhere in the engine says nothing about a
+    sink invariant. Only same-layer pairs are an argument."""
+    features = FEATURES + [
+        {"id": "config.validation", "description": "c", "requires": ["unit"]},
+        {"id": "sink.retry", "description": "r", "requires": ["unit"]},
+    ]
+    s = snap(features=features, go_results={
+        **{f"TestConfigValidation_{i}": cm.PASS for i in range(20)},
+        **{f"TestSinkRetry_{i}": cm.PASS for i in range(5)},
+    })
+    s.update(inv_snap())
+
+    feature, tests, invariant, _, _ = cm.strongest_argument(s)
+    # config.validation has four times the tests and no invariant of its own,
+    # so it is not the argument.
+    assert feature == "sink.retry"
+    assert tests == 5
+    assert invariant.startswith("sink.")
+
+
+def test_the_argument_needs_an_invariant_in_the_same_layer():
+    """A layer with tests and no invariants declared is not an argument."""
+    features = [{"id": "config.validation", "description": "c", "requires": ["unit"]}]
+    s = snap(features=features,
+             go_results={"TestConfigValidation_A": cm.PASS})
+    s.update(inv_snap())
+    assert cm.strongest_argument(s) is None
+
+
+def test_domain_names_the_subsystem():
+    assert cm.domain("sink.retry") == "sink"
+    assert cm.domain("sink.flush.keeps_batch") == "sink"
+    assert cm.domain("config.validation") == "config"
+
+
+def test_the_argument_is_omitted_when_no_feature_has_a_test():
+    s = snap()
+    s.update(inv_snap())
+    assert "## Why invariants, and not the test count" not in cm.render(s)
+
+
+def test_the_most_tested_feature_counts_across_every_level():
+    s = snap(
+        go_results={"TestSinkClickhouse_A": cm.PASS},
+        py_results={"test_sink_clickhouse_b": cm.PASS},
+        integration_results={"TestSinkConsole_C": cm.PASS},
+    )
+    assert cm.most_tested_feature(s) == ("sink.clickhouse", 2)
+
+
+def test_the_least_proven_invariant_ignores_exempt_integrations():
+    """console is exempt from keeps_batch, so it is neither proof nor a hole:
+    counting it as unproven would overstate the gap."""
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}})
+
+    invariant, proven, applicable, _ = cm.least_proven_invariant(s)
+    # only_processed applies to source.kafka alone and has no proof at all.
+    assert invariant == "source.commit.only_processed"
+    assert (proven, applicable) == (0, 1)
+
+
+def test_the_least_proven_invariant_prefers_the_smaller_share():
+    """Two invariants with no proof and different reach: the one covering more
+    integrations is the bigger hole, but share is what ranks them."""
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}})
+    _, proven, applicable, share = cm.least_proven_invariant(s)
+    assert share == proven / applicable
+
+
+def test_the_least_proven_invariant_is_none_when_nothing_is_applicable():
+    """Nothing to prove is not the same as nothing proven, and the page must
+    say nothing rather than invent a worst case."""
+    integrations = [dict(INTEGRATIONS[1])]  # console only, and it is exempt
+    s = inv_snap(integrations=integrations)
+    assert cm.least_proven_invariant(s) is None
+
+
+def test_the_argument_is_omitted_when_no_invariant_is_applicable():
+    s = snap(go_results={"TestSinkClickhouse_A": cm.PASS})
+    s.update(inv_snap(integrations=[dict(INTEGRATIONS[1])]))
+    assert "## Why invariants, and not the test count" not in cm.render(s)
+
+
+def test_cell_state_reports_the_worst_thing_that_happened():
+    assert cm.cell_state(levels(unit="covered", integration="failing")) == "failing"
+    assert cm.cell_state(levels(unit="covered", integration="missing")) == "covered"
+    assert cm.cell_state(levels(unit="skipped")) == "skipped"
+    assert cm.cell_state(levels()) == "missing"
+    assert cm.cell_state(
+        {lvl: {"status": "exempt", "reason": "r"} for lvl in cm.LEVELS}) == "exempt"
+
+
+def test_a_claim_carries_the_defect_that_proves_it_matters():
+    """violated_once is the difference between a rule and a scar."""
+    s = inv_snap(invariants=[dict(INVARIANTS[0], violated_once=["#221"])])
+    assert "violated once: #221" in cm.render_invariants(s)

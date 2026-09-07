@@ -55,7 +55,35 @@ names every one of them.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 16 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 12 |
 
-**33 features declared, 33 fully covered, 0 gap(s).**
+**33 features declared. 33 have at least one passing test attributed at every level they require, so 0 gap(s).**
+
+That sentence counts attribution, not proof. A feature is green here when
+a test named for it ran and passed; it says nothing about whether the
+integration behind it keeps a batch it could not deliver, or commits
+offsets only after a flush. Those are invariants, they are counted
+separately below, and the two numbers are not interchangeable.
+
+**28 invariants declared. Of 108 (invariant, integration) cells: 2 proven, 82 missing, 0 skipped, 0 failing, 24 exempt. 0 gap(s), because no invariant requires a level yet.**
+
+A further 8 invariants attach to the pipeline rather than
+to any one integration. Nothing collects evidence for them yet, so
+they show no cells at all, which is worse than missing rather than
+better.
+
+## Why invariants, and not the test count
+
+`sink.retry` carries 71 attributed tests, more than anything
+else in the `sink` layer. `sink.flush.no_hollow_success`, an invariant
+of that same layer, is proven on 0 of the 5
+integrations it applies to.
+
+Those two numbers are the argument. Tests accumulate around the
+code that was written; an invariant is the claim that code exists
+to uphold. A suite can exercise a retry ladder in every direction
+and never ask whether the sink underneath keeps the rows the
+ladder re-sends -- and if it does not, every one of those tests
+passes while the pipeline loses data. The feature table calls that
+covered. This one does not.
 
 ## Covered only by another test's marker
 
@@ -102,10 +130,10 @@ invariant's `requires` is filled in, and none is yet.
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. | ❌ missing | ✅ i | ❌ missing | — exempt | — exempt | — exempt |
-| `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
+| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. *(violated once: #221)* | ❌ missing | ✅ i | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. *(violated once: #221)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.flush.preserves_order` | Rows reach the destination in WriteTable order, across a retry. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
 | `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `sink.batch.reports_buffer` | Batch returns what is buffered, and nil when nothing is. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
@@ -115,38 +143,65 @@ invariant's `requires` is filled in, and none is yet.
 
 | Invariant | Claim | `source.kafka` | `source.websocket` | `source.webhook` |
 | --- | --- | --- | --- | --- |
-| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | · | · | · |
-| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | · | · | · |
-| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | · | · | · |
-| `source.commit.only_processed` | A source commits the marks the pipeline processed, never what it fetched. | ❌ missing | — exempt | — exempt |
+| `source.commit.only_processed` | A source commits the marks the pipeline processed, never what it fetched. *(violated once: #154)* | ❌ missing | — exempt | — exempt |
 | `source.resume.from_committed` | Restart resumes at the committed position. No gap, and no replay before it. | ❌ missing | — exempt | — exempt |
 | `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt |
 | `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt |
+
+These checkpoint invariants are properties of the pipeline, not
+of any one integration, so they have no column. **No evidence is
+collected for them yet**: `verified_by: named` is declared and
+not wired, so an empty cell here means unmeasured, not passing.
+The feature table above may show the same ground as covered,
+and where the two disagree this one is the weaker claim.
+
+| Invariant | Claim | Evidence |
+| --- | --- | --- |
+| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ❌ none collected (`named`) |
+| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ❌ none collected (`named`) |
+| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ❌ none collected (`named`) |
 
 ## Invariants: types
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `type.roundtrip` | Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.roundtrip` | Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error. *(violated once: #147, #150, #151)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `type.null` | A null in every declared type reads back as declared. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `type.timestamp.instant` | A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.timestamp.instant` | A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type. *(violated once: #153)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `type.nested` | list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `type.string.fidelity` | Unicode, escapes and the empty string round-trip byte for byte. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.string.fidelity` | Unicode, escapes and the empty string round-trip byte for byte. *(violated once: #149)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `type.undeclared.fails_loud` | An Arrow type absent from the table fails the batch with a coded error. Never coerced silently. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 
 ## Invariants: lifecycle
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | · | · | · | · | · | · |
-| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | · | · | · | · | · | · |
 | `lifecycle.close.idempotent` | Close twice is safe. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | · | · | · | · | · | · |
+
+These lifecycle invariants are properties of the pipeline, not
+of any one integration, so they have no column. **No evidence is
+collected for them yet**: `verified_by: named` is declared and
+not wired, so an empty cell here means unmeasured, not passing.
+The feature table above may show the same ground as covered,
+and where the two disagree this one is the weaker claim.
+
+| Invariant | Claim | Evidence |
+| --- | --- | --- |
+| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | ❌ none collected (`named`) |
+| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ none collected (`named`) |
+| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ none collected (`named`) |
 
 ## Invariants: errors
 
-| Invariant | Claim | Verified by |
+These errors invariants are properties of the pipeline, not
+of any one integration, so they have no column. **No evidence is
+collected for them yet**: `verified_by: named` is declared and
+not wired, so an empty cell here means unmeasured, not passing.
+The feature table above may show the same ground as covered,
+and where the two disagree this one is the weaker claim.
+
+| Invariant | Claim | Evidence |
 | --- | --- | --- |
-| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | named |
-| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | named |
+| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ none collected (`named`) |
+| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ none collected (`named`) |
 

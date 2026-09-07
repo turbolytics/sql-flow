@@ -543,10 +543,59 @@ def render(snap):
     )
     lines += [
         "",
-        f"**{len(snap['features'])} features declared, {covered} fully covered, "
+        f"**{len(snap['features'])} features declared. {covered} have at least one "
+        f"passing test attributed at every level they require, so "
         f"{len(snap['gaps'])} gap(s).**",
         "",
+        "That sentence counts attribution, not proof. A feature is green here when",
+        "a test named for it ran and passed; it says nothing about whether the",
+        "integration behind it keeps a batch it could not deliver, or commits",
+        "offsets only after a flush. Those are invariants, they are counted",
+        "separately below, and the two numbers are not interchangeable.",
+        "",
     ]
+
+    if snap.get("invariants"):
+        tally, unwired = invariant_tally(snap)
+        total = sum(tally.values())
+        lines += [
+            f"**{len(snap['invariants'])} invariants declared. Of {total} "
+            f"(invariant, integration) cells: {tally['covered']} proven, "
+            f"{tally['missing']} missing, {tally['skipped']} skipped, "
+            f"{tally['failing']} failing, {tally['exempt']} exempt. "
+            f"{len(snap['invariant_gaps'])} gap(s), because no invariant "
+            "requires a level yet.**",
+            "",
+        ]
+        if unwired:
+            lines += [
+                f"A further {unwired} invariants attach to the pipeline rather than",
+                "to any one integration. Nothing collects evidence for them yet, so",
+                "they show no cells at all, which is worse than missing rather than",
+                "better.",
+                "",
+            ]
+
+        argument = strongest_argument(snap)
+        if argument:
+            feature, tests, invariant, proven, applicable = argument
+            lines += [
+                "## Why invariants, and not the test count",
+                "",
+                f"`{feature}` carries {tests} attributed tests, more than anything",
+                f"else in the `{domain(feature)}` layer. `{invariant}`, an invariant",
+                f"of that same layer, is proven on {proven} of the {applicable}",
+                "integrations it applies to.",
+                "",
+                "Those two numbers are the argument. Tests accumulate around the",
+                "code that was written; an invariant is the claim that code exists",
+                "to uphold. A suite can exercise a retry ladder in every direction",
+                "and never ask whether the sink underneath keeps the rows the",
+                "ladder re-sends -- and if it does not, every one of those tests",
+                "passes while the pipeline loses data. The feature table calls that",
+                "covered. This one does not.",
+                "",
+            ]
 
     if snap["gaps"]:
         lines += ["## Gaps", "",
@@ -608,36 +657,149 @@ def render(snap):
 LEVEL_INITIALS = {lvl: lvl[0] for lvl in LEVELS}
 
 
+def cell_state(levels):
+    """One status for one (invariant, integration) cell, worst first.
+
+    Failing beats missing beats skipped beats covered, so a cell reports the
+    worst thing that happened rather than the best.
+    """
+    if any(c["status"] == "exempt" for c in levels.values()):
+        return "exempt"
+
+    states = {cell["status"] for cell in levels.values()}
+    if "failing" in states:
+        return "failing"
+    if "covered" in states:
+        return "covered"
+    if "skipped" in states:
+        return "skipped"
+    return "missing"
+
+
 def invariant_cell(levels, required):
     """Render one integration's cell for one invariant.
 
     A covered cell names the levels that proved it, because "proven with a
     fake but never against the real thing" is the question this matrix exists
     to answer, and a bare tick cannot say it.
-
-    Failing beats missing beats skipped: a cell reports the worst thing that
-    happened, then what was achieved.
     """
-    if any(c["status"] == "exempt" for c in levels.values()):
+    state = cell_state(levels)
+    if state == "exempt":
         return "— exempt"
+    if state == "failing":
+        return "🔥 failing"
+    if state == "skipped":
+        return "⚠️ skipped"
+    if state == "missing":
+        return "❌ missing"
 
     states = {lvl: cell["status"] for lvl, cell in levels.items()}
-    if "failing" in states.values():
-        return "🔥 failing"
+    proven = "".join(LEVEL_INITIALS[lvl] for lvl in LEVELS
+                     if states.get(lvl) == "covered")
+    # A required level that is not covered is a gap, listed below. Say so here
+    # too rather than showing a tick beside an unmet requirement.
+    unmet = [lvl for lvl in required if states.get(lvl) != "covered"]
+    if unmet:
+        return f"⚠️ {proven}, {'+'.join(unmet)} missing"
+    return f"✅ {proven}"
 
-    covered = [lvl for lvl in LEVELS if states.get(lvl) == "covered"]
-    if covered:
-        proven = "".join(LEVEL_INITIALS[lvl] for lvl in covered)
-        # A required level that is not covered is a gap, listed below. Say so
-        # here too rather than showing a tick beside an unmet requirement.
-        unmet = [lvl for lvl in required if states.get(lvl) != "covered"]
-        if unmet:
-            return f"⚠️ {proven}, {'+'.join(unmet)} missing"
-        return f"✅ {proven}"
 
-    if "skipped" in states.values():
-        return "⚠️ skipped"
-    return "❌ missing"
+def describe_claim(inv):
+    """The claim, plus the issue tracking it when the code does not hold it."""
+    claim = inv["claim"]
+    if inv.get("tracked_by"):
+        claim += f" *(declared, tracked by {inv['tracked_by']})*"
+    if inv.get("violated_once"):
+        claim += f" *(violated once: {', '.join(inv['violated_once'])})*"
+    return claim
+
+
+def invariant_tally(snap):
+    """Count every (invariant, integration) cell by state.
+
+    `cells` counts only invariants that have integrations. A pipeline
+    invariant attaches to core rather than to a constructor case, so it has
+    none, and `unwired` counts those separately rather than letting them read
+    as zero work.
+    """
+    tally = {s: 0 for s in ("covered", "missing", "skipped", "failing", "exempt")}
+    unwired = 0
+    for inv in snap["invariants"]:
+        if not inv["integrations"]:
+            unwired += 1
+            continue
+        for levels in inv["integrations"].values():
+            tally[cell_state(levels)] += 1
+    return tally, unwired
+
+
+def domain(identifier):
+    """sink.retry -> sink. The subsystem a feature or invariant belongs to."""
+    return identifier.split(".", 1)[0]
+
+
+def most_tested_feature(snap, within=None):
+    """The feature carrying the most attributed tests, and how many.
+
+    `within` restricts to one subsystem. Counted over features rather than
+    integrations because the sharpest case is a cross-cutting one: sink.retry
+    is not a sink anyone configures, and it accumulated more tests than any
+    other part of the sink layer.
+    """
+    best = None
+    for feature in snap["features"]:
+        if within and domain(feature["id"]) != within:
+            continue
+        total = sum(len(feature["levels"][lvl].get("tests", [])) for lvl in LEVELS)
+        if best is None or total > best[1]:
+            best = (feature["id"], total)
+    return best
+
+
+def least_proven_invariant(snap, within=None):
+    """The invariant proven on the fewest of the integrations it applies to.
+
+    Exempt cells count as neither proof nor hole: an integration excused from
+    an invariant is not evidence that the invariant is unproven.
+    """
+    worst = None
+    for inv in snap["invariants"]:
+        if within and domain(inv["id"]) != within:
+            continue
+        applicable = [levels for levels in inv["integrations"].values()
+                      if cell_state(levels) != "exempt"]
+        if not applicable:
+            continue
+        proven = sum(1 for levels in applicable if cell_state(levels) == "covered")
+        share = proven / len(applicable)
+        if worst is None or share < worst[3]:
+            worst = (inv["id"], proven, len(applicable), share)
+    return worst
+
+
+def strongest_argument(snap):
+    """A heavily tested feature paired with an unproven invariant of the same
+    subsystem, as (feature, tests, invariant, proven, applicable).
+
+    Same subsystem is what makes the pair an argument rather than a
+    coincidence. A feature with many tests somewhere else in the engine says
+    nothing about a sink invariant; a feature with many tests *in the sink
+    layer* alongside a sink invariant nothing proves says exactly the thing
+    this file exists to say.
+
+    Generated rather than written down so it cannot go stale.
+    """
+    best = None
+    for subsystem in sorted({domain(i["id"]) for i in snap["invariants"]}):
+        feature = most_tested_feature(snap, within=subsystem)
+        invariant = least_proven_invariant(snap, within=subsystem)
+        if not feature or not invariant or feature[1] == 0:
+            continue
+        # Rank by tests: the more a subsystem is tested while an invariant of
+        # its own goes unproven, the louder the point.
+        if best is None or feature[1] > best[1]:
+            best = (feature[0], feature[1], invariant[0], invariant[1], invariant[2])
+    return best
 
 
 def render_invariants(snap):
@@ -677,30 +839,43 @@ def render_invariants(snap):
                 if integ not in columns:
                     columns.append(integ)
 
+        # Split by whether the invariant has integrations. A pipeline row in a
+        # table of sink columns renders as a line of dots, which reads as "not
+        # applicable" when the truth is "nothing collects this yet".
+        per_integration = [i for i in rows if i["integrations"]]
+        per_pipeline = [i for i in rows if not i["integrations"]]
+
         lines += [f"## Invariants: {family}", ""]
-        if columns:
+
+        if per_integration:
             lines.append("| Invariant | Claim | "
                          + " | ".join(f"`{c}`" for c in columns) + " |")
             lines.append("| --- | --- | "
                          + " | ".join("---" for _ in columns) + " |")
-        else:
-            # pipeline invariants have no per-integration column.
-            lines.append("| Invariant | Claim | Verified by |")
-            lines.append("| --- | --- | --- |")
-
-        for inv in rows:
-            claim = inv["claim"]
-            if inv.get("tracked_by"):
-                claim += f" *(declared, tracked by {inv['tracked_by']})*"
-            if columns:
+            for inv in per_integration:
                 cells = " | ".join(
                     invariant_cell(inv["integrations"][c], inv["requires"])
                     if c in inv["integrations"] else "·"
                     for c in columns)
-                lines.append(f"| `{inv['id']}` | {claim} | {cells} |")
-            else:
-                lines.append(f"| `{inv['id']}` | {claim} | {inv['verified_by']} |")
-        lines.append("")
+                lines.append(f"| `{inv['id']}` | {describe_claim(inv)} | {cells} |")
+            lines.append("")
+
+        if per_pipeline:
+            lines += [
+                f"These {family} invariants are properties of the pipeline, not",
+                "of any one integration, so they have no column. **No evidence is",
+                "collected for them yet**: `verified_by: named` is declared and",
+                "not wired, so an empty cell here means unmeasured, not passing.",
+                "The feature table above may show the same ground as covered,",
+                "and where the two disagree this one is the weaker claim.",
+                "",
+                "| Invariant | Claim | Evidence |",
+                "| --- | --- | --- |",
+            ]
+            for inv in per_pipeline:
+                lines.append(f"| `{inv['id']}` | {describe_claim(inv)} | "
+                             f"❌ none collected (`{inv['verified_by']}`) |")
+            lines.append("")
 
     if snap["invariant_gaps"]:
         lines += ["## Invariant gaps", "",
