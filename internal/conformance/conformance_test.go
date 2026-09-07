@@ -451,3 +451,80 @@ func TestToolingConformanceSinks_TheDoublesIntegrationIsNotAShippedSink(t *testi
 		assert.That(t, "sink."+kind != fakeIntegration)
 	}
 }
+
+// --- The pipeline harness --------------------------------------------------
+
+// A pipeline that commits before it flushes moves the position past rows the
+// sink never took. The harness must catch that on every path, so this runs a
+// subject whose recorder reports the wrong order and holds that the verdict
+// names it.
+func TestToolingConformancePipelines_CatchesACommitBeforeTheFlush(t *testing.T) {
+	vs := pipelineVerdictsFor(t, PipelineSubject{
+		Integration: "pipeline.stateful",
+		KeepsState:  true,
+		Options: func(r *Recorder) []core.TurbineOption {
+			// A store that records its save before the sink has flushed is
+			// the defect: the events come out in the wrong order.
+			r.record("save-offsets")
+			return []core.TurbineOption{core.WithStateStore(r.Offsets(), r.Tx())}
+		},
+	})
+
+	assert.True(t, vs[commitAfterFlush].failure != "")
+	assert.True(t, strings.Contains(vs[commitAfterFlush].failure, "want"))
+}
+
+// A configuration that keeps no state cannot prove the invariant about
+// committing state with the offsets. It must skip rather than fail, and the
+// registry must exempt it: two statements that have to agree.
+func TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants(t *testing.T) {
+	vs := pipelineVerdictsFor(t, PipelineSubject{
+		Integration: "pipeline.stateless",
+		KeepsState:  false,
+		Options:     func(*Recorder) []core.TurbineOption { return nil },
+	})
+
+	assert.True(t, strings.Contains(vs[stateWithOffsets].skipped, "no durable state"))
+	assert.Equal(t, "", vs[stateWithOffsets].failure)
+
+	// The other three still apply to a stateless pipeline.
+	assert.Equal(t, "", vs[commitAfterFlush].failure)
+	assert.Equal(t, "", vs[commitNothingOnFail].failure)
+	assert.Equal(t, "", vs[drainOnCancel].failure)
+}
+
+// Every invariant the pipeline harness judges must be declared, or its marker
+// reports as unknown and the cell never appears.
+func TestToolingConformancePipelines_JudgeOnlyDeclaredInvariants(t *testing.T) {
+	declared, err := coverage.Invariants()
+	assert.NoError(t, err)
+
+	for id := range pipelineVerdictsFor(t, PipelineSubject{
+		Integration: "pipeline.stateful",
+		KeepsState:  true,
+		Options: func(r *Recorder) []core.TurbineOption {
+			return []core.TurbineOption{core.WithStateStore(r.Offsets(), r.Tx())}
+		},
+	}) {
+		assert.True(t, declared[id])
+	}
+}
+
+// The harness must exercise every path that reaches a batch. A trigger that
+// stopped firing would leave its path unproven while the matrix stayed green.
+func TestToolingConformancePipelines_RunsEveryTrigger(t *testing.T) {
+	assert.DeepEqual(t, []Trigger{
+		TriggerBatchFull, TriggerInterval, TriggerSourceClosed, TriggerDrain,
+	}, Triggers)
+}
+
+func pipelineVerdictsFor(t *testing.T, s PipelineSubject) map[string]verdict {
+	t.Helper()
+
+	out := map[string]verdict{}
+	for _, v := range pipelineVerdicts(t, s) {
+		out[v.invariant] = v
+	}
+	assert.Equal(t, 4, len(out))
+	return out
+}

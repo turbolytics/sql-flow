@@ -21,6 +21,7 @@ import coverage_matrix as cm  # noqa: E402
 
 
 FEATURES = [
+    {"id": "state.durability", "description": "state", "requires": ["unit"]},
     {"id": "sink.clickhouse", "description": "ch", "requires": ["unit", "release"]},
     {"id": "sink.console", "description": "console", "requires": ["unit"]},
     {"id": "source.kafka", "description": "kafka", "requires": ["release"]},
@@ -499,6 +500,8 @@ INTEGRATIONS = [
                  "proven_by": "TestSinkConsole_ImplementsNoProber"}]},
     {"id": "source.kafka", "kind": "source", "implements": ["Source"],
      "feature": "source.kafka", "exempt": []},
+    {"id": "pipeline.stateful", "kind": "pipeline", "constructed": False,
+     "implements": ["Sink"], "feature": "state.durability", "exempt": []},
 ]
 
 
@@ -511,7 +514,8 @@ def test_the_committed_registries_load_and_validate():
 
     assert cm.validate_registries(invariants, integrations, features) == []
     assert len(invariants) >= 20
-    assert {i["kind"] for i in integrations} == {"sink", "source", "handler"}
+    assert {i["kind"] for i in integrations} == {
+        "sink", "source", "handler", "pipeline"}
 
 
 def test_every_committed_invariant_is_unenforced_in_this_revision():
@@ -919,11 +923,11 @@ def test_snapshot_an_exempt_cell_carries_no_tests_even_with_evidence():
     assert "tests" not in c
 
 
-def test_snapshot_a_pipeline_invariant_carries_exactly_one_cell():
-    """It is a property of the engine, not of anything a config names, so it
-    gets one cell rather than a column per integration."""
+def test_snapshot_a_pipeline_invariant_gets_a_cell_per_configuration():
+    """The consume loop has configurations, and durable state changes what a
+    commit means. One cell each is what shows which configuration proved it."""
     s = inv_snap(invariants=PIPELINE)
-    assert list(s["invariants"][0]["integrations"]) == ["pipeline"]
+    assert list(s["invariants"][0]["integrations"]) == ["pipeline.stateful"]
 
 
 def test_snapshot_orders_tests_stably_whatever_order_they_arrived_in():
@@ -1094,19 +1098,20 @@ def test_render_omits_the_gap_section_when_there_are_none():
     assert "## Invariant gaps" not in cm.render_invariants(inv_snap())
 
 
-def test_render_shows_a_pipeline_invariant_as_missing_when_nothing_proves_it():
+def test_render_gives_the_pipeline_table_a_column_per_configuration():
     """A pipeline row among sink columns used to render as a line of dots,
     which reads as "not applicable" when the truth is "unproven"."""
     md = cm.render_invariants(inv_snap(invariants=PIPELINE))
 
-    assert "| Invariant | Claim | Proven |" in md
+    assert "| Invariant | Claim | `pipeline.stateful` |" in md
     assert "| `pipeline.commit.after_flush` | c | ❌ missing |" in md
 
 
 def test_render_shows_a_pipeline_invariant_as_covered_once_proven():
     s = inv_snap(
         invariants=PIPELINE,
-        evidence={"unit": {"TestA": [("pipeline.commit.after_flush", "pipeline")]}},
+        evidence={"unit": {"TestA": [("pipeline.commit.after_flush",
+                                      "pipeline.stateful")]}},
         results={"unit": {"TestA": cm.PASS}},
     )
     assert "| `pipeline.commit.after_flush` | c | ✅ u |" in cm.render_invariants(s)
@@ -1122,10 +1127,10 @@ def test_render_separates_pipeline_rows_from_integration_rows_in_one_family():
 
     assert md.count("## Invariants: checkpoint") == 1
     assert "| Invariant | Claim | `source.kafka` |" in md
-    assert "| Invariant | Claim | Proven |" in md
-    # The pipeline row never appears in the integration table.
-    integration_table = md.split("| Invariant | Claim | Proven |")[0]
-    assert "pipeline.commit.after_flush" not in integration_table
+    assert "| Invariant | Claim | `pipeline.stateful` |" in md
+    # The pipeline row never appears in the source table.
+    source_table = md.split("| Invariant | Claim | `pipeline.stateful` |")[0]
+    assert "pipeline.commit.after_flush" not in source_table
 
 
 # --- The summary a skimmer reads -------------------------------------------
@@ -1172,9 +1177,8 @@ def test_the_tally_counts_every_cell_by_state():
     assert unwired == 0
 
 
-def test_the_tally_counts_a_pipeline_invariant_once():
-    """One cell, counted like any other. It used to carry none and be tallied
-    separately as unwired."""
+def test_the_tally_counts_a_pipeline_cell_like_any_other():
+    """It used to carry no cell and be tallied separately as unwired."""
     tally, unwired = cm.invariant_tally(inv_snap(invariants=PIPELINE))
 
     assert unwired == 0
@@ -1498,18 +1502,19 @@ PIPELINE = [
 def test_a_pipeline_invariant_is_proven_by_a_marker():
     s = inv_snap(
         invariants=PIPELINE,
-        evidence={"unit": {"TestA": [("pipeline.commit.after_flush", "pipeline")]}},
+        evidence={"unit": {"TestA": [("pipeline.commit.after_flush",
+                                      "pipeline.stateful")]}},
         results={"unit": {"TestA": cm.PASS}},
     )
     inv = s["invariants"][0]
-    assert inv["integrations"]["pipeline"]["unit"]["status"] == "covered"
+    assert inv["integrations"]["pipeline.stateful"]["unit"]["status"] == "covered"
 
 
 def test_a_pipeline_invariant_with_no_marker_is_missing_not_absent():
     """It used to render "none collected", which reads as "not applicable"."""
     s = inv_snap(invariants=PIPELINE)
     inv = s["invariants"][0]
-    assert inv["integrations"]["pipeline"]["unit"]["status"] == "missing"
+    assert inv["integrations"]["pipeline.stateful"]["unit"]["status"] == "missing"
 
 
 def test_a_pipeline_marker_naming_a_sink_is_unknown():
@@ -1550,3 +1555,15 @@ def test_named_is_no_longer_a_verifier():
 def test_no_committed_invariant_uses_named():
     for inv in cm.load_invariants():
         assert inv["verified_by"] != "named", inv["id"]
+
+
+# The conformance harness emits a feature marker inside every subtest, so
+# nothing it runs relies on its name. An earlier attempt excused any
+# marker-carrying test from this report instead, which let a test contribute to
+# no feature while nothing said so.
+
+def test_a_test_with_neither_marker_nor_matching_name_is_still_unattributed():
+    coverage, secondary, unmatched, unknown = cm.build(
+        FEATURES, {}, {}, {}, {}, {"TestNobodyDeclaredThis": cm.PASS}, {})
+    s = cm.snapshot(FEATURES, coverage, secondary, unmatched, unknown)
+    assert s["unattributed"]["integration"] == ["TestNobodyDeclaredThis"]

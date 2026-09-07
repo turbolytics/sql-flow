@@ -152,6 +152,31 @@ integrations:
         reason: implements no MarkCommitter; at-most-once by construction
         proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
 
+  # --- Pipelines -------------------------------------------------------------
+  # Configurations of the consume loop. Nothing in a config file names one, so
+  # `constructed: false`: no constructor switch lists them and Kinds() must not
+  # be held equal to them.
+  #
+  # They are subjects because the loop behaves differently with durable state
+  # than without, and because four paths reach processBatch. One cell per
+  # configuration is what shows which of those combinations is proven.
+  - id: pipeline.stateful
+    kind: pipeline
+    constructed: false
+    implements: [Source, Sink, Handler]
+    feature: state.durability
+    exempt: []
+
+  - id: pipeline.stateless
+    kind: pipeline
+    constructed: false
+    implements: [Source, Sink, Handler]
+    feature: core.consume_loop
+    exempt:
+      - invariant: pipeline.state.with_offsets
+        reason: keeps no durable state, so there is nothing to commit with the offsets
+        proven_by: TestPipelineStateless_KeepsNoDurableState
+
   # --- Handlers --------------------------------------------------------------
   - id: handler.structured
     kind: handler

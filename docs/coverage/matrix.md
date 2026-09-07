@@ -35,12 +35,12 @@ names every one of them.
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
 | `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 8 |
-| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 11 |
+| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 16 |
 | `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ | 22 |
 | `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ | 6 |
 | `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ | 2 |
 | `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ | 8 |
-| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 14 |
+| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 20 |
 | `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — | 16 |
 | `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | 1 |
 | `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ | 5 |
@@ -53,7 +53,7 @@ names every one of them.
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 22 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 26 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 12 |
 
 **34 features declared. 34 have at least one passing test attributed at every level they require, so 0 gap(s).**
@@ -64,7 +64,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**29 invariants declared. Of 122 (invariant, integration) cells: 19 proven, 84 missing, 0 skipped, 0 failing, 19 exempt. 0 gap(s), because no invariant requires a level yet.**
+**29 invariants declared. Of 130 (invariant, integration) cells: 22 proven, 88 missing, 0 skipped, 0 failing, 20 exempt. 0 gap(s), because no invariant requires a level yet.**
 
 ## Why invariants, and not the test count
 
@@ -141,16 +141,18 @@ invariant's `requires` is filled in, and none is yet.
 | `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt |
 | `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt |
 
-These checkpoint invariants are properties of the engine rather
-than of anything a config names, so they carry one cell instead
-of a column per integration. A test proves one by calling
-`coverage.PipelineInvariant`.
+These checkpoint invariants are properties of the consume loop
+rather than of anything a config file names. The columns are
+its configurations, and `internal/conformance` runs each one
+through every path that reaches a batch: the batch filling, the
+flush interval elapsing, the source closing, and a cancel that
+drains. An invariant holds only if it holds on all four.
 
-| Invariant | Claim | Proven |
-| --- | --- | --- |
-| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ✅ u |
-| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u |
-| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u |
+| Invariant | Claim | `pipeline.stateful` | `pipeline.stateless` |
+| --- | --- | --- | --- |
+| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ✅ u | ✅ u |
+| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u | ✅ u |
+| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
 
 ## Invariants: types
 
@@ -169,26 +171,30 @@ of a column per integration. A test proves one by calling
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `lifecycle.close.idempotent` | Close twice is safe. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 
-These lifecycle invariants are properties of the engine rather
-than of anything a config names, so they carry one cell instead
-of a column per integration. A test proves one by calling
-`coverage.PipelineInvariant`.
+These lifecycle invariants are properties of the consume loop
+rather than of anything a config file names. The columns are
+its configurations, and `internal/conformance` runs each one
+through every path that reaches a batch: the batch filling, the
+flush interval elapsing, the source closing, and a cancel that
+drains. An invariant holds only if it holds on all four.
 
-| Invariant | Claim | Proven |
-| --- | --- | --- |
-| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | ✅ u |
-| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ missing |
-| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing |
+| Invariant | Claim | `pipeline.stateful` | `pipeline.stateless` |
+| --- | --- | --- | --- |
+| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | ✅ u | ✅ u |
+| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ missing | ❌ missing |
+| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing | ❌ missing |
 
 ## Invariants: errors
 
-These errors invariants are properties of the engine rather
-than of anything a config names, so they carry one cell instead
-of a column per integration. A test proves one by calling
-`coverage.PipelineInvariant`.
+These errors invariants are properties of the consume loop
+rather than of anything a config file names. The columns are
+its configurations, and `internal/conformance` runs each one
+through every path that reaches a batch: the batch filling, the
+flush interval elapsing, the source closing, and a cancel that
+drains. An invariant holds only if it holds on all four.
 
-| Invariant | Claim | Proven |
-| --- | --- | --- |
-| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ missing |
-| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ missing |
+| Invariant | Claim | `pipeline.stateful` | `pipeline.stateless` |
+| --- | --- | --- | --- |
+| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ missing | ❌ missing |
+| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ missing | ❌ missing |
 

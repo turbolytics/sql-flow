@@ -62,14 +62,12 @@ KINDS = ("sink", "source", "handler", "pipeline")
 # attribute the same claim.
 VERIFIERS = ("harness", "typetable")
 
-# A pipeline invariant is a property of the engine, not of anything a config
-# names, so its marker carries this in place of an integration id and it gets
-# one cell rather than a column per integration.
 PIPELINE = "pipeline"
 
-# pipeline is not among them: no constructor switch builds a pipeline, so no
-# entry in integrations.yml carries that kind.
-INTEGRATION_KINDS = ("sink", "source", "handler")
+# A pipeline configuration is an integration of the harness, though no
+# constructor switch builds one. `constructed: false` says so, and the Kinds()
+# agreement tests skip those entries.
+INTEGRATION_KINDS = ("sink", "source", "handler", "pipeline")
 
 
 def load_features():
@@ -333,9 +331,6 @@ def build_invariants(invariants, integrations, results, evidence):
     kinds = {i["id"]: i["kind"] for i in integrations}
     allowed = {}
     for inv in invariants:
-        if inv["applies_to"] == PIPELINE:
-            allowed[inv["id"]] = {PIPELINE}
-            continue
         allowed[inv["id"]] = {
             iid for iid, kind in kinds.items() if kind == inv["applies_to"]
         }
@@ -402,14 +397,7 @@ def snapshot_invariants(invariants, integrations, built):
         if inv.get("violated_once"):
             entry["violated_once"] = list(inv["violated_once"])
 
-        # A pipeline invariant is a property of the engine rather than of
-        # anything a config names, so it gets one cell instead of a column per
-        # integration.
-        subjects = by_kind.get(inv["applies_to"], [])
-        if inv["applies_to"] == PIPELINE:
-            subjects = [{"id": PIPELINE}]
-
-        for integ in subjects:
+        for integ in by_kind.get(inv["applies_to"], []):
             exemption = exemptions.get((inv["id"], integ["id"]))
             reason = exemption  # None when the integration must prove it
             levels = {}
@@ -924,17 +912,30 @@ def render_invariants(snap):
 
         if per_pipeline:
             lines += [
-                f"These {family} invariants are properties of the engine rather",
-                "than of anything a config names, so they carry one cell instead",
-                "of a column per integration. A test proves one by calling",
-                "`coverage.PipelineInvariant`.",
+                f"These {family} invariants are properties of the consume loop",
+                "rather than of anything a config file names. The columns are",
+                "its configurations, and `internal/conformance` runs each one",
+                "through every path that reaches a batch: the batch filling, the",
+                "flush interval elapsing, the source closing, and a cancel that",
+                "drains. An invariant holds only if it holds on all four.",
                 "",
-                "| Invariant | Claim | Proven |",
-                "| --- | --- | --- |",
             ]
+            pipeline_columns = []
             for inv in per_pipeline:
-                cell = invariant_cell(inv["integrations"][PIPELINE], inv["requires"])
-                lines.append(f"| `{inv['id']}` | {describe_claim(inv)} | {cell} |")
+                for integ in inv["integrations"]:
+                    if integ not in pipeline_columns:
+                        pipeline_columns.append(integ)
+
+            lines.append("| Invariant | Claim | "
+                         + " | ".join(f"`{c}`" for c in pipeline_columns) + " |")
+            lines.append("| --- | --- | "
+                         + " | ".join("---" for _ in pipeline_columns) + " |")
+            for inv in per_pipeline:
+                cells = " | ".join(
+                    invariant_cell(inv["integrations"][c], inv["requires"])
+                    if c in inv["integrations"] else "·"
+                    for c in pipeline_columns)
+                lines.append(f"| `{inv['id']}` | {describe_claim(inv)} | {cells} |")
             lines.append("")
 
     if snap["invariant_gaps"]:

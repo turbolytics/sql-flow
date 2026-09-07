@@ -38,14 +38,3 @@ func Invariant(t testing.TB, invariant, integration string) {
 	t.Helper()
 	t.Logf("COVERS invariant=%s integration=%s", invariant, integration)
 }
-
-// PipelineInvariant records that this test proved one invariant of the engine
-// itself.
-//
-// A pipeline invariant is a property of the consume loop rather than of
-// anything a config names, so there is no integration to credit. It carries
-// "pipeline" in that slot, and the generator gives it a single cell.
-func PipelineInvariant(t testing.TB, invariant string) {
-	t.Helper()
-	Invariant(t, invariant, "pipeline")
-}

@@ -73,8 +73,29 @@ func Sinks(t *testing.T, s SinkSubject) {
 	t.Helper()
 	requireSubject(t, s)
 
+	// Every subtest is its own entry in `go test -json`, so each one carries
+	// both markers. The sink subtests happened to match a feature prefix --
+	// TestIntegrationSinkClickhouse_Conformance/... reads as
+	// TestSinkClickhouse* once the level prefix is stripped -- and that
+	// accident is exactly what an explicit marker replaces.
+	//
+	// The feature comes from the registry rather than from the integration
+	// id: sink.noop attributes to sink.noop, and a test_only integration
+	// attributes to nothing.
+	feature, hasFeature, err := coverage.FeatureFor(s.Integration)
+	if err != nil {
+		t.Fatalf("conformance: %v", err)
+	}
+
 	for _, v := range sinkVerdicts(t, s) {
 		t.Run(v.invariant, func(t *testing.T) {
+			// Emitted before the outcome, because it says which feature this
+			// test touched rather than that it passed. A skipped or failing
+			// subtest records as a skip or a failure against the feature,
+			// which status() already refuses to count as coverage.
+			if hasFeature {
+				coverage.Covers(t, feature)
+			}
 			if v.skipped != "" {
 				t.Skip(v.skipped)
 			}
@@ -85,15 +106,7 @@ func Sinks(t *testing.T, s SinkSubject) {
 		})
 	}
 
-	// The feature axis credits the run too, so a conformance test is not
-	// invisible to features.yml. The feature comes from the registry rather
-	// than from the integration id: sink.noop attributes to sink.console, and
-	// a test_only integration attributes to nothing.
-	feature, has, err := coverage.FeatureFor(s.Integration)
-	if err != nil {
-		t.Fatalf("conformance: %v", err)
-	}
-	if has {
+	if hasFeature {
 		coverage.Covers(t, feature)
 	}
 }
