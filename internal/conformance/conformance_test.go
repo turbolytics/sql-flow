@@ -548,6 +548,23 @@ func pipelineVerdictsFor(t *testing.T, s PipelineSubject) map[string]verdict {
 	for _, v := range pipelineVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 4, len(out))
+	assert.Equal(t, 5, len(out))
 	return out
+}
+
+// The liveness claim is the only one that says the pipeline does anything.
+// Every safety verdict above holds for a pipeline that never flushes, so a
+// harness that judged safety alone would call a permanently stalled loop
+// conformant.
+func TestToolingConformancePipelines_JudgeOneLivenessClaim(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	vs := pipelineVerdictsFor(t, PipelineSubject{
+		Integration: "pipeline.stateless",
+		KeepsState:  false,
+		Options:     func(*Recorder) []core.TurbineOption { return nil },
+	})
+
+	assert.Equal(t, "", vs[flushEventually].failure)
+	assert.Equal(t, "", vs[flushEventually].skipped)
 }

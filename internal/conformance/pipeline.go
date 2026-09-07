@@ -120,6 +120,7 @@ const (
 	commitNothingOnFail = "pipeline.commit.nothing_on_failure"
 	stateWithOffsets    = "pipeline.state.with_offsets"
 	drainOnCancel       = "lifecycle.drain.on_cancel"
+	flushEventually     = "pipeline.flush.eventually"
 )
 
 // pipelineVerdicts runs every trigger against the subject and judges each
@@ -136,6 +137,7 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 	onFailure := verdict{invariant: commitNothingOnFail}
 	withOffsets := verdict{invariant: stateWithOffsets}
 	drain := verdict{invariant: drainOnCancel}
+	eventually := verdict{invariant: flushEventually}
 
 	if !s.KeepsState {
 		withOffsets.skipped = s.Integration + " keeps no durable state, so " +
@@ -173,7 +175,14 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 		drain.failure = err.Error()
 	}
 
-	return []verdict{afterFlush, onFailure, withOffsets, drain}
+	// The only liveness claim here. Everything above says the pipeline does
+	// nothing wrong; this says it does something. A sink that never flushed
+	// would satisfy every one of them and fail this one alone.
+	if err := checkFlushEventually(t, s); err != nil {
+		eventually.failure = err.Error()
+	}
+
+	return []verdict{afterFlush, onFailure, withOffsets, drain, eventually}
 }
 
 // checkCommitAfterFlush runs one trigger and holds the event order.
@@ -268,6 +277,39 @@ func checkDrain(t *testing.T, s PipelineSubject) error {
 	return nil
 }
 
+// checkFlushEventually holds that a batch too small to fill still lands.
+//
+// The interval scenario writes fewer messages than batchSize and lets the
+// ticker fire. Without that path a low-traffic topic -- and any push source
+// between deliveries -- buffers until the process dies.
+func checkFlushEventually(t *testing.T, s PipelineSubject) error {
+	t.Helper()
+
+	run := runPipeline(t, s, TriggerInterval, faults{})
+	if run.stalled {
+		return fmt.Errorf(
+			"a batch of %d, below batchSize, did not reach the sink within %s "+
+				"of a %s flush interval; the run had to be cancelled to end it",
+			intervalRows, stallTimeout, 100*time.Millisecond)
+	}
+	if run.err != nil {
+		return fmt.Errorf("interval: the pipeline failed with no fault "+
+			"injected: %v", run.err)
+	}
+	if run.flushes == 0 {
+		return errors.New(
+			"a batch smaller than batchSize never reached the sink; only the " +
+				"flush interval can move it, and a pipeline that waits for a " +
+				"batch that never fills stalls for as long as it runs")
+	}
+	if run.rows != intervalRows {
+		return fmt.Errorf(
+			"the flush interval delivered %d of %d buffered rows",
+			run.rows, intervalRows)
+	}
+	return nil
+}
+
 func sameOrder(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
@@ -300,11 +342,25 @@ type outcome struct {
 	flushes       int
 	sourceCommits int
 	err           error
+
+	// stalled is set when the run had to be cancelled to end it. A liveness
+	// check must never wait on the thing it is testing: a pipeline that never
+	// flushes would otherwise hang the suite rather than fail one invariant.
+	stalled bool
 }
 
 // drainRows is the number of messages the drain scenario buffers. Small, and
 // larger than one, so a drain that writes a partial batch is visible.
 const drainRows = 10
+
+// intervalRows is the partial batch the flush interval has to move. Fewer than
+// any batchSize the harness sets, so the batch can never fill.
+const intervalRows = 2
+
+// stallTimeout bounds the interval scenario at many times its 100ms tick. A
+// pipeline that never flushes is what this check exists to catch, so it must
+// report rather than wait.
+const stallTimeout = 5 * time.Second
 
 // runPipeline builds the subject's pipeline over the harness's instrumented
 // parts and runs it until the trigger fires.
@@ -314,6 +370,7 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	rec := &Recorder{failOffsets: f.offsets}
 	src := &recordingSource{rec: rec}
 	sink := &recordingSink{rec: rec, fail: f.flush}
+	var flushed chan struct{}
 
 	// Sized so only the intended trigger can fire. A batch size above the
 	// message count keeps the batch from filling; an hour-long interval keeps
@@ -323,20 +380,26 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	case TriggerBatchFull:
 		src.batch = messages(4)
 	case TriggerInterval:
+		// intervalRows is below every batchSize the harness uses, so only the
+		// ticker can move them.
 		// The stream stays open so the select blocks on it and the ticker
 		// wins. Closing it here instead would end the run through the
 		// source-closed path, which is a different branch: an earlier version
 		// did exactly that and tested one path twice.
-		src.batch = messages(2)
+		src.batch = messages(intervalRows)
 		src.block = true
 		batchSize, interval = 1000, 100*time.Millisecond
 
 		// Close as soon as the interval's flush lands, so the run ends
 		// deterministically and no second tick can fire.
+		flushed = make(chan struct{})
 		var once sync.Once
 		rec.onEvent = func(event string) {
 			if event == "flush" || event == "flush-failed" {
-				once.Do(func() { go src.Close() })
+				once.Do(func() {
+					close(flushed)
+					go src.Close()
+				})
 			}
 		}
 	case TriggerSourceClosed:
@@ -358,6 +421,24 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	stalled := false
+	if flushed != nil {
+		// The run ends when the flush lands. If it never does, end it here
+		// instead of waiting: that is the failure, not a reason to hang.
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-flushed:
+			case <-time.After(stallTimeout):
+				stalled = true
+				cancel()
+				go src.Close()
+			case <-done:
+			}
+		}()
+		defer close(done)
+	}
+
 	if trigger == TriggerDrain {
 		go func() {
 			src.wrote.Wait()
@@ -373,6 +454,7 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 		flushes:       sink.Flushes(),
 		sourceCommits: src.Commits(),
 		err:           err,
+		stalled:       stalled,
 	}
 }
 

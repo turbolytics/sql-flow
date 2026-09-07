@@ -480,10 +480,12 @@ def test_the_check_exits_non_zero_on_a_gap(tmp_path):
 # --- Registries ------------------------------------------------------------
 
 INVARIANTS = [
-    {"id": "sink.flush.keeps_batch", "family": "resilience", "applies_to": "sink",
-     "claim": "kept", "verified_by": "harness", "requires": []},
+    {"id": "sink.flush.keeps_batch", "family": "resilience", "class": "safety",
+     "applies_to": "sink", "claim": "kept", "verified_by": "harness",
+     "requires": []},
     {"id": "source.commit.only_processed", "family": "checkpoint",
-     "applies_to": "source", "claim": "c", "verified_by": "harness", "requires": []},
+     "class": "safety", "applies_to": "source", "claim": "c",
+     "verified_by": "harness", "requires": []},
 ]
 
 INTEGRATIONS = [
@@ -683,8 +685,8 @@ def test_a_tracked_invariant_renders_as_declared_unenforced():
 def test_render_carries_one_table_per_family():
     s = inv_snap()
     md = cm.render_invariants(s)
-    assert "## Invariants: resilience" in md
-    assert "## Invariants: checkpoint" in md
+    assert "## Safety invariants: resilience" in md
+    assert "## Safety invariants: checkpoint" in md
     assert "| `sink.flush.keeps_batch` |" in md
 
 
@@ -1120,7 +1122,7 @@ def test_render_separates_pipeline_rows_from_integration_rows_in_one_family():
     ]
     md = cm.render_invariants(inv_snap(invariants=mixed))
 
-    assert md.count("## Invariants: checkpoint") == 1
+    assert md.count("## Safety invariants: checkpoint") == 1
     assert "| Invariant | Claim | `source.kafka` |" in md
     assert "| Invariant | Claim | `pipeline.stateful` |" in md
     # The pipeline row never appears in the source table.
@@ -1500,8 +1502,8 @@ def test_the_committed_registry_marks_the_double_test_only():
 
 PIPELINE = [
     {"id": "pipeline.commit.after_flush", "family": "checkpoint",
-     "applies_to": "pipeline", "claim": "c", "verified_by": "harness",
-     "requires": []},
+     "class": "safety", "applies_to": "pipeline", "claim": "c",
+     "verified_by": "harness", "requires": []},
 ]
 
 
@@ -1602,3 +1604,71 @@ def test_a_feature_claimed_twice_by_one_test_counts_once():
         go_covers={"TestX": ["sink.clickhouse", "sink.clickhouse"]},
     )
     assert level(s, "sink.clickhouse", "unit")["tests"] == ["TestX"]
+
+
+# --- Safety and liveness ----------------------------------------------------
+#
+# Every invariant declared before this was a safety property: nothing bad
+# happens. None was a liveness property: something good eventually happens.
+#
+# That gap is not cosmetic. A sink that never flushes satisfies every safety
+# invariant in the file. keeps_batch holds vacuously if you never flush;
+# commit.after_flush holds if you never commit. A pipeline that buffers forever
+# reads as fully conformant, which is the one outcome the matrix must never
+# report as fine.
+
+SAFETY = dict(INVARIANTS[0], **{"class": "safety"})
+LIVENESS = {"id": "pipeline.flush.eventually", "family": "lifecycle",
+            "class": "liveness", "applies_to": "pipeline",
+            "claim": "buffered rows reach the sink within the flush interval",
+            "verified_by": "harness", "requires": []}
+
+
+def test_every_committed_invariant_declares_its_class():
+    for inv in cm.load_invariants():
+        assert inv.get("class") in ("safety", "liveness"), inv["id"]
+
+
+def test_validate_rejects_an_invariant_with_no_class():
+    bad = [{k: v for k, v in SAFETY.items() if k != "class"}]
+    problems = cm.validate_registries(bad, INTEGRATIONS, FEATURES)
+    assert any("class" in p for p in problems)
+
+
+def test_validate_rejects_an_unknown_class():
+    bad = [dict(SAFETY, **{"class": "eventual"})]
+    problems = cm.validate_registries(bad, INTEGRATIONS, FEATURES)
+    assert any("eventual" in p for p in problems)
+
+
+def test_the_registry_declares_at_least_one_liveness_invariant():
+    """A file of safety claims alone cannot say the pipeline does anything."""
+    classes = {i["class"] for i in cm.load_invariants()}
+    assert "liveness" in classes
+
+
+def test_render_groups_tables_by_class_then_family():
+    """Grouping rather than a column, so a liveness section that is entirely
+    red is visible beside a green safety one."""
+    s = inv_snap(invariants=[SAFETY, LIVENESS])
+    md = cm.render_invariants(s)
+
+    assert "## Safety invariants: resilience" in md
+    assert "## Liveness invariants: lifecycle" in md
+
+
+def test_render_counts_each_class_separately():
+    """Beside the feature count, because a reader who stops at the first bold
+    line should see both numbers."""
+    s = snap()
+    s.update(inv_snap(invariants=[SAFETY, LIVENESS]))
+    md = cm.render(s)
+    assert "1 safety" in md and "1 liveness" in md
+
+
+def test_render_says_what_safety_alone_cannot_prove():
+    """The vacuity is the reason the distinction exists, and a reader cannot
+    infer it from a page of green cells."""
+    s = snap()
+    s.update(inv_snap(invariants=[SAFETY, LIVENESS]))
+    assert "never flushes" in cm.render(s)

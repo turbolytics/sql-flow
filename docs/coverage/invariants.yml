@@ -27,6 +27,7 @@ invariants:
   # --- Resilience: the sink contract ---------------------------------------
   - id: sink.write.buffers_only
     family: resilience
+    class: safety
     applies_to: sink
     claim: WriteTable does not reach the destination. Only Flush does.
     verified_by: harness
@@ -38,6 +39,7 @@ invariants:
 
   - id: sink.flush.keeps_batch
     family: resilience
+    class: safety
     applies_to: sink
     claim: >
       A failed Flush leaves every undelivered row buffered. The next Flush
@@ -49,6 +51,7 @@ invariants:
 
   - id: sink.flush.no_hollow_success
     family: resilience
+    class: safety
     applies_to: sink
     claim: >
       Flush returns nil only when every row since the last success was
@@ -59,6 +62,7 @@ invariants:
 
   - id: sink.flush.preserves_order
     family: resilience
+    class: safety
     applies_to: sink
     claim: Rows reach the destination in WriteTable order, across a retry.
     verified_by: harness
@@ -66,6 +70,7 @@ invariants:
 
   - id: sink.flush.honours_context
     family: resilience
+    class: safety
     applies_to: sink
     claim: Flush returns ctx.Err() when the context ends. Rows stay buffered.
     verified_by: harness
@@ -74,6 +79,7 @@ invariants:
 
   - id: sink.flush.empty_is_noop
     family: resilience
+    class: safety
     applies_to: sink
     claim: Flush with nothing buffered returns nil and touches nothing.
     verified_by: harness
@@ -81,6 +87,7 @@ invariants:
 
   - id: sink.buffer.reports_depth
     family: resilience
+    class: safety
     applies_to: sink
     claim: >
       A sink reports how many rows it is holding, and the count rises when a
@@ -91,6 +98,7 @@ invariants:
 
   - id: sink.batch.reports_buffer
     family: resilience
+    class: safety
     applies_to: sink
     claim: Batch returns what is buffered, and nil when nothing is.
     verified_by: harness
@@ -98,6 +106,7 @@ invariants:
 
   - id: sink.error.classifies
     family: resilience
+    class: safety
     applies_to: sink
     claim: >
       The sink's errors classify as unreachable or rejected, so the retry
@@ -107,6 +116,7 @@ invariants:
 
   - id: sink.probe.fails_start
     family: resilience
+    class: safety
     applies_to: sink
     claim: >
       A Prober whose destination is unreachable fails the start once, without
@@ -117,6 +127,7 @@ invariants:
   # --- Checkpoint: the pipeline and source contract ------------------------
   - id: pipeline.commit.after_flush
     family: checkpoint
+    class: safety
     applies_to: pipeline
     claim: Offsets and state commit only after Flush returned nil.
     verified_by: harness
@@ -125,6 +136,7 @@ invariants:
 
   - id: pipeline.commit.nothing_on_failure
     family: checkpoint
+    class: safety
     applies_to: pipeline
     claim: A failed flush commits nothing. Not offsets, not state.
     verified_by: harness
@@ -133,6 +145,7 @@ invariants:
 
   - id: pipeline.state.with_offsets
     family: checkpoint
+    class: safety
     applies_to: pipeline
     claim: Window state and the offsets that produced it commit atomically.
     verified_by: harness
@@ -141,6 +154,7 @@ invariants:
 
   - id: source.commit.only_processed
     family: checkpoint
+    class: safety
     applies_to: source
     claim: >
       A source commits the marks the pipeline processed, never what it
@@ -151,6 +165,7 @@ invariants:
 
   - id: source.resume.from_committed
     family: checkpoint
+    class: safety
     applies_to: source
     claim: >
       Restart resumes at the committed position. No gap, and no replay before
@@ -160,6 +175,7 @@ invariants:
 
   - id: source.marks.never_regress
     family: checkpoint
+    class: safety
     applies_to: source
     claim: A committed position never moves backwards.
     verified_by: harness
@@ -167,6 +183,7 @@ invariants:
 
   - id: source.commit.on_revoke
     family: checkpoint
+    class: safety
     applies_to: source
     claim: >
       Marks commit when a partition is revoked, before the rebalance
@@ -178,6 +195,7 @@ invariants:
   # --- Types: per integration, from its declared table ---------------------
   - id: type.roundtrip
     family: types
+    class: safety
     applies_to: sink
     claim: >
       Every declared Arrow type reads back with the declared outcome: exact,
@@ -188,6 +206,7 @@ invariants:
 
   - id: type.null
     family: types
+    class: safety
     applies_to: sink
     claim: A null in every declared type reads back as declared.
     verified_by: typetable
@@ -195,6 +214,7 @@ invariants:
 
   - id: type.timestamp.instant
     family: types
+    class: safety
     applies_to: sink
     claim: >
       A timestamp reads back as the same instant. Zone-less is UTC, and the
@@ -205,6 +225,7 @@ invariants:
 
   - id: type.nested
     family: types
+    class: safety
     applies_to: sink
     claim: >
       list, struct, list-of-struct and list-of-list read back, or are declared
@@ -214,6 +235,7 @@ invariants:
 
   - id: type.string.fidelity
     family: types
+    class: safety
     applies_to: sink
     claim: Unicode, escapes and the empty string round-trip byte for byte.
     verified_by: typetable
@@ -222,6 +244,7 @@ invariants:
 
   - id: type.undeclared.fails_loud
     family: types
+    class: safety
     applies_to: sink
     claim: >
       An Arrow type absent from the table fails the batch with a coded error.
@@ -232,14 +255,43 @@ invariants:
   # --- Lifecycle -----------------------------------------------------------
   - id: lifecycle.drain.on_cancel
     family: lifecycle
+    class: safety
     applies_to: pipeline
     claim: Cancel or SIGTERM flushes the buffered batch, then commits.
     verified_by: harness
     requires: []
     enforced: true
 
+  # --- Liveness: the pipeline makes progress -------------------------------
+  # Every claim above is safety: nothing bad happens. None of them says the
+  # pipeline does anything, and a sink that never flushes satisfies all of
+  # them. These are the claims that it does.
+  - id: pipeline.flush.eventually
+    family: lifecycle
+    class: liveness
+    applies_to: pipeline
+    claim: >
+      A batch that never reaches batchSize still reaches the sink, within the
+      flush interval.
+    verified_by: harness
+    requires: []
+    enforced: true
+
+  - id: pipeline.progress.no_silent_stall
+    family: lifecycle
+    class: liveness
+    applies_to: pipeline
+    claim: >
+      A configuration that cannot make progress fails at startup rather than
+      running quietly. flush_interval_seconds of 0 removes the ticker
+      entirely, so a batch a low-traffic topic never fills waits forever.
+      Unenforced and untracked: the engine permits the configuration today.
+    verified_by: harness
+    requires: []
+
   - id: lifecycle.drain.bounded
     family: lifecycle
+    class: liveness
     applies_to: pipeline
     claim: The drain finishes or fails inside its deadline.
     verified_by: harness
@@ -248,6 +300,7 @@ invariants:
 
   - id: lifecycle.close.idempotent
     family: lifecycle
+    class: safety
     applies_to: sink
     claim: Close twice is safe.
     verified_by: harness
@@ -255,6 +308,7 @@ invariants:
 
   - id: pipeline.batch.timeout
     family: lifecycle
+    class: liveness
     applies_to: pipeline
     claim: >
       A batch whose query exceeds the timeout fails the batch, not the
@@ -266,6 +320,7 @@ invariants:
   # --- Error policy --------------------------------------------------------
   - id: error.dlq.carries_provenance
     family: errors
+    class: safety
     applies_to: pipeline
     claim: A DLQ record carries the payload, offset, partition and reason.
     verified_by: harness
@@ -274,6 +329,7 @@ invariants:
 
   - id: error.bad_record.threshold
     family: errors
+    class: safety
     applies_to: pipeline
     claim: >
       N bad records in a window fail the pipeline rather than discarding
