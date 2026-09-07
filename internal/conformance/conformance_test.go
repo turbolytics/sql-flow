@@ -43,9 +43,9 @@ func TestToolingConformanceSinks_ASinkThatWritesThroughIsCaught(t *testing.T) {
 	assert.True(t, vs[buffersOnly].failure != "")
 	assert.True(t, strings.Contains(vs[buffersOnly].failure, "before any Flush"))
 
-	// And it is named for what it did, not for a downstream symptom.
+	// keeps_batch fails too, and says why: there was nothing left to keep.
 	assert.True(t, vs[keepsBatch].failure != "")
-	assert.True(t, strings.Contains(vs[keepsBatch].failure, "Flush that failed"))
+	assert.True(t, strings.Contains(vs[keepsBatch].failure, "already been delivered"))
 }
 
 // The two invariants are independent: a sink can buffer correctly and still
@@ -128,6 +128,16 @@ func TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink
 	s.Heal = func(*testing.T) {}
 
 	assert.True(t, fatals(t, func(t *testing.T) { sinkVerdicts(t, s) }))
+}
+
+// A write-through sink also flushes successfully while broken, and it must
+// not be reported as a broken fault: buffers_only already showed that the
+// rows went out early, so the sink is at fault and the subject is not.
+func TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject(t *testing.T) {
+	vs := verdicts(t, subject(&writeThroughSink{memSink: newMemSink()}))
+
+	assert.True(t, vs[buffersOnly].failure != "")
+	assert.True(t, vs[keepsBatch].failure != "")
 }
 
 func TestToolingConformanceDescribe_NamesTheRowsItFound(t *testing.T) {
@@ -223,14 +233,12 @@ func (w *writeThroughSink) WriteTable(_ context.Context, t arrow.Table) error {
 	return nil
 }
 
-func (w *writeThroughSink) Flush(context.Context) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.down {
-		return errors.New("destination unreachable")
-	}
-	return nil
-}
+// Flush returns nil even while the destination is broken, because there is
+// nothing left to send: the rows went out on WriteTable. That is what the
+// real Kafka sink did -- franz-go's Flush has an empty buffer to wait on --
+// and an earlier version of this fake returned an error instead, which hid a
+// harness bug until a real broker exposed it.
+func (w *writeThroughSink) Flush(context.Context) error { return nil }
 
 // neverClearSink keeps its buffer even after a successful flush.
 type neverClearSink struct{ *memSink }

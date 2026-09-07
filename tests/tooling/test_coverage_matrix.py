@@ -1300,3 +1300,48 @@ def test_a_claim_carries_the_defect_that_proves_it_matters():
     """violated_once is the difference between a rule and a scar."""
     s = inv_snap(invariants=[dict(INVARIANTS[0], violated_once=["#221"])])
     assert "violated once: #221" in cm.render_invariants(s)
+
+
+# --- Exemptions must be proven, not argued ---------------------------------
+#
+# An exemption is a claim that an invariant cannot apply. Left as prose it is
+# an excuse, and two of them hid live batch-loss bugs in sink.sqlcommand and
+# sink.console: both were excused on the grounds that nothing crosses a
+# network, which is the argument for skipping a *retry ladder*, not for
+# skipping the invariant a ladder depends on. An exemption now names a test
+# that proves its premise.
+
+def test_the_committed_exemptions_all_name_a_test():
+    for integ in cm.load_integrations():
+        for ex in integ.get("exempt", []):
+            assert ex.get("proven_by"), \
+                f"{integ['id']} is exempt from {ex['invariant']} with no proven_by"
+
+
+def test_validate_rejects_an_exemption_with_no_proven_by():
+    bad = [dict(INTEGRATIONS[1], exempt=[
+        {"invariant": "sink.flush.keeps_batch", "reason": "stdout is reliable"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("proven_by" in p for p in problems)
+
+
+def test_validate_still_requires_a_reason_beside_the_proof():
+    """The test says what is true; the reason says why that makes the
+    invariant inapplicable. A reader needs both."""
+    bad = [dict(INTEGRATIONS[1], exempt=[
+        {"invariant": "sink.flush.keeps_batch", "proven_by": "TestX"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("reason" in p for p in problems)
+
+
+def test_the_snapshot_carries_the_proof_beside_the_exemption():
+    """A reader looking at an exempt cell can go straight to the test."""
+    integrations = [dict(INTEGRATIONS[1], exempt=[{
+        "invariant": "sink.flush.keeps_batch",
+        "reason": "implements no Prober",
+        "proven_by": "TestSinkConsole_ImplementsNoProber"}])]
+    s = inv_snap(integrations=integrations)
+    c = cell(s, "sink.flush.keeps_batch", "sink.console", "unit")
+
+    assert c["status"] == "exempt"
+    assert c["proven_by"] == "TestSinkConsole_ImplementsNoProber"

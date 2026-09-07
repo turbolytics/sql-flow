@@ -172,13 +172,29 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	broken, cancel := context.WithTimeout(ctx, flushTimeout)
 	err := sink.Flush(broken)
 	cancel()
+
 	if err == nil {
-		// Not a verdict: a flush that succeeds into a broken destination
-		// proves nothing, because the fault never took. That is the subject's
-		// bug, not the sink's, and blaming the sink sends the reader to the
-		// wrong file.
-		t.Fatalf("conformance: Flush succeeded while the destination was "+
-			"broken, so %s's Break did not break it", s.Integration)
+		// A flush that succeeds into a broken destination means one of two
+		// things, and they point at different files.
+		//
+		// If the rows had already been delivered, this sink writes through:
+		// there was nothing left for the flush to fail on. That is the sink's
+		// bug, buffers_only already caught it, and reporting it as a broken
+		// fault would send the reader to the subject instead.
+		//
+		// If nothing was delivered and the flush still succeeded, the fault
+		// never took. That is the subject's bug and nothing can be judged.
+		if buffers.failure == "" {
+			t.Fatalf("conformance: Flush succeeded while the destination was "+
+				"broken and nothing had been delivered, so %s's Break did not "+
+				"break it", s.Integration)
+		}
+		return []verdict{buffers, {
+			invariant: keepsBatch,
+			failure: "Flush returned nil while the destination was broken, " +
+				"because the rows had already been delivered by WriteTable; " +
+				"there was nothing left to keep",
+		}}
 	}
 
 	keeps := verdict{invariant: keepsBatch}

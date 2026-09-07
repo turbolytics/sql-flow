@@ -43,56 +43,52 @@ integrations:
     implements: [Sink]
     feature: sink.sqlcommand
     exempt:
-      - invariant: sink.flush.keeps_batch
-        reason: >
-          writes through the pipeline's own DuckDB connection, so a failure is
-          not a network blip. retriesHelp already excludes it.
-      - invariant: sink.flush.honours_context
-        reason: nothing to wait on that a context could cut short
-      - invariant: sink.error.classifies
-        reason: no network, so nothing to classify as unreachable
       - invariant: sink.probe.fails_start
-        reason: nothing to dial
+        reason: implements no Prober, so there is no start-time check to fail
+        proven_by: TestSinkSqlcommand_ImplementsNoProber
 
   - id: sink.console
     kind: sink
     implements: [Sink]
     feature: sink.console
     exempt:
-      - invariant: sink.flush.keeps_batch
-        reason: >
-          stdout cannot be temporarily unavailable. retriesHelp already
-          excludes it.
-      - invariant: sink.flush.honours_context
-        reason: nothing to wait on that a context could cut short
-      - invariant: sink.error.classifies
-        reason: no network, so nothing to classify as unreachable
       - invariant: sink.probe.fails_start
-        reason: nothing to dial
+        reason: implements no Prober, so there is no start-time check to fail
+        proven_by: TestSinkConsole_ImplementsNoProber
 
   - id: sink.noop
     kind: sink
     implements: [Sink]
     feature: sink.console
+    # noop has no destination at all, which is its whole purpose: it exists so
+    # a benchmark can measure the engine without a sink. Every invariant about
+    # delivering rows is vacuous for it, and one test states that contract
+    # directly rather than eight reasons asserting it.
     exempt:
       - invariant: sink.write.buffers_only
-        reason: >
-          discards every row by design, so there is no destination for a
-          write to reach and nothing a read-back could show
+        reason: has no destination; discarding every row is the contract
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.flush.keeps_batch
-        reason: discards every row by design; it exists for benchmarking
+        reason: has no destination; discarding every row is the contract
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.flush.no_hollow_success
-        reason: discards every row by design
+        reason: has no destination; discarding every row is the contract
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.flush.preserves_order
-        reason: discards every row by design
+        reason: has no destination; discarding every row is the contract
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.flush.honours_context
-        reason: nothing to wait on
+        reason: has no destination; discarding every row is the contract
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.batch.reports_buffer
-        reason: buffers nothing by design
+        reason: has no destination; discarding every row is the contract
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.error.classifies
-        reason: never fails
+        reason: has no destination; discarding every row is the contract
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.probe.fails_start
-        reason: nothing to dial
+        reason: implements no Prober, so there is no start-time check to fail
+        proven_by: TestSinkNoop_ImplementsNoProber
 
   # --- Sources ---------------------------------------------------------------
   - id: source.kafka
@@ -107,13 +103,17 @@ integrations:
     feature: source.websocket
     exempt:
       - invariant: source.commit.only_processed
-        reason: no replayable position; at-most-once by construction
+        reason: implements no MarkCommitter; at-most-once by construction
+        proven_by: TestSourceWebsocket_ImplementsNoMarkCommitter
       - invariant: source.resume.from_committed
-        reason: no replayable position; at-most-once by construction
+        reason: implements no MarkCommitter; at-most-once by construction
+        proven_by: TestSourceWebsocket_ImplementsNoMarkCommitter
       - invariant: source.marks.never_regress
-        reason: no marks
+        reason: implements no MarkCommitter; at-most-once by construction
+        proven_by: TestSourceWebsocket_ImplementsNoMarkCommitter
       - invariant: source.commit.on_revoke
-        reason: no partitions to revoke
+        reason: implements no MarkCommitter; at-most-once by construction
+        proven_by: TestSourceWebsocket_ImplementsNoMarkCommitter
 
   - id: source.webhook
     kind: source
@@ -121,13 +121,17 @@ integrations:
     feature: source.webhook
     exempt:
       - invariant: source.commit.only_processed
-        reason: no replayable position; at-most-once by construction
+        reason: implements no MarkCommitter; at-most-once by construction
+        proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
       - invariant: source.resume.from_committed
-        reason: no replayable position; at-most-once by construction
+        reason: implements no MarkCommitter; at-most-once by construction
+        proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
       - invariant: source.marks.never_regress
-        reason: no marks
+        reason: implements no MarkCommitter; at-most-once by construction
+        proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
       - invariant: source.commit.on_revoke
-        reason: no partitions to revoke
+        reason: implements no MarkCommitter; at-most-once by construction
+        proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
 
   # --- Handlers --------------------------------------------------------------
   - id: handler.structured

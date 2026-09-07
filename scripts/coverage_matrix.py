@@ -137,6 +137,15 @@ def validate_registries(invariants, integrations, features):
             if not ex.get("reason"):
                 problems.append(
                     f"integrations.yml: {iid} exemption from {inv['id']} has no reason")
+            # An exemption left as prose is an excuse. Two of them hid live
+            # batch-loss bugs: sink.sqlcommand and sink.console were both
+            # excused because nothing crosses a network, which is the argument
+            # for skipping a retry ladder, not the invariant a ladder depends
+            # on. A test must prove the premise.
+            if not ex.get("proven_by"):
+                problems.append(
+                    f"integrations.yml: {iid} exemption from {inv['id']} has no "
+                    "proven_by naming a test that proves the premise")
             if inv.get("applies_to") != integ.get("kind"):
                 problems.append(
                     f"integrations.yml: {iid} is a {integ.get('kind')} but "
@@ -340,7 +349,7 @@ def snapshot_invariants(invariants, integrations, built):
         by_kind.setdefault(integ["kind"], []).append(integ)
 
     exemptions = {
-        (ex["invariant"], integ["id"]): ex["reason"]
+        (ex["invariant"], integ["id"]): ex
         for integ in integrations
         for ex in integ.get("exempt", [])
     }
@@ -367,11 +376,15 @@ def snapshot_invariants(invariants, integrations, built):
 
         # A pipeline invariant attaches to core, so it has no subjects.
         for integ in by_kind.get(inv["applies_to"], []):
-            reason = exemptions.get((inv["id"], integ["id"]))
+            exemption = exemptions.get((inv["id"], integ["id"]))
             levels = {}
             for level in LEVELS:
-                if reason is not None:
-                    levels[level] = {"status": "exempt", "reason": reason}
+                if exemption is not None:
+                    levels[level] = {
+                        "status": "exempt",
+                        "reason": exemption["reason"],
+                        "proven_by": exemption.get("proven_by", ""),
+                    }
                     continue
 
                 # No not_required here, unlike the feature half. Every

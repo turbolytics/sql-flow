@@ -56,6 +56,20 @@ func (s *SQLCommandSink) Batch() (arrow.Table, error) {
 	return s.tables[len(s.tables)-1], nil
 }
 
+// Flush runs the sink SQL over the buffered rows, and keeps them buffered if
+// it cannot.
+//
+// Every batch used to be released on the way out whatever the outcome, so a
+// failed flush left nothing to retry. Nothing calls Flush twice on this sink
+// today -- retriesHelp excludes it, and processBatch calls it once and lets
+// the error stop the pipeline -- so the rows replayed from the source rather
+// than vanishing. That made it correct by accident of the call pattern, and
+// the accident ends the day anything retries a sqlcommand sink, or an error
+// policy makes a failed flush non-fatal.
+//
+// Keeping the batch is the invariant. Whether a retry ladder is wrapped
+// around this sink is a different question with a different answer, and
+// retriesHelp answers only that one.
 func (s *SQLCommandSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	tables := s.tables
@@ -65,12 +79,30 @@ func (s *SQLCommandSink) Flush(ctx context.Context) error {
 	if len(tables) == 0 {
 		return nil
 	}
-	defer func() {
-		for _, t := range tables {
-			t.Release()
-		}
-	}()
 
+	if err := s.send(ctx, tables); err != nil {
+		s.requeue(tables)
+		return err
+	}
+
+	for _, t := range tables {
+		t.Release()
+	}
+	return nil
+}
+
+// requeue returns undelivered batches to the head of the buffer, ahead of
+// anything written while the failed flush was in flight, so a retry runs them
+// in the order they arrived.
+func (s *SQLCommandSink) requeue(tables []arrow.Table) {
+	s.mu.Lock()
+	s.tables = append(tables, s.tables...)
+	s.mu.Unlock()
+}
+
+// send is one delivery attempt. It releases nothing: whether these batches can
+// be dropped is the caller's decision, and it depends on this error.
+func (s *SQLCommandSink) send(ctx context.Context, tables []arrow.Table) error {
 	if err := s.materialize(ctx, tables); err != nil {
 		return err
 	}
