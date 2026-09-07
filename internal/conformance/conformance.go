@@ -85,9 +85,17 @@ func Sinks(t *testing.T, s SinkSubject) {
 		})
 	}
 
-	// The feature axis credits the integration too, so a conformance run is
-	// not invisible to features.yml.
-	coverage.Covers(t, s.Integration)
+	// The feature axis credits the run too, so a conformance test is not
+	// invisible to features.yml. The feature comes from the registry rather
+	// than from the integration id: sink.noop attributes to sink.console, and
+	// a test_only integration attributes to nothing.
+	feature, has, err := coverage.FeatureFor(s.Integration)
+	if err != nil {
+		t.Fatalf("conformance: %v", err)
+	}
+	if has {
+		coverage.Covers(t, feature)
+	}
 }
 
 func requireSubject(t *testing.T, s SinkSubject) {
@@ -117,20 +125,22 @@ type verdict struct {
 }
 
 const (
-	buffersOnly = "sink.write.buffers_only"
-	keepsBatch  = "sink.flush.keeps_batch"
+	buffersOnly  = "sink.write.buffers_only"
+	keepsBatch   = "sink.flush.keeps_batch"
+	reportsDepth = "sink.buffer.reports_depth"
 )
 
-// sinkVerdicts runs one sequence and judges two invariants from it.
+// sinkVerdicts runs one sequence and judges three invariants from it.
 //
-//  1. WriteTable(A). The destination must still be empty -- buffers_only.
-//  2. Break, then Flush must fail. The destination must still be empty:
-//     rows that could not be delivered were kept, not sent.
-//  3. Heal, then Flush must succeed.
+//  1. WriteTable(A). The destination must still be empty -- buffers_only --
+//     and the sink must report one buffered row -- reports_depth.
+//  2. Break, then Flush must fail. The destination must still be empty and the
+//     sink must still report one row: what it could not deliver, it still owes.
+//  3. Heal, then Flush must succeed. The sink must now report none.
 //  4. The destination must hold exactly A, once -- keeps_batch.
 //
-// The two are separate because a sink can hold either without the other, and
-// the pair is what the pipeline actually depends on. A sink that delivers in
+// The three are separate because a sink can hold any one without the others,
+// and together they are what the pipeline depends on. A sink that delivers in
 // WriteTable passes step 4 for the wrong reason: the row reached the
 // destination before the fault, so nothing was ever kept, and the failed
 // flush left the pipeline unable to commit offsets for rows that did go out.
@@ -147,6 +157,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		return []verdict{
 			{invariant: buffersOnly, skipped: skip},
 			{invariant: keepsBatch, skipped: skip},
+			{invariant: reportsDepth, skipped: skip},
 		}
 	}
 
@@ -168,17 +179,55 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			"because the pipeline commits offsets on what Flush reports"
 	}
 
+	// The sink's own account of what it is holding. The pipeline publishes it
+	// as sink_buffered_rows, and a gauge nobody checks is a gauge that lies
+	// quietly: an operator watching a buffer that stops draining needs this
+	// number to be the truth.
+	depth := verdict{invariant: reportsDepth}
+	reporter, reports := sink.(core.BufferedRowReporter)
+	if !reports {
+		depth.skipped = s.Integration + " reports no buffer depth; exempt it " +
+			"in integrations.yml or implement core.BufferedRowReporter"
+	} else if n := reporter.BufferedRows(); n != 1 {
+		depth.failure = "reports " + strconv.Itoa(n) +
+			" buffered rows after one WriteTable; want 1"
+	}
+
 	s.Break(t)
 	broken, cancel := context.WithTimeout(ctx, flushTimeout)
 	err := sink.Flush(broken)
 	cancel()
+
 	if err == nil {
-		// Not a verdict: a flush that succeeds into a broken destination
-		// proves nothing, because the fault never took. That is the subject's
-		// bug, not the sink's, and blaming the sink sends the reader to the
-		// wrong file.
-		t.Fatalf("conformance: Flush succeeded while the destination was "+
-			"broken, so %s's Break did not break it", s.Integration)
+		// A flush that succeeds into a broken destination means one of two
+		// things, and they point at different files.
+		//
+		// If the rows had already been delivered, this sink writes through:
+		// there was nothing left for the flush to fail on. That is the sink's
+		// bug, buffers_only already caught it, and reporting it as a broken
+		// fault would send the reader to the subject instead.
+		//
+		// If nothing was delivered and the flush still succeeded, the fault
+		// never took. That is the subject's bug and nothing can be judged.
+		if buffers.failure == "" {
+			t.Fatalf("conformance: Flush succeeded while the destination was "+
+				"broken and nothing had been delivered, so %s's Break did not "+
+				"break it", s.Integration)
+		}
+		return []verdict{buffers, {
+			invariant: keepsBatch,
+			failure: "Flush returned nil while the destination was broken, " +
+				"because the rows had already been delivered by WriteTable; " +
+				"there was nothing left to keep",
+		}, depth}
+	}
+
+	if reports && depth.failure == "" {
+		if n := reporter.BufferedRows(); n != 1 {
+			depth.failure = "reports " + strconv.Itoa(n) +
+				" buffered rows after a Flush that failed; want 1, because " +
+				"the row is still owed"
+		}
 	}
 
 	keeps := verdict{invariant: keepsBatch}
@@ -194,7 +243,14 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			keeps.failure = "Flush after Heal failed with " + err.Error() +
 				"; the retry did not deliver what the failed flush kept"
 		}
-		return []verdict{buffers, keeps}
+		return []verdict{buffers, keeps, depth}
+	}
+
+	if reports && depth.failure == "" {
+		if n := reporter.BufferedRows(); n != 0 {
+			depth.failure = "reports " + strconv.Itoa(n) +
+				" buffered rows after a Flush that succeeded; want 0"
+		}
 	}
 
 	got := s.ReadBack(t)
@@ -203,7 +259,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			"destination holds " + describe(got) +
 			"; want exactly the row the failed flush could not deliver"
 	}
-	return []verdict{buffers, keeps}
+	return []verdict{buffers, keeps, depth}
 }
 
 func describe(rows []Row) string {

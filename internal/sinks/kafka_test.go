@@ -92,12 +92,23 @@ func TestSinkKafka_FlushHonoursItsContext(t *testing.T) {
 	err := flushWithin(t, s, ctx, 10*time.Second)
 	assert.Error(t, err)
 	assert.That(t, errors.Is(err, context.DeadlineExceeded))
+
+	// And the row is still there for the next attempt. A flush that gives up
+	// must not also discard what it failed to send.
+	s.mu.Lock()
+	pending := len(s.pending)
+	s.mu.Unlock()
+	assert.Equal(t, 1, pending)
 }
 
-// A write whose context is already done must fail rather than buffer. The
-// records would otherwise sit in the client until some later flush, and be
-// reported against a batch that has nothing to do with them.
-func TestSinkKafka_WriteTableHonoursItsContext(t *testing.T) {
+// WriteTable reaches nothing, so its context governs nothing.
+//
+// This replaces a test asserting that a cancelled write context failed those
+// records. It passed for the wrong reason: franz-go watches a Produce context
+// only while a topic is unresolved, and the topic could never resolve against
+// 127.0.0.1:1. The sink now buffers on the way in, so no context can fail a
+// write, and the guarantee that matters moved to Flush.
+func TestSinkKafka_WriteTableBuffersWhateverItsContextSays(t *testing.T) {
 	s := newUnreachableKafkaSink(t)
 
 	table := newTestTable(t, []string{"nyc"}, []int64{1})
@@ -108,12 +119,10 @@ func TestSinkKafka_WriteTableHonoursItsContext(t *testing.T) {
 
 	assert.NoError(t, s.WriteTable(ctx, table))
 
-	// Produce is asynchronous, so the context error arrives at the promise and
-	// Flush is what reports it. The flush context is deliberately live: what
-	// is being asserted is that the *write's* context failed these records.
-	err := flushWithin(t, s, context.Background(), 10*time.Second)
-	assert.Error(t, err)
-	assert.That(t, errors.Is(err, context.Canceled))
+	s.mu.Lock()
+	pending := len(s.pending)
+	s.mu.Unlock()
+	assert.Equal(t, 1, pending)
 }
 
 // Produce errors must not be swallowed. The pipeline commits its offsets only

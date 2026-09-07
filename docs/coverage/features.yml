@@ -75,6 +75,12 @@ features:
     description: Writes result rows to stdout as JSON.
     requires: [unit, release]
 
+  # Configurable, so it ships. It exists to measure the engine without a sink,
+  # and borrowing sink.console's row hid its tests from the matrix.
+  - id: sink.noop
+    description: Discards every result row, for measuring the engine without a sink.
+    requires: [unit]
+
   - id: sink.retry
     description: Retries a sink whose destination is not answering, bounded by a deadline.
     requires: [unit]

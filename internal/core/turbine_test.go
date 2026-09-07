@@ -11,6 +11,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -452,6 +453,7 @@ func TestLifecycleDrain_CancelDrainsTheBufferedBatch(t *testing.T) {
 	assert.Equal(t, int64(10), rows)
 	assert.Equal(t, 1, flushes)
 	assert.Equal(t, int64(10), stats.MessagesConsumed())
+	coverage.PipelineInvariant(t, "lifecycle.drain.on_cancel")
 }
 
 func TestCoreConsumeLoop_WritesEveryMessageAcrossManyBatches(t *testing.T) {
@@ -615,6 +617,7 @@ func TestCoreConsumeLoop_ProcessBatchFlushesSinkBeforeCommittingState(t *testing
 	assert.NoError(t, err)
 
 	assert.Equal(t, []string{"flush", "save-offsets", "commit"}, events)
+	coverage.PipelineInvariant(t, "pipeline.commit.after_flush")
 }
 
 // A sink failure must roll the transaction back, so the offsets on disk stay
@@ -634,6 +637,7 @@ func TestCoreConsumeLoop_ProcessBatchRollsBackWhenSinkFails(t *testing.T) {
 	_, err := tb.ConsumeLoop(context.Background(), 0)
 	assert.Error(t, err)
 	assert.Equal(t, []string{"flush-failed", "rollback"}, events)
+	coverage.PipelineInvariant(t, "pipeline.commit.nothing_on_failure")
 }
 
 // A failure saving offsets must roll back too: state written by the handler
@@ -653,6 +657,9 @@ func TestCoreConsumeLoop_ProcessBatchRollsBackWhenOffsetSaveFails(t *testing.T) 
 	_, err := tb.ConsumeLoop(context.Background(), 0)
 	assert.Error(t, err)
 	assert.Equal(t, []string{"flush", "save-offsets-failed", "rollback"}, events)
+	// State the handler wrote and the offsets that describe it roll back
+	// together, which is what makes them one commit.
+	coverage.PipelineInvariant(t, "pipeline.state.with_offsets")
 }
 
 // A commit failure is fatal to the batch and must not be followed by a Kafka
@@ -674,6 +681,7 @@ func TestCoreConsumeLoop_ProcessBatchCommitFailureDoesNotCommitSource(t *testing
 	assert.Equal(t, []string{"flush", "save-offsets", "commit-failed", "rollback"}, events)
 	// Kafka must not have been told anything.
 	assert.Equal(t, 0, len(src.marks))
+	coverage.PipelineInvariant(t, "pipeline.commit.nothing_on_failure")
 }
 
 // The offsets handed to the store are the ones the pipeline processed, not

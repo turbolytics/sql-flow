@@ -44,6 +44,101 @@ func Invariants() (map[string]bool, error) {
 	return out, nil
 }
 
+// IsTestOnly reports whether integrations.yml marks an integration as
+// existing only for tests.
+//
+// The conformance harness's doubles must name an integration, because a
+// marker carries one. Naming a real sink would credit that sink for what a
+// double did. A test-only id gets no cells, so a double's marker lands
+// nowhere.
+func IsTestOnly(integration string) (bool, error) {
+	raw, err := readRegistry("integrations.yml")
+	if err != nil {
+		return false, err
+	}
+
+	var doc struct {
+		Integrations []struct {
+			ID       string `yaml:"id"`
+			TestOnly bool   `yaml:"test_only"`
+		} `yaml:"integrations"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return false, fmt.Errorf("coverage: parse integrations.yml: %w", err)
+	}
+
+	for _, entry := range doc.Integrations {
+		if entry.ID == integration {
+			return entry.TestOnly, nil
+		}
+	}
+	return false, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+}
+
+// FeatureFor returns the features.yml id an integration attributes to, and
+// whether it has one.
+//
+// An integration id is not a feature id. sink.noop attributes to
+// sink.console, and a test_only integration attributes to nothing at all.
+// Emitting the integration id as a feature marker put
+// "marks sink.conformance_double" into the feature matrix's unknown list.
+func FeatureFor(integration string) (string, bool, error) {
+	raw, err := readRegistry("integrations.yml")
+	if err != nil {
+		return "", false, err
+	}
+
+	var doc struct {
+		Integrations []struct {
+			ID      string `yaml:"id"`
+			Feature string `yaml:"feature"`
+		} `yaml:"integrations"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return "", false, fmt.Errorf("coverage: parse integrations.yml: %w", err)
+	}
+
+	for _, entry := range doc.Integrations {
+		if entry.ID == integration {
+			return entry.Feature, entry.Feature != "", nil
+		}
+	}
+	return "", false, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+}
+
+// Exemptions returns the invariants integrations.yml excuses one integration
+// from, as a set.
+func Exemptions(integration string) (map[string]bool, error) {
+	raw, err := readRegistry("integrations.yml")
+	if err != nil {
+		return nil, err
+	}
+
+	var doc struct {
+		Integrations []struct {
+			ID     string `yaml:"id"`
+			Exempt []struct {
+				Invariant string `yaml:"invariant"`
+			} `yaml:"exempt"`
+		} `yaml:"integrations"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("coverage: parse integrations.yml: %w", err)
+	}
+
+	for _, entry := range doc.Integrations {
+		if entry.ID != integration {
+			continue
+		}
+		out := make(map[string]bool, len(entry.Exempt))
+		for _, ex := range entry.Exempt {
+			out[ex.Invariant] = true
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+}
+
 // readRegistry reads one file from docs/coverage.
 //
 // Located relative to this source file, not the working directory: `go test
@@ -82,8 +177,9 @@ func Integrations(kind string) ([]string, error) {
 
 	var doc struct {
 		Integrations []struct {
-			ID   string `yaml:"id"`
-			Kind string `yaml:"kind"`
+			ID       string `yaml:"id"`
+			Kind     string `yaml:"kind"`
+			TestOnly bool   `yaml:"test_only"`
 		} `yaml:"integrations"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -92,6 +188,11 @@ func Integrations(kind string) ([]string, error) {
 
 	out := []string{}
 	for _, integration := range doc.Integrations {
+		// A test-only integration has no constructor case, so it must not
+		// appear in the list Kinds() is held equal to.
+		if integration.TestOnly {
+			continue
+		}
 		if integration.Kind == kind {
 			out = append(out, strings.TrimPrefix(integration.ID, kind+"."))
 		}

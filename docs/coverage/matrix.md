@@ -24,12 +24,13 @@ names every one of them.
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | 28 |
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
-| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | — | ✅ | 7 |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 20 |
-| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 13 |
+| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 12 |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 21 |
+| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 17 |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
-| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 10 |
-| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 3 |
+| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 15 |
+| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 8 |
+| `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — | 2 |
 | `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 71 |
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
@@ -52,10 +53,10 @@ names every one of them.
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 16 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 22 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 12 |
 
-**33 features declared. 33 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**34 features declared. 34 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -63,12 +64,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**28 invariants declared. Of 108 (invariant, integration) cells: 2 proven, 82 missing, 0 skipped, 0 failing, 24 exempt. 0 gap(s), because no invariant requires a level yet.**
-
-A further 8 invariants attach to the pipeline rather than
-to any one integration. Nothing collects evidence for them yet, so
-they show no cells at all, which is worse than missing rather than
-better.
+**29 invariants declared. Of 122 (invariant, integration) cells: 19 proven, 84 missing, 0 skipped, 0 failing, 19 exempt. 0 gap(s), because no invariant requires a level yet.**
 
 ## Why invariants, and not the test count
 
@@ -102,10 +98,6 @@ that deserves its own test.
 - `config.templating` (release) — via `test_config_validation_accepts_a_shipped_example`
 - `cli.dev_invoke` (release) — via `test_handler_inferred_mem_invoke_renders_rows`
 
-## Markers naming an unknown feature
-
-- `TestToolingConformanceSinks_ACorrectSinkPasses` marks `sink.noop`
-
 
 # Invariant matrix
 
@@ -129,14 +121,15 @@ invariant's `requires` is filled in, and none is yet.
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. *(violated once: #221)* | ❌ missing | ✅ i | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
+| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. *(violated once: #221)* | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
 | `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. *(violated once: #221)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.flush.preserves_order` | Rows reach the destination in WriteTable order, across a retry. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `sink.buffer.reports_depth` | A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds. | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
 | `sink.batch.reports_buffer` | Batch returns what is buffered, and nil when nothing is. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
 
 ## Invariants: checkpoint
@@ -148,18 +141,16 @@ invariant's `requires` is filled in, and none is yet.
 | `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt |
 | `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt |
 
-These checkpoint invariants are properties of the pipeline, not
-of any one integration, so they have no column. **No evidence is
-collected for them yet**: `verified_by: named` is declared and
-not wired, so an empty cell here means unmeasured, not passing.
-The feature table above may show the same ground as covered,
-and where the two disagree this one is the weaker claim.
+These checkpoint invariants are properties of the engine rather
+than of anything a config names, so they carry one cell instead
+of a column per integration. A test proves one by calling
+`coverage.PipelineInvariant`.
 
-| Invariant | Claim | Evidence |
+| Invariant | Claim | Proven |
 | --- | --- | --- |
-| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ❌ none collected (`named`) |
-| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ❌ none collected (`named`) |
-| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ❌ none collected (`named`) |
+| `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ✅ u |
+| `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u |
+| `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u |
 
 ## Invariants: types
 
@@ -178,30 +169,26 @@ and where the two disagree this one is the weaker claim.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `lifecycle.close.idempotent` | Close twice is safe. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 
-These lifecycle invariants are properties of the pipeline, not
-of any one integration, so they have no column. **No evidence is
-collected for them yet**: `verified_by: named` is declared and
-not wired, so an empty cell here means unmeasured, not passing.
-The feature table above may show the same ground as covered,
-and where the two disagree this one is the weaker claim.
+These lifecycle invariants are properties of the engine rather
+than of anything a config names, so they carry one cell instead
+of a column per integration. A test proves one by calling
+`coverage.PipelineInvariant`.
 
-| Invariant | Claim | Evidence |
+| Invariant | Claim | Proven |
 | --- | --- | --- |
-| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | ❌ none collected (`named`) |
-| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ none collected (`named`) |
-| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ none collected (`named`) |
+| `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | ✅ u |
+| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ missing |
+| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing |
 
 ## Invariants: errors
 
-These errors invariants are properties of the pipeline, not
-of any one integration, so they have no column. **No evidence is
-collected for them yet**: `verified_by: named` is declared and
-not wired, so an empty cell here means unmeasured, not passing.
-The feature table above may show the same ground as covered,
-and where the two disagree this one is the weaker claim.
+These errors invariants are properties of the engine rather
+than of anything a config names, so they carry one cell instead
+of a column per integration. A test proves one by calling
+`coverage.PipelineInvariant`.
 
-| Invariant | Claim | Evidence |
+| Invariant | Claim | Proven |
 | --- | --- | --- |
-| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ none collected (`named`) |
-| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ none collected (`named`) |
+| `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ missing |
+| `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ missing |
 

@@ -2,6 +2,7 @@ package sinks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -17,12 +18,19 @@ type KafkaSink struct {
 	client *kgo.Client
 	topic  string
 
-	mu    sync.Mutex
-	batch arrow.Table
-	errs  []error
+	mu sync.Mutex
+	// pending holds the encoded rows that Flush has not yet had acknowledged.
+	pending [][]byte
+	batch   arrow.Table
 }
 
-func NewKafkaSink(conf config.KafkaSink) (*KafkaSink, error) {
+// NewKafkaSink builds the sink. Extra client options are appended last, so a
+// caller can override what this function set: the conformance test dials
+// every broker address through a proxy, which is the only way to fault the
+// connection from outside. A testcontainers broker advertises its own mapped
+// host port, so a client that merely bootstraps through a proxy reconnects
+// around it on the first metadata response.
+func NewKafkaSink(conf config.KafkaSink, extra ...kgo.Opt) (*KafkaSink, error) {
 	if conf.Topic == "" {
 		return nil, fmt.Errorf("kafka sink: topic is required")
 	}
@@ -41,6 +49,7 @@ func NewKafkaSink(conf config.KafkaSink) (*KafkaSink, error) {
 		return nil, fmt.Errorf("kafka sink security: %w", err)
 	}
 	opts = append(opts, securityOpts...)
+	opts = append(opts, extra...)
 
 	client, err := kgo.NewClient(opts...)
 	if err != nil {
@@ -50,6 +59,12 @@ func NewKafkaSink(conf config.KafkaSink) (*KafkaSink, error) {
 	return &KafkaSink{client: client, topic: conf.Topic}, nil
 }
 
+// WriteTable buffers the encoded rows. Nothing is produced here.
+//
+// It used to call Produce for every row, so records reached the broker before
+// any flush and a flush failure could not hold them back. The pipeline commits
+// offsets on what Flush reports, so a sink that delivers earlier than it
+// reports leaves the two out of step in the direction that loses rows.
 func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	rows, err := tableRowsAsJSON(batch)
 	if err != nil {
@@ -57,22 +72,9 @@ func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.batch = batch
-	s.mu.Unlock()
-
-	for _, row := range rows {
-		s.client.Produce(
-			ctx,
-			&kgo.Record{Topic: s.topic, Value: row},
-			func(_ *kgo.Record, err error) {
-				if err != nil {
-					s.mu.Lock()
-					s.errs = append(s.errs, err)
-					s.mu.Unlock()
-				}
-			},
-		)
-	}
+	s.pending = append(s.pending, rows...)
 	return nil
 }
 
@@ -87,18 +89,85 @@ func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 // hands the sink a context stripped of cancellation, so honouring the context
 // here cannot cut the final write short.
 func (s *KafkaSink) Flush(ctx context.Context) error {
-	if err := s.client.Flush(ctx); err != nil {
-		return err
+	s.mu.Lock()
+	pending := s.pending
+	s.pending = nil
+	s.mu.Unlock()
+
+	if len(pending) == 0 {
+		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.errs) > 0 {
-		err := fmt.Errorf("kafka sink: %d produce error(s), first: %w", len(s.errs), s.errs[0])
-		s.errs = nil
-		return err
+	// One promise per record, indexed so an unacknowledged row can be put back
+	// where it was. Results arrive in completion order, which is not the order
+	// the rows were written.
+	var (
+		mu     sync.Mutex
+		failed = make(map[int]error, 0)
+		acked  = make(map[int]bool, len(pending))
+	)
+	for i, row := range pending {
+		i := i
+		s.client.Produce(
+			ctx,
+			&kgo.Record{Topic: s.topic, Value: row},
+			func(_ *kgo.Record, err error) {
+				mu.Lock()
+				defer mu.Unlock()
+				acked[i] = true
+				if err != nil {
+					failed[i] = err
+				}
+			},
+		)
 	}
-	return nil
+
+	// Flush honours the context; Produce does not. franz-go retries a produce
+	// indefinitely by default, so against a broker that stopped answering only
+	// this call can end the wait -- an elapsed flush interval, a cancelled run
+	// and a SIGTERM all reach the sink through ctx. The pipeline's drain hands
+	// the sink a context stripped of cancellation, so honouring it here cannot
+	// cut the final write short.
+	flushErr := s.client.Flush(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// A record with no promise yet was still in flight when the context ended.
+	// It is not delivered, so it stays pending.
+	var (
+		keep     [][]byte
+		firstErr error
+	)
+	for i, row := range pending {
+		err, didFail := failed[i]
+		if !acked[i] || didFail {
+			keep = append(keep, row)
+			if firstErr == nil {
+				if err != nil {
+					firstErr = err
+				} else {
+					firstErr = flushErr
+				}
+			}
+		}
+	}
+
+	if len(keep) == 0 {
+		return nil
+	}
+
+	// At the head, ahead of anything written while the flush was in flight, so
+	// a retry produces them in the order they arrived.
+	s.mu.Lock()
+	s.pending = append(keep, s.pending...)
+	s.mu.Unlock()
+
+	if firstErr == nil {
+		firstErr = errors.New("not acknowledged")
+	}
+	return fmt.Errorf("kafka sink: %d of %d rows not acknowledged, first: %w",
+		len(keep), len(pending), firstErr)
 }
 
 func (s *KafkaSink) Batch() (arrow.Table, error) {
@@ -110,4 +179,14 @@ func (s *KafkaSink) Batch() (arrow.Table, error) {
 func (s *KafkaSink) Close() error {
 	s.client.Close()
 	return nil
+}
+
+// BufferedRows reports the rows this sink is holding that no flush has had
+// acknowledged. The pipeline publishes it as sink_buffered_rows, so an
+// operator can tell a sink retrying a broker from one that has stopped
+// draining.
+func (s *KafkaSink) BufferedRows() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending)
 }

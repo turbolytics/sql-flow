@@ -1,0 +1,130 @@
+package sinks
+
+// The Kafka sink under the conformance harness, against a real broker behind
+// toxiproxy.
+//
+// The sink had both defects the harness judges. WriteTable produced every row
+// on the way in, so a flush failure could not hold anything back, and Flush
+// cleared its error list after reporting, so a second flush returned nil
+// having produced nothing new. The pipeline commits offsets on what Flush
+// reports, and both defects put the two out of step in the direction that
+// loses rows.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"testing"
+	"time"
+
+	"github.com/apache/arrow-go/v18/arrow"
+	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
+	"github.com/testcontainers/testcontainers-go/network"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/conformance"
+	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/zeebo/assert"
+)
+
+// brokerImage matches the one internal/kafka pins, so the two integration
+// passes do not pull two images.
+const sinkBrokerImage = "confluentinc/confluent-local:7.5.0"
+
+func TestIntegrationSinkKafka_Conformance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	ctx := context.Background()
+
+	nw, err := network.New(ctx)
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = nw.Remove(context.Background()) })
+
+	broker, err := tckafka.Run(ctx, sinkBrokerImage,
+		network.WithNetwork([]string{"kafka"}, nw),
+	)
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = broker.Terminate(context.Background()) })
+
+	proxy := conformance.NewProxy(t, nw, "kafka:9093")
+
+	topic := fmt.Sprintf("conformance-%d", time.Now().UnixNano())
+
+	// Every connection the sink makes goes to the proxy, whatever address the
+	// broker advertises. Without this the sink reconnects around the fault on
+	// the first metadata response and Break does nothing.
+	viaProxy := kgo.Dialer(func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", proxy.Addr)
+	})
+
+	// The reader talks to the broker directly, so a broken destination is
+	// never mistaken for an empty one.
+	direct, err := broker.Brokers(ctx)
+	assert.NoError(t, err)
+
+	conformance.Sinks(t, conformance.SinkSubject{
+		Integration: "sink.kafka",
+
+		New: func(t *testing.T) core.Sink {
+			s, err := NewKafkaSink(config.KafkaSink{
+				Brokers: []string{proxy.Addr},
+				Topic:   topic,
+			}, viaProxy)
+			assert.NoError(t, err)
+			t.Cleanup(func() { s.Close() })
+			return s
+		},
+
+		Break: proxy.Break,
+		Heal:  proxy.Heal,
+
+		ReadBack: func(t *testing.T) []conformance.Row {
+			return consumeIDs(t, direct, topic)
+		},
+
+		Table: func(t *testing.T, id int64) arrow.Table { return oneRowTable(t, id) },
+	})
+}
+
+// consumeIDs reads the topic from the beginning and decodes the id of every
+// message. A fresh client per call keeps the read independent of anything the
+// sink's client is doing.
+func consumeIDs(t *testing.T, brokers []string, topic string) []conformance.Row {
+	t.Helper()
+
+	client, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.ConsumeTopics(topic),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	assert.NoError(t, err)
+	defer client.Close()
+
+	// Short: the topic is either empty or holds what the sink just wrote, and
+	// waiting longer cannot change which.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var out []conformance.Row
+	for {
+		fetches := client.PollFetches(ctx)
+		if fetches.IsClientClosed() || ctx.Err() != nil {
+			return out
+		}
+		empty := true
+		fetches.EachRecord(func(rec *kgo.Record) {
+			empty = false
+			var row map[string]any
+			if err := json.Unmarshal(rec.Value, &row); err != nil {
+				t.Fatalf("kafka sink wrote something that is not JSON: %v", err)
+			}
+			out = append(out, conformance.Row{"id": int64(row["id"].(float64))})
+		})
+		if empty {
+			return out
+		}
+	}
+}

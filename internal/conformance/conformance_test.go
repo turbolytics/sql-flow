@@ -43,9 +43,9 @@ func TestToolingConformanceSinks_ASinkThatWritesThroughIsCaught(t *testing.T) {
 	assert.True(t, vs[buffersOnly].failure != "")
 	assert.True(t, strings.Contains(vs[buffersOnly].failure, "before any Flush"))
 
-	// And it is named for what it did, not for a downstream symptom.
+	// keeps_batch fails too, and says why: there was nothing left to keep.
 	assert.True(t, vs[keepsBatch].failure != "")
-	assert.True(t, strings.Contains(vs[keepsBatch].failure, "Flush that failed"))
+	assert.True(t, strings.Contains(vs[keepsBatch].failure, "already been delivered"))
 }
 
 // The two invariants are independent: a sink can buffer correctly and still
@@ -72,12 +72,32 @@ func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
 }
 
+func TestToolingConformanceSinks_ASinkThatMisreportsItsDepthIsCaught(t *testing.T) {
+	vs := verdicts(t, subject(&lyingSink{memSink: newMemSink()}))
+
+	// It keeps its batch, so the other two hold. Only the gauge lies.
+	assert.Equal(t, "", vs[buffersOnly].failure)
+	assert.Equal(t, "", vs[keepsBatch].failure)
+	assert.True(t, strings.Contains(vs[reportsDepth].failure,
+		"0 buffered rows after one WriteTable"))
+}
+
+// A sink that reports no depth at all is skipped rather than failed, and the
+// registry must then exempt it. Two statements that have to agree.
+func TestToolingConformanceSinks_ASinkThatReportsNoDepthIsSkipped(t *testing.T) {
+	vs := verdicts(t, subject(&noDepthSink{inner: newMemSink()}))
+
+	assert.Equal(t, "", vs[keepsBatch].failure)
+	assert.True(t, strings.Contains(vs[reportsDepth].skipped,
+		"reports no buffer depth"))
+}
+
 func TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped(t *testing.T) {
 	s := subject(newMemSink())
 	s.Break, s.Heal = nil, nil
 
 	vs := verdicts(t, s)
-	for _, id := range []string{buffersOnly, keepsBatch} {
+	for _, id := range []string{buffersOnly, keepsBatch, reportsDepth} {
 		assert.True(t, vs[id].skipped != "")
 		assert.True(t, strings.Contains(vs[id].skipped, "integrations.yml"))
 		assert.Equal(t, "", vs[id].failure)
@@ -130,12 +150,34 @@ func TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink
 	assert.True(t, fatals(t, func(t *testing.T) { sinkVerdicts(t, s) }))
 }
 
+// A write-through sink also flushes successfully while broken, and it must
+// not be reported as a broken fault: buffers_only already showed that the
+// rows went out early, so the sink is at fault and the subject is not.
+func TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject(t *testing.T) {
+	vs := verdicts(t, subject(&writeThroughSink{memSink: newMemSink()}))
+
+	assert.True(t, vs[buffersOnly].failure != "")
+	assert.True(t, vs[keepsBatch].failure != "")
+}
+
 func TestToolingConformanceDescribe_NamesTheRowsItFound(t *testing.T) {
 	assert.Equal(t, "no rows", describe(nil))
 	assert.Equal(t, "rows [id=1]", describe([]Row{{"id": int64(1)}}))
 	assert.Equal(t, "rows [id=1, id=2]",
 		describe([]Row{{"id": int64(1)}, {"id": int64(2)}}))
 }
+
+// fakeIntegration is the id the doubles below run under.
+//
+// Not a real sink. A marker carries an integration id, so the doubles need
+// one, and naming a shipped sink would credit it for what a double did. It
+// would also force exemptions onto that sink for reasons unrelated to its
+// contract: the first invariant it genuinely satisfied would have to be
+// exempted anyway, hiding real coverage.
+//
+// integrations.yml marks this id test_only, so it gets no cells and a
+// double's marker lands nowhere.
+const fakeIntegration = "sink.conformance_double"
 
 // --- Test doubles ----------------------------------------------------------
 
@@ -181,6 +223,19 @@ func (m *memSink) Batch() (arrow.Table, error) {
 	return m.buffered[0], nil
 }
 
+// BufferedRows makes the fakes honest about what they hold, so the harness
+// can judge reports_depth against them the way it does against a real sink.
+func (m *memSink) BufferedRows() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var rows int64
+	for _, t := range m.buffered {
+		rows += t.NumRows()
+	}
+	return int(rows)
+}
+
 func (m *memSink) set(down bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -223,14 +278,12 @@ func (w *writeThroughSink) WriteTable(_ context.Context, t arrow.Table) error {
 	return nil
 }
 
-func (w *writeThroughSink) Flush(context.Context) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.down {
-		return errors.New("destination unreachable")
-	}
-	return nil
-}
+// Flush returns nil even while the destination is broken, because there is
+// nothing left to send: the rows went out on WriteTable. That is what the
+// real Kafka sink did -- franz-go's Flush has an empty buffer to wait on --
+// and an earlier version of this fake returned an error instead, which hid a
+// harness bug until a real broker exposed it.
+func (w *writeThroughSink) Flush(context.Context) error { return nil }
 
 // neverClearSink keeps its buffer even after a successful flush.
 type neverClearSink struct{ *memSink }
@@ -250,6 +303,13 @@ func (n *neverClearSink) Flush(context.Context) error {
 	return nil
 }
 
+// lyingSink keeps its batch correctly and misreports the depth. A gauge that
+// reads zero while rows pile up is worse than no gauge: an operator watching
+// it concludes the sink is draining.
+type lyingSink struct{ *memSink }
+
+func (l *lyingSink) BufferedRows() int { return 0 }
+
 // staysDownSink never recovers, so the retry fails rather than delivering.
 type staysDownSink struct{ *memSink }
 
@@ -259,6 +319,19 @@ func (s *staysDownSink) Flush(context.Context) error {
 
 // --- Helpers ---------------------------------------------------------------
 
+// noDepthSink implements core.Sink and nothing else, so the harness cannot ask
+// it for a depth. It forwards rather than embeds: embedding memSink would
+// inherit BufferedRows and satisfy the interface after all.
+type noDepthSink struct{ inner *memSink }
+
+func (n *noDepthSink) WriteTable(ctx context.Context, t arrow.Table) error {
+	return n.inner.WriteTable(ctx, t)
+}
+func (n *noDepthSink) Flush(ctx context.Context) error { return n.inner.Flush(ctx) }
+func (n *noDepthSink) Batch() (arrow.Table, error)     { return n.inner.Batch() }
+func (n *noDepthSink) set(down bool)                   { n.inner.set(down) }
+func (n *noDepthSink) rows() []Row                     { return n.inner.rows() }
+
 type breakable interface {
 	core.Sink
 	set(down bool)
@@ -267,12 +340,12 @@ type breakable interface {
 
 func subject(sink breakable) SinkSubject {
 	return SinkSubject{
-		// sink.noop, not a sink with a real destination. These tests run in
-		// the unit pass against an in-memory fake, and the marker Sinks emits
-		// must not credit a sink this never touched. noop is exempt from both
-		// invariants, so the marker lands on an exempt cell and changes
-		// nothing -- which is what a fake proving nothing should do.
-		Integration: "sink.noop",
+		// Not a sink with a real destination. These tests run in the unit pass
+		// against an in-memory fake, and the marker Sinks emits must not
+		// credit a sink the fake never touched. Every invariant the harness
+		// judges is exempt for this id, so the marker lands on an exempt cell
+		// and changes nothing. A test below holds that true.
+		Integration: fakeIntegration,
 		New:         func(*testing.T) core.Sink { return sink },
 		Break:       func(*testing.T) { sink.set(true) },
 		Heal:        func(*testing.T) { sink.set(false) },
@@ -290,7 +363,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 	for _, v := range sinkVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 2, len(out))
+	assert.Equal(t, 3, len(out))
 	return out
 }
 
@@ -353,4 +426,28 @@ func oneRow(t *testing.T, id int64) arrow.Table {
 	rec := b.NewRecord()
 	defer rec.Release()
 	return array.NewTableFromRecords(schema, []arrow.Record{rec})
+}
+
+// The doubles must never credit a shipped sink.
+//
+// They emit markers like any subject, and a marker names an integration. This
+// held sink.buffer.reports_depth green for sink.noop on the strength of an
+// in-memory double that never touched NoopSink. The id the doubles use has to
+// be test_only, which is what keeps its markers off every cell.
+func TestToolingConformanceSinks_TheDoublesRunUnderATestOnlyIntegration(t *testing.T) {
+	testOnly, err := coverage.IsTestOnly(fakeIntegration)
+	assert.NoError(t, err)
+	assert.True(t, testOnly)
+}
+
+// And it must not be a sink the engine can build. A test_only id that the
+// constructor switch also names would put a double's marker on a real sink
+// after all.
+func TestToolingConformanceSinks_TheDoublesIntegrationIsNotAShippedSink(t *testing.T) {
+	shipped, err := coverage.Integrations("sink")
+	assert.NoError(t, err)
+
+	for _, kind := range shipped {
+		assert.That(t, "sink."+kind != fakeIntegration)
+	}
 }

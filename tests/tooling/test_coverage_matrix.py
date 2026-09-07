@@ -495,7 +495,8 @@ INTEGRATIONS = [
      "feature": "sink.clickhouse", "exempt": []},
     {"id": "sink.console", "kind": "sink", "implements": ["Sink"],
      "feature": "sink.console",
-     "exempt": [{"invariant": "sink.flush.keeps_batch", "reason": "stdout"}]},
+     "exempt": [{"invariant": "sink.flush.keeps_batch", "reason": "stdout",
+                 "proven_by": "TestSinkConsole_ImplementsNoProber"}]},
     {"id": "source.kafka", "kind": "source", "implements": ["Source"],
      "feature": "source.kafka", "exempt": []},
 ]
@@ -918,13 +919,11 @@ def test_snapshot_an_exempt_cell_carries_no_tests_even_with_evidence():
     assert "tests" not in c
 
 
-def test_snapshot_a_pipeline_invariant_has_no_integration_cells():
-    """It attaches to core, and no constructor case is a pipeline."""
-    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
-                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
-                 "requires": []}]
-    s = inv_snap(invariants=pipeline)
-    assert s["invariants"][0]["integrations"] == {}
+def test_snapshot_a_pipeline_invariant_carries_exactly_one_cell():
+    """It is a property of the engine, not of anything a config names, so it
+    gets one cell rather than a column per integration."""
+    s = inv_snap(invariants=PIPELINE)
+    assert list(s["invariants"][0]["integrations"]) == ["pipeline"]
 
 
 def test_snapshot_orders_tests_stably_whatever_order_they_arrived_in():
@@ -1095,35 +1094,37 @@ def test_render_omits_the_gap_section_when_there_are_none():
     assert "## Invariant gaps" not in cm.render_invariants(inv_snap())
 
 
-def test_render_says_a_pipeline_invariant_has_no_evidence_rather_than_a_dot():
-    """A pipeline row among sink columns rendered as a line of dots, which
-    reads as "not applicable" when the truth is "nothing collects this yet".
-    verified_by: named is declared and not wired."""
-    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
-                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
-                 "requires": []}]
-    md = cm.render_invariants(inv_snap(invariants=pipeline))
+def test_render_shows_a_pipeline_invariant_as_missing_when_nothing_proves_it():
+    """A pipeline row among sink columns used to render as a line of dots,
+    which reads as "not applicable" when the truth is "unproven"."""
+    md = cm.render_invariants(inv_snap(invariants=PIPELINE))
 
-    assert "| Invariant | Claim | Evidence |" in md
-    assert "| `pipeline.commit.after_flush` | c | ❌ none collected (`named`) |" in md
-    assert "unmeasured, not passing" in md
+    assert "| Invariant | Claim | Proven |" in md
+    assert "| `pipeline.commit.after_flush` | c | ❌ missing |" in md
+
+
+def test_render_shows_a_pipeline_invariant_as_covered_once_proven():
+    s = inv_snap(
+        invariants=PIPELINE,
+        evidence={"unit": {"TestA": [("pipeline.commit.after_flush", "pipeline")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert "| `pipeline.commit.after_flush` | c | ✅ u |" in cm.render_invariants(s)
 
 
 def test_render_separates_pipeline_rows_from_integration_rows_in_one_family():
     """checkpoint holds both. Mixing them puts dots in a table of real cells."""
     mixed = [
         dict(INVARIANTS[1], family="checkpoint"),           # applies_to source
-        {"id": "pipeline.commit.after_flush", "family": "checkpoint",
-         "applies_to": "pipeline", "claim": "c", "verified_by": "named",
-         "requires": []},
+        PIPELINE[0],
     ]
     md = cm.render_invariants(inv_snap(invariants=mixed))
 
     assert md.count("## Invariants: checkpoint") == 1
     assert "| Invariant | Claim | `source.kafka` |" in md
-    assert "| Invariant | Claim | Evidence |" in md
+    assert "| Invariant | Claim | Proven |" in md
     # The pipeline row never appears in the integration table.
-    integration_table = md.split("| Invariant | Claim | Evidence |")[0]
+    integration_table = md.split("| Invariant | Claim | Proven |")[0]
     assert "pipeline.commit.after_flush" not in integration_table
 
 
@@ -1171,14 +1172,24 @@ def test_the_tally_counts_every_cell_by_state():
     assert unwired == 0
 
 
-def test_the_tally_counts_a_pipeline_invariant_as_unwired_not_as_zero():
-    pipeline = [{"id": "pipeline.commit.after_flush", "family": "checkpoint",
-                 "applies_to": "pipeline", "claim": "c", "verified_by": "named",
-                 "requires": []}]
-    tally, unwired = cm.invariant_tally(inv_snap(invariants=pipeline))
+def test_the_tally_counts_a_pipeline_invariant_once():
+    """One cell, counted like any other. It used to carry none and be tallied
+    separately as unwired."""
+    tally, unwired = cm.invariant_tally(inv_snap(invariants=PIPELINE))
 
-    assert unwired == 1
-    assert sum(tally.values()) == 0
+    assert unwired == 0
+    assert tally["missing"] == 1
+    assert sum(tally.values()) == 1
+
+
+def test_no_committed_invariant_is_unwired():
+    """An invariant nothing can prove is a declaration with no path to
+    evidence."""
+    m = json.load(open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "docs", "coverage", "matrix.json")))
+    _, unwired = cm.invariant_tally(m)
+    assert unwired == 0
 
 
 def test_the_page_pairs_the_most_tested_feature_with_the_least_proven_invariant():
@@ -1300,3 +1311,242 @@ def test_a_claim_carries_the_defect_that_proves_it_matters():
     """violated_once is the difference between a rule and a scar."""
     s = inv_snap(invariants=[dict(INVARIANTS[0], violated_once=["#221"])])
     assert "violated once: #221" in cm.render_invariants(s)
+
+
+# --- Exemptions must be proven, not argued ---------------------------------
+#
+# An exemption is a claim that an invariant cannot apply. Left as prose it is
+# an excuse, and two of them hid live batch-loss bugs in sink.sqlcommand and
+# sink.console: both were excused on the grounds that nothing crosses a
+# network, which is the argument for skipping a *retry ladder*, not for
+# skipping the invariant a ladder depends on. An exemption now names a test
+# that proves its premise.
+
+def test_the_committed_exemptions_all_name_a_test():
+    for integ in cm.load_integrations():
+        for ex in integ.get("exempt", []):
+            assert ex.get("proven_by"), \
+                f"{integ['id']} is exempt from {ex['invariant']} with no proven_by"
+
+
+def test_validate_rejects_an_exemption_with_no_proven_by():
+    bad = [dict(INTEGRATIONS[1], exempt=[
+        {"invariant": "sink.flush.keeps_batch", "reason": "stdout is reliable"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("proven_by" in p for p in problems)
+
+
+def test_validate_still_requires_a_reason_beside_the_proof():
+    """The test says what is true; the reason says why that makes the
+    invariant inapplicable. A reader needs both."""
+    bad = [dict(INTEGRATIONS[1], exempt=[
+        {"invariant": "sink.flush.keeps_batch", "proven_by": "TestX"}])]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("reason" in p for p in problems)
+
+
+def test_the_snapshot_carries_the_proof_beside_the_exemption():
+    """A reader looking at an exempt cell can go straight to the test."""
+    integrations = [dict(INTEGRATIONS[1], exempt=[{
+        "invariant": "sink.flush.keeps_batch",
+        "reason": "implements no Prober",
+        "proven_by": "TestSinkConsole_ImplementsNoProber"}])]
+    s = inv_snap(integrations=integrations)
+    c = cell(s, "sink.flush.keeps_batch", "sink.console", "unit")
+
+    assert c["status"] == "exempt"
+    assert c["proven_by"] == "TestSinkConsole_ImplementsNoProber"
+
+
+# --- Enforcement: proven somewhere -----------------------------------------
+#
+# `requires` names levels, and the level an invariant can be proven at is a
+# property of the integration rather than of the claim: ClickHouse and Kafka
+# need a container, console and sqlcommand fail in-process. Demanding a
+# specific level would force a container on a sink that needs none, or accept
+# a fake for one that does. `enforced` demands evidence at some level.
+
+def test_an_enforced_invariant_needs_evidence_at_some_level():
+    enforced = [dict(INVARIANTS[0], enforced=True)]
+    s = inv_snap(
+        invariants=enforced,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    # clickhouse is proven at unit, which is enough; console is exempt.
+    assert s["invariant_gaps"] == []
+
+
+def test_an_enforced_invariant_with_no_evidence_anywhere_is_a_gap():
+    enforced = [dict(INVARIANTS[0], enforced=True)]
+    s = inv_snap(invariants=enforced)
+
+    assert {"invariant": "sink.flush.keeps_batch", "integration": "sink.clickhouse",
+            "level": "any", "status": "missing"} in s["invariant_gaps"]
+    assert not any(g["integration"] == "sink.console" for g in s["invariant_gaps"])
+
+
+def test_an_enforced_invariant_proven_at_integration_only_is_covered():
+    """A sink that needs a container is not penalised for needing one."""
+    enforced = [dict(INVARIANTS[0], enforced=True)]
+    s = inv_snap(
+        invariants=enforced,
+        evidence={"integration": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"integration": {"TestA": cm.PASS}},
+    )
+    assert s["invariant_gaps"] == []
+
+
+def test_an_enforced_invariant_whose_only_evidence_is_a_skip_is_a_gap():
+    enforced = [dict(INVARIANTS[0], enforced=True)]
+    s = inv_snap(
+        invariants=enforced,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.SKIP}},
+    )
+    assert any(g["integration"] == "sink.clickhouse" for g in s["invariant_gaps"])
+
+
+def test_requires_and_enforced_are_independent():
+    """requires still demands a named level when a claim genuinely needs one."""
+    both = [dict(INVARIANTS[0], enforced=True, requires=["release"])]
+    s = inv_snap(
+        invariants=both,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    levels = {g["level"] for g in s["invariant_gaps"]}
+    assert levels == {"release"}
+
+
+def test_the_committed_registry_enforces_the_two_proven_invariants():
+    """Every sink now proves both, so both are enforced. A new sink cannot
+    merge without a conformance subject."""
+    enforced = {i["id"] for i in cm.load_invariants() if i.get("enforced")}
+    assert "sink.write.buffers_only" in enforced
+    assert "sink.flush.keeps_batch" in enforced
+
+
+# --- Test-only integrations ------------------------------------------------
+#
+# The conformance harness runs doubles, and a marker names an integration. A
+# double that names a shipped sink credits that sink for what the double did:
+# sink.buffer.reports_depth read green for sink.noop on the strength of an
+# in-memory fake. It would also force exemptions onto a shipped sink for
+# reasons unrelated to its contract.
+
+def test_a_test_only_integration_gets_no_cells():
+    integrations = INTEGRATIONS + [
+        {"id": "sink.conformance_double", "kind": "sink", "test_only": True,
+         "implements": ["Sink"], "exempt": []}]
+    s = inv_snap(integrations=integrations)
+    inv = next(i for i in s["invariants"] if i["id"] == "sink.flush.keeps_batch")
+
+    assert "sink.conformance_double" not in inv["integrations"]
+
+
+def test_a_double_marker_credits_nothing():
+    """The whole point: a passing double changes no cell."""
+    integrations = INTEGRATIONS + [
+        {"id": "sink.conformance_double", "kind": "sink", "test_only": True,
+         "implements": ["Sink"], "exempt": []}]
+    s = inv_snap(
+        integrations=integrations,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.conformance_double")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "unit")["status"] == "missing"
+    assert s["unknown_invariant_markers"] == []
+
+
+def test_a_test_only_integration_needs_no_feature():
+    """It ships to nobody, so features.yml never names it."""
+    integrations = INTEGRATIONS + [
+        {"id": "sink.conformance_double", "kind": "sink", "test_only": True,
+         "implements": ["Sink"], "exempt": []}]
+    assert cm.validate_registries(INVARIANTS, integrations, FEATURES) == []
+
+
+def test_a_shipped_integration_still_needs_a_feature():
+    bad = INTEGRATIONS + [
+        {"id": "sink.mystery", "kind": "sink", "implements": ["Sink"], "exempt": []}]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("sink.mystery" in p for p in problems)
+
+
+def test_the_committed_registry_marks_the_double_test_only():
+    doubles = [i for i in cm.load_integrations() if i.get("test_only")]
+    assert [i["id"] for i in doubles] == ["sink.conformance_double"]
+
+
+# --- Pipeline invariants prove themselves by marker -------------------------
+#
+# `named` was a third attribution mechanism: a test whose name matched the
+# invariant id. It was declared and never implemented, so eight invariants
+# collected nothing while six tests in internal/core proved three of them.
+# Markers replace it. Every invariant is now proven the same way, and a test
+# says what it covers instead of being read for it.
+
+PIPELINE = [
+    {"id": "pipeline.commit.after_flush", "family": "checkpoint",
+     "applies_to": "pipeline", "claim": "c", "verified_by": "harness",
+     "requires": []},
+]
+
+
+def test_a_pipeline_invariant_is_proven_by_a_marker():
+    s = inv_snap(
+        invariants=PIPELINE,
+        evidence={"unit": {"TestA": [("pipeline.commit.after_flush", "pipeline")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    inv = s["invariants"][0]
+    assert inv["integrations"]["pipeline"]["unit"]["status"] == "covered"
+
+
+def test_a_pipeline_invariant_with_no_marker_is_missing_not_absent():
+    """It used to render "none collected", which reads as "not applicable"."""
+    s = inv_snap(invariants=PIPELINE)
+    inv = s["invariants"][0]
+    assert inv["integrations"]["pipeline"]["unit"]["status"] == "missing"
+
+
+def test_a_pipeline_marker_naming_a_sink_is_unknown():
+    """applies_to is the guard. A pipeline invariant proven "on sink.kafka"
+    is a typo, and crediting it would invent a cell."""
+    s = inv_snap(
+        invariants=PIPELINE,
+        evidence={"unit": {"TestA": [("pipeline.commit.after_flush", "sink.kafka")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert {"test": "TestA", "invariant": "pipeline.commit.after_flush",
+            "integration": "sink.kafka"} in s["unknown_invariant_markers"]
+
+
+def test_a_sink_marker_naming_the_pipeline_is_unknown():
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "pipeline")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert {"test": "TestA", "invariant": "sink.flush.keeps_batch",
+            "integration": "pipeline"} in s["unknown_invariant_markers"]
+
+
+def test_a_sink_marker_naming_a_source_is_unknown():
+    """The same guard catches a sink invariant credited to a source."""
+    s = inv_snap(
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "source.kafka")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert {"test": "TestA", "invariant": "sink.flush.keeps_batch",
+            "integration": "source.kafka"} in s["unknown_invariant_markers"]
+
+
+def test_named_is_no_longer_a_verifier():
+    assert "named" not in cm.VERIFIERS
+
+
+def test_no_committed_invariant_uses_named():
+    for inv in cm.load_invariants():
+        assert inv["verified_by"] != "named", inv["id"]

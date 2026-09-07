@@ -83,6 +83,20 @@ type Sink interface {
 	Batch() (arrow.Table, error)
 }
 
+// BufferedRowReporter is implemented by a sink that can say how many rows it
+// is holding.
+//
+// A sink keeps every row a failed flush could not deliver, and nothing bounds
+// that buffer. Today a failed flush stops the pipeline, so the buffer dies
+// with the process. That bound is a property of the call pattern rather than
+// of the design, and it disappears the day a flush failure stops being fatal.
+// An operator needs to see the depth before that day, not after.
+//
+// Optional, like MarkCommitter: a sink that buffers nothing reports nothing.
+type BufferedRowReporter interface {
+	BufferedRows() int
+}
+
 type Handler interface {
 	Init(ctx context.Context) error
 	Write(msg []byte) error
@@ -758,6 +772,18 @@ func (t *Turbine) SyncState(ctx context.Context) error {
 // processBatch invokes the handler on the buffered messages, writes the
 // result to the sink, commits the source, and resets the handler for the
 // next batch.
+// recordBufferedRows publishes the sink's buffer depth.
+//
+// A sink that does not report one is a sink that buffers nothing, so there is
+// nothing to publish and no branch for the caller.
+func (t *Turbine) recordBufferedRows(ctx context.Context) {
+	reporter, ok := t.sink.(BufferedRowReporter)
+	if !ok {
+		return
+	}
+	t.metrics.SinkBufferedRows.Record(ctx, int64(reporter.BufferedRows()))
+}
+
 func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error {
 	b0 := time.Now()
 
@@ -795,6 +821,11 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	if err := t.flush(ctx, batch); err != nil {
 		t.recordError(ctx, err, phaseSinkFlush, "error flushing sink")
 		t.metrics.SinkFlushCount.Add(ctx, 1, t.resultAttrs(resultError)...)
+		// Recorded on the failure path first, because this is the path where
+		// the number moves. A flush that keeps its batch leaves those rows
+		// buffered, and a rising gauge is what separates a sink retrying a
+		// destination from one that has stopped draining.
+		t.recordBufferedRows(ctx)
 		// The handler's writes are still uncommitted in the state
 		// transaction; discard them with the batch they belong to.
 		t.rollbackState(ctx)
@@ -806,6 +837,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 
 	b2 := time.Now()
 
+	t.recordBufferedRows(ctx)
 	t.metrics.SinkFlushLatency.Record(ctx, b2.Sub(b1).Seconds())
 	t.metrics.SinkFlushCount.Add(ctx, 1, t.resultAttrs(resultOK)...)
 	if batch != nil {
