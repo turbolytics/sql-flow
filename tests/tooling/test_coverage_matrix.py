@@ -1345,3 +1345,72 @@ def test_the_snapshot_carries_the_proof_beside_the_exemption():
 
     assert c["status"] == "exempt"
     assert c["proven_by"] == "TestSinkConsole_ImplementsNoProber"
+
+
+# --- Enforcement: proven somewhere -----------------------------------------
+#
+# `requires` names levels, and the level an invariant can be proven at is a
+# property of the integration rather than of the claim: ClickHouse and Kafka
+# need a container, console and sqlcommand fail in-process. Demanding a
+# specific level would force a container on a sink that needs none, or accept
+# a fake for one that does. `enforced` demands evidence at some level.
+
+def test_an_enforced_invariant_needs_evidence_at_some_level():
+    enforced = [dict(INVARIANTS[0], enforced=True)]
+    s = inv_snap(
+        invariants=enforced,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    # clickhouse is proven at unit, which is enough; console is exempt.
+    assert s["invariant_gaps"] == []
+
+
+def test_an_enforced_invariant_with_no_evidence_anywhere_is_a_gap():
+    enforced = [dict(INVARIANTS[0], enforced=True)]
+    s = inv_snap(invariants=enforced)
+
+    assert {"invariant": "sink.flush.keeps_batch", "integration": "sink.clickhouse",
+            "level": "any", "status": "missing"} in s["invariant_gaps"]
+    assert not any(g["integration"] == "sink.console" for g in s["invariant_gaps"])
+
+
+def test_an_enforced_invariant_proven_at_integration_only_is_covered():
+    """A sink that needs a container is not penalised for needing one."""
+    enforced = [dict(INVARIANTS[0], enforced=True)]
+    s = inv_snap(
+        invariants=enforced,
+        evidence={"integration": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"integration": {"TestA": cm.PASS}},
+    )
+    assert s["invariant_gaps"] == []
+
+
+def test_an_enforced_invariant_whose_only_evidence_is_a_skip_is_a_gap():
+    enforced = [dict(INVARIANTS[0], enforced=True)]
+    s = inv_snap(
+        invariants=enforced,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.SKIP}},
+    )
+    assert any(g["integration"] == "sink.clickhouse" for g in s["invariant_gaps"])
+
+
+def test_requires_and_enforced_are_independent():
+    """requires still demands a named level when a claim genuinely needs one."""
+    both = [dict(INVARIANTS[0], enforced=True, requires=["release"])]
+    s = inv_snap(
+        invariants=both,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    levels = {g["level"] for g in s["invariant_gaps"]}
+    assert levels == {"release"}
+
+
+def test_the_committed_registry_enforces_the_two_proven_invariants():
+    """Every sink now proves both, so both are enforced. A new sink cannot
+    merge without a conformance subject."""
+    enforced = {i["id"] for i in cm.load_invariants() if i.get("enforced")}
+    assert "sink.write.buffers_only" in enforced
+    assert "sink.flush.keeps_batch" in enforced

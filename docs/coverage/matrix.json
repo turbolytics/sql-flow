@@ -145,16 +145,25 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestIntegrationSinkKafka_Conformance",
             "TestSinkKafka_BatchIsTheLastWrite",
             "TestSinkKafka_FlushHonoursItsContext",
             "TestSinkKafka_FlushReportsProduceErrors",
             "TestSinkKafka_NewRejectsAnUnknownSecurityProtocol",
             "TestSinkKafka_NewRequiresATopic",
-            "TestSinkKafka_WriteTableHonoursItsContext"
+            "TestSinkKafka_WriteTableBuffersWhateverItsContextSays"
+          ],
+          "skipped": [
+            "TestIntegrationSinkKafka_Conformance"
           ]
         },
         "integration": {
-          "status": "not_required"
+          "status": "covered",
+          "tests": [
+            "TestIntegrationSinkKafka_Conformance",
+            "TestIntegrationSinkKafka_Conformance/sink.flush.keeps_batch",
+            "TestIntegrationSinkKafka_Conformance/sink.write.buffers_only"
+          ]
         },
         "release": {
           "status": "covered",
@@ -242,6 +251,9 @@
             "TestSinkIceberg_CatalogPropertiesFromPyicebergFile",
             "TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme",
             "TestSinkIceberg_CatalogPropertiesRequireAURI",
+            "TestSinkIceberg_Conformance",
+            "TestSinkIceberg_Conformance/sink.flush.keeps_batch",
+            "TestSinkIceberg_Conformance/sink.write.buffers_only",
             "TestSinkIceberg_EmptyBatchAppendsNothing",
             "TestSinkIceberg_FlushWithNothingPendingAppendsNothing",
             "TestSinkIceberg_MissingTableFailsTheStart",
@@ -293,9 +305,13 @@
           "tests": [
             "TestSinkSqlcommand_AccumulatesUntilFlush",
             "TestSinkSqlcommand_BatchIsTheLastWrite",
+            "TestSinkSqlcommand_Conformance",
+            "TestSinkSqlcommand_Conformance/sink.flush.keeps_batch",
+            "TestSinkSqlcommand_Conformance/sink.write.buffers_only",
             "TestSinkSqlcommand_EachFlushReplacesTheBatchTable",
             "TestSinkSqlcommand_EmptyBatchStillRunsTheSQL",
             "TestSinkSqlcommand_FlushWithNothingPendingIsANoop",
+            "TestSinkSqlcommand_ImplementsNoProber",
             "TestSinkSqlcommand_NewRequiresSQL",
             "TestSinkSqlcommand_RejectsAnUnknownSubstitution",
             "TestSinkSqlcommand_ReportsASQLError",
@@ -322,6 +338,10 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestSinkConsole_Conformance",
+            "TestSinkConsole_Conformance/sink.flush.keeps_batch",
+            "TestSinkConsole_Conformance/sink.write.buffers_only",
+            "TestSinkConsole_ImplementsNoProber",
             "TestSinkConsole_RowsAsJSONEmptyTable",
             "TestSinkConsole_RowsAsJSONOneObjectPerRow"
           ]
@@ -1263,6 +1283,7 @@
             "TestToolingConformanceSinks_ASubjectWithBreakAndNoHealIsRejected",
             "TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped",
             "TestToolingConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected",
+            "TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject",
             "TestToolingConformanceSinks_JudgesOnlyDeclaredInvariants"
           ]
         },
@@ -1309,7 +1330,10 @@
   ],
   "gaps": [],
   "unattributed": {
-    "unit": [],
+    "unit": [
+      "TestSinkNoop_DeliversNothingAndSaysSo",
+      "TestSinkNoop_ImplementsNoProber"
+    ],
     "integration": [],
     "release": []
   },
@@ -1327,6 +1351,7 @@
       "claim": "WriteTable does not reach the destination. Only Flush does.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": true,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -1334,8 +1359,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkKafka_Conformance/sink.write.buffers_only"
+            ]
           },
           "release": {
             "status": "missing",
@@ -1360,8 +1387,10 @@
         },
         "sink.iceberg": {
           "unit": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestSinkIceberg_Conformance/sink.write.buffers_only"
+            ]
           },
           "integration": {
             "status": "missing",
@@ -1374,8 +1403,10 @@
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestSinkSqlcommand_Conformance/sink.write.buffers_only"
+            ]
           },
           "integration": {
             "status": "missing",
@@ -1388,8 +1419,10 @@
         },
         "sink.console": {
           "unit": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestSinkConsole_Conformance/sink.write.buffers_only"
+            ]
           },
           "integration": {
             "status": "missing",
@@ -1403,15 +1436,18 @@
         "sink.noop": {
           "unit": {
             "status": "exempt",
-            "reason": "discards every row by design, so there is no destination for a write to reach and nothing a read-back could show\n"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "integration": {
             "status": "exempt",
-            "reason": "discards every row by design, so there is no destination for a write to reach and nothing a read-back could show\n"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "release": {
             "status": "exempt",
-            "reason": "discards every row by design, so there is no destination for a write to reach and nothing a read-back could show\n"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
       }
@@ -1423,6 +1459,7 @@
       "claim": "A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": true,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -1430,8 +1467,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkKafka_Conformance/sink.flush.keeps_batch"
+            ]
           },
           "release": {
             "status": "missing",
@@ -1456,8 +1495,10 @@
         },
         "sink.iceberg": {
           "unit": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestSinkIceberg_Conformance/sink.flush.keeps_batch"
+            ]
           },
           "integration": {
             "status": "missing",
@@ -1470,44 +1511,51 @@
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "exempt",
-            "reason": "writes through the pipeline's own DuckDB connection, so a failure is not a network blip. retriesHelp already excludes it.\n"
+            "status": "covered",
+            "tests": [
+              "TestSinkSqlcommand_Conformance/sink.flush.keeps_batch"
+            ]
           },
           "integration": {
-            "status": "exempt",
-            "reason": "writes through the pipeline's own DuckDB connection, so a failure is not a network blip. retriesHelp already excludes it.\n"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "writes through the pipeline's own DuckDB connection, so a failure is not a network blip. retriesHelp already excludes it.\n"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.console": {
           "unit": {
-            "status": "exempt",
-            "reason": "stdout cannot be temporarily unavailable. retriesHelp already excludes it.\n"
+            "status": "covered",
+            "tests": [
+              "TestSinkConsole_Conformance/sink.flush.keeps_batch"
+            ]
           },
           "integration": {
-            "status": "exempt",
-            "reason": "stdout cannot be temporarily unavailable. retriesHelp already excludes it.\n"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "stdout cannot be temporarily unavailable. retriesHelp already excludes it.\n"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.noop": {
           "unit": {
             "status": "exempt",
-            "reason": "discards every row by design; it exists for benchmarking"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "integration": {
             "status": "exempt",
-            "reason": "discards every row by design; it exists for benchmarking"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "release": {
             "status": "exempt",
-            "reason": "discards every row by design; it exists for benchmarking"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
       },
@@ -1522,6 +1570,7 @@
       "claim": "Flush returns nil only when every row since the last success was acknowledged by the destination.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -1596,15 +1645,18 @@
         "sink.noop": {
           "unit": {
             "status": "exempt",
-            "reason": "discards every row by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "integration": {
             "status": "exempt",
-            "reason": "discards every row by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "release": {
             "status": "exempt",
-            "reason": "discards every row by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
       },
@@ -1619,6 +1671,7 @@
       "claim": "Rows reach the destination in WriteTable order, across a retry.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -1693,15 +1746,18 @@
         "sink.noop": {
           "unit": {
             "status": "exempt",
-            "reason": "discards every row by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "integration": {
             "status": "exempt",
-            "reason": "discards every row by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "release": {
             "status": "exempt",
-            "reason": "discards every row by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
       }
@@ -1713,6 +1769,7 @@
       "claim": "Flush returns ctx.Err() when the context ends. Rows stay buffered.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -1758,44 +1815,47 @@
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "exempt",
-            "reason": "nothing to wait on that a context could cut short"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "nothing to wait on that a context could cut short"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "nothing to wait on that a context could cut short"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.console": {
           "unit": {
-            "status": "exempt",
-            "reason": "nothing to wait on that a context could cut short"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "nothing to wait on that a context could cut short"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "nothing to wait on that a context could cut short"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.noop": {
           "unit": {
             "status": "exempt",
-            "reason": "nothing to wait on"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "integration": {
             "status": "exempt",
-            "reason": "nothing to wait on"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "release": {
             "status": "exempt",
-            "reason": "nothing to wait on"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
       },
@@ -1810,6 +1870,7 @@
       "claim": "Flush with nothing buffered returns nil and touches nothing.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -1904,6 +1965,7 @@
       "claim": "Batch returns what is buffered, and nil when nothing is.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -1978,15 +2040,18 @@
         "sink.noop": {
           "unit": {
             "status": "exempt",
-            "reason": "buffers nothing by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "integration": {
             "status": "exempt",
-            "reason": "buffers nothing by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "release": {
             "status": "exempt",
-            "reason": "buffers nothing by design"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
       }
@@ -1998,6 +2063,7 @@
       "claim": "The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -2043,44 +2109,47 @@
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "exempt",
-            "reason": "no network, so nothing to classify as unreachable"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "no network, so nothing to classify as unreachable"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "no network, so nothing to classify as unreachable"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.console": {
           "unit": {
-            "status": "exempt",
-            "reason": "no network, so nothing to classify as unreachable"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "no network, so nothing to classify as unreachable"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "no network, so nothing to classify as unreachable"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.noop": {
           "unit": {
             "status": "exempt",
-            "reason": "never fails"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "integration": {
             "status": "exempt",
-            "reason": "never fails"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           },
           "release": {
             "status": "exempt",
-            "reason": "never fails"
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
       }
@@ -2092,6 +2161,7 @@
       "claim": "A Prober whose destination is unreachable fails the start once, without retrying.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -2138,43 +2208,52 @@
         "sink.sqlcommand": {
           "unit": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkSqlcommand_ImplementsNoProber"
           },
           "integration": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkSqlcommand_ImplementsNoProber"
           },
           "release": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkSqlcommand_ImplementsNoProber"
           }
         },
         "sink.console": {
           "unit": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkConsole_ImplementsNoProber"
           },
           "integration": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkConsole_ImplementsNoProber"
           },
           "release": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkConsole_ImplementsNoProber"
           }
         },
         "sink.noop": {
           "unit": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkNoop_ImplementsNoProber"
           },
           "integration": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkNoop_ImplementsNoProber"
           },
           "release": {
             "status": "exempt",
-            "reason": "nothing to dial"
+            "reason": "implements no Prober, so there is no start-time check to fail",
+            "proven_by": "TestSinkNoop_ImplementsNoProber"
           }
         }
       }
@@ -2186,6 +2265,7 @@
       "claim": "Offsets and state commit only after Flush returned nil.",
       "verified_by": "named",
       "requires": [],
+      "enforced": false,
       "integrations": {}
     },
     {
@@ -2195,6 +2275,7 @@
       "claim": "A failed flush commits nothing. Not offsets, not state.",
       "verified_by": "named",
       "requires": [],
+      "enforced": false,
       "integrations": {}
     },
     {
@@ -2204,6 +2285,7 @@
       "claim": "Window state and the offsets that produced it commit atomically.",
       "verified_by": "named",
       "requires": [],
+      "enforced": false,
       "integrations": {}
     },
     {
@@ -2213,6 +2295,7 @@
       "claim": "A source commits the marks the pipeline processed, never what it fetched.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "source.kafka": {
           "unit": {
@@ -2231,29 +2314,35 @@
         "source.websocket": {
           "unit": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           },
           "integration": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           },
           "release": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           }
         },
         "source.webhook": {
           "unit": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           },
           "integration": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           },
           "release": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           }
         }
       },
@@ -2268,6 +2357,7 @@
       "claim": "Restart resumes at the committed position. No gap, and no replay before it.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "source.kafka": {
           "unit": {
@@ -2286,29 +2376,35 @@
         "source.websocket": {
           "unit": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           },
           "integration": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           },
           "release": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           }
         },
         "source.webhook": {
           "unit": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           },
           "integration": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           },
           "release": {
             "status": "exempt",
-            "reason": "no replayable position; at-most-once by construction"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           }
         }
       }
@@ -2320,6 +2416,7 @@
       "claim": "A committed position never moves backwards.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "source.kafka": {
           "unit": {
@@ -2338,29 +2435,35 @@
         "source.websocket": {
           "unit": {
             "status": "exempt",
-            "reason": "no marks"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           },
           "integration": {
             "status": "exempt",
-            "reason": "no marks"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           },
           "release": {
             "status": "exempt",
-            "reason": "no marks"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           }
         },
         "source.webhook": {
           "unit": {
             "status": "exempt",
-            "reason": "no marks"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           },
           "integration": {
             "status": "exempt",
-            "reason": "no marks"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           },
           "release": {
             "status": "exempt",
-            "reason": "no marks"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           }
         }
       }
@@ -2372,6 +2475,7 @@
       "claim": "Marks commit when a partition is revoked, before the rebalance completes.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "source.kafka": {
           "unit": {
@@ -2390,29 +2494,35 @@
         "source.websocket": {
           "unit": {
             "status": "exempt",
-            "reason": "no partitions to revoke"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           },
           "integration": {
             "status": "exempt",
-            "reason": "no partitions to revoke"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           },
           "release": {
             "status": "exempt",
-            "reason": "no partitions to revoke"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebsocket_ImplementsNoMarkCommitter"
           }
         },
         "source.webhook": {
           "unit": {
             "status": "exempt",
-            "reason": "no partitions to revoke"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           },
           "integration": {
             "status": "exempt",
-            "reason": "no partitions to revoke"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           },
           "release": {
             "status": "exempt",
-            "reason": "no partitions to revoke"
+            "reason": "implements no MarkCommitter; at-most-once by construction",
+            "proven_by": "TestSourceWebhook_ImplementsNoMarkCommitter"
           }
         }
       },
@@ -2425,6 +2535,7 @@
       "claim": "Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error.",
       "verified_by": "typetable",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -2524,6 +2635,7 @@
       "claim": "A null in every declared type reads back as declared.",
       "verified_by": "typetable",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -2618,6 +2730,7 @@
       "claim": "A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type.",
       "verified_by": "typetable",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -2715,6 +2828,7 @@
       "claim": "list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened.",
       "verified_by": "typetable",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -2809,6 +2923,7 @@
       "claim": "Unicode, escapes and the empty string round-trip byte for byte.",
       "verified_by": "typetable",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -2906,6 +3021,7 @@
       "claim": "An Arrow type absent from the table fails the batch with a coded error. Never coerced silently.",
       "verified_by": "typetable",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -3000,6 +3116,7 @@
       "claim": "Cancel or SIGTERM flushes the buffered batch, then commits.",
       "verified_by": "named",
       "requires": [],
+      "enforced": false,
       "integrations": {}
     },
     {
@@ -3009,6 +3126,7 @@
       "claim": "The drain finishes or fails inside its deadline.",
       "verified_by": "named",
       "requires": [],
+      "enforced": false,
       "integrations": {},
       "tracked_by": "#161"
     },
@@ -3019,6 +3137,7 @@
       "claim": "Close twice is safe.",
       "verified_by": "harness",
       "requires": [],
+      "enforced": false,
       "integrations": {
         "sink.kafka": {
           "unit": {
@@ -3113,6 +3232,7 @@
       "claim": "A batch whose query exceeds the timeout fails the batch, not the process.",
       "verified_by": "named",
       "requires": [],
+      "enforced": false,
       "integrations": {},
       "tracked_by": "#163"
     },
@@ -3123,6 +3243,7 @@
       "claim": "A DLQ record carries the payload, offset, partition and reason.",
       "verified_by": "named",
       "requires": [],
+      "enforced": false,
       "integrations": {},
       "tracked_by": "#166"
     },
@@ -3133,6 +3254,7 @@
       "claim": "N bad records in a window fail the pipeline rather than discarding forever.",
       "verified_by": "named",
       "requires": [],
+      "enforced": false,
       "integrations": {},
       "tracked_by": "#166"
     }

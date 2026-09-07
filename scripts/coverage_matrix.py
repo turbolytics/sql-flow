@@ -367,6 +367,7 @@ def snapshot_invariants(invariants, integrations, built):
             "claim": " ".join(inv["claim"].split()),
             "verified_by": inv["verified_by"],
             "requires": sorted(required),
+            "enforced": bool(inv.get("enforced")),
             "integrations": {},
         }
         if inv.get("tracked_by"):
@@ -377,6 +378,7 @@ def snapshot_invariants(invariants, integrations, built):
         # A pipeline invariant attaches to core, so it has no subjects.
         for integ in by_kind.get(inv["applies_to"], []):
             exemption = exemptions.get((inv["id"], integ["id"]))
+            reason = exemption  # None when the integration must prove it
             levels = {}
             for level in LEVELS:
                 if exemption is not None:
@@ -410,6 +412,21 @@ def snapshot_invariants(invariants, integrations, built):
                         "level": level,
                         "status": state,
                     })
+
+            # An enforced invariant must be proven somewhere, and the level is
+            # not the claim's business: ClickHouse and Kafka need a container,
+            # console and sqlcommand fail in-process. Demanding a named level
+            # would force a container on a sink that needs none, or accept a
+            # fake for one that does.
+            if inv.get("enforced") and reason is None:
+                if not any(c["status"] == "covered" for c in levels.values()):
+                    out["invariant_gaps"].append({
+                        "invariant": inv["id"],
+                        "integration": integ["id"],
+                        "level": "any",
+                        "status": cell_state(levels),
+                    })
+
             entry["integrations"][integ["id"]] = levels
 
         out["invariants"].append(entry)

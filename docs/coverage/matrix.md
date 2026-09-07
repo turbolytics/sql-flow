@@ -24,12 +24,12 @@ names every one of them.
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | 28 |
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
-| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | — | ✅ | 7 |
+| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 11 |
 | `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 20 |
-| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 13 |
+| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 16 |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
-| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 10 |
-| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 3 |
+| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 14 |
+| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 7 |
 | `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 71 |
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
@@ -52,7 +52,7 @@ names every one of them.
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 16 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 17 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 12 |
 
 **33 features declared. 33 have at least one passing test attributed at every level they require, so 0 gap(s).**
@@ -63,7 +63,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**28 invariants declared. Of 108 (invariant, integration) cells: 2 proven, 82 missing, 0 skipped, 0 failing, 24 exempt. 0 gap(s), because no invariant requires a level yet.**
+**28 invariants declared. Of 108 (invariant, integration) cells: 10 proven, 80 missing, 0 skipped, 0 failing, 18 exempt. 0 gap(s), because no invariant requires a level yet.**
 
 A further 8 invariants attach to the pipeline rather than
 to any one integration. Nothing collects evidence for them yet, so
@@ -102,6 +102,14 @@ that deserves its own test.
 - `config.templating` (release) — via `test_config_validation_accepts_a_shipped_example`
 - `cli.dev_invoke` (release) — via `test_handler_inferred_mem_invoke_renders_rows`
 
+## Unattributed unit tests (2)
+
+These match no declared feature. Either rename them to the
+convention, or add the feature to `features.yml`.
+
+- `TestSinkNoop_DeliversNothingAndSaysSo`
+- `TestSinkNoop_ImplementsNoProber`
+
 ## Markers naming an unknown feature
 
 - `TestToolingConformanceSinks_ACorrectSinkPasses` marks `sink.noop`
@@ -129,14 +137,14 @@ invariant's `requires` is filled in, and none is yet.
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. *(violated once: #221)* | ❌ missing | ✅ i | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
+| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. *(violated once: #221)* | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
 | `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. *(violated once: #221)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.flush.preserves_order` | Rows reach the destination in WriteTable order, across a retry. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `sink.batch.reports_buffer` | Batch returns what is buffered, and nil when nothing is. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
 
 ## Invariants: checkpoint

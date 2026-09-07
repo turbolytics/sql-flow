@@ -31,6 +31,10 @@ invariants:
     claim: WriteTable does not reach the destination. Only Flush does.
     verified_by: harness
     requires: []
+    # Every sink proves this, so a new one cannot merge without a conformance
+    # subject. The level is the integration's business: ClickHouse and Kafka
+    # need a container, console and sqlcommand fail in-process.
+    enforced: true
 
   - id: sink.flush.keeps_batch
     family: resilience
@@ -40,6 +44,7 @@ invariants:
       re-attempts them.
     verified_by: harness
     requires: []
+    enforced: true
     violated_once: ["#221"]
 
   - id: sink.flush.no_hollow_success
