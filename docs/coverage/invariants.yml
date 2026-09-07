@@ -79,6 +79,16 @@ invariants:
     verified_by: harness
     requires: []
 
+  - id: sink.buffer.reports_depth
+    family: resilience
+    applies_to: sink
+    claim: >
+      A sink reports how many rows it is holding, and the count rises when a
+      flush fails and falls to zero when one succeeds.
+    verified_by: harness
+    requires: []
+    enforced: true
+
   - id: sink.batch.reports_buffer
     family: resilience
     applies_to: sink

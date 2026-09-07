@@ -495,7 +495,8 @@ INTEGRATIONS = [
      "feature": "sink.clickhouse", "exempt": []},
     {"id": "sink.console", "kind": "sink", "implements": ["Sink"],
      "feature": "sink.console",
-     "exempt": [{"invariant": "sink.flush.keeps_batch", "reason": "stdout"}]},
+     "exempt": [{"invariant": "sink.flush.keeps_batch", "reason": "stdout",
+                 "proven_by": "TestSinkConsole_ImplementsNoProber"}]},
     {"id": "source.kafka", "kind": "source", "implements": ["Source"],
      "feature": "source.kafka", "exempt": []},
 ]
@@ -1414,3 +1415,56 @@ def test_the_committed_registry_enforces_the_two_proven_invariants():
     enforced = {i["id"] for i in cm.load_invariants() if i.get("enforced")}
     assert "sink.write.buffers_only" in enforced
     assert "sink.flush.keeps_batch" in enforced
+
+
+# --- Test-only integrations ------------------------------------------------
+#
+# The conformance harness runs doubles, and a marker names an integration. A
+# double that names a shipped sink credits that sink for what the double did:
+# sink.buffer.reports_depth read green for sink.noop on the strength of an
+# in-memory fake. It would also force exemptions onto a shipped sink for
+# reasons unrelated to its contract.
+
+def test_a_test_only_integration_gets_no_cells():
+    integrations = INTEGRATIONS + [
+        {"id": "sink.conformance_double", "kind": "sink", "test_only": True,
+         "implements": ["Sink"], "exempt": []}]
+    s = inv_snap(integrations=integrations)
+    inv = next(i for i in s["invariants"] if i["id"] == "sink.flush.keeps_batch")
+
+    assert "sink.conformance_double" not in inv["integrations"]
+
+
+def test_a_double_marker_credits_nothing():
+    """The whole point: a passing double changes no cell."""
+    integrations = INTEGRATIONS + [
+        {"id": "sink.conformance_double", "kind": "sink", "test_only": True,
+         "implements": ["Sink"], "exempt": []}]
+    s = inv_snap(
+        integrations=integrations,
+        evidence={"unit": {"TestA": [("sink.flush.keeps_batch", "sink.conformance_double")]}},
+        results={"unit": {"TestA": cm.PASS}},
+    )
+    assert cell(s, "sink.flush.keeps_batch", "sink.clickhouse",
+                "unit")["status"] == "missing"
+    assert s["unknown_invariant_markers"] == []
+
+
+def test_a_test_only_integration_needs_no_feature():
+    """It ships to nobody, so features.yml never names it."""
+    integrations = INTEGRATIONS + [
+        {"id": "sink.conformance_double", "kind": "sink", "test_only": True,
+         "implements": ["Sink"], "exempt": []}]
+    assert cm.validate_registries(INVARIANTS, integrations, FEATURES) == []
+
+
+def test_a_shipped_integration_still_needs_a_feature():
+    bad = INTEGRATIONS + [
+        {"id": "sink.mystery", "kind": "sink", "implements": ["Sink"], "exempt": []}]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("sink.mystery" in p for p in problems)
+
+
+def test_the_committed_registry_marks_the_double_test_only():
+    doubles = [i for i in cm.load_integrations() if i.get("test_only")]
+    assert [i["id"] for i in doubles] == ["sink.conformance_double"]

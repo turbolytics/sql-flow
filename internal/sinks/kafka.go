@@ -180,3 +180,13 @@ func (s *KafkaSink) Close() error {
 	s.client.Close()
 	return nil
 }
+
+// BufferedRows reports the rows this sink is holding that no flush has had
+// acknowledged. The pipeline publishes it as sink_buffered_rows, so an
+// operator can tell a sink retrying a broker from one that has stopped
+// draining.
+func (s *KafkaSink) BufferedRows() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending)
+}

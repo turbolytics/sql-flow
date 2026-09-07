@@ -478,3 +478,17 @@ func goElemType(dt arrow.DataType) reflect.Type {
 		return reflect.TypeOf("")
 	}
 }
+
+// BufferedRows reports the rows this sink is holding that no flush has
+// delivered. The pipeline publishes it as sink_buffered_rows, so an operator
+// can tell a sink retrying a destination from one that has stopped draining.
+func (s *ClickhouseSink) BufferedRows() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var rows int64
+	for _, t := range s.tables {
+		rows += t.NumRows()
+	}
+	return int(rows)
+}

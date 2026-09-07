@@ -122,7 +122,10 @@ def validate_registries(invariants, integrations, features):
         if integ.get("kind") not in INTEGRATION_KINDS:
             problems.append(
                 f"integrations.yml: {iid} kind {integ.get('kind')!r} is not one of {INTEGRATION_KINDS}")
-        if integ.get("feature") not in feature_ids:
+        # A test-only integration ships to nobody, so it has no feature and no
+        # cells. It exists so the conformance harness's doubles have an id
+        # that is not a real sink's.
+        if not integ.get("test_only") and integ.get("feature") not in feature_ids:
             problems.append(
                 f"integrations.yml: {iid} names feature {integ.get('feature')!r}, "
                 "which features.yml does not declare")
@@ -346,6 +349,11 @@ def snapshot_invariants(invariants, integrations, built):
     """
     by_kind = {}
     for integ in integrations:
+        # test_only integrations get no cells. Their markers are known, so the
+        # harness's doubles are not reported as unknown, and they credit
+        # nothing.
+        if integ.get("test_only"):
+            continue
         by_kind.setdefault(integ["kind"], []).append(integ)
 
     exemptions = {

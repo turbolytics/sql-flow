@@ -1,6 +1,7 @@
 package sinks
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -84,4 +85,14 @@ func (s *ConsoleSink) Batch() (arrow.Table, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.batch, nil
+}
+
+// BufferedRows reports the rows this sink is holding that no flush has
+// written. Every row ends in a newline and a short write only removes a
+// prefix, so counting newlines counts the rows still owed, including a row
+// left half written.
+func (s *ConsoleSink) BufferedRows() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return bytes.Count(s.pending, []byte{'\n'})
 }

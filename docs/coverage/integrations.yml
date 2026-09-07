@@ -59,7 +59,7 @@ integrations:
   - id: sink.noop
     kind: sink
     implements: [Sink]
-    feature: sink.console
+    feature: sink.noop
     # noop has no destination at all, which is its whole purpose: it exists so
     # a benchmark can measure the engine without a sink. Every invariant about
     # delivering rows is vacuous for it, and one test states that contract
@@ -83,12 +83,31 @@ integrations:
       - invariant: sink.batch.reports_buffer
         reason: has no destination; discarding every row is the contract
         proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+      - invariant: sink.buffer.reports_depth
+        reason: has no destination; it holds nothing, so there is no depth to report
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.error.classifies
         reason: has no destination; discarding every row is the contract
         proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.probe.fails_start
         reason: implements no Prober, so there is no start-time check to fail
         proven_by: TestSinkNoop_ImplementsNoProber
+
+  # The conformance harness's own doubles run under this id.
+  #
+  # They must name an integration, because a marker carries one. Naming a real
+  # sink would credit that sink for what a double did, and it would force
+  # exemptions onto a customer-facing sink for reasons that have nothing to do
+  # with its contract: the first invariant NoopSink genuinely satisfies would
+  # have to be exempted anyway, hiding real coverage.
+  #
+  # test_only keeps it out of the matrix. Its markers are known, so they are
+  # not reported as unknown, and they land on no cell.
+  - id: sink.conformance_double
+    kind: sink
+    test_only: true
+    implements: [Sink]
+    exempt: []
 
   # --- Sources ---------------------------------------------------------------
   - id: source.kafka

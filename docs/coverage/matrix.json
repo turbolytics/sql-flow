@@ -161,6 +161,7 @@
           "status": "covered",
           "tests": [
             "TestIntegrationSinkKafka_Conformance",
+            "TestIntegrationSinkKafka_Conformance/sink.buffer.reports_depth",
             "TestIntegrationSinkKafka_Conformance/sink.flush.keeps_batch",
             "TestIntegrationSinkKafka_Conformance/sink.write.buffers_only"
           ]
@@ -221,6 +222,7 @@
           "status": "covered",
           "tests": [
             "TestIntegrationSinkClickhouse_Conformance",
+            "TestIntegrationSinkClickhouse_Conformance/sink.buffer.reports_depth",
             "TestIntegrationSinkClickhouse_Conformance/sink.flush.keeps_batch",
             "TestIntegrationSinkClickhouse_Conformance/sink.write.buffers_only"
           ]
@@ -252,6 +254,7 @@
             "TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme",
             "TestSinkIceberg_CatalogPropertiesRequireAURI",
             "TestSinkIceberg_Conformance",
+            "TestSinkIceberg_Conformance/sink.buffer.reports_depth",
             "TestSinkIceberg_Conformance/sink.flush.keeps_batch",
             "TestSinkIceberg_Conformance/sink.write.buffers_only",
             "TestSinkIceberg_EmptyBatchAppendsNothing",
@@ -306,6 +309,7 @@
             "TestSinkSqlcommand_AccumulatesUntilFlush",
             "TestSinkSqlcommand_BatchIsTheLastWrite",
             "TestSinkSqlcommand_Conformance",
+            "TestSinkSqlcommand_Conformance/sink.buffer.reports_depth",
             "TestSinkSqlcommand_Conformance/sink.flush.keeps_batch",
             "TestSinkSqlcommand_Conformance/sink.write.buffers_only",
             "TestSinkSqlcommand_EachFlushReplacesTheBatchTable",
@@ -339,6 +343,7 @@
           "status": "covered",
           "tests": [
             "TestSinkConsole_Conformance",
+            "TestSinkConsole_Conformance/sink.buffer.reports_depth",
             "TestSinkConsole_Conformance/sink.flush.keeps_batch",
             "TestSinkConsole_Conformance/sink.write.buffers_only",
             "TestSinkConsole_ImplementsNoProber",
@@ -357,6 +362,28 @@
           "by_marker": [
             "test_handler_inferred_mem_invoke_renders_rows"
           ]
+        }
+      }
+    },
+    {
+      "id": "sink.noop",
+      "description": "Discards every result row, for measuring the engine without a sink.",
+      "requires": [
+        "unit"
+      ],
+      "levels": {
+        "unit": {
+          "status": "covered",
+          "tests": [
+            "TestSinkNoop_DeliversNothingAndSaysSo",
+            "TestSinkNoop_ImplementsNoProber"
+          ]
+        },
+        "integration": {
+          "status": "not_required"
+        },
+        "release": {
+          "status": "not_required"
         }
       }
     },
@@ -1271,12 +1298,15 @@
             "TestToolingConformanceDescribe_NamesTheRowsItFound",
             "TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink",
             "TestToolingConformanceSinks_ACorrectSinkPasses",
+            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.buffer.reports_depth",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.keeps_batch",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.write.buffers_only",
             "TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly",
             "TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught",
             "TestToolingConformanceSinks_ASinkThatDeliversTwiceIsCaught",
             "TestToolingConformanceSinks_ASinkThatDropsItsBatchIsCaught",
+            "TestToolingConformanceSinks_ASinkThatMisreportsItsDepthIsCaught",
+            "TestToolingConformanceSinks_ASinkThatReportsNoDepthIsSkipped",
             "TestToolingConformanceSinks_ASinkThatWritesThroughIsCaught",
             "TestToolingConformanceSinks_ASkippedVerdictEmitsNoMarker",
             "TestToolingConformanceSinks_ASubjectMissingReadBackIsRejected",
@@ -1284,7 +1314,9 @@
             "TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped",
             "TestToolingConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected",
             "TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject",
-            "TestToolingConformanceSinks_JudgesOnlyDeclaredInvariants"
+            "TestToolingConformanceSinks_JudgesOnlyDeclaredInvariants",
+            "TestToolingConformanceSinks_TheDoublesIntegrationIsNotAShippedSink",
+            "TestToolingConformanceSinks_TheDoublesRunUnderATestOnlyIntegration"
           ]
         },
         "integration": {
@@ -1330,19 +1362,11 @@
   ],
   "gaps": [],
   "unattributed": {
-    "unit": [
-      "TestSinkNoop_DeliversNothingAndSaysSo",
-      "TestSinkNoop_ImplementsNoProber"
-    ],
+    "unit": [],
     "integration": [],
     "release": []
   },
-  "unknown_markers": [
-    {
-      "test": "TestToolingConformanceSinks_ACorrectSinkPasses",
-      "feature": "sink.noop"
-    }
-  ],
+  "unknown_markers": [],
   "invariants": [
     {
       "id": "sink.write.buffers_only",
@@ -1954,6 +1978,114 @@
           "release": {
             "status": "missing",
             "tests": []
+          }
+        }
+      }
+    },
+    {
+      "id": "sink.buffer.reports_depth",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds.",
+      "verified_by": "harness",
+      "requires": [],
+      "enforced": true,
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkKafka_Conformance/sink.buffer.reports_depth"
+            ]
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Conformance/sink.buffer.reports_depth"
+            ]
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestSinkIceberg_Conformance/sink.buffer.reports_depth"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestSinkSqlcommand_Conformance/sink.buffer.reports_depth"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestSinkConsole_Conformance/sink.buffer.reports_depth"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "has no destination; it holds nothing, so there is no depth to report",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "has no destination; it holds nothing, so there is no depth to report",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "has no destination; it holds nothing, so there is no depth to report",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
       }
