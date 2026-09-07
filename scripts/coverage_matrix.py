@@ -55,6 +55,19 @@ INTEGRATION_PREFIX = "TestIntegration"
 # The closed vocabularies invariants.yml may use. A value outside one of them
 # is a typo, and a typo must not reach the matrix as a missing cell.
 FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors")
+
+# What kind of claim an invariant makes, which is orthogonal to its family.
+#
+#   safety    nothing bad happens: never commit a position for rows the sink
+#             did not take, never lose a batch a flush could not deliver.
+#   liveness  something good eventually happens: buffered rows reach the sink,
+#             a drain finishes, a stalled configuration fails at startup.
+#
+# The distinction is not academic. A sink that never flushes satisfies every
+# safety invariant here -- keeps_batch holds vacuously if you never flush, and
+# commit.after_flush holds if you never commit. Only a liveness claim says the
+# pipeline does anything at all.
+CLASSES = ("safety", "liveness")
 KINDS = ("sink", "source", "handler", "pipeline")
 # How an invariant collects evidence. Both are explicit markers: a test says
 # what it proves. `named` used to mean "a test whose name matches the id",
@@ -101,12 +114,16 @@ def validate_registries(invariants, integrations, features):
             problems.append(f"invariants.yml: duplicate id {fid}")
         by_id[fid] = inv
 
-        for key in ("family", "applies_to", "claim", "verified_by", "requires"):
+        for key in ("family", "class", "applies_to", "claim", "verified_by",
+                    "requires"):
             if key not in inv:
                 problems.append(f"invariants.yml: {fid} has no {key}")
         if inv.get("family") not in FAMILIES:
             problems.append(
                 f"invariants.yml: {fid} family {inv.get('family')!r} is not one of {FAMILIES}")
+        if inv.get("class") not in CLASSES:
+            problems.append(
+                f"invariants.yml: {fid} class {inv.get('class')!r} is not one of {CLASSES}")
         if inv.get("applies_to") not in KINDS:
             problems.append(
                 f"invariants.yml: {fid} applies_to {inv.get('applies_to')!r} is not one of {KINDS}")
@@ -371,6 +388,7 @@ def snapshot_invariants(invariants, integrations, built):
             # words keeps the JSON diff stable when the wrapping changes.
             "claim": " ".join(inv["claim"].split()),
             "verified_by": inv["verified_by"],
+            "class": inv["class"],
             "requires": sorted(required),
             "enforced": bool(inv.get("enforced")),
             "integrations": {},
@@ -593,13 +611,22 @@ def render(snap):
     if snap.get("invariants"):
         tally, unwired = invariant_tally(snap)
         total = sum(tally.values())
+        safety = sum(1 for i in snap["invariants"] if i["class"] == "safety")
+        liveness = sum(1 for i in snap["invariants"] if i["class"] == "liveness")
+
         lines += [
-            f"**{len(snap['invariants'])} invariants declared. Of {total} "
-            f"(invariant, integration) cells: {tally['covered']} proven, "
-            f"{tally['missing']} missing, {tally['skipped']} skipped, "
-            f"{tally['failing']} failing, {tally['exempt']} exempt. "
-            f"{len(snap['invariant_gaps'])} gap(s), because no invariant "
-            "requires a level yet.**",
+            f"**{len(snap['invariants'])} invariants declared: {safety} safety "
+            f"and {liveness} liveness. Of {total} (invariant, integration) "
+            f"cells: {tally['covered']} proven, {tally['missing']} missing, "
+            f"{tally['skipped']} skipped, {tally['failing']} failing, "
+            f"{tally['exempt']} exempt. {len(snap['invariant_gaps'])} gap(s).**",
+            "",
+            "Safety says nothing bad happens. Liveness says something good",
+            "eventually does, and the two are not interchangeable: a sink that",
+            "never flushes satisfies every safety invariant on this page.",
+            "`keeps_batch` holds if you never flush, and `commit.after_flush`",
+            "holds if you never commit. Only a liveness claim says the pipeline",
+            "does anything at all.",
             "",
         ]
         if unwired:
@@ -859,13 +886,19 @@ def render_invariants(snap):
         "",
     ]
 
-    families = []
+    # Grouped by class first. A liveness section that is entirely red sitting
+    # beside a green safety one is the imbalance a reader has to see, and a
+    # column would let it pass unnoticed.
+    groups = []
     for inv in snap["invariants"]:
-        if inv["family"] not in families:
-            families.append(inv["family"])
+        key = (inv["class"], inv["family"])
+        if key not in groups:
+            groups.append(key)
+    groups.sort(key=lambda k: (CLASSES.index(k[0]), FAMILIES.index(k[1])))
 
-    for family in families:
-        rows = [i for i in snap["invariants"] if i["family"] == family]
+    for cls, family in groups:
+        rows = [i for i in snap["invariants"]
+                if i["class"] == cls and i["family"] == family]
 
         # Split on what the invariant applies to. A pipeline row in a table of
         # sink columns renders as a line of dots, which reads as "not
@@ -879,7 +912,7 @@ def render_invariants(snap):
                 if integ not in columns:
                     columns.append(integ)
 
-        lines += [f"## Invariants: {family}", ""]
+        lines += [f"## {cls.capitalize()} invariants: {family}", ""]
 
         if per_integration:
             lines.append("| Invariant | Claim | "

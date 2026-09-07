@@ -628,6 +628,7 @@
             "TestPipelineStateful_Conformance/lifecycle.drain.on_cancel",
             "TestPipelineStateful_Conformance/pipeline.commit.after_flush",
             "TestPipelineStateful_Conformance/pipeline.commit.nothing_on_failure",
+            "TestPipelineStateful_Conformance/pipeline.flush.eventually",
             "TestPipelineStateful_Conformance/pipeline.state.with_offsets",
             "TestStateDurability_DBSecondConnectionSeesOnlyCommittedState",
             "TestStateDurability_OpenPathEmptyPathIsInMemory",
@@ -819,6 +820,7 @@
             "TestPipelineStateless_Conformance/lifecycle.drain.on_cancel",
             "TestPipelineStateless_Conformance/pipeline.commit.after_flush",
             "TestPipelineStateless_Conformance/pipeline.commit.nothing_on_failure",
+            "TestPipelineStateless_Conformance/pipeline.flush.eventually",
             "TestPipelineStateless_Conformance/pipeline.state.with_offsets",
             "TestPipelineStateless_KeepsNoDurableState"
           ],
@@ -1312,6 +1314,7 @@
             "TestToolingConformanceDescribe_NamesTheRowsItFound",
             "TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants",
             "TestToolingConformancePipelines_CatchesACommitBeforeTheFlush",
+            "TestToolingConformancePipelines_JudgeOneLivenessClaim",
             "TestToolingConformancePipelines_JudgeOnlyDeclaredInvariants",
             "TestToolingConformancePipelines_RunsEveryTrigger",
             "TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink",
@@ -1392,6 +1395,7 @@
       "applies_to": "sink",
       "claim": "WriteTable does not reach the destination. Only Flush does.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": true,
       "integrations": {
@@ -1500,6 +1504,7 @@
       "applies_to": "sink",
       "claim": "A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": true,
       "integrations": {
@@ -1611,6 +1616,7 @@
       "applies_to": "sink",
       "claim": "Flush returns nil only when every row since the last success was acknowledged by the destination.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -1712,6 +1718,7 @@
       "applies_to": "sink",
       "claim": "Rows reach the destination in WriteTable order, across a retry.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -1810,6 +1817,7 @@
       "applies_to": "sink",
       "claim": "Flush returns ctx.Err() when the context ends. Rows stay buffered.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -1911,6 +1919,7 @@
       "applies_to": "sink",
       "claim": "Flush with nothing buffered returns nil and touches nothing.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2006,6 +2015,7 @@
       "applies_to": "sink",
       "claim": "A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": true,
       "integrations": {
@@ -2114,6 +2124,7 @@
       "applies_to": "sink",
       "claim": "Batch returns what is buffered, and nil when nothing is.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2212,6 +2223,7 @@
       "applies_to": "sink",
       "claim": "The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2310,6 +2322,7 @@
       "applies_to": "sink",
       "claim": "A Prober whose destination is unreachable fails the start once, without retrying.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2414,6 +2427,7 @@
       "applies_to": "pipeline",
       "claim": "Offsets and state commit only after Flush returned nil.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": true,
       "integrations": {
@@ -2457,6 +2471,7 @@
       "applies_to": "pipeline",
       "claim": "A failed flush commits nothing. Not offsets, not state.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": true,
       "integrations": {
@@ -2500,6 +2515,7 @@
       "applies_to": "pipeline",
       "claim": "Window state and the offsets that produced it commit atomically.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": true,
       "integrations": {
@@ -2544,6 +2560,7 @@
       "applies_to": "source",
       "claim": "A source commits the marks the pipeline processed, never what it fetched.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2606,6 +2623,7 @@
       "applies_to": "source",
       "claim": "Restart resumes at the committed position. No gap, and no replay before it.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2665,6 +2683,7 @@
       "applies_to": "source",
       "claim": "A committed position never moves backwards.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2724,6 +2743,7 @@
       "applies_to": "source",
       "claim": "Marks commit when a partition is revoked, before the rebalance completes.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2784,6 +2804,7 @@
       "applies_to": "sink",
       "claim": "Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error.",
       "verified_by": "typetable",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2884,6 +2905,7 @@
       "applies_to": "sink",
       "claim": "A null in every declared type reads back as declared.",
       "verified_by": "typetable",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -2979,6 +3001,7 @@
       "applies_to": "sink",
       "claim": "A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type.",
       "verified_by": "typetable",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -3077,6 +3100,7 @@
       "applies_to": "sink",
       "claim": "list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened.",
       "verified_by": "typetable",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -3172,6 +3196,7 @@
       "applies_to": "sink",
       "claim": "Unicode, escapes and the empty string round-trip byte for byte.",
       "verified_by": "typetable",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -3270,6 +3295,7 @@
       "applies_to": "sink",
       "claim": "An Arrow type absent from the table fails the batch with a coded error. Never coerced silently.",
       "verified_by": "typetable",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -3365,6 +3391,7 @@
       "applies_to": "pipeline",
       "claim": "Cancel or SIGTERM flushes the buffered batch, then commits.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": true,
       "integrations": {
@@ -3403,11 +3430,96 @@
       }
     },
     {
+      "id": "pipeline.flush.eventually",
+      "family": "lifecycle",
+      "applies_to": "pipeline",
+      "claim": "A batch that never reaches batchSize still reaches the sink, within the flush interval.",
+      "verified_by": "harness",
+      "class": "liveness",
+      "requires": [],
+      "enforced": true,
+      "integrations": {
+        "pipeline.stateful": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestPipelineStateful_Conformance/pipeline.flush.eventually"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestPipelineStateless_Conformance/pipeline.flush.eventually"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
+    },
+    {
+      "id": "pipeline.progress.no_silent_stall",
+      "family": "lifecycle",
+      "applies_to": "pipeline",
+      "claim": "A configuration that cannot make progress fails at startup rather than running quietly. flush_interval_seconds of 0 removes the ticker entirely, so a batch a low-traffic topic never fills waits forever. Unenforced and untracked: the engine permits the configuration today.",
+      "verified_by": "harness",
+      "class": "liveness",
+      "requires": [],
+      "enforced": false,
+      "integrations": {
+        "pipeline.stateful": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
+    },
+    {
       "id": "lifecycle.drain.bounded",
       "family": "lifecycle",
       "applies_to": "pipeline",
       "claim": "The drain finishes or fails inside its deadline.",
       "verified_by": "harness",
+      "class": "liveness",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -3448,6 +3560,7 @@
       "applies_to": "sink",
       "claim": "Close twice is safe.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -3543,6 +3656,7 @@
       "applies_to": "pipeline",
       "claim": "A batch whose query exceeds the timeout fails the batch, not the process.",
       "verified_by": "harness",
+      "class": "liveness",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -3583,6 +3697,7 @@
       "applies_to": "pipeline",
       "claim": "A DLQ record carries the payload, offset, partition and reason.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {
@@ -3623,6 +3738,7 @@
       "applies_to": "pipeline",
       "claim": "N bad records in a window fail the pipeline rather than discarding forever.",
       "verified_by": "harness",
+      "class": "safety",
       "requires": [],
       "enforced": false,
       "integrations": {

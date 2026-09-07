@@ -36,12 +36,12 @@ names every one of them.
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
 | `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 8 |
-| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 16 |
+| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 17 |
 | `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ | 22 |
 | `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ | 6 |
 | `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ | 2 |
 | `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ | 8 |
-| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 20 |
+| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 21 |
 | `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — | 16 |
 | `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | 1 |
 | `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ | 5 |
@@ -54,7 +54,7 @@ names every one of them.
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 26 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 27 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 12 |
 
 **34 features declared. 34 have at least one passing test attributed at every level they require, so 0 gap(s).**
@@ -65,7 +65,14 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**29 invariants declared. Of 130 (invariant, integration) cells: 22 proven, 88 missing, 0 skipped, 0 failing, 20 exempt. 0 gap(s), because no invariant requires a level yet.**
+**31 invariants declared: 27 safety and 4 liveness. Of 134 (invariant, integration) cells: 24 proven, 90 missing, 0 skipped, 0 failing, 20 exempt. 0 gap(s).**
+
+Safety says nothing bad happens. Liveness says something good
+eventually does, and the two are not interchangeable: a sink that
+never flushes satisfies every safety invariant on this page.
+`keeps_batch` holds if you never flush, and `commit.after_flush`
+holds if you never commit. Only a liveness claim says the pipeline
+does anything at all.
 
 ## Why invariants, and not the test count
 
@@ -117,7 +124,7 @@ shipped image. **exempt** carries its reason in the JSON, and
 **missing** means no evidence. Nothing here fails the build until an
 invariant's `requires` is filled in, and none is yet.
 
-## Invariants: resilience
+## Safety invariants: resilience
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -132,7 +139,7 @@ invariant's `requires` is filled in, and none is yet.
 | `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
 | `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
 
-## Invariants: checkpoint
+## Safety invariants: checkpoint
 
 | Invariant | Claim | `source.kafka` | `source.websocket` | `source.webhook` |
 | --- | --- | --- | --- | --- |
@@ -154,7 +161,7 @@ drains. An invariant holds only if it holds on all four.
 | `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u | ✅ u |
 | `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
 
-## Invariants: types
+## Safety invariants: types
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -165,7 +172,7 @@ drains. An invariant holds only if it holds on all four.
 | `type.string.fidelity` | Unicode, escapes and the empty string round-trip byte for byte. *(violated once: #149)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `type.undeclared.fails_loud` | An Arrow type absent from the table fails the batch with a coded error. Never coerced silently. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 
-## Invariants: lifecycle
+## Safety invariants: lifecycle
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -181,10 +188,8 @@ drains. An invariant holds only if it holds on all four.
 | Invariant | Claim | `pipeline.stateful` | `pipeline.stateless` |
 | --- | --- | --- | --- |
 | `lifecycle.drain.on_cancel` | Cancel or SIGTERM flushes the buffered batch, then commits. | ✅ u | ✅ u |
-| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ missing | ❌ missing |
-| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing | ❌ missing |
 
-## Invariants: errors
+## Safety invariants: errors
 
 These errors invariants are properties of the consume loop
 rather than of anything a config file names. The columns are
@@ -197,4 +202,20 @@ drains. An invariant holds only if it holds on all four.
 | --- | --- | --- | --- |
 | `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ missing | ❌ missing |
 | `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ missing | ❌ missing |
+
+## Liveness invariants: lifecycle
+
+These lifecycle invariants are properties of the consume loop
+rather than of anything a config file names. The columns are
+its configurations, and `internal/conformance` runs each one
+through every path that reaches a batch: the batch filling, the
+flush interval elapsing, the source closing, and a cancel that
+drains. An invariant holds only if it holds on all four.
+
+| Invariant | Claim | `pipeline.stateful` | `pipeline.stateless` |
+| --- | --- | --- | --- |
+| `pipeline.flush.eventually` | A batch that never reaches batchSize still reaches the sink, within the flush interval. | ✅ u | ✅ u |
+| `pipeline.progress.no_silent_stall` | A configuration that cannot make progress fails at startup rather than running quietly. flush_interval_seconds of 0 removes the ticker entirely, so a batch a low-traffic topic never fills waits forever. Unenforced and untracked: the engine permits the configuration today. | ❌ missing | ❌ missing |
+| `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ missing | ❌ missing |
+| `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing | ❌ missing |
 
