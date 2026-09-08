@@ -146,16 +146,11 @@
           "status": "covered",
           "tests": [
             "TestIntegrationSinkKafka_Conformance",
-            "TestSinkKafka_ARecordTimeoutIsUnreachable",
-            "TestSinkKafka_FlushCodesAnUnreachableBroker",
+            "TestSinkKafka_BatchIsTheLastWrite",
             "TestSinkKafka_FlushHonoursItsContext",
             "TestSinkKafka_FlushReportsProduceErrors",
-            "TestSinkKafka_FlushReturnsWithoutADeadline",
-            "TestSinkKafka_HasADeliveryTimeoutByDefault",
-            "TestSinkKafka_ImplementsProber",
             "TestSinkKafka_NewRejectsAnUnknownSecurityProtocol",
             "TestSinkKafka_NewRequiresATopic",
-            "TestSinkKafka_ProbeFailsAgainstAnUnreachableBroker",
             "TestSinkKafka_WriteTableBuffersWhateverItsContextSays"
           ],
           "skipped": [
@@ -166,14 +161,8 @@
           "status": "covered",
           "tests": [
             "TestIntegrationSinkKafka_Conformance",
-            "TestIntegrationSinkKafka_Conformance/lifecycle.close.idempotent",
             "TestIntegrationSinkKafka_Conformance/sink.buffer.reports_depth",
-            "TestIntegrationSinkKafka_Conformance/sink.flush.empty_is_noop",
-            "TestIntegrationSinkKafka_Conformance/sink.flush.honours_context",
             "TestIntegrationSinkKafka_Conformance/sink.flush.keeps_batch",
-            "TestIntegrationSinkKafka_Conformance/sink.flush.no_hollow_success",
-            "TestIntegrationSinkKafka_Conformance/sink.flush.preserves_order",
-            "TestIntegrationSinkKafka_Conformance/sink.probe.fails_start",
             "TestIntegrationSinkKafka_Conformance/sink.write.buffers_only"
           ]
         },
@@ -200,6 +189,13 @@
           "status": "covered",
           "tests": [
             "TestIntegrationSinkClickhouse_Conformance",
+            "TestIntegrationSinkClickhouse_Types",
+            "TestSinkClickhouse_ANullListOfAnUnsupportedTypeFailsWithACode",
+            "TestSinkClickhouse_ANullOfASupportedTypeIsStillNil",
+            "TestSinkClickhouse_ANullOfAnUnsupportedTypeStillFails",
+            "TestSinkClickhouse_AnEmptyListOfASupportedTypeIsStillEmpty",
+            "TestSinkClickhouse_AnEmptyListOfAnUnsupportedTypeFailsWithACode",
+            "TestSinkClickhouse_BatchIsNil",
             "TestSinkClickhouse_EmptyTableIsNoop",
             "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
             "TestSinkClickhouse_InsertsArrays",
@@ -213,10 +209,13 @@
             "TestSinkClickhouse_OptionsPythonDSN",
             "TestSinkClickhouse_OptionsSecure",
             "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone",
-            "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer"
+            "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer",
+            "TestSinkClickhouse_UnsupportedArrowTypeCarriesACode"
           ],
           "skipped": [
             "TestIntegrationSinkClickhouse_Conformance",
+            "TestIntegrationSinkClickhouse_Types",
+            "TestSinkClickhouse_BatchIsNil",
             "TestSinkClickhouse_EmptyTableIsNoop",
             "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
             "TestSinkClickhouse_InsertsArrays",
@@ -231,15 +230,15 @@
           "status": "covered",
           "tests": [
             "TestIntegrationSinkClickhouse_Conformance",
-            "TestIntegrationSinkClickhouse_Conformance/lifecycle.close.idempotent",
             "TestIntegrationSinkClickhouse_Conformance/sink.buffer.reports_depth",
-            "TestIntegrationSinkClickhouse_Conformance/sink.flush.empty_is_noop",
-            "TestIntegrationSinkClickhouse_Conformance/sink.flush.honours_context",
             "TestIntegrationSinkClickhouse_Conformance/sink.flush.keeps_batch",
-            "TestIntegrationSinkClickhouse_Conformance/sink.flush.no_hollow_success",
-            "TestIntegrationSinkClickhouse_Conformance/sink.flush.preserves_order",
-            "TestIntegrationSinkClickhouse_Conformance/sink.probe.fails_start",
-            "TestIntegrationSinkClickhouse_Conformance/sink.write.buffers_only"
+            "TestIntegrationSinkClickhouse_Conformance/sink.write.buffers_only",
+            "TestIntegrationSinkClickhouse_Types",
+            "TestIntegrationSinkClickhouse_Types/type.nested",
+            "TestIntegrationSinkClickhouse_Types/type.null",
+            "TestIntegrationSinkClickhouse_Types/type.roundtrip",
+            "TestIntegrationSinkClickhouse_Types/type.string.fidelity",
+            "TestIntegrationSinkClickhouse_Types/type.undeclared.fails_loud"
           ]
         },
         "release": {
@@ -263,34 +262,20 @@
           "tests": [
             "TestSinkIceberg_AddsPyicebergsMissingTypeColumn",
             "TestSinkIceberg_AppendsEveryRow",
+            "TestSinkIceberg_BatchIsTheLastWrite",
             "TestSinkIceberg_CatalogPropertiesEnvOverridesFile",
             "TestSinkIceberg_CatalogPropertiesFromPyicebergFile",
             "TestSinkIceberg_CatalogPropertiesRejectAnUnsupportedScheme",
             "TestSinkIceberg_CatalogPropertiesRequireAURI",
             "TestSinkIceberg_Conformance",
-            "TestSinkIceberg_Conformance/lifecycle.close.idempotent",
             "TestSinkIceberg_Conformance/sink.buffer.reports_depth",
-            "TestSinkIceberg_Conformance/sink.flush.empty_is_noop",
-            "TestSinkIceberg_Conformance/sink.flush.honours_context",
             "TestSinkIceberg_Conformance/sink.flush.keeps_batch",
-            "TestSinkIceberg_Conformance/sink.flush.no_hollow_success",
-            "TestSinkIceberg_Conformance/sink.flush.preserves_order",
-            "TestSinkIceberg_Conformance/sink.probe.fails_start",
             "TestSinkIceberg_Conformance/sink.write.buffers_only",
             "TestSinkIceberg_EmptyBatchAppendsNothing",
-            "TestSinkIceberg_FlushCannotOutliveItsContext",
             "TestSinkIceberg_FlushWithNothingPendingAppendsNothing",
-            "TestSinkIceberg_ImplementsNoCloser",
-            "TestSinkIceberg_ImplementsNoProber",
             "TestSinkIceberg_MissingTableFailsTheStart",
             "TestSinkIceberg_NewRequiresCatalogAndTable",
             "TestSinkIceberg_TypeColumnSkipsAnEmptyCatalog"
-          ],
-          "skipped": [
-            "TestSinkIceberg_Conformance/lifecycle.close.idempotent",
-            "TestSinkIceberg_Conformance/sink.flush.honours_context",
-            "TestSinkIceberg_Conformance/sink.flush.preserves_order",
-            "TestSinkIceberg_Conformance/sink.probe.fails_start"
           ]
         },
         "integration": {
@@ -336,32 +321,20 @@
           "status": "covered",
           "tests": [
             "TestSinkSqlcommand_AccumulatesUntilFlush",
+            "TestSinkSqlcommand_BatchIsTheLastWrite",
             "TestSinkSqlcommand_Conformance",
-            "TestSinkSqlcommand_Conformance/lifecycle.close.idempotent",
             "TestSinkSqlcommand_Conformance/sink.buffer.reports_depth",
-            "TestSinkSqlcommand_Conformance/sink.flush.empty_is_noop",
-            "TestSinkSqlcommand_Conformance/sink.flush.honours_context",
             "TestSinkSqlcommand_Conformance/sink.flush.keeps_batch",
-            "TestSinkSqlcommand_Conformance/sink.flush.no_hollow_success",
-            "TestSinkSqlcommand_Conformance/sink.flush.preserves_order",
-            "TestSinkSqlcommand_Conformance/sink.probe.fails_start",
             "TestSinkSqlcommand_Conformance/sink.write.buffers_only",
             "TestSinkSqlcommand_EachFlushReplacesTheBatchTable",
             "TestSinkSqlcommand_EmptyBatchStillRunsTheSQL",
-            "TestSinkSqlcommand_FlushCannotOutliveItsContext",
             "TestSinkSqlcommand_FlushWithNothingPendingIsANoop",
-            "TestSinkSqlcommand_ImplementsNoCloser",
             "TestSinkSqlcommand_ImplementsNoProber",
             "TestSinkSqlcommand_NewRequiresSQL",
             "TestSinkSqlcommand_RejectsAnUnknownSubstitution",
             "TestSinkSqlcommand_ReportsASQLError",
             "TestSinkSqlcommand_RunsSQLAgainstTheBatch",
             "TestSinkSqlcommand_SubstitutesUUID4"
-          ],
-          "skipped": [
-            "TestSinkSqlcommand_Conformance/lifecycle.close.idempotent",
-            "TestSinkSqlcommand_Conformance/sink.flush.honours_context",
-            "TestSinkSqlcommand_Conformance/sink.probe.fails_start"
           ]
         },
         "integration": {
@@ -384,25 +357,12 @@
           "status": "covered",
           "tests": [
             "TestSinkConsole_Conformance",
-            "TestSinkConsole_Conformance/lifecycle.close.idempotent",
             "TestSinkConsole_Conformance/sink.buffer.reports_depth",
-            "TestSinkConsole_Conformance/sink.flush.empty_is_noop",
-            "TestSinkConsole_Conformance/sink.flush.honours_context",
             "TestSinkConsole_Conformance/sink.flush.keeps_batch",
-            "TestSinkConsole_Conformance/sink.flush.no_hollow_success",
-            "TestSinkConsole_Conformance/sink.flush.preserves_order",
-            "TestSinkConsole_Conformance/sink.probe.fails_start",
             "TestSinkConsole_Conformance/sink.write.buffers_only",
-            "TestSinkConsole_FlushCannotOutliveItsContext",
-            "TestSinkConsole_ImplementsNoCloser",
             "TestSinkConsole_ImplementsNoProber",
             "TestSinkConsole_RowsAsJSONEmptyTable",
             "TestSinkConsole_RowsAsJSONOneObjectPerRow"
-          ],
-          "skipped": [
-            "TestSinkConsole_Conformance/lifecycle.close.idempotent",
-            "TestSinkConsole_Conformance/sink.flush.honours_context",
-            "TestSinkConsole_Conformance/sink.probe.fails_start"
           ]
         },
         "integration": {
@@ -430,7 +390,6 @@
           "status": "covered",
           "tests": [
             "TestSinkNoop_DeliversNothingAndSaysSo",
-            "TestSinkNoop_ImplementsNoCloser",
             "TestSinkNoop_ImplementsNoProber"
           ]
         },
@@ -1387,11 +1346,17 @@
         "unit": {
           "status": "covered",
           "tests": [
-            "TestToolingConformanceDelivered_AllowsARepeat",
-            "TestToolingConformanceDelivered_CatchesALostRow",
-            "TestToolingConformanceDelivered_CatchesAReorder",
-            "TestToolingConformanceDelivered_CatchesAnEmptyDestination",
+            "TestToolingConformanceCanonicalKey_CollapsesTheDecimalFamily",
+            "TestToolingConformanceCanonicalKey_IgnoresChildNamesAndNullability",
+            "TestToolingConformanceCanonicalKey_NamesEachConstructor",
+            "TestToolingConformanceCanonicalKey_WildcardsTheTimestampZone",
             "TestToolingConformanceDescribe_NamesTheRowsItFound",
+            "TestToolingConformanceLattice_AUnionNullLivesInItsChild",
+            "TestToolingConformanceLattice_BuildsAListWithANullElement",
+            "TestToolingConformanceLattice_EveryDeclaredKeyHasAValue",
+            "TestToolingConformanceLattice_EveryKeyBuildsANull",
+            "TestToolingConformanceLattice_EveryValueCarriesItsOwnKey",
+            "TestToolingConformanceLattice_RejectsANullElementOnANonList",
             "TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants",
             "TestToolingConformancePipelines_CatchesACommitBeforeTheFlush",
             "TestToolingConformancePipelines_JudgeOneLivenessClaim",
@@ -1399,47 +1364,46 @@
             "TestToolingConformancePipelines_RunsEveryTrigger",
             "TestToolingConformanceSinks_ABreakThatDoesNotBreakFailsTheSubjectNotTheSink",
             "TestToolingConformanceSinks_ACorrectSinkPasses",
-            "TestToolingConformanceSinks_ACorrectSinkPasses/lifecycle.close.idempotent",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.buffer.reports_depth",
-            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.empty_is_noop",
-            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.honours_context",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.keeps_batch",
-            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.no_hollow_success",
-            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.preserves_order",
-            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.probe.fails_start",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.write.buffers_only",
             "TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly",
-            "TestToolingConformanceSinks_ADuplicatingSinkPasses",
-            "TestToolingConformanceSinks_AHollowSuccessIsCaught",
-            "TestToolingConformanceSinks_ALosingSinkIsCaught",
-            "TestToolingConformanceSinks_AProbeThatCannotFailIsCaught",
-            "TestToolingConformanceSinks_AReorderingSinkIsCaught",
-            "TestToolingConformanceSinks_ASinkThatCannotCloseTwiceIsCaught",
             "TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught",
+            "TestToolingConformanceSinks_ASinkThatDeliversTwiceIsCaught",
             "TestToolingConformanceSinks_ASinkThatDropsItsBatchIsCaught",
-            "TestToolingConformanceSinks_ASinkThatIgnoresItsContextIsCaught",
             "TestToolingConformanceSinks_ASinkThatMisreportsItsDepthIsCaught",
-            "TestToolingConformanceSinks_ASinkThatNeverDrainsIsCaught",
             "TestToolingConformanceSinks_ASinkThatReportsNoDepthIsSkipped",
             "TestToolingConformanceSinks_ASinkThatWritesThroughIsCaught",
-            "TestToolingConformanceSinks_ASinkWithNoProbeOrCloseIsSkipped",
             "TestToolingConformanceSinks_ASkippedVerdictEmitsNoMarker",
-            "TestToolingConformanceSinks_ASlowProbeIsCaught",
             "TestToolingConformanceSinks_ASubjectMissingReadBackIsRejected",
             "TestToolingConformanceSinks_ASubjectWithBreakAndNoHealIsRejected",
             "TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped",
             "TestToolingConformanceSinks_ASubjectWithoutAnIntegrationIdIsRejected",
             "TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject",
-            "TestToolingConformanceSinks_AnEagerEmptyFlushIsCaught",
-            "TestToolingConformanceSinks_AnUnorderedReadBackSkipsOrder",
             "TestToolingConformanceSinks_JudgesOnlyDeclaredInvariants",
             "TestToolingConformanceSinks_TheDoublesIntegrationIsNotAShippedSink",
-            "TestToolingConformanceSinks_TheDoublesRunUnderATestOnlyIntegration"
-          ],
-          "skipped": [
-            "TestToolingConformanceSinks_ACorrectSinkPasses/lifecycle.close.idempotent",
-            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.honours_context",
-            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.probe.fails_start"
+            "TestToolingConformanceSinks_TheDoublesRunUnderATestOnlyIntegration",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.nested",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.null",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.roundtrip",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.string.fidelity",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.undeclared.fails_loud",
+            "TestToolingConformanceTypes_AFailureWithTheWrongCodeIsCaught",
+            "TestToolingConformanceTypes_AMangledStringIsCaught",
+            "TestToolingConformanceTypes_ANullDeclaredCoercedThatSurvivesIsCaught",
+            "TestToolingConformanceTypes_ANullElementAgainstTheWrongRuleIsCaught",
+            "TestToolingConformanceTypes_ANullReadBackAsAValueIsCaught",
+            "TestToolingConformanceTypes_ANullWithNoDeclaredOutcomeIsCaught",
+            "TestToolingConformanceTypes_ASubjectMissingPrepareIsRejected",
+            "TestToolingConformanceTypes_ASubjectWithoutAnIntegrationIdIsRejected",
+            "TestToolingConformanceTypes_ATableWithNoContainerRowsIsNotNestedProof",
+            "TestToolingConformanceTypes_ATableWithNoStringRowIsNotFidelityProof",
+            "TestToolingConformanceTypes_ATypeDeclaredExactThatFailsIsCaught",
+            "TestToolingConformanceTypes_ATypeDeclaredUnsupportedThatWorksIsCaught",
+            "TestToolingConformanceTypes_AnEmptyStringReadBackAsNullIsCaught",
+            "TestToolingConformanceTypes_AnUndeclaredTypeThatSucceedsIsCaught",
+            "TestToolingConformanceTypes_AnUnsupportedElementInsideAListIsCaught"
           ]
         },
         "integration": {
@@ -1465,6 +1429,8 @@
             "TestToolingCoverageHandlerRegistry_MatchesTheConstructorSwitch",
             "TestToolingCoverageInvariant_DoesNotLookLikeAFeatureMarker",
             "TestToolingCoverageInvariant_EmitsTheStructuredMarker",
+            "TestToolingCoverageRegistry_ClickhouseDeclaresEveryLatticeKey",
+            "TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed",
             "TestToolingCoverageRegistry_ListsHandlers",
             "TestToolingCoverageRegistry_ListsSinksByBareName",
             "TestToolingCoverageRegistry_ListsSources",
@@ -1604,7 +1570,7 @@
       "id": "sink.flush.keeps_batch",
       "family": "resilience",
       "applies_to": "sink",
-      "claim": "A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. Delivery is at-least-once, so a row that arrives twice holds the claim and a row that never arrives breaks it.",
+      "claim": "A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them.",
       "verified_by": "harness",
       "class": "safety",
       "requires": [],
@@ -1728,10 +1694,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkKafka_Conformance/sink.flush.no_hollow_success"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -1744,10 +1708,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkClickhouse_Conformance/sink.flush.no_hollow_success"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -1756,10 +1718,8 @@
         },
         "sink.iceberg": {
           "unit": {
-            "status": "covered",
-            "tests": [
-              "TestSinkIceberg_Conformance/sink.flush.no_hollow_success"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "integration": {
             "status": "missing",
@@ -1772,10 +1732,8 @@
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "covered",
-            "tests": [
-              "TestSinkSqlcommand_Conformance/sink.flush.no_hollow_success"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "integration": {
             "status": "missing",
@@ -1788,10 +1746,8 @@
         },
         "sink.console": {
           "unit": {
-            "status": "covered",
-            "tests": [
-              "TestSinkConsole_Conformance/sink.flush.no_hollow_success"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "integration": {
             "status": "missing",
@@ -1828,7 +1784,7 @@
       "id": "sink.flush.preserves_order",
       "family": "resilience",
       "applies_to": "sink",
-      "claim": "Rows reach the destination in WriteTable order, across a retry. Repeats are permitted, because delivery is at-least-once; a row that overtakes one written before it is not.",
+      "claim": "Rows reach the destination in WriteTable order, across a retry.",
       "verified_by": "harness",
       "class": "safety",
       "requires": [],
@@ -1840,10 +1796,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkKafka_Conformance/sink.flush.preserves_order"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -1856,10 +1810,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkClickhouse_Conformance/sink.flush.preserves_order"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -1882,10 +1834,8 @@
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "covered",
-            "tests": [
-              "TestSinkSqlcommand_Conformance/sink.flush.preserves_order"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "integration": {
             "status": "missing",
@@ -1898,10 +1848,8 @@
         },
         "sink.console": {
           "unit": {
-            "status": "covered",
-            "tests": [
-              "TestSinkConsole_Conformance/sink.flush.preserves_order"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "integration": {
             "status": "missing",
@@ -1947,10 +1895,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkKafka_Conformance/sink.flush.honours_context"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -1963,10 +1909,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkClickhouse_Conformance/sink.flush.honours_context"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -1975,53 +1919,44 @@
         },
         "sink.iceberg": {
           "unit": {
-            "status": "exempt",
-            "reason": "appends through the catalog and the local filesystem, which fail immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkIceberg_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "appends through the catalog and the local filesystem, which fail immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkIceberg_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "appends through the catalog and the local filesystem, which fail immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkIceberg_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "exempt",
-            "reason": "runs the user's SQL on the pipeline's own DuckDB connection, which returns or fails immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkSqlcommand_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "runs the user's SQL on the pipeline's own DuckDB connection, which returns or fails immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkSqlcommand_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "runs the user's SQL on the pipeline's own DuckDB connection, which returns or fails immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkSqlcommand_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.console": {
           "unit": {
-            "status": "exempt",
-            "reason": "writes to an io.Writer, which returns or fails immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkConsole_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "writes to an io.Writer, which returns or fails immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkConsole_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "writes to an io.Writer, which returns or fails immediately; no flush can still be running when a deadline arrives\n",
-            "proven_by": "TestSinkConsole_FlushCannotOutliveItsContext"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.noop": {
@@ -2062,10 +1997,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkKafka_Conformance/sink.flush.empty_is_noop"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -2078,10 +2011,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkClickhouse_Conformance/sink.flush.empty_is_noop"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -2090,10 +2021,8 @@
         },
         "sink.iceberg": {
           "unit": {
-            "status": "covered",
-            "tests": [
-              "TestSinkIceberg_Conformance/sink.flush.empty_is_noop"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "integration": {
             "status": "missing",
@@ -2106,10 +2035,8 @@
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "covered",
-            "tests": [
-              "TestSinkSqlcommand_Conformance/sink.flush.empty_is_noop"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "integration": {
             "status": "missing",
@@ -2122,10 +2049,8 @@
         },
         "sink.console": {
           "unit": {
-            "status": "covered",
-            "tests": [
-              "TestSinkConsole_Conformance/sink.flush.empty_is_noop"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "integration": {
             "status": "missing",
@@ -2138,19 +2063,16 @@
         },
         "sink.noop": {
           "unit": {
-            "status": "exempt",
-            "reason": "has no destination; discarding every row is the contract",
-            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "has no destination; discarding every row is the contract",
-            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "has no destination; discarding every row is the contract",
-            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
+            "status": "missing",
+            "tests": []
           }
         }
       }
@@ -2259,6 +2181,105 @@
           "release": {
             "status": "exempt",
             "reason": "has no destination; it holds nothing, so there is no depth to report",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
+          }
+        }
+      }
+    },
+    {
+      "id": "sink.batch.reports_buffer",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "Batch returns what is buffered, and nil when nothing is.",
+      "verified_by": "harness",
+      "class": "safety",
+      "requires": [],
+      "enforced": false,
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "exempt",
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
+          },
+          "integration": {
+            "status": "exempt",
+            "reason": "has no destination; discarding every row is the contract",
+            "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
+          },
+          "release": {
+            "status": "exempt",
+            "reason": "has no destination; discarding every row is the contract",
             "proven_by": "TestSinkNoop_DeliversNothingAndSaysSo"
           }
         }
@@ -2379,10 +2400,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkKafka_Conformance/sink.probe.fails_start"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -2395,10 +2414,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkClickhouse_Conformance/sink.probe.fails_start"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -2407,19 +2424,16 @@
         },
         "sink.iceberg": {
           "unit": {
-            "status": "exempt",
-            "reason": "implements no Prober, so there is no start-time check to fail",
-            "proven_by": "TestSinkIceberg_ImplementsNoProber"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "implements no Prober, so there is no start-time check to fail",
-            "proven_by": "TestSinkIceberg_ImplementsNoProber"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "implements no Prober, so there is no start-time check to fail",
-            "proven_by": "TestSinkIceberg_ImplementsNoProber"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.sqlcommand": {
@@ -2934,8 +2948,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.roundtrip"
+            ]
           },
           "release": {
             "status": "missing",
@@ -3035,8 +3051,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.null"
+            ]
           },
           "release": {
             "status": "missing",
@@ -3230,8 +3248,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.nested"
+            ]
           },
           "release": {
             "status": "missing",
@@ -3326,8 +3346,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.string.fidelity"
+            ]
           },
           "release": {
             "status": "missing",
@@ -3425,8 +3447,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.undeclared.fails_loud"
+            ]
           },
           "release": {
             "status": "missing",
@@ -3680,10 +3704,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkKafka_Conformance/lifecycle.close.idempotent"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -3696,10 +3718,8 @@
             "tests": []
           },
           "integration": {
-            "status": "covered",
-            "tests": [
-              "TestIntegrationSinkClickhouse_Conformance/lifecycle.close.idempotent"
-            ]
+            "status": "missing",
+            "tests": []
           },
           "release": {
             "status": "missing",
@@ -3708,70 +3728,58 @@
         },
         "sink.iceberg": {
           "unit": {
-            "status": "exempt",
-            "reason": "implements no Close; it holds no client to release",
-            "proven_by": "TestSinkIceberg_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "implements no Close; it holds no client to release",
-            "proven_by": "TestSinkIceberg_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "implements no Close; it holds no client to release",
-            "proven_by": "TestSinkIceberg_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.sqlcommand": {
           "unit": {
-            "status": "exempt",
-            "reason": "implements no Close; the DuckDB connection belongs to the pipeline and this sink must not close it\n",
-            "proven_by": "TestSinkSqlcommand_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "implements no Close; the DuckDB connection belongs to the pipeline and this sink must not close it\n",
-            "proven_by": "TestSinkSqlcommand_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "implements no Close; the DuckDB connection belongs to the pipeline and this sink must not close it\n",
-            "proven_by": "TestSinkSqlcommand_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.console": {
           "unit": {
-            "status": "exempt",
-            "reason": "implements no Close; the io.Writer belongs to its caller and this sink must not close it\n",
-            "proven_by": "TestSinkConsole_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "implements no Close; the io.Writer belongs to its caller and this sink must not close it\n",
-            "proven_by": "TestSinkConsole_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "implements no Close; the io.Writer belongs to its caller and this sink must not close it\n",
-            "proven_by": "TestSinkConsole_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           }
         },
         "sink.noop": {
           "unit": {
-            "status": "exempt",
-            "reason": "implements no Close; it holds nothing to release",
-            "proven_by": "TestSinkNoop_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           },
           "integration": {
-            "status": "exempt",
-            "reason": "implements no Close; it holds nothing to release",
-            "proven_by": "TestSinkNoop_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           },
           "release": {
-            "status": "exempt",
-            "reason": "implements no Close; it holds nothing to release",
-            "proven_by": "TestSinkNoop_ImplementsNoCloser"
+            "status": "missing",
+            "tests": []
           }
         }
       }
