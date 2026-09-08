@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/nikolalohinski/gonja/v2"
@@ -74,6 +75,20 @@ func RenderTemplateString(src []byte, overrides map[string]string) ([]byte, erro
 	}
 
 	return out, nil
+}
+
+// SettingsVarNames are the variables the engine injects into every render.
+//
+// Validation needs them separated from the rest: nobody supplied them, so
+// reporting them as supplied-but-never-read would put two lines of noise on
+// every config and bury the one name that matters.
+func SettingsVarNames() []string {
+	names := make([]string, 0, 2)
+	for k := range settingsVars() {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // TemplateVars returns the context a render runs against, so validation can

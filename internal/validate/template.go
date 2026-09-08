@@ -6,6 +6,7 @@ import (
 
 	"github.com/nikolalohinski/gonja/v2"
 	"github.com/nikolalohinski/gonja/v2/nodes"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/errs"
 )
 
@@ -88,8 +89,12 @@ func checkTemplate(src string, provided map[string]string, rep *Report) {
 
 	// Only a complete walk can prove a variable goes unread.
 	if complete {
+		injected := map[string]bool{}
+		for _, name := range config.SettingsVarNames() {
+			injected[name] = true
+		}
 		for name := range provided {
-			if !referenced[name] {
+			if !referenced[name] && !injected[name] {
 				vars.Unused = append(vars.Unused, name)
 			}
 		}
