@@ -21,6 +21,7 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -142,6 +143,8 @@ const (
 	keepsBatch   = "sink.flush.keeps_batch"
 	reportsDepth = "sink.buffer.reports_depth"
 	emptyIsNoop  = "sink.flush.empty_is_noop"
+
+	honoursContext = "sink.flush.honours_context"
 )
 
 // sinkVerdicts runs one sequence and judges four invariants from it.
@@ -184,6 +187,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			{invariant: buffersOnly, skipped: skip},
 			{invariant: keepsBatch, skipped: skip},
 			{invariant: reportsDepth, skipped: skip},
+			{invariant: honoursContext, skipped: skip},
 		}
 	}
 
@@ -250,9 +254,76 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	}
 
 	s.Break(t)
-	broken, cancel := context.WithTimeout(ctx, flushTimeout)
-	err := sink.Flush(broken)
+
+	// Bounded well inside flushTimeout, so a sink that ignores its deadline is
+	// caught by the gap between the two rather than by hanging the suite.
+	deadline := flushTimeout / 4
+	broken, cancel := context.WithTimeout(ctx, deadline)
+
+	// Run off this goroutine, so a sink that ignores its context fails this
+	// verdict rather than hanging the suite. Judging it after the call returned
+	// would mean never judging it at all.
+	type flushOutcome struct {
+		err     error
+		expired bool
+	}
+	done := make(chan flushOutcome, 1)
+	go func() {
+		e := sink.Flush(broken)
+		// Read before cancel below, which reports Canceled whatever happened.
+		done <- flushOutcome{err: e, expired: broken.Err() != nil}
+	}()
+
+	// Twice the deadline the sink was given. A sink that honours it returns
+	// well inside this; one that ignores it does not return at all.
+	grace := 2 * deadline
+
+	honours := verdict{invariant: honoursContext}
+	var (
+		err     error
+		expired bool
+		hung    bool
+	)
+	select {
+	case out := <-done:
+		err, expired = out.err, out.expired
+	case <-time.After(grace):
+		hung = true
+	}
 	cancel()
+
+	if hung {
+		honours.failure = "Flush did not return within " + grace.String() +
+			" against a context that expired after " + deadline.String() +
+			"; the pipeline's drain reaches the sink only through that context, " +
+			"so a sink that ignores it cannot be stopped"
+		// The flush is still running, so nothing below can be judged against
+		// this sink without racing it.
+		return []verdict{empty, buffers, {
+			invariant: keepsBatch,
+			skipped:   "Flush never returned; honours_context names the defect",
+		}, depth, honours}
+	}
+
+	switch {
+	case err == nil:
+		// Left to keeps_batch below, which explains why a flush into a broken
+		// destination succeeding is a delivery defect rather than a timing one.
+		honours.skipped = "Flush returned nil against a broken destination"
+	case !expired:
+		// The sink failed on its own before the deadline arrived, so no context
+		// ended and there is nothing to honour. Only a fault that hangs
+		// exercises this claim, which is a property of the subject's Break: a
+		// full disk and a dropped table refuse immediately, a partition does
+		// not.
+		honours.skipped = s.Integration + " fails a flush before its context " +
+			"expires, so no deadline was reached to honour; exempt it in " +
+			"integrations.yml or give it a fault that hangs"
+	case !errors.Is(err, context.DeadlineExceeded):
+		honours.failure = "Flush returned " + err.Error() +
+			", which does not wrap context.DeadlineExceeded; a caller cannot " +
+			"tell a sink that gave up on time from one that failed outright"
+	}
 
 	if err == nil {
 		// A flush that succeeds into a broken destination means one of two
@@ -275,7 +346,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			failure: "Flush returned nil while the destination was broken, " +
 				"because the rows had already been delivered by WriteTable; " +
 				"there was nothing left to keep",
-		}, depth}
+		}, depth, honours}
 	}
 
 	if reports && depth.failure == "" {
@@ -299,7 +370,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			keeps.failure = "Flush after Heal failed with " + err.Error() +
 				"; the retry did not deliver what the failed flush kept"
 		}
-		return []verdict{empty, buffers, keeps, depth}
+		return []verdict{empty, buffers, keeps, depth, honours}
 	}
 
 	if reports && depth.failure == "" {
@@ -312,11 +383,28 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	got := s.ReadBack(t)
 	if keeps.failure == "" {
 		want := []Row{{"id": int64(1)}, {"id": int64(2)}}
-		if bad := deliveredInOrder(got, want); bad != "" {
+		if bad := rowsArrived(got, want); bad != "" {
 			keeps.failure = "after a failed Flush and a successful retry, " + bad
 		}
 	}
-	return []verdict{empty, buffers, keeps, depth}
+	return []verdict{empty, buffers, keeps, depth, honours}
+}
+
+// rowsArrived reports the first row of want that never reached the
+// destination, if any.
+//
+// Loss is what keeps_batch claims: a row the sink could not deliver stays
+// buffered and the next Flush re-attempts it. Whether the rows arrived in
+// order is preserves_order's separate claim, and judging both here would blame
+// keeps_batch for an ordering defect and send the reader to the wrong file.
+func rowsArrived(got, want []Row) string {
+	for _, w := range want {
+		if indexOf(got, w) < 0 {
+			return "id=" + format(w["id"]) + " never reached the destination; " +
+				"want " + describe(want) + ", got " + describe(got)
+		}
+	}
+	return ""
 }
 
 // deliveredInOrder judges a read-back against at-least-once delivery.

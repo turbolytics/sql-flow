@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -88,6 +89,15 @@ func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&staysDownSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
+}
+
+// A sink that ignores its context cannot be stopped. The pipeline's drain and
+// every other caller reach it only through that context.
+func TestToolingConformanceSinks_ASinkThatIgnoresItsContextIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&deafSink{memSink: newMemSink()}))[honoursContext]
+
+	assert.True(t, strings.Contains(v.failure, "did not return"))
 }
 
 // A flush with nothing buffered must reach nothing. The pipeline flushes on an
@@ -455,6 +465,22 @@ func (d *duplicatingSink) Flush(context.Context) error {
 	return nil
 }
 
+// deafSink ignores the context it is given: it sleeps past any deadline before
+// reporting the failure.
+//
+// Every caller reaches the sink through that context. A flush interval that
+// elapsed, a cancelled run and a SIGTERM have no other way to stop a flush, so
+// a sink that ignores it cannot be stopped at all.
+type deafSink struct{ *memSink }
+
+func (d *deafSink) Flush(ctx context.Context) error {
+	err := d.memSink.Flush(ctx)
+	if err != nil {
+		time.Sleep(2 * flushTimeout)
+	}
+	return err
+}
+
 // eagerFlushSink writes even when nothing is buffered. The pipeline flushes on
 // an interval whether or not a batch arrived, so this sink writes on every idle
 // tick.
@@ -538,7 +564,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 	for _, v := range sinkVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 4, len(out))
+	assert.Equal(t, 5, len(out))
 	return out
 }
 
