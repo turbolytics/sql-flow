@@ -93,7 +93,30 @@ var latticeType = map[string]arrow.DataType{
 	"timestamp[us, tz=*]":     &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "Asia/Tokyo"},
 	"month_day_nano_interval": arrow.FixedWidthTypes.MonthDayNanoInterval,
 
+	"list<bool>":                arrow.ListOf(arrow.FixedWidthTypes.Boolean),
+	"list<int8>":                arrow.ListOf(arrow.PrimitiveTypes.Int8),
+	"list<int16>":               arrow.ListOf(arrow.PrimitiveTypes.Int16),
+	"list<int32>":               arrow.ListOf(arrow.PrimitiveTypes.Int32),
 	"list<int64>":               arrow.ListOf(arrow.PrimitiveTypes.Int64),
+	"list<uint8>":               arrow.ListOf(arrow.PrimitiveTypes.Uint8),
+	"list<uint16>":              arrow.ListOf(arrow.PrimitiveTypes.Uint16),
+	"list<uint32>":              arrow.ListOf(arrow.PrimitiveTypes.Uint32),
+	"list<uint64>":              arrow.ListOf(arrow.PrimitiveTypes.Uint64),
+	"list<float32>":             arrow.ListOf(arrow.PrimitiveTypes.Float32),
+	"list<float64>":             arrow.ListOf(arrow.PrimitiveTypes.Float64),
+	"list<utf8>":                arrow.ListOf(arrow.BinaryTypes.String),
+	"list<binary>":              arrow.ListOf(arrow.BinaryTypes.Binary),
+	"list<date32>":              arrow.ListOf(arrow.FixedWidthTypes.Date32),
+	"list<time64[us]>":          arrow.ListOf(arrow.FixedWidthTypes.Time64us),
+	"list<timestamp[s]>":        arrow.ListOf(&arrow.TimestampType{Unit: arrow.Second}),
+	"list<timestamp[ms]>":       arrow.ListOf(&arrow.TimestampType{Unit: arrow.Millisecond}),
+	"list<timestamp[us]>":       arrow.ListOf(&arrow.TimestampType{Unit: arrow.Microsecond}),
+	"list<timestamp[ns]>":       arrow.ListOf(&arrow.TimestampType{Unit: arrow.Nanosecond}),
+	"list<timestamp[us, tz=*]>": arrow.ListOf(&arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "Asia/Tokyo"}),
+	"list<decimal(*, *)>":       arrow.ListOf(&arrow.Decimal128Type{Precision: 38, Scale: 0}),
+	"list<list<int64>>":         arrow.ListOf(arrow.ListOf(arrow.PrimitiveTypes.Int64)),
+	"list<struct>": arrow.ListOf(arrow.StructOf(
+		arrow.Field{Name: "a", Type: arrow.PrimitiveTypes.Int32, Nullable: true})),
 	"fixed_size_list<int32>[3]": arrow.FixedSizeListOf(3, arrow.PrimitiveTypes.Int32),
 	"struct":                    arrow.StructOf(arrow.Field{Name: "a", Type: arrow.PrimitiveTypes.Int32, Nullable: true}),
 	"map":                       arrow.MapOf(arrow.BinaryTypes.String, arrow.PrimitiveTypes.Int32),
@@ -133,6 +156,37 @@ func LatticeArray(key string, null bool) (arrow.Array, error) {
 		return b.NewArray(), nil
 	}
 	if err := appendLatticeValue(b, key); err != nil {
+		return nil, err
+	}
+	return b.NewArray(), nil
+}
+
+// LatticeListWithNullElement builds a one-row list holding [value, null,
+// value]. The caller releases it.
+//
+// This is the third null position, and the one no published table mentions. A
+// null column and a null list are both visible to anyone who looks; a null
+// inside a list is not, and ClickHouse's Array(T) has no way to hold one.
+func LatticeListWithNullElement(key string) (arrow.Array, error) {
+	dt, ok := latticeType[key]
+	if !ok {
+		return nil, fmt.Errorf("conformance: no lattice value for %q", key)
+	}
+	lt, ok := dt.(*arrow.ListType)
+	if !ok {
+		return nil, fmt.Errorf("conformance: %q is not a list, so it has no element to null", key)
+	}
+
+	b := array.NewBuilder(memory.NewGoAllocator(), lt).(*array.ListBuilder)
+	defer b.Release()
+
+	b.Append(true)
+	elem := b.ValueBuilder()
+	if err := appendLatticeValue(elem, key); err != nil {
+		return nil, err
+	}
+	elem.AppendNull()
+	if err := appendLatticeValue(elem, key); err != nil {
 		return nil, err
 	}
 	return b.NewArray(), nil
@@ -194,7 +248,16 @@ func appendLatticeValue(b array.Builder, key string) error {
 		bldr.Append(arrow.MonthDayNanoInterval{Months: 1, Days: 2, Nanoseconds: 3})
 	case *array.ListBuilder:
 		bldr.Append(true)
-		bldr.ValueBuilder().(*array.Int64Builder).AppendValues([]int64{1, 2, 3}, nil)
+		// Three elements, filled through the same switch that fills a bare
+		// column, so a list of T carries the same value as a T. A divergence
+		// between the two is then a real difference in the sink rather than in
+		// the fixture. Nested lists and structs recurse through here.
+		elem := bldr.ValueBuilder()
+		for i := 0; i < 3; i++ {
+			if err := appendLatticeValue(elem, key); err != nil {
+				return err
+			}
+		}
 	case *array.FixedSizeListBuilder:
 		bldr.Append(true)
 		bldr.ValueBuilder().(*array.Int32Builder).AppendValues([]int32{1, 2, 3}, nil)

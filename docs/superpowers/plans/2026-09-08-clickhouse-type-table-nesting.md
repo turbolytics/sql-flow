@@ -4,7 +4,7 @@
 
 **Goal:** Prove that a container does not launder what it holds, and that a string survives the sink byte for byte.
 
-**Architecture:** The lattice grows from 29 keys to 50 by adding `list<T>` for every element type ClickHouse converts, plus two unsupported-element rows and two depth-3 witnesses. Two new verdicts join the runner: `type.nested`, which judges the constructor rows and the null-element position, and `type.string.fidelity`, which writes a corpus of hostile strings through the `utf8` row rather than the single canonical value.
+**Architecture:** The lattice grows from 29 keys to 51 by adding `list<T>` for every element type ClickHouse converts, plus two unsupported-element rows and two depth-3 witnesses. Two new verdicts join the runner: `type.nested`, which judges the constructor rows and the null-element position, and `type.string.fidelity`, which writes a corpus of hostile strings through the `utf8` row rather than the single canonical value.
 
 **Tech Stack:** Go 1.x with CGO, arrow-go v18, clickhouse-go, testcontainers-go, Python 3 for the generator.
 
@@ -42,13 +42,13 @@ In `internal/coverage/registry_test.go`, change the assertion in
 `TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed`:
 
 ```go
-	assert.Equal(t, len(entries), 50)
+	assert.Equal(t, len(entries), 51)
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `CGO_ENABLED=1 go test ./internal/coverage/ -run TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed`
-Expected: FAIL, `29 != 50`.
+Expected: FAIL, `29 != 51`.
 
 - [ ] **Step 3: Add the container keys to `lattice.yml`**
 
@@ -295,7 +295,7 @@ func TestToolingConformanceLattice_RejectsANullElementOnANonList(t *testing.T) {
 - [ ] **Step 8: Run the conformance and coverage tests**
 
 Run: `CGO_ENABLED=1 go test ./internal/conformance/ ./internal/coverage/ -v 2>&1 | grep -E "^(---|FAIL|ok)"`
-Expected: PASS. `TestToolingConformanceLattice_EveryDeclaredKeyHasAValue` holds the 50 YAML keys equal to the 50 builders, so a typo in either list fails here and names the key.
+Expected: PASS. `TestToolingConformanceLattice_EveryDeclaredKeyHasAValue` holds the 51 YAML keys equal to the 51 builders, so a typo in either list fails here and names the key.
 
 - [ ] **Step 9: Run the full unit pass**
 
@@ -332,7 +332,7 @@ the recursion stops paying for itself."
 
 **Interfaces:**
 - Consumes: the 21 keys from Task 1.
-- Produces: `types:` rows for all 50 keys and a `nulls: list_element` rule. Task 3 reads both through `coverage.TypesFor` and `coverage.NullsFor`.
+- Produces: `types:` rows for all 51 keys and a `nulls: list_element` rule. Task 3 reads both through `coverage.TypesFor` and `coverage.NullsFor`.
 
 - [ ] **Step 1: Confirm the failing test**
 
