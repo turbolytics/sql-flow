@@ -624,10 +624,18 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestPipelineStatefulRealSink_Conformance",
+            "TestPipelineStatefulRealSink_Conformance/lifecycle.drain.on_cancel",
+            "TestPipelineStatefulRealSink_Conformance/pipeline.commit.after_flush",
+            "TestPipelineStatefulRealSink_Conformance/pipeline.commit.nothing_on_failure",
+            "TestPipelineStatefulRealSink_Conformance/pipeline.commit.only_delivered_rows",
+            "TestPipelineStatefulRealSink_Conformance/pipeline.flush.eventually",
+            "TestPipelineStatefulRealSink_Conformance/pipeline.state.with_offsets",
             "TestPipelineStateful_Conformance",
             "TestPipelineStateful_Conformance/lifecycle.drain.on_cancel",
             "TestPipelineStateful_Conformance/pipeline.commit.after_flush",
             "TestPipelineStateful_Conformance/pipeline.commit.nothing_on_failure",
+            "TestPipelineStateful_Conformance/pipeline.commit.only_delivered_rows",
             "TestPipelineStateful_Conformance/pipeline.flush.eventually",
             "TestPipelineStateful_Conformance/pipeline.state.with_offsets",
             "TestStateDurability_DBSecondConnectionSeesOnlyCommittedState",
@@ -640,6 +648,9 @@
             "TestStateDurability_Stats_ExcludesTheBatchTable",
             "TestStateDurability_Stats_IsDeterministicallyOrdered",
             "TestStateDurability_Stats_TableNamesSurviveReaderRelease"
+          ],
+          "skipped": [
+            "TestPipelineStateful_Conformance/pipeline.commit.only_delivered_rows"
           ]
         },
         "integration": {
@@ -816,15 +827,25 @@
             "TestCoreConsumeLoop_ProcessBatchRollsBackWhenSinkFails",
             "TestCoreConsumeLoop_ProcessBatchSavesTheProcessedOffsets",
             "TestCoreConsumeLoop_WritesEveryMessageAcrossManyBatches",
+            "TestPipelineStatelessRealSink_Conformance",
+            "TestPipelineStatelessRealSink_Conformance/lifecycle.drain.on_cancel",
+            "TestPipelineStatelessRealSink_Conformance/pipeline.commit.after_flush",
+            "TestPipelineStatelessRealSink_Conformance/pipeline.commit.nothing_on_failure",
+            "TestPipelineStatelessRealSink_Conformance/pipeline.commit.only_delivered_rows",
+            "TestPipelineStatelessRealSink_Conformance/pipeline.flush.eventually",
+            "TestPipelineStatelessRealSink_Conformance/pipeline.state.with_offsets",
             "TestPipelineStateless_Conformance",
             "TestPipelineStateless_Conformance/lifecycle.drain.on_cancel",
             "TestPipelineStateless_Conformance/pipeline.commit.after_flush",
             "TestPipelineStateless_Conformance/pipeline.commit.nothing_on_failure",
+            "TestPipelineStateless_Conformance/pipeline.commit.only_delivered_rows",
             "TestPipelineStateless_Conformance/pipeline.flush.eventually",
             "TestPipelineStateless_Conformance/pipeline.state.with_offsets",
             "TestPipelineStateless_KeepsNoDurableState"
           ],
           "skipped": [
+            "TestPipelineStatelessRealSink_Conformance/pipeline.state.with_offsets",
+            "TestPipelineStateless_Conformance/pipeline.commit.only_delivered_rows",
             "TestPipelineStateless_Conformance/pipeline.state.with_offsets"
           ]
         },
@@ -2435,6 +2456,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatefulRealSink_Conformance/pipeline.commit.after_flush",
               "TestPipelineStateful_Conformance/pipeline.commit.after_flush"
             ]
           },
@@ -2451,6 +2473,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatelessRealSink_Conformance/pipeline.commit.after_flush",
               "TestPipelineStateless_Conformance/pipeline.commit.after_flush"
             ]
           },
@@ -2466,6 +2489,53 @@
       }
     },
     {
+      "id": "pipeline.commit.only_delivered_rows",
+      "family": "checkpoint",
+      "applies_to": "pipeline",
+      "claim": "The pipeline never commits a position covering a row the destination did not take, and never leaves a delivered row uncommitted after a clean run.",
+      "verified_by": "harness",
+      "class": "safety",
+      "requires": [],
+      "enforced": true,
+      "integrations": {
+        "pipeline.stateful": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestPipelineStatefulRealSink_Conformance/pipeline.commit.only_delivered_rows"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "pipeline.stateless": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestPipelineStatelessRealSink_Conformance/pipeline.commit.only_delivered_rows"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      },
+      "violated_once": [
+        "#154"
+      ]
+    },
+    {
       "id": "pipeline.commit.nothing_on_failure",
       "family": "checkpoint",
       "applies_to": "pipeline",
@@ -2479,6 +2549,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatefulRealSink_Conformance/pipeline.commit.nothing_on_failure",
               "TestPipelineStateful_Conformance/pipeline.commit.nothing_on_failure"
             ]
           },
@@ -2495,6 +2566,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatelessRealSink_Conformance/pipeline.commit.nothing_on_failure",
               "TestPipelineStateless_Conformance/pipeline.commit.nothing_on_failure"
             ]
           },
@@ -2523,6 +2595,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatefulRealSink_Conformance/pipeline.state.with_offsets",
               "TestPipelineStateful_Conformance/pipeline.state.with_offsets"
             ]
           },
@@ -3399,6 +3472,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatefulRealSink_Conformance/lifecycle.drain.on_cancel",
               "TestPipelineStateful_Conformance/lifecycle.drain.on_cancel"
             ]
           },
@@ -3415,6 +3489,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatelessRealSink_Conformance/lifecycle.drain.on_cancel",
               "TestPipelineStateless_Conformance/lifecycle.drain.on_cancel"
             ]
           },
@@ -3443,6 +3518,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatefulRealSink_Conformance/pipeline.flush.eventually",
               "TestPipelineStateful_Conformance/pipeline.flush.eventually"
             ]
           },
@@ -3459,6 +3535,7 @@
           "unit": {
             "status": "covered",
             "tests": [
+              "TestPipelineStatelessRealSink_Conformance/pipeline.flush.eventually",
               "TestPipelineStateless_Conformance/pipeline.flush.eventually"
             ]
           },
