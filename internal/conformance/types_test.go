@@ -118,6 +118,8 @@ func TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses(t *testing.T) 
 // The defect the runner exists to catch: a table claiming exact for a type
 // the sink refuses. On the published page it tells a user a cast will work.
 func TestToolingConformanceTypes_ATypeDeclaredExactThatFailsIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	declared := []coverage.TypeDecl{
 		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
 	}
@@ -128,6 +130,8 @@ func TestToolingConformanceTypes_ATypeDeclaredExactThatFailsIsCaught(t *testing.
 // The mirror defect: a table claiming unsupported for a type that works. It
 // hides working support, and tells a user to cast a column they need not.
 func TestToolingConformanceTypes_ATypeDeclaredUnsupportedThatWorksIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	declared := []coverage.TypeDecl{
 		{Key: "int64", Outcome: "unsupported", Code: "user.sink.type_unsupported"},
 	}
@@ -139,6 +143,8 @@ func TestToolingConformanceTypes_ATypeDeclaredUnsupportedThatWorksIsCaught(t *te
 // the operator as system.internal.unexpected, which sends them to file a bug
 // rather than to cast the column.
 func TestToolingConformanceTypes_AFailureWithTheWrongCodeIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	declared := []coverage.TypeDecl{
 		{Key: "int64", Outcome: "unsupported", Code: "user.sink.some_other_code"},
 	}
@@ -151,6 +157,8 @@ func TestToolingConformanceTypes_AFailureWithTheWrongCodeIsCaught(t *testing.T) 
 // A type absent from the table must fail the batch rather than be coerced
 // into whatever the destination happens to accept.
 func TestToolingConformanceTypes_AnUndeclaredTypeThatSucceedsIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	declared := []coverage.TypeDecl{
 		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
 	}
@@ -161,6 +169,8 @@ func TestToolingConformanceTypes_AnUndeclaredTypeThatSucceedsIsCaught(t *testing
 // A null must survive as a null. A sink that turns one into a value is the
 // silent kind of wrong, so the runner judges it separately from the value.
 func TestToolingConformanceTypes_ANullReadBackAsAValueIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	declared := []coverage.TypeDecl{
 		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
 	}
@@ -181,6 +191,8 @@ func TestToolingConformanceTypes_ANullReadBackAsAValueIsCaught(t *testing.T) {
 // that keeps them. Nothing is broken, and the published page still tells
 // users to work around a coercion that no longer happens.
 func TestToolingConformanceTypes_ANullDeclaredCoercedThatSurvivesIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	declared := []coverage.TypeDecl{
 		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
 	}
@@ -193,6 +205,8 @@ func TestToolingConformanceTypes_ANullDeclaredCoercedThatSurvivesIsCaught(t *tes
 // An integration that says nothing about nulls has an untested and
 // unpublished behaviour, which is worse than either declared outcome.
 func TestToolingConformanceTypes_ANullWithNoDeclaredOutcomeIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	declared := []coverage.TypeDecl{
 		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
 	}
@@ -205,6 +219,8 @@ func TestToolingConformanceTypes_ANullWithNoDeclaredOutcomeIsCaught(t *testing.T
 // A marker carries an integration id, so a subject without one would emit
 // evidence that lands on no cell.
 func TestToolingConformanceTypes_ASubjectWithoutAnIntegrationIdIsRejected(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	s := typeSubject(newTypeSink(), nil)
 	s.Integration = ""
 
@@ -212,6 +228,8 @@ func TestToolingConformanceTypes_ASubjectWithoutAnIntegrationIdIsRejected(t *tes
 }
 
 func TestToolingConformanceTypes_ASubjectMissingPrepareIsRejected(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	s := typeSubject(newTypeSink(), nil)
 	s.Prepare = nil
 

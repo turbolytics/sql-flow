@@ -28,6 +28,8 @@ func TestToolingConformanceCanonicalKey_IgnoresChildNamesAndNullability(t *testi
 // The zone is the DuckDB session's, not the type's. Pinning it into the key
 // would make the declaration depend on the host that ran the test.
 func TestToolingConformanceCanonicalKey_WildcardsTheTimestampZone(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	zoned := &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "Asia/Tokyo"}
 	bare := &arrow.TimestampType{Unit: arrow.Microsecond}
 
@@ -38,6 +40,8 @@ func TestToolingConformanceCanonicalKey_WildcardsTheTimestampZone(t *testing.T) 
 // Precision and scale are the user's choice and do not change which branch of
 // a sink's conversion runs, so one key covers the family.
 func TestToolingConformanceCanonicalKey_CollapsesTheDecimalFamily(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	p38 := &arrow.Decimal128Type{Precision: 38, Scale: 0}
 	p18 := &arrow.Decimal128Type{Precision: 18, Scale: 3}
 
@@ -46,6 +50,8 @@ func TestToolingConformanceCanonicalKey_CollapsesTheDecimalFamily(t *testing.T) 
 }
 
 func TestToolingConformanceCanonicalKey_NamesEachConstructor(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	cases := map[string]arrow.DataType{
 		"int64":                     arrow.PrimitiveTypes.Int64,
 		"utf8":                      arrow.BinaryTypes.String,
@@ -93,6 +99,8 @@ func TestToolingConformanceLattice_EveryDeclaredKeyHasAValue(t *testing.T) {
 // The array the table builds must carry the type its key names, or a row is
 // judged against a different type than the one it claims.
 func TestToolingConformanceLattice_EveryValueCarriesItsOwnKey(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	for _, k := range LatticeKeys() {
 		arr, err := LatticeArray(k, false)
 		if err != nil {
@@ -110,6 +118,8 @@ func TestToolingConformanceLattice_EveryValueCarriesItsOwnKey(t *testing.T) {
 
 // type.null asks the same question of every type, so every key builds a null.
 func TestToolingConformanceLattice_EveryKeyBuildsANull(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	for _, k := range LatticeKeys() {
 		arr, err := LatticeArray(k, true)
 		if err != nil {
@@ -134,6 +144,8 @@ func TestToolingConformanceLattice_EveryKeyBuildsANull(t *testing.T) {
 // left unchecked. A sink that reads the child sees a null; one that reads the
 // union sees a value.
 func TestToolingConformanceLattice_AUnionNullLivesInItsChild(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
 	arr, err := LatticeArray("sparse_union", true)
 	assert.NoError(t, err)
 	defer arr.Release()

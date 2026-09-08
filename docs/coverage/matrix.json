@@ -189,6 +189,9 @@
           "status": "covered",
           "tests": [
             "TestIntegrationSinkClickhouse_Conformance",
+            "TestIntegrationSinkClickhouse_Types",
+            "TestSinkClickhouse_ANullOfASupportedTypeIsStillNil",
+            "TestSinkClickhouse_ANullOfAnUnsupportedTypeStillFails",
             "TestSinkClickhouse_BatchIsNil",
             "TestSinkClickhouse_EmptyTableIsNoop",
             "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
@@ -203,19 +206,12 @@
             "TestSinkClickhouse_OptionsPythonDSN",
             "TestSinkClickhouse_OptionsSecure",
             "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone",
-            "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer"
+            "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer",
+            "TestSinkClickhouse_UnsupportedArrowTypeCarriesACode"
           ],
           "skipped": [
             "TestIntegrationSinkClickhouse_Conformance",
-            "TestSinkClickhouse_BatchIsNil",
-            "TestSinkClickhouse_EmptyTableIsNoop",
-            "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
-            "TestSinkClickhouse_InsertsArrays",
-            "TestSinkClickhouse_InsertsNestedArrays",
-            "TestSinkClickhouse_InsertsRows",
-            "TestSinkClickhouse_NullsBecomeDefaults",
-            "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone",
-            "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer"
+            "TestIntegrationSinkClickhouse_Types"
           ]
         },
         "integration": {
@@ -224,7 +220,11 @@
             "TestIntegrationSinkClickhouse_Conformance",
             "TestIntegrationSinkClickhouse_Conformance/sink.buffer.reports_depth",
             "TestIntegrationSinkClickhouse_Conformance/sink.flush.keeps_batch",
-            "TestIntegrationSinkClickhouse_Conformance/sink.write.buffers_only"
+            "TestIntegrationSinkClickhouse_Conformance/sink.write.buffers_only",
+            "TestIntegrationSinkClickhouse_Types",
+            "TestIntegrationSinkClickhouse_Types/type.null",
+            "TestIntegrationSinkClickhouse_Types/type.roundtrip",
+            "TestIntegrationSinkClickhouse_Types/type.undeclared.fails_loud"
           ]
         },
         "release": {
@@ -1161,7 +1161,6 @@
           ],
           "skipped": [
             "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.postgres.windowed.yml",
-            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.clickhouse.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.mem.iceberg.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.sasl-tls.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.structured.disk.yml",
@@ -1332,7 +1331,15 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestToolingConformanceCanonicalKey_CollapsesTheDecimalFamily",
+            "TestToolingConformanceCanonicalKey_IgnoresChildNamesAndNullability",
+            "TestToolingConformanceCanonicalKey_NamesEachConstructor",
+            "TestToolingConformanceCanonicalKey_WildcardsTheTimestampZone",
             "TestToolingConformanceDescribe_NamesTheRowsItFound",
+            "TestToolingConformanceLattice_AUnionNullLivesInItsChild",
+            "TestToolingConformanceLattice_EveryDeclaredKeyHasAValue",
+            "TestToolingConformanceLattice_EveryKeyBuildsANull",
+            "TestToolingConformanceLattice_EveryValueCarriesItsOwnKey",
             "TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants",
             "TestToolingConformancePipelines_CatchesACommitBeforeTheFlush",
             "TestToolingConformancePipelines_JudgeOneLivenessClaim",
@@ -1358,7 +1365,20 @@
             "TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject",
             "TestToolingConformanceSinks_JudgesOnlyDeclaredInvariants",
             "TestToolingConformanceSinks_TheDoublesIntegrationIsNotAShippedSink",
-            "TestToolingConformanceSinks_TheDoublesRunUnderATestOnlyIntegration"
+            "TestToolingConformanceSinks_TheDoublesRunUnderATestOnlyIntegration",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.null",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.roundtrip",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.undeclared.fails_loud",
+            "TestToolingConformanceTypes_AFailureWithTheWrongCodeIsCaught",
+            "TestToolingConformanceTypes_ANullDeclaredCoercedThatSurvivesIsCaught",
+            "TestToolingConformanceTypes_ANullReadBackAsAValueIsCaught",
+            "TestToolingConformanceTypes_ANullWithNoDeclaredOutcomeIsCaught",
+            "TestToolingConformanceTypes_ASubjectMissingPrepareIsRejected",
+            "TestToolingConformanceTypes_ASubjectWithoutAnIntegrationIdIsRejected",
+            "TestToolingConformanceTypes_ATypeDeclaredExactThatFailsIsCaught",
+            "TestToolingConformanceTypes_ATypeDeclaredUnsupportedThatWorksIsCaught",
+            "TestToolingConformanceTypes_AnUndeclaredTypeThatSucceedsIsCaught"
           ]
         },
         "integration": {
@@ -1384,6 +1404,8 @@
             "TestToolingCoverageHandlerRegistry_MatchesTheConstructorSwitch",
             "TestToolingCoverageInvariant_DoesNotLookLikeAFeatureMarker",
             "TestToolingCoverageInvariant_EmitsTheStructuredMarker",
+            "TestToolingCoverageRegistry_ClickhouseDeclaresEveryLatticeKey",
+            "TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed",
             "TestToolingCoverageRegistry_ListsHandlers",
             "TestToolingCoverageRegistry_ListsSinksByBareName",
             "TestToolingCoverageRegistry_ListsSources",
@@ -2901,8 +2923,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.roundtrip"
+            ]
           },
           "release": {
             "status": "missing",
@@ -3002,8 +3026,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.null"
+            ]
           },
           "release": {
             "status": "missing",
@@ -3392,8 +3418,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.undeclared.fails_loud"
+            ]
           },
           "release": {
             "status": "missing",
