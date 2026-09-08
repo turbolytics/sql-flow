@@ -202,6 +202,20 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 		len(keep), len(pending))
 }
 
+// Probe checks the broker before the first batch arrives.
+//
+// Without it a wrong broker list produces a pipeline that starts normally,
+// logs "consumer loop starting", and fails at the first flush. With a long
+// flush interval that is minutes later, and a supervisor reports the pipeline
+// healthy for every one of them. sinks.New probes any sink implementing
+// Prober, so implementing it here is the whole change.
+//
+// Ping asks the seed brokers for metadata, which is the cheapest request that
+// proves one of them answered.
+func (s *KafkaSink) Probe(ctx context.Context) error {
+	return s.client.Ping(ctx)
+}
+
 func (s *KafkaSink) Close() error {
 	s.client.Close()
 	return nil

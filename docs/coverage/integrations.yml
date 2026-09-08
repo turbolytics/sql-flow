@@ -22,7 +22,7 @@ integrations:
   # --- Sinks ---------------------------------------------------------------
   - id: sink.kafka
     kind: sink
-    implements: [Sink]
+    implements: [Sink, Prober]
     feature: sink.kafka
     exempt: []
 

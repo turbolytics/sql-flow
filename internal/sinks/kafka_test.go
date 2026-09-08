@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -212,6 +213,31 @@ func TestSinkKafka_ARecordTimeoutIsUnreachable(t *testing.T) {
 
 	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
 	assert.Equal(t, errs.ExitSinkUnreachable, errs.ExitCode(err))
+}
+
+// A broker list that names nothing must fail the start.
+//
+// Without a probe the pipeline starts, logs "consumer loop starting", and
+// discovers the broker at the first flush. With a long flush interval that is
+// minutes later, and a supervisor calls the pipeline healthy for every one of
+// them.
+func TestSinkKafka_ProbeFailsAgainstAnUnreachableBroker(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	s := newUnreachableKafkaSink(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	assert.Error(t, s.Probe(ctx))
+}
+
+// And it must be reachable through the interface, or sinks.New never calls it.
+func TestSinkKafka_ImplementsProber(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	var s core.Sink = newUnreachableKafkaSink(t)
+
+	_, ok := s.(Prober)
+	assert.True(t, ok)
 }
 
 // Produce errors must not be swallowed. The pipeline commits its offsets only
