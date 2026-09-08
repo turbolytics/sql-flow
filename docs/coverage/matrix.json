@@ -211,7 +211,16 @@
           ],
           "skipped": [
             "TestIntegrationSinkClickhouse_Conformance",
-            "TestIntegrationSinkClickhouse_Types"
+            "TestIntegrationSinkClickhouse_Types",
+            "TestSinkClickhouse_BatchIsNil",
+            "TestSinkClickhouse_EmptyTableIsNoop",
+            "TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered",
+            "TestSinkClickhouse_InsertsArrays",
+            "TestSinkClickhouse_InsertsNestedArrays",
+            "TestSinkClickhouse_InsertsRows",
+            "TestSinkClickhouse_NullsBecomeDefaults",
+            "TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone",
+            "TestSinkClickhouse_SuccessfulFlushClearsTheBuffer"
           ]
         },
         "integration": {
@@ -1161,6 +1170,7 @@
           ],
           "skipped": [
             "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.postgres.windowed.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.clickhouse.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.mem.iceberg.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.sasl-tls.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.structured.disk.yml",
