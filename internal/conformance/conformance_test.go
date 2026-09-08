@@ -61,12 +61,19 @@ func TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly(t *testing.T) {
 	assert.True(t, vs[keepsBatch].failure != "")
 }
 
-// A sink that keeps the batch but never clears it delivers the row twice.
-func TestToolingConformanceSinks_ASinkThatDeliversTwiceIsCaught(t *testing.T) {
+// A sink that never clears its buffer re-delivers everything on every flush.
+//
+// The duplication itself is legal: delivery is at-least-once, so keeps_batch
+// holds. What does not hold is the depth. A buffer that never drains grows
+// without bound, and reports_depth is the claim that catches it -- the count
+// must fall to zero once a flush has succeeded.
+func TestToolingConformanceSinks_ASinkThatNeverDrainsIsCaught(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
-	v := verdicts(t, subject(&neverClearSink{memSink: newMemSink()}))[keepsBatch]
+	vs := verdicts(t, subject(&neverClearSink{memSink: newMemSink()}))
 
-	assert.True(t, strings.Contains(v.failure, "id=1, id=1"))
+	assert.Equal(t, "", vs[keepsBatch].failure)
+	assert.True(t, strings.Contains(vs[reportsDepth].failure,
+		"buffered rows after a Flush that succeeded"))
 }
 
 // A retry that fails is not the same defect, and the message must not blame
@@ -76,6 +83,24 @@ func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&staysDownSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
+}
+
+// The contract's positive control, run through the whole harness rather than
+// the comparison alone: a sink that delivers each row twice is conformant.
+func TestToolingConformanceSinks_ADuplicatingSinkPasses(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(&duplicatingSink{memSink: newMemSink()}))
+
+	assert.Equal(t, "", vs[keepsBatch].failure)
+	assert.Equal(t, "", vs[buffersOnly].failure)
+}
+
+// And a sink that loses the row it could not deliver still fails.
+func TestToolingConformanceSinks_ALosingSinkIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&losingSink{memSink: newMemSink()}))[keepsBatch]
+
+	assert.True(t, strings.Contains(v.failure, "never reached"))
 }
 
 func TestToolingConformanceSinks_ASinkThatMisreportsItsDepthIsCaught(t *testing.T) {

@@ -267,10 +267,10 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	}
 
 	got := s.ReadBack(t)
-	if keeps.failure == "" && (len(got) != 1 || got[0]["id"] != int64(1)) {
-		keeps.failure = "after a failed Flush and a successful retry the " +
-			"destination holds " + describe(got) +
-			"; want exactly the row the failed flush could not deliver"
+	if keeps.failure == "" {
+		if bad := deliveredInOrder(got, []Row{{"id": int64(1)}}); bad != "" {
+			keeps.failure = "after a failed Flush and a successful retry, " + bad
+		}
 	}
 	return []verdict{buffers, keeps, depth}
 }
