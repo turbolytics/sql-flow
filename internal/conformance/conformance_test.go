@@ -91,6 +91,36 @@ func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
 }
 
+func TestToolingConformanceSinks_ASlowProbeIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&slowProbeSink{memSink: newMemSink()}))[probeFailsStart]
+
+	assert.True(t, strings.Contains(v.failure, "had not returned"))
+}
+
+func TestToolingConformanceSinks_AProbeThatCannotFailIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&blindProbeSink{memSink: newMemSink()}))[probeFailsStart]
+
+	assert.True(t, strings.Contains(v.failure, "returned nil"))
+}
+
+func TestToolingConformanceSinks_ASinkThatCannotCloseTwiceIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&closeOnceSink{memSink: newMemSink()}))[closeIdempotent]
+
+	assert.True(t, strings.Contains(v.failure, "second Close"))
+}
+
+// A sink implementing neither is skipped, and the registry must exempt it.
+func TestToolingConformanceSinks_ASinkWithNoProbeOrCloseIsSkipped(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(newMemSink()))
+
+	assert.True(t, strings.Contains(vs[probeFailsStart].skipped, "integrations.yml"))
+	assert.True(t, strings.Contains(vs[closeIdempotent].skipped, "integrations.yml"))
+}
+
 // A second flush into the same fault must fail again. Returning nil tells the
 // pipeline to commit offsets for rows that never landed.
 func TestToolingConformanceSinks_AHollowSuccessIsCaught(t *testing.T) {
@@ -496,6 +526,42 @@ func (d *duplicatingSink) Flush(context.Context) error {
 	return nil
 }
 
+// slowProbeSink ladders its probe. probe() dials once and does not retry,
+// because the supervisor's restart is already the retry, so a ladder here only
+// delays the report.
+type slowProbeSink struct{ *memSink }
+
+func (s *slowProbeSink) Probe(context.Context) error {
+	// Past the grace the harness allows, so it is judged for laddering rather
+	// than for using the deadline it was given.
+	time.Sleep(3 * probeTimeout)
+	return errors.New("destination unreachable")
+}
+
+// blindProbeSink cannot fail. A probe that certifies a destination which is not
+// there is worse than no probe: the pipeline starts and the operator is told
+// the dependency is fine.
+type blindProbeSink struct{ *memSink }
+
+func (b *blindProbeSink) Probe(context.Context) error { return nil }
+
+// closeOnceSink fails its second Close. More than one shutdown path reaches
+// Close, and the second must not change the exit status.
+type closeOnceSink struct {
+	*memSink
+	closed bool
+}
+
+func (c *closeOnceSink) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return errors.New("close of closed sink")
+	}
+	c.closed = true
+	return nil
+}
+
 // hollowSink reports success on its second failed flush.
 //
 // #221's defect reached by another route: the first flush records the failure,
@@ -622,7 +688,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 	for _, v := range sinkVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 7, len(out))
+	assert.Equal(t, 9, len(out))
 	return out
 }
 

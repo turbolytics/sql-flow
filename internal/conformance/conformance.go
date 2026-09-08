@@ -22,6 +22,7 @@ package conformance
 import (
 	"context"
 	"errors"
+	"io"
 	"strconv"
 	"testing"
 	"time"
@@ -157,7 +158,27 @@ const (
 	honoursContext  = "sink.flush.honours_context"
 	noHollowSuccess = "sink.flush.no_hollow_success"
 	preservesOrder  = "sink.flush.preserves_order"
+
+	probeFailsStart = "sink.probe.fails_start"
+	closeIdempotent = "lifecycle.close.idempotent"
 )
+
+// prober mirrors sinks.Prober.
+//
+// Declared here rather than imported because internal/sinks imports this
+// package in its tests, so importing it back would be a cycle in the test
+// binary. Go interfaces are structural, so the two match without a dependency.
+type prober interface {
+	Probe(ctx context.Context) error
+}
+
+// probeTimeout is the deadline a Probe is given against a broken destination.
+//
+// probe() dials once and does not retry: nothing has been consumed yet, so
+// there is nothing to lose by failing now, and the supervisor's restart is
+// already the retry. A prober that ladders runs past twice this and is judged
+// on that, not on whether it used the deadline it was handed.
+const probeTimeout = 3 * time.Second
 
 // sinkVerdicts runs one sequence and judges four invariants from it.
 //
@@ -202,6 +223,8 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			{invariant: honoursContext, skipped: skip},
 			{invariant: noHollowSuccess, skipped: skip},
 			{invariant: preservesOrder, skipped: skip},
+			{invariant: probeFailsStart, skipped: skip},
+			{invariant: closeIdempotent, skipped: skip},
 		}
 	}
 
@@ -319,6 +342,8 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			depth, honours,
 			{invariant: noHollowSuccess, skipped: stuck},
 			{invariant: preservesOrder, skipped: stuck},
+			{invariant: probeFailsStart, skipped: stuck},
+			{invariant: closeIdempotent, skipped: stuck},
 		}
 	}
 
@@ -358,7 +383,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 				"broken and nothing had been delivered, so %s's Break did not "+
 				"break it", s.Integration)
 		}
-		return []verdict{empty, buffers, {
+		return append([]verdict{empty, buffers, {
 			invariant: keepsBatch,
 			failure: "Flush returned nil while the destination was broken, " +
 				"because the rows had already been delivered by WriteTable; " +
@@ -366,7 +391,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		}, depth, honours,
 			{invariant: noHollowSuccess, skipped: "the rows were delivered on write"},
 			{invariant: preservesOrder, skipped: "the rows were delivered on write"},
-		}
+		}, startAndStop(t, s)...)
 	}
 
 	if reports && depth.failure == "" {
@@ -427,8 +452,9 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			keeps.failure = "Flush after Heal failed with " + err.Error() +
 				"; the retry did not deliver what the failed flush kept"
 		}
-		return []verdict{empty, buffers, keeps, depth, honours, hollow,
-			{invariant: preservesOrder, skipped: "the retry never delivered"}}
+		return append([]verdict{empty, buffers, keeps, depth, honours, hollow,
+			{invariant: preservesOrder, skipped: "the retry never delivered"}},
+			startAndStop(t, s)...)
 	}
 
 	if reports && depth.failure == "" {
@@ -463,7 +489,69 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		}
 	}
 
-	return []verdict{empty, buffers, keeps, depth, honours, hollow, order}
+	return append([]verdict{empty, buffers, keeps, depth, honours, hollow, order},
+		startAndStop(t, s)...)
+}
+
+// startAndStop judges the two claims the delivery sequence cannot reach: that a
+// Probe fails fast against a destination that is not there, and that Close
+// survives a second call.
+//
+// It builds its own sink, because the one above holds a delivered buffer and
+// both claims are about a sink that has not started yet.
+func startAndStop(t *testing.T, s SinkSubject) []verdict {
+	t.Helper()
+
+	probes := verdict{invariant: probeFailsStart}
+	closes := verdict{invariant: closeIdempotent}
+
+	fresh := s.New(t)
+	s.Break(t)
+	defer s.Heal(t)
+
+	if p, ok := fresh.(prober); !ok {
+		probes.skipped = s.Integration + " implements no Prober, so there is " +
+			"no start-time check to fail; exempt it in integrations.yml"
+	} else {
+		// The deadline is the probe's bound, and reaching it is a legitimate
+		// way to fail: against a destination that hangs, nothing else can end
+		// the wait. What the claim rules out is a probe that ladders past its
+		// deadline, so the verdict measures against a grace well beyond it and
+		// runs off this goroutine to catch one that never returns at all.
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		done := make(chan error, 1)
+		go func() { done <- p.Probe(ctx) }()
+
+		grace := 2 * probeTimeout
+		select {
+		case err := <-done:
+			if err == nil {
+				probes.failure = "Probe returned nil against a broken " +
+					"destination; a probe that cannot fail certifies a " +
+					"destination that is not there"
+			}
+		case <-time.After(grace):
+			probes.failure = "Probe had not returned " + grace.String() +
+				" after being given a " + probeTimeout.String() + " deadline; " +
+				"it dials once and does not retry, because the supervisor's " +
+				"restart is already the retry"
+		}
+		cancel()
+	}
+
+	if c, ok := fresh.(io.Closer); !ok {
+		closes.skipped = s.Integration + " implements no Close, so there is " +
+			"nothing to close twice; exempt it in integrations.yml"
+	} else {
+		_ = c.Close()
+		if err := c.Close(); err != nil {
+			closes.failure = "the second Close returned " + err.Error() +
+				"; more than one shutdown path reaches Close, and the second " +
+				"must not change the exit status"
+		}
+	}
+
+	return []verdict{probes, closes}
 }
 
 // rowsArrived reports the first row of want that never reached the

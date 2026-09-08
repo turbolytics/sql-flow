@@ -25,13 +25,13 @@ names every one of them.
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | 28 |
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
-| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 19 |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 24 |
-| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 21 |
+| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 23 |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 26 |
+| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 25 |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
-| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 19 |
-| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 13 |
-| `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — | 2 |
+| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 22 |
+| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 16 |
+| `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — | 3 |
 | `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 71 |
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
@@ -54,7 +54,7 @@ names every one of them.
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 42 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 48 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 12 |
 
 **34 features declared. 34 have at least one passing test attributed at every level they require, so 0 gap(s).**
@@ -65,7 +65,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**31 invariants declared: 27 safety and 4 liveness. Of 130 (invariant, integration) cells: 42 proven, 65 missing, 0 skipped, 0 failing, 23 exempt. 0 gap(s).**
+**31 invariants declared: 27 safety and 4 liveness. Of 130 (invariant, integration) cells: 46 proven, 56 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -136,7 +136,7 @@ invariant's `requires` is filled in, and none is yet.
 | `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
 | `sink.buffer.reports_depth` | A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds. | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
 | `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt |
-| `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ❌ missing | ❌ missing | ❌ missing | — exempt | — exempt | — exempt |
+| `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ✅ i | ✅ i | — exempt | — exempt | — exempt | — exempt |
 
 ## Safety invariants: checkpoint
 
@@ -176,7 +176,7 @@ drains. An invariant holds only if it holds on all four.
 
 | Invariant | Claim | `sink.kafka` | `sink.clickhouse` | `sink.iceberg` | `sink.sqlcommand` | `sink.console` | `sink.noop` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `lifecycle.close.idempotent` | Close twice is safe. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `lifecycle.close.idempotent` | Close twice is safe. | ✅ i | ✅ i | — exempt | — exempt | — exempt | — exempt |
 
 These lifecycle invariants are properties of the consume loop
 rather than of anything a config file names. The columns are

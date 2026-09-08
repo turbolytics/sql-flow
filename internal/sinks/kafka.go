@@ -212,8 +212,23 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 //
 // Ping asks the seed brokers for metadata, which is the cheapest request that
 // proves one of them answered.
+//
+// It runs off this goroutine because Ping does not reliably return when its
+// context ends. Against a broker that accepts the connection and then never
+// answers -- a partition rather than a refusal -- it was still running six
+// seconds after a three second deadline. probe() runs before the pipeline has
+// consumed anything, so a probe that cannot be bounded hangs the start instead
+// of failing it, which is the failure the probe exists to prevent.
 func (s *KafkaSink) Probe(ctx context.Context) error {
-	return s.client.Ping(ctx)
+	done := make(chan error, 1)
+	go func() { done <- s.client.Ping(ctx) }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *KafkaSink) Close() error {

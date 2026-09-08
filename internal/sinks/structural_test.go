@@ -3,6 +3,7 @@ package sinks
 import (
 	"context"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -45,6 +46,63 @@ func TestSinkNoop_ImplementsNoProber(t *testing.T) {
 	coverage.Covers(t, "sink.noop")
 	var s core.Sink = &NoopSink{}
 	_, ok := s.(Prober)
+	assert.That(t, !ok)
+}
+
+// integrations.yml claimed sink.iceberg implements Prober and it never has.
+// NewIcebergSink loads the catalog and the table, so an absent table fails the
+// start -- but through the constructor, not through the interface sinks.New
+// probes.
+func TestSinkIceberg_ImplementsNoProber(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
+	catalogName, tableName := newLocalIcebergTable(t)
+
+	built, err := NewIcebergSink(context.Background(), catalogName, tableName)
+	assert.NoError(t, err)
+
+	var s core.Sink = built
+	_, ok := s.(Prober)
+	assert.That(t, !ok)
+}
+
+// The four sinks that hold nothing to release. lifecycle.close.idempotent is
+// exempt for each, and these prove the premise: there is no Close to call
+// twice. ClickHouse and Kafka own a client and do implement it.
+
+func TestSinkConsole_ImplementsNoCloser(t *testing.T) {
+	coverage.Covers(t, "sink.console")
+	var s core.Sink = NewConsoleSink()
+	_, ok := s.(io.Closer)
+	assert.That(t, !ok)
+}
+
+func TestSinkSqlcommand_ImplementsNoCloser(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
+	conn := newSinkTestConn(t)
+	built, err := NewSQLCommandSink(conn, "SELECT 1", nil)
+	assert.NoError(t, err)
+
+	var s core.Sink = built
+	_, ok := s.(io.Closer)
+	assert.That(t, !ok)
+}
+
+func TestSinkNoop_ImplementsNoCloser(t *testing.T) {
+	coverage.Covers(t, "sink.noop")
+	var s core.Sink = &NoopSink{}
+	_, ok := s.(io.Closer)
+	assert.That(t, !ok)
+}
+
+func TestSinkIceberg_ImplementsNoCloser(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
+	catalogName, tableName := newLocalIcebergTable(t)
+
+	built, err := NewIcebergSink(context.Background(), catalogName, tableName)
+	assert.NoError(t, err)
+
+	var s core.Sink = built
+	_, ok := s.(io.Closer)
 	assert.That(t, !ok)
 }
 
