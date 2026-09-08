@@ -13,8 +13,29 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
+
+// A type the sink cannot convert must fail with a code. An uncoded error
+// reaches the operator as system.internal.unexpected, which blames sqlflow
+// for a column the user chose.
+func TestSinkClickhouse_UnsupportedArrowTypeCarriesACode(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+
+	b := array.NewTime64Builder(memory.NewGoAllocator(), &arrow.Time64Type{Unit: arrow.Microsecond})
+	defer b.Release()
+	b.Append(arrow.Time64(12 * 3600 * 1e6))
+
+	arr := b.NewArray()
+	defer arr.Release()
+
+	_, err := arrowValue(arr, 0)
+	assert.Error(t, err)
+	if !errs.HasCode(err, errs.CodeSinkTypeUnsupported) {
+		t.Fatalf("code = %s, want %s", errs.CodeOf(err), errs.CodeSinkTypeUnsupported)
+	}
+}
 
 func TestSinkClickhouse_OptionsPythonDSN(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")

@@ -401,7 +401,11 @@ func arrowValue(arr arrow.Array, i int) (any, error) {
 	case *array.Date64:
 		return a.Value(i).ToTime(), nil
 	default:
-		return nil, fmt.Errorf("unsupported arrow type %s", arr.DataType())
+		// Coded, because this is the user's column and not sqlflow's bug. An
+		// uncoded error reaches the operator as system.internal.unexpected,
+		// which sends them to file a report rather than to cast the column.
+		return nil, errs.New(errs.CodeSinkTypeUnsupported,
+			"unsupported arrow type %s", arr.DataType())
 	}
 }
 
@@ -430,7 +434,11 @@ func arrowListValue(l *array.List, row int) (any, error) {
 		}
 		rv := reflect.ValueOf(v)
 		if !rv.Type().AssignableTo(out.Type().Elem()) {
-			return nil, fmt.Errorf("list element %s is not assignable to %s", rv.Type(), out.Type().Elem())
+			// The same defect one level down: goElemType renders an element
+			// type the value switch converts to something else. It is the
+			// user's column type either way.
+			return nil, errs.New(errs.CodeSinkTypeUnsupported,
+				"list element %s is not assignable to %s", rv.Type(), out.Type().Elem())
 		}
 		out = reflect.Append(out, rv)
 	}
