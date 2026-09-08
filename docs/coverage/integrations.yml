@@ -149,6 +149,17 @@ integrations:
         outcome: unsupported
         code: user.sink.type_unsupported
         columns: []
+    # What a null does, stated once for every type rather than per row: the
+    # answer is a property of the destination column, not of the Arrow type.
+    #
+    # `default` is the non-Nullable case, which is what every column in the
+    # table above is. ClickHouse raises nothing and stores the column type's
+    # zero value, and it does not evaluate the column's DEFAULT expression,
+    # because sqlflow names every produced column in the INSERT.
+    nulls:
+      default:
+        outcome: coerced
+        rule: the column type's zero value; the DEFAULT expression is not evaluated because every produced column is named in the INSERT
 
   - id: sink.iceberg
     kind: sink

@@ -37,6 +37,45 @@ func TestSinkClickhouse_UnsupportedArrowTypeCarriesACode(t *testing.T) {
 	}
 }
 
+// A null used to be checked before the type, so a null of a type the sink
+// cannot convert returned nil and was stored as NULL. An all-null column is
+// the ordinary shape of a field the producer stopped sending, so the same
+// column silently succeeded or failed the batch depending on whether any row
+// carried a value.
+func TestSinkClickhouse_ANullOfAnUnsupportedTypeStillFails(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+
+	b := array.NewTime64Builder(memory.NewGoAllocator(), &arrow.Time64Type{Unit: arrow.Microsecond})
+	defer b.Release()
+	b.AppendNull()
+
+	arr := b.NewArray()
+	defer arr.Release()
+
+	_, err := arrowValue(arr, 0)
+	assert.Error(t, err)
+	if !errs.HasCode(err, errs.CodeSinkTypeUnsupported) {
+		t.Fatalf("code = %s, want %s", errs.CodeOf(err), errs.CodeSinkTypeUnsupported)
+	}
+}
+
+// The fix must not make a null of a supported type fail: that null is the
+// column's absence, and it is stored as NULL or as the zero value.
+func TestSinkClickhouse_ANullOfASupportedTypeIsStillNil(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+
+	b := array.NewInt64Builder(memory.NewGoAllocator())
+	defer b.Release()
+	b.AppendNull()
+
+	arr := b.NewArray()
+	defer arr.Release()
+
+	v, err := arrowValue(arr, 0)
+	assert.NoError(t, err)
+	assert.Nil(t, v)
+}
+
 func TestSinkClickhouse_OptionsPythonDSN(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
 	// The dsn the Python configs carry. clickhouse_connect speaks only the

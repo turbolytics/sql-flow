@@ -265,6 +265,43 @@ type TypeDecl struct {
 	Columns []string `yaml:"columns"`
 }
 
+// NullRule is what an integration does with a null, when the destination
+// column does not say otherwise.
+//
+// It is separate from TypeDecl because it is one statement about every type
+// rather than one per type: ClickHouse stores a null in a non-Nullable column
+// as the column type's zero value whatever that type is.
+type NullRule struct {
+	Outcome string `yaml:"outcome"`
+	Rule    string `yaml:"rule"`
+}
+
+// NullsFor returns an integration's default null rule.
+func NullsFor(integration string) (NullRule, error) {
+	raw, err := readRegistry("integrations.yml")
+	if err != nil {
+		return NullRule{}, err
+	}
+
+	var doc struct {
+		Integrations []struct {
+			ID    string              `yaml:"id"`
+			Nulls map[string]NullRule `yaml:"nulls"`
+		} `yaml:"integrations"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return NullRule{}, fmt.Errorf("coverage: parse integrations.yml: %w", err)
+	}
+
+	for _, entry := range doc.Integrations {
+		if entry.ID != integration {
+			continue
+		}
+		return entry.Nulls["default"], nil
+	}
+	return NullRule{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+}
+
 // TypesFor returns one integration's type table, sorted by key.
 //
 // Sorted rather than in file order: a YAML mapping carries no order, so file
