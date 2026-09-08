@@ -45,63 +45,88 @@ integrations:
     types:
       bool:
         outcome: exact
+        expect: "true"
+        # Both columns hold what was written; only the rendering differs.
+        expect_per_column: {UInt8: "1"}
         columns: [Bool, UInt8]
       int8:
         outcome: exact
+        expect: "-128"
         columns: [Int8]
       int16:
         outcome: exact
+        expect: "-32768"
         columns: [Int16]
       int32:
         outcome: exact
+        expect: "-2147483648"
         columns: [Int32]
       int64:
         outcome: exact
+        expect: "-9223372036854775808"
         columns: [Int64]
       uint8:
         outcome: exact
+        expect: "255"
         columns: [UInt8]
       uint16:
         outcome: exact
+        expect: "65535"
         columns: [UInt16]
       uint32:
         outcome: exact
+        expect: "4294967295"
         columns: [UInt32]
       uint64:
         outcome: exact
+        expect: "18446744073709551615"
         columns: [UInt64]
       float32:
         outcome: exact
+        expect: "3.4028235e38"
         columns: [Float32]
       float64:
         outcome: exact
+        expect: "1.7976931348623157e308"
         columns: [Float64]
       utf8:
         outcome: exact
+        expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
         columns: [String, LowCardinality(String)]
       binary:
         outcome: exact
+        # Base64, because the value is bytes rather than text. 0xFF is not a
+        # character, and a UTF-8 file cannot carry it as one: writing "\xff"
+        # here declares code point U+00FF, which is two bytes, and the row
+        # would fail against a sink that stored exactly what it was given.
+        expect: !!binary AP9/gA==
         columns: [String]
       date32:
         outcome: exact
+        expect: "2026-09-08"
         columns: [Date32]
       "timestamp[s]":
         outcome: exact
+        expect: "2026-09-08 12:00:00"
         columns: [DateTime]
       "timestamp[ms]":
         outcome: exact
+        expect: "2026-09-08 12:00:00.123"
         columns: ["DateTime64(3)"]
       "timestamp[us]":
         outcome: exact
+        expect: "2026-09-08 12:00:00.123456"
         columns: ["DateTime64(6)"]
       "timestamp[ns]":
         outcome: exact
+        expect: "2026-09-08 12:00:00.123456789"
         columns: ["DateTime64(9)"]
 
       # #153's defect, stated as an outcome: the instant survives and the zone
       # does not. The column's own zone governs how the server renders it.
       "timestamp[us, tz=*]":
         outcome: coerced
+        expect: "2026-09-08 12:00:00.123456"
         rule: stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering
         columns: ["DateTime64(6)"]
 
@@ -110,62 +135,88 @@ integrations:
       # the element type the bare column takes.
       "list<bool>":
         outcome: exact
+        expect: "[true,true,true]"
         columns: ["Array(Bool)"]
       "list<int8>":
         outcome: exact
+        expect: "[-128,-128,-128]"
         columns: ["Array(Int8)"]
       "list<int16>":
         outcome: exact
+        expect: "[-32768,-32768,-32768]"
         columns: ["Array(Int16)"]
       "list<int32>":
         outcome: exact
+        expect: "[-2147483648,-2147483648,-2147483648]"
         columns: ["Array(Int32)"]
       "list<int64>":
         outcome: exact
+        expect: "[-9223372036854775808,-9223372036854775808,-9223372036854775808]"
         columns: ["Array(Int64)"]
       "list<uint8>":
         outcome: exact
+        expect: "[255,255,255]"
         columns: ["Array(UInt8)"]
       "list<uint16>":
         outcome: exact
+        expect: "[65535,65535,65535]"
         columns: ["Array(UInt16)"]
       "list<uint32>":
         outcome: exact
+        expect: "[4294967295,4294967295,4294967295]"
         columns: ["Array(UInt32)"]
       "list<uint64>":
         outcome: exact
+        expect: "[18446744073709551615,18446744073709551615,18446744073709551615]"
         columns: ["Array(UInt64)"]
       "list<float32>":
         outcome: exact
+        expect: "[3.4028235e38,3.4028235e38,3.4028235e38]"
         columns: ["Array(Float32)"]
       "list<float64>":
         outcome: exact
+        expect: "[1.7976931348623157e308,1.7976931348623157e308,1.7976931348623157e308]"
         columns: ["Array(Float64)"]
       "list<utf8>":
         outcome: exact
+        # toString escapes a quote, a backslash and a tab inside an array
+        # element. The stored value is the canonical string, which the
+        # bare utf8 row and type.string.fidelity both check byte for byte.
+        expect: '[''L\''Œil 👁 "quoted" back\\slash\ttab'',''L\''Œil 👁 "quoted" back\\slash\ttab'',''L\''Œil 👁 "quoted" back\\slash\ttab'']'
         columns: ["Array(String)"]
       # Array(String), not an Array of some binary type: ClickHouse has no
       # separate binary column, exactly as the bare binary row records.
       "list<binary>":
         outcome: exact
+        # Base64 for the same reason the bare binary row uses it, with one
+        # addition: ClickHouse renders an array element's NUL as the two
+        # characters \0 and leaves the other bytes raw, so the expectation
+        # mixes literal backslashes with bytes no UTF-8 file can carry.
+        expect: !!binary WydcMP9/gCcsJ1ww/3+AJywnXDD/f4AnXQ==
         columns: ["Array(String)"]
       "list<date32>":
         outcome: exact
+        expect: "['2026-09-08','2026-09-08','2026-09-08']"
         columns: ["Array(Date32)"]
       "list<timestamp[s]>":
         outcome: exact
+        expect: "['2026-09-08 12:00:00','2026-09-08 12:00:00','2026-09-08 12:00:00']"
         columns: ["Array(DateTime)"]
       "list<timestamp[ms]>":
         outcome: exact
+        expect: "['2026-09-08 12:00:00.123','2026-09-08 12:00:00.123','2026-09-08 12:00:00.123']"
         columns: ["Array(DateTime64(3))"]
       "list<timestamp[us]>":
         outcome: exact
+        expect: "['2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456']"
         columns: ["Array(DateTime64(6))"]
       "list<timestamp[ns]>":
         outcome: exact
+        expect: "['2026-09-08 12:00:00.123456789','2026-09-08 12:00:00.123456789','2026-09-08 12:00:00.123456789']"
         columns: ["Array(DateTime64(9))"]
       "list<timestamp[us, tz=*]>":
         outcome: coerced
+        expect: "['2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456']"
         rule: stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering
         columns: ["Array(DateTime64(6))"]
 
@@ -173,6 +224,7 @@ integrations:
       # slice the driver rejects.
       "list<list<int64>>":
         outcome: exact
+        expect: "[[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808]]"
         columns: ["Array(Array(Int64))"]
 
       # A list does not launder its element. arrowListValue recurses into

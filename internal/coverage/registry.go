@@ -266,6 +266,14 @@ type TypeDecl struct {
 	// this value is what the published page's "exact" means.
 	Expect string `yaml:"expect"`
 
+	// ExpectPerColumn overrides Expect for one destination column type.
+	//
+	// A row can name several column types that hold the same value and render
+	// it differently: an Arrow bool is `true` in a ClickHouse Bool column and
+	// `1` in a UInt8 one, and both store what was written. One expectation per
+	// row would force dropping one of the columns, and the page publishes both.
+	ExpectPerColumn map[string]string `yaml:"expect_per_column"`
+
 	// Code is the errs code an unsupported type must fail with.
 	Code string `yaml:"code"`
 
