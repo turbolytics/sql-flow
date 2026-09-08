@@ -5,6 +5,8 @@
 // hook, and an agent loop all call it without consequences.
 package validate
 
+import "sort"
+
 // Status is the outcome of one check.
 type Status string
 
@@ -112,9 +114,41 @@ func (r *Report) SetCheck(id string, status Status, reason string) {
 // Vars returns the variable report, or nil when the template never parsed.
 func (r *Report) Vars() *Variables { return r.Variables }
 
-// Finish computes OK. Only an error clears it: a warning is advice, and gating
-// CI on advice makes the advice unwelcome.
+// Finish orders the diagnostics and computes OK.
+//
+// The ordering is not cosmetic. jsonschema builds an error's causes from a
+// map, so the same config reports the same faults in a different order on
+// every run. A report that reorders cannot be diffed between runs, cached, or
+// compared in a test, so diagnostics are sorted by where they are: top of the
+// file first, and anything without a position ahead of everything else.
+//
+// Only an error clears OK. A warning is advice, and gating CI on advice makes
+// the advice unwelcome.
 func (r *Report) Finish() {
+	sort.SliceStable(r.Diagnostics, func(i, j int) bool {
+		a, b := r.Diagnostics[i], r.Diagnostics[j]
+
+		al, ac := 0, 0
+		if a.Position != nil {
+			al, ac = a.Position.Line, a.Position.Column
+		}
+		bl, bc := 0, 0
+		if b.Position != nil {
+			bl, bc = b.Position.Line, b.Position.Column
+		}
+
+		if al != bl {
+			return al < bl
+		}
+		if ac != bc {
+			return ac < bc
+		}
+		if a.Code != b.Code {
+			return a.Code < b.Code
+		}
+		return a.Message < b.Message
+	})
+
 	r.OK = true
 	for _, d := range r.Diagnostics {
 		if d.Severity == SeverityError {

@@ -48,6 +48,24 @@ func TestValidateTemplate_ParseErrorIsReturned(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// Every shipped example writes {{ SQLFLOW_KAFKA_BROKERS|default(...) }} and
+// runs with that variable unset. Calling it missing would fail the whole
+// example corpus, which is the spurious error a model would obey.
+func TestValidateTemplate_DefaultFilterMakesAVariableOptional(t *testing.T) {
+	src := "brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]\n"
+
+	var rep Report
+	checkTemplate(src, nil, &rep)
+	rep.Finish()
+
+	assert.That(t, rep.OK)
+	assert.Equal(t, 0, len(rep.Diagnostics))
+	assert.Equal(t, StatusPass, checkStatus(t, rep, "config.template"))
+
+	// It is still a reference, so it cannot make a provided value look unread.
+	assert.DeepEqual(t, []string{"SQLFLOW_KAFKA_BROKERS"}, rep.Variables.Referenced)
+}
+
 // Issue #120: the reporter provided SQLFLOW_AZURE_STORAGE_CONNECTION_STRING
 // and the config read SQLFLOW_AZURE_CONNECTION_STRING. gonja rendered the
 // missing name as an empty string with a nil error, and the resulting
@@ -74,6 +92,25 @@ func TestValidateTemplate_MissingVariableNamesItsNeighbour(t *testing.T) {
 
 	assert.DeepEqual(t, []string{"SQLFLOW_AZURE_CONNECTION_STRING"}, rep.Variables.Missing)
 	assert.DeepEqual(t, []string{"SQLFLOW_AZURE_STORAGE_CONNECTION_STRING"}, rep.Variables.Unused)
+}
+
+// Three shipped examples read a variable with no default -- SQLFLOW_ROOT_DIR,
+// SQLFLOW_SINK_BASEPATH, SQLFLOW_GITHUB_WEBHOOK_SECRET -- because the operator
+// is meant to supply it. Failing those would make validation useless in CI,
+// where no secret is set (#142). It is reported, not fatal.
+func TestValidateTemplate_UnsuppliedInputIsAWarning(t *testing.T) {
+	var rep Report
+	checkTemplate("root: {{ SQLFLOW_ROOT_DIR }}\n", nil, &rep)
+	rep.Finish()
+
+	assert.That(t, rep.OK)
+	assert.Equal(t, 1, len(rep.Diagnostics))
+	assert.Equal(t, SeverityWarning, rep.Diagnostics[0].Severity)
+	assert.Equal(t, 0, len(rep.Diagnostics[0].DidYouMean))
+	assert.Equal(t, StatusPass, checkStatus(t, rep, "config.template"))
+
+	// Still reported as missing: a warning is advice, not silence.
+	assert.DeepEqual(t, []string{"SQLFLOW_ROOT_DIR"}, rep.Variables.Missing)
 }
 
 func TestValidateTemplate_AllVariablesDefinedPasses(t *testing.T) {

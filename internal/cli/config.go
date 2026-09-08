@@ -2,24 +2,16 @@ package cli
 
 import (
 	"bytes"
-	_ "embed"
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/spf13/cobra"
-	"github.com/turbolytics/sql-flow/internal/config"
-	"gopkg.in/yaml.v3"
+	"github.com/turbolytics/sql-flow/internal/errs"
+	"github.com/turbolytics/sql-flow/internal/validate"
 )
-
-// configSchemaJSON is the config JSON Schema the Python engine validates
-// against. go:embed cannot reach outside its own package directory, so the
-// canonical file at sqlflow/static/schemas/config.json is mirrored here;
-// TestEmbeddedSchemaMatchesPython fails if the two drift apart.
-//
-//go:embed schemas/config.json
-var configSchemaJSON []byte
 
 func newConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -72,72 +64,37 @@ func newConfigExampleCommand() *cobra.Command {
 	}
 }
 
-// validateConfig renders the config template and validates the result against
-// the config schema, the same two steps the Python `config validate` performs.
+// validateConfig renders the config template and validates the result,
+// delegating to internal/validate so `config validate` and `validate` cannot
+// disagree about what a valid config is.
 func validateConfig(path string) error {
-	rendered, err := config.RenderTemplate(path, map[string]string{})
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return errs.New(errs.CodeConfigNotFound, "config file not found: %s", path)
+	}
+
+	rep, err := validate.Validate(context.Background(), validate.Request{
+		Path:   path,
+		Config: string(src),
+	})
 	if err != nil {
 		return err
 	}
-
-	var doc any
-	if err := yaml.Unmarshal(rendered, &doc); err != nil {
-		return fmt.Errorf("parsing YAML failed: %w", err)
+	if rep.OK {
+		return nil
 	}
 
-	// The validator works on the JSON data model, so the YAML document is
-	// round-tripped to normalize its types (YAML ints, in particular).
-	normalized, err := jsonRoundTrip(doc)
-	if err != nil {
-		return fmt.Errorf("normalizing config failed: %w", err)
+	// Every fault in one message. Reporting the first would cost a reader a
+	// run per mistake.
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s is invalid", path)
+	for _, d := range rep.Diagnostics {
+		if d.Severity != validate.SeverityError {
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %s", d.Message)
 	}
-
-	schema, err := compileConfigSchema()
-	if err != nil {
-		return err
-	}
-
-	if err := schema.Validate(normalized); err != nil {
-		// The validator's own message already nests each cause under the
-		// instance location that failed.
-		return fmt.Errorf("%s is invalid: %w", path, err)
-	}
-
-	return nil
-}
-
-func compileConfigSchema() (*jsonschema.Schema, error) {
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(configSchemaJSON))
-	if err != nil {
-		return nil, fmt.Errorf("parsing config schema failed: %w", err)
-	}
-
-	const schemaURL = "https://turbolytics.io/schemas/config.json"
-
-	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource(schemaURL, doc); err != nil {
-		return nil, fmt.Errorf("loading config schema failed: %w", err)
-	}
-
-	schema, err := compiler.Compile(schemaURL)
-	if err != nil {
-		return nil, fmt.Errorf("compiling config schema failed: %w", err)
-	}
-
-	return schema, nil
-}
-
-func jsonRoundTrip(v any) (any, error) {
-	encoded, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-
-	var out any
-	if err := json.Unmarshal(encoded, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return errs.New(errs.CodeConfigInvalid, "%s", b.String())
 }
 
 // configExample renders the schema as a commented YAML skeleton, a port of the
@@ -145,7 +102,7 @@ func jsonRoundTrip(v any) (any, error) {
 // <type> placeholders, and enums are listed as alternatives.
 func configExample() (string, error) {
 	var root schemaNode
-	if err := json.Unmarshal(configSchemaJSON, &root); err != nil {
+	if err := json.Unmarshal(validate.SchemaJSON(), &root); err != nil {
 		return "", fmt.Errorf("parsing config schema failed: %w", err)
 	}
 

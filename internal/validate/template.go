@@ -36,6 +36,10 @@ func checkTemplate(src string, provided map[string]string, rep *Report) {
 		if _, ok := provided[r.name]; ok {
 			continue
 		}
+		// A reference with a default filter is meant to be absent.
+		if r.optional {
+			continue
+		}
 		// One diagnostic per name, at its first use. Reading a variable three
 		// times is one mistake, not three.
 		if seen[r.name] {
@@ -44,12 +48,30 @@ func checkTemplate(src string, provided map[string]string, rep *Report) {
 		seen[r.name] = true
 		missing = append(missing, r.name)
 
+		// A config that reads {{ SQLFLOW_ROOT_DIR }} with no default is
+		// declaring a required input. Absent, it is the environment that is
+		// incomplete, not the config, and failing on it would make validation
+		// useless in CI, where secrets are not set (#142).
+		//
+		// A missing name that closely resembles a provided one is different.
+		// That resemblance is evidence of a typo, which is the fault #120
+		// spent days on, so it fails.
+		neighbours := nearest(r.name, provided)
+		severity := SeverityWarning
+		message := "template variable " + r.name +
+			" is not set and renders as an empty string"
+		if len(neighbours) > 0 {
+			severity = SeverityError
+			message = "template variable " + r.name +
+				" is not defined and renders as an empty string, but a similar name is supplied and never read"
+		}
+
 		rep.Add(diagnostic(
 			errs.CodeConfigTemplateUndefined,
-			SeverityError,
-			"template variable "+r.name+" is not defined and renders as an empty string",
+			severity,
+			message,
 			&Position{Source: "config", Line: r.line, Column: r.col},
-			nearest(r.name, provided)...,
+			neighbours...,
 		))
 	}
 
@@ -80,11 +102,15 @@ func checkTemplate(src string, provided map[string]string, rep *Report) {
 
 	rep.Variables = vars
 
-	if len(missing) > 0 {
-		rep.SetCheck("config.template", StatusFail, "")
-	} else {
-		rep.SetCheck("config.template", StatusPass, "")
+	// A warning is advice, so only an error fails the check.
+	status := StatusPass
+	for _, d := range rep.Diagnostics {
+		if d.Code == string(errs.CodeConfigTemplateUndefined) && d.Severity == SeverityError {
+			status = StatusFail
+			break
+		}
 	}
+	rep.SetCheck("config.template", status, "")
 }
 
 // nearest returns the provided names close enough to want to be plausible
@@ -178,10 +204,16 @@ func sortedSet(m map[string]bool) []string {
 }
 
 // ref is one variable reference, with the position of the name itself.
+//
+// optional marks a reference the author gave a fallback, as in
+// {{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}. Leaving it undefined
+// is the documented way to use that config, so reporting it as missing would
+// fail every shipped example.
 type ref struct {
-	name string
-	line int
-	col  int
+	name     string
+	line     int
+	col      int
+	optional bool
 }
 
 // scanTemplate parses the config as a Jinja2 template and collects every
@@ -211,6 +243,10 @@ func scanTemplate(src string) (refs []ref, complete bool, err error) {
 type walker struct {
 	refs     []ref
 	complete bool
+
+	// optional counts the default filters enclosing the node being walked.
+	// A reference inside one has a fallback and cannot be missing.
+	optional int
 }
 
 func (w *walker) walk(n nodes.Node) {
@@ -229,7 +265,24 @@ func (w *walker) walk(n nodes.Node) {
 		w.walk(v.Alternative)
 
 	case *nodes.FilteredExpression:
+		// A default filter supplies the value when the variable is absent,
+		// so the reference under it is optional.
+		defaulted := false
+		for _, f := range v.Filters {
+			if f.Name == "default" {
+				defaulted = true
+				break
+			}
+		}
+		if defaulted {
+			w.optional++
+		}
 		w.walk(v.Expression)
+		if defaulted {
+			w.optional--
+		}
+
+		// The filter's own arguments are not covered by the fallback.
 		for _, f := range v.Filters {
 			for _, a := range f.Args {
 				w.walk(a)
@@ -243,13 +296,14 @@ func (w *walker) walk(n nodes.Node) {
 		w.walk(v.Expression)
 
 	case *nodes.Name:
-		w.refs = append(w.refs, ref{v.Name.Val, v.Name.Line, v.Name.Col})
+		w.refs = append(w.refs, ref{v.Name.Val, v.Name.Line, v.Name.Col, w.optional > 0})
 
 	case *nodes.Variable:
 		// Only the root of a dotted lookup is a variable. The rest are
 		// attributes of whatever it resolves to.
 		if len(v.Parts) > 0 {
-			w.refs = append(w.refs, ref{v.Parts[0].S, v.Location.Line, v.Location.Col})
+			w.refs = append(w.refs,
+				ref{v.Parts[0].S, v.Location.Line, v.Location.Col, w.optional > 0})
 		}
 
 	case *nodes.GetAttribute:
