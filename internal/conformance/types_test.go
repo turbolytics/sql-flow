@@ -90,12 +90,13 @@ func (s *typeSink) value() any {
 	if chunk.IsNull(0) {
 		return nil
 	}
-	// Strings come back as strings, so the fidelity corpus is compared rather
-	// than skipped past a failed type assertion.
+	// Rendered, not returned raw. A real destination answers with a string, so
+	// a double that answers with an Arrow array would slip past the value
+	// comparison on a failed type assertion and prove less than it looks.
 	if str, ok := chunk.(*array.String); ok {
 		return str.Value(0)
 	}
-	return chunk
+	return chunk.ValueStr(0)
 }
 
 // lastString returns the single string value of the last delivered table, or
@@ -158,10 +159,16 @@ func TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses(t *testing.T) 
 	// A container row and a string row are both part of honouring the table:
 	// type.nested and type.string.fidelity each refuse to pass on a table that
 	// declares nothing they can exercise.
+	// The expectations are the canonical values internal/conformance/lattice.go
+	// writes, rendered the way the double answers. int64 writes its type's
+	// minimum, so a value stored one width too narrow wraps and is caught here.
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
-		{Key: "utf8", Outcome: "exact", Columns: []string{"String"}},
-		{Key: "list<int64>", Outcome: "exact", Columns: []string{"Array(Int64)"}},
+		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"},
+			Expect: "-9223372036854775808"},
+		{Key: "utf8", Outcome: "exact", Columns: []string{"String"},
+			Expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"},
+		{Key: "list<int64>", Outcome: "exact", Columns: []string{"Array(Int64)"},
+			Expect: "[-9223372036854775808,-9223372036854775808,-9223372036854775808]"},
 	}
 	s := typeSubject(newTypeSink("int64", "utf8", "list<int64>"), declared)
 	// The double keeps every value it is given, nulls included.
@@ -379,6 +386,55 @@ func TestToolingConformanceTypes_ATableWithNoStringRowIsNotFidelityProof(t *test
 	s.ListElementNulls = coverage.NullRule{Outcome: "exact"}
 
 	assertTypeFailure(t, typeVerdicts(t, s), typeFidelity, "no utf8 row")
+}
+
+// The hole this closes: a sink that takes a value, stores something else, and
+// returns it without an error passed type.roundtrip for as long as the
+// read-back was not nil.
+func TestToolingConformanceTypes_AValueChangedInFlightIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "utf8", Outcome: "exact", Columns: []string{"String"}, Expect: "hello"},
+	}
+	s := typeSubject(newTypeSink("utf8"), declared)
+	s.Prepare = func(t *testing.T, key, columnType string) TypeDestination {
+		sink := newTypeSink("utf8")
+		return TypeDestination{
+			Sink: core.Sink(sink),
+			// A destination that stores something other than what it took.
+			ReadBack: func(t *testing.T) (any, error) { return "something else", nil },
+		}
+	}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeRoundtrip, "something else")
+}
+
+// A row claiming a value survives and declaring no expectation cannot be
+// judged, and must say so rather than pass.
+func TestToolingConformanceTypes_AnExactRowWithNoExpectationIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+	}
+	s := typeSubject(newTypeSink("int64"), declared)
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeRoundtrip, "no expect")
+}
+
+// An unsupported row needs no expectation: it never reaches a destination.
+func TestToolingConformanceTypes_AnUnsupportedRowNeedsNoExpectation(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "unsupported", Code: "user.sink.type_unsupported"},
+	}
+	for _, entry := range typeVerdicts(t, typeSubject(newTypeSink(), declared)) {
+		if entry.invariant == typeRoundtrip && entry.failure != "" {
+			t.Fatalf("type.roundtrip failed on an unsupported row: %s", entry.failure)
+		}
+	}
 }
 
 // A marker carries an integration id, so a subject without one would emit

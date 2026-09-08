@@ -257,6 +257,15 @@ type TypeDecl struct {
 	// cannot predict what their column will hold.
 	Rule string `yaml:"rule"`
 
+	// Expect is what the destination must hold after the row is written, as
+	// the subject's ReadBack renders it. Required when Outcome is exact or
+	// coerced.
+	//
+	// Declared rather than derived from the run. A test that records whatever
+	// the sink returned compares the sink to itself and proves nothing, and
+	// this value is what the published page's "exact" means.
+	Expect string `yaml:"expect"`
+
 	// Code is the errs code an unsupported type must fail with.
 	Code string `yaml:"code"`
 

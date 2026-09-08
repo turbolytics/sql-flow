@@ -211,6 +211,20 @@ func judgeTypeRow(t *testing.T, s TypeSubject, d coverage.TypeDecl, null bool) s
 		if got == nil {
 			return fmt.Sprintf("%s into %s: the value read back as null", d.Key, columnType)
 		}
+		// A non-null read-back is not proof the value survived. A sink that
+		// takes a value, stores something else and returns it without an
+		// error satisfies everything above.
+		if d.Expect == "" {
+			return fmt.Sprintf("%s into %s is declared %s and the table names no "+
+				"expect, so nothing checks what the destination holds. A row that "+
+				"claims a value survives must say what survives",
+				d.Key, columnType, d.Outcome)
+		}
+		if rendered, ok := got.(string); ok && rendered != d.Expect {
+			return fmt.Sprintf("%s into %s read back as %q, and the table expects "+
+				"%q. Either the sink changed what it stores, or the table was "+
+				"wrong when it was written", d.Key, columnType, rendered, d.Expect)
+		}
 	}
 	return ""
 }
