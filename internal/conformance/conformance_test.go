@@ -506,6 +506,8 @@ func TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants(t *te
 	})
 
 	assert.True(t, strings.Contains(vs[stateWithOffsets].skipped, "no durable state"))
+	// It reads nothing back either, so the outcome check cannot run.
+	assert.True(t, strings.Contains(vs[onlyDeliveredRows].skipped, "read back"))
 	assert.Equal(t, "", vs[stateWithOffsets].failure)
 
 	// The other three still apply to a stateless pipeline.
@@ -548,7 +550,7 @@ func pipelineVerdictsFor(t *testing.T, s PipelineSubject) map[string]verdict {
 	for _, v := range pipelineVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 5, len(out))
+	assert.Equal(t, 6, len(out))
 	return out
 }
 

@@ -134,6 +134,23 @@ invariants:
     requires: []
     enforced: true
 
+  # The property pipeline.commit.after_flush approximates. after_flush asserts
+  # the order the loop does things, which is a mechanism: a correct rewrite
+  # that committed optimistically and rolled back would fail it. This asserts
+  # the outcome, against rows a destination actually holds, so it survives any
+  # implementation that keeps the guarantee.
+  - id: pipeline.commit.only_delivered_rows
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      The pipeline never commits a position covering a row the destination did
+      not take, and never leaves a delivered row uncommitted after a clean run.
+    verified_by: harness
+    requires: []
+    enforced: true
+    violated_once: ["#154"]
+
   - id: pipeline.commit.nothing_on_failure
     family: checkpoint
     class: safety

@@ -36,12 +36,12 @@ names every one of them.
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
 | `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 8 |
-| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 17 |
+| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 25 |
 | `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ | 22 |
 | `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ | 6 |
 | `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ | 2 |
 | `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ | 8 |
-| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 21 |
+| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 29 |
 | `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — | 16 |
 | `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | 1 |
 | `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ | 5 |
@@ -65,7 +65,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**31 invariants declared: 27 safety and 4 liveness. Of 134 (invariant, integration) cells: 24 proven, 90 missing, 0 skipped, 0 failing, 20 exempt. 0 gap(s).**
+**32 invariants declared: 28 safety and 4 liveness. Of 136 (invariant, integration) cells: 26 proven, 90 missing, 0 skipped, 0 failing, 20 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -158,6 +158,7 @@ drains. An invariant holds only if it holds on all four.
 | Invariant | Claim | `pipeline.stateful` | `pipeline.stateless` |
 | --- | --- | --- | --- |
 | `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ✅ u | ✅ u |
+| `pipeline.commit.only_delivered_rows` | The pipeline never commits a position covering a row the destination did not take, and never leaves a delivered row uncommitted after a clean run. *(violated once: #154)* | ✅ u | ✅ u |
 | `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u | ✅ u |
 | `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
 

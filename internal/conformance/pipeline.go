@@ -72,6 +72,29 @@ type PipelineSubject struct {
 	// Options builds the pipeline's options from the harness's recorder. A
 	// stateful configuration returns core.WithStateStore(r.Offsets(), r.Tx()).
 	Options func(r *Recorder) []core.TurbineOption
+
+	// NewSink supplies the destination the pipeline writes to. Nil means the
+	// harness discards the rows and judges the event order alone.
+	//
+	// A subject that supplies one, with ReadBack and Break, is judged on what
+	// the destination actually holds. That is the difference between asserting
+	// the loop emitted three events in an order and asserting it never
+	// committed offsets for a row the sink never wrote.
+	NewSink func(t *testing.T) core.Sink
+
+	// ReadBack returns every row the destination holds. Required with NewSink.
+	ReadBack func(t *testing.T) []Row
+
+	// Break makes the destination stop accepting writes, and Heal reverses it.
+	// With a real sink these replace the harness's synthetic flush failure, so
+	// the flush fails the way it would in production.
+	Break func(t *testing.T)
+	Heal  func(t *testing.T)
+}
+
+// readsBack reports whether the subject can be judged on delivered rows.
+func (s PipelineSubject) readsBack() bool {
+	return s.NewSink != nil && s.ReadBack != nil && s.Break != nil && s.Heal != nil
 }
 
 // Pipelines proves every pipeline invariant the subject can exercise.
@@ -121,6 +144,7 @@ const (
 	stateWithOffsets    = "pipeline.state.with_offsets"
 	drainOnCancel       = "lifecycle.drain.on_cancel"
 	flushEventually     = "pipeline.flush.eventually"
+	onlyDeliveredRows   = "pipeline.commit.only_delivered_rows"
 )
 
 // pipelineVerdicts runs every trigger against the subject and judges each
@@ -138,6 +162,13 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 	withOffsets := verdict{invariant: stateWithOffsets}
 	drain := verdict{invariant: drainOnCancel}
 	eventually := verdict{invariant: flushEventually}
+	delivered := verdict{invariant: onlyDeliveredRows}
+
+	if !s.readsBack() {
+		delivered.skipped = s.Integration + " has no destination to read back " +
+			"from, so what it committed cannot be compared with what landed; " +
+			"supply NewSink, ReadBack, Break and Heal"
+	}
 
 	if !s.KeepsState {
 		withOffsets.skipped = s.Integration + " keeps no durable state, so " +
@@ -175,6 +206,20 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 		drain.failure = err.Error()
 	}
 
+	// The outcome, not the order. after_flush asserts the sequence the loop
+	// happens to use; this asserts the guarantee that sequence exists for, and
+	// it needs a destination to count.
+	if s.readsBack() {
+		for _, trigger := range Triggers {
+			if delivered.failure != "" {
+				break
+			}
+			if err := checkOnlyDeliveredRows(t, s, trigger); err != nil {
+				delivered.failure = err.Error()
+			}
+		}
+	}
+
 	// The only liveness claim here. Everything above says the pipeline does
 	// nothing wrong; this says it does something. A sink that never flushed
 	// would satisfy every one of them and fail this one alone.
@@ -182,7 +227,8 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 		eventually.failure = err.Error()
 	}
 
-	return []verdict{afterFlush, onFailure, withOffsets, drain, eventually}
+	return []verdict{afterFlush, onFailure, withOffsets, drain, eventually,
+		delivered}
 }
 
 // checkCommitAfterFlush runs one trigger and holds the event order.
@@ -201,8 +247,8 @@ func checkCommitAfterFlush(t *testing.T, s PipelineSubject, trigger Trigger) err
 	if !sameOrder(run.events, want) {
 		return fmt.Errorf(
 			"%s: the pipeline did %s; want %s. Committing before the flush "+
-				"moves the position past rows the sink never took, and the "+
-				"consumer group reports no lag while they are gone",
+				"records progress past rows the sink never wrote, so a restart "+
+				"skips them and nothing looks wrong",
 			trigger, list(run.events), list(want))
 	}
 	return nil
@@ -226,8 +272,9 @@ func checkNothingOnFailure(t *testing.T, s PipelineSubject, trigger Trigger) err
 	}
 	if run.sourceCommits != 0 {
 		return fmt.Errorf(
-			"%s: the flush failed and the source was still told to commit %d "+
-				"time(s); the rows never landed, so the position must not move",
+			"%s: the flush failed and the pipeline still committed its offsets "+
+				"%d time(s). Nothing was written, so a restart has to re-read "+
+				"those messages rather than skip them",
 			trigger, run.sourceCommits)
 	}
 	return nil
@@ -245,14 +292,16 @@ func checkStateWithOffsets(t *testing.T, s PipelineSubject, trigger Trigger) err
 	if !sameOrder(run.events, []string{"flush", "save-offsets-failed", "rollback"}) {
 		return fmt.Errorf(
 			"%s: after a failed offset save the pipeline did %s; want a "+
-				"rollback, so the state this batch wrote goes back with the "+
-				"offsets that describe it",
+				"rollback. The window state this batch wrote has to go back "+
+				"with the offsets that say where it came from, or a restart "+
+				"replays the batch into state that already holds it",
 			trigger, list(run.events))
 	}
 	if run.sourceCommits != 0 {
 		return fmt.Errorf(
-			"%s: the offset save failed and the source was still told to "+
-				"commit", trigger)
+			"%s: saving the offsets failed and the pipeline still told the "+
+				"source it had finished with those messages. A restart would "+
+				"skip them", trigger)
 	}
 	return nil
 }
@@ -273,6 +322,66 @@ func checkDrain(t *testing.T, s PipelineSubject) error {
 	if run.flushes != 1 {
 		return fmt.Errorf("drain: the buffered batch was flushed %d times; want 1",
 			run.flushes)
+	}
+	return nil
+}
+
+// checkOnlyDeliveredRows compares what the pipeline committed with what the
+// destination holds, on a clean run and on a broken one.
+//
+// The pipeline commits offsets on what Flush reports. A run that advances the
+// position while the destination holds nothing has lost those rows, and the
+// consumer group shows no lag while they are gone -- which is #154, found in
+// production rather than by a test.
+func checkOnlyDeliveredRows(t *testing.T, s PipelineSubject, trigger Trigger) error {
+	t.Helper()
+
+	// Deltas, not totals. Every scenario writes to the same destination, so
+	// what matters is what this run added.
+	start := int64(len(s.ReadBack(t)))
+
+	clean := runPipeline(t, s, trigger, faults{})
+	if clean.err != nil {
+		return fmt.Errorf("%s: the pipeline failed with no fault injected: %v",
+			trigger, clean.err)
+	}
+
+	landed := int64(len(s.ReadBack(t))) - start
+	if landed != clean.rows {
+		return fmt.Errorf(
+			"%s: the pipeline gave the sink %d rows and only %d reached the "+
+				"table. It commits offsets for all %d, so the missing rows are "+
+				"never read again",
+			trigger, clean.rows, landed, clean.rows)
+	}
+	if clean.sourceCommits == 0 {
+		return fmt.Errorf(
+			"%s: %d rows reached the table and the pipeline never committed its "+
+				"offsets. Every restart re-reads and re-writes the same batch",
+			trigger, landed)
+	}
+
+	// And the other direction: a destination that took nothing must leave the
+	// position where it was.
+	before := int64(len(s.ReadBack(t)))
+
+	broken := runPipeline(t, s, trigger, faults{flush: true})
+	if broken.err == nil {
+		return fmt.Errorf("%s: the destination was broken and the pipeline did "+
+			"not fail", trigger)
+	}
+	if added := int64(len(s.ReadBack(t))) - before; added != 0 {
+		return fmt.Errorf(
+			"%s: the sink was broken and %d rows reached the table anyway",
+			trigger, added)
+	}
+	if broken.sourceCommits != 0 {
+		return fmt.Errorf(
+			"%s: the sink wrote no rows and the pipeline committed its offsets "+
+				"anyway. After a restart the source resumes past those rows, so "+
+				"they are gone, and the consumer group reports no lag while they "+
+				"are missing",
+			trigger)
 	}
 	return nil
 }
@@ -298,9 +407,9 @@ func checkFlushEventually(t *testing.T, s PipelineSubject) error {
 	}
 	if run.flushes == 0 {
 		return errors.New(
-			"a batch smaller than batchSize never reached the sink; only the " +
-				"flush interval can move it, and a pipeline that waits for a " +
-				"batch that never fills stalls for as long as it runs")
+			"a batch smaller than batchSize never reached the sink. Only the " +
+				"flush interval can move it, so on a quiet topic the rows sit " +
+				"in memory for as long as the process runs")
 	}
 	if run.rows != intervalRows {
 		return fmt.Errorf(
@@ -369,7 +478,22 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 
 	rec := &Recorder{failOffsets: f.offsets}
 	src := &recordingSource{rec: rec}
-	sink := &recordingSink{rec: rec, fail: f.flush}
+
+	sink := &recordingSink{rec: rec}
+	if s.NewSink != nil {
+		sink.inner = s.NewSink(t)
+	}
+	// Break the destination where there is one, so the flush fails the way it
+	// would in production. Only a subject with nothing to break needs the
+	// harness to fake it.
+	if f.flush {
+		if s.readsBack() {
+			s.Break(t)
+			defer s.Heal(t)
+		} else {
+			sink.fail = true
+		}
+	}
 	var flushed chan struct{}
 
 	// Sized so only the intended trigger can fire. A batch size above the
@@ -599,39 +723,65 @@ func (s *recordingSource) Close() error {
 	return nil
 }
 
-// recordingSink logs its flushes and can fail them.
+// recordingSink logs what the pipeline asked of a sink, and delegates.
+//
+// It wraps the subject's sink where there is one, so the event order and the
+// delivered rows come from the same run. With no inner sink it discards, which
+// is what the double-only subjects want.
 type recordingSink struct {
-	rec  *Recorder
-	fail bool
+	rec   *Recorder
+	inner core.Sink
+	fail  bool
 
 	mu      sync.Mutex
 	rows    int64
 	flushes int
 }
 
-func (s *recordingSink) WriteTable(_ context.Context, batch arrow.Table) error {
+func (s *recordingSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if batch != nil {
 		s.rows += batch.NumRows()
+	}
+	inner := s.inner
+	s.mu.Unlock()
+
+	if inner != nil {
+		return inner.WriteTable(ctx, batch)
 	}
 	return nil
 }
 
-func (s *recordingSink) Flush(context.Context) error {
+func (s *recordingSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	s.flushes++
+	inner, fail := s.inner, s.fail
 	s.mu.Unlock()
 
-	if s.fail {
+	// The synthetic failure is for subjects with no destination to break. A
+	// subject that has one gets a real error from a really broken sink.
+	if fail {
 		s.rec.record("flush-failed")
 		return errors.New("conformance: sink is down")
+	}
+	if inner != nil {
+		if err := inner.Flush(ctx); err != nil {
+			s.rec.record("flush-failed")
+			return err
+		}
 	}
 	s.rec.record("flush")
 	return nil
 }
 
-func (s *recordingSink) Batch() (arrow.Table, error) { return nil, nil }
+func (s *recordingSink) Batch() (arrow.Table, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inner != nil {
+		return s.inner.Batch()
+	}
+	return nil, nil
+}
 
 func (s *recordingSink) Rows() int64 {
 	s.mu.Lock()
