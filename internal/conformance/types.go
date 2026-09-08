@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -34,6 +35,7 @@ const (
 	typeRoundtrip  = "type.roundtrip"
 	typeNull       = "type.null"
 	typeNested     = "type.nested"
+	typeInstant    = "type.timestamp.instant"
 	typeFidelity   = "type.string.fidelity"
 	typeUndeclared = "type.undeclared.fails_loud"
 )
@@ -81,6 +83,12 @@ type TypeSubject struct {
 	// differs: a ClickHouse column can be Nullable and its Array(T) elements
 	// cannot, so the column-level rule says nothing about what a list holds.
 	ListElementNulls coverage.NullRule
+
+	// TemporalString is a timestamp that reaches the sink as text, bound for a
+	// temporal column. No Arrow type describes that pairing, and it is the
+	// exact shape of #153, so a table keyed on Arrow types alone never writes
+	// it.
+	TemporalString coverage.TemporalString
 
 	// Prepare creates a destination with a single column "v" of columnType,
 	// and a sink writing to it.
@@ -148,7 +156,8 @@ func typeVerdicts(t *testing.T, s TypeSubject) []verdict {
 	}
 
 	return []verdict{roundtrip, nulls, judgeNested(t, s),
-		judgeStringFidelity(t, s), judgeUndeclaredType(t, s)}
+		judgeTimestampInstant(t, s), judgeStringFidelity(t, s),
+		judgeUndeclaredType(t, s)}
 }
 
 // judgeTypeRow writes one value of one type into every column type the row
@@ -405,6 +414,106 @@ func judgeNull(rule coverage.NullRule, key, columnType string, got any) string {
 	default:
 		return fmt.Sprintf("%s: the integration declares no default null outcome, "+
 			"so what a null does here is untested and unpublished", key)
+	}
+	return ""
+}
+
+// judgeTimestampInstant writes every temporal row with the host in a zone that
+// is not UTC.
+//
+// Equality alone cannot make this claim. A timestamp written from a host in
+// UTC-4 into a destination read from UTC-4 compares equal and is still four
+// hours wrong for everyone else. That is what #153 was: clickhouse-go parsed a
+// zone-less string in time.Local, so the stored value depended on where the
+// process ran, and every test on a UTC machine agreed with the bug.
+//
+// Moving time.Local is process-wide, so this restores it before returning. It
+// is safe because nothing under internal/ runs in parallel; a t.Parallel()
+// anywhere in a package that reaches this code invalidates it.
+func judgeTimestampInstant(t *testing.T, s TypeSubject) verdict {
+	t.Helper()
+	v := verdict{invariant: typeInstant}
+
+	var temporal []coverage.TypeDecl
+	for _, d := range s.Declared {
+		if d.Outcome == "unsupported" {
+			continue
+		}
+		if strings.HasPrefix(d.Key, "timestamp[") || d.Key == "date32" {
+			temporal = append(temporal, d)
+		}
+	}
+	if len(temporal) == 0 {
+		v.failure = "the type table declares no temporal row, so nothing here " +
+			"proves a timestamp keeps its instant"
+		return v
+	}
+
+	// Deliberately not UTC, and deliberately not the zone the zoned value
+	// carries. A runner that leaves the host in UTC proves nothing about a
+	// leak, because the wrong answer and the right one coincide.
+	restore := time.Local
+	time.Local = time.FixedZone("conformance", 9*3600)
+	defer func() { time.Local = restore }()
+
+	for _, d := range temporal {
+		if f := judgeTypeRow(t, s, d, false); f != "" {
+			v.failure = "with the host nine hours ahead of UTC: " + f
+			return v
+		}
+	}
+	if f := judgeTemporalString(t, s); f != "" {
+		v.failure = "with the host nine hours ahead of UTC: " + f
+	}
+	return v
+}
+
+// judgeTemporalString writes a timestamp that arrives as text into a temporal
+// column.
+//
+// This is #153's exact shape, and no Arrow type describes it: the batch column
+// is utf8 and the destination's is a DateTime, so a table keyed on Arrow types
+// writes every timestamp as an Arrow timestamp and never as the string a
+// handler passes through without a CAST. The driver parsed that string in
+// time.Local, so the stored value moved with the host.
+func judgeTemporalString(t *testing.T, s TypeSubject) string {
+	t.Helper()
+
+	ts := s.TemporalString
+	if ts.Column == "" || ts.Value == "" || ts.Expect == "" {
+		return "the integration declares no temporal_string case, so a timestamp " +
+			"that arrives as text is unproven. That pairing is #153, and no Arrow " +
+			"type describes it"
+	}
+
+	b := array.NewStringBuilder(memory.NewGoAllocator())
+	defer b.Release()
+	b.Append(ts.Value)
+
+	arr := b.NewArray()
+	defer arr.Release()
+
+	dest := s.Prepare(t, "utf8", ts.Column)
+	tbl := oneColumnTable(arr)
+	defer tbl.Release()
+
+	ctx := context.Background()
+	err := dest.Sink.WriteTable(ctx, tbl)
+	if err == nil {
+		err = dest.Sink.Flush(ctx)
+	}
+	if err != nil {
+		return fmt.Sprintf("%q into %s: the sink refused it: %v", ts.Value, ts.Column, err)
+	}
+
+	got, err := dest.ReadBack(t)
+	if err != nil {
+		return fmt.Sprintf("%q into %s: read back: %v", ts.Value, ts.Column, err)
+	}
+	if rendered, ok := got.(string); ok && rendered != ts.Expect {
+		return fmt.Sprintf("%q into %s read back as %q, and the table expects %q. "+
+			"A zone-less timestamp is UTC wherever the process runs",
+			ts.Value, ts.Column, rendered, ts.Expect)
 	}
 	return ""
 }

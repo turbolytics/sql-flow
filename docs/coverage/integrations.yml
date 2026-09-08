@@ -289,6 +289,19 @@ integrations:
     # table above is. ClickHouse raises nothing and stores the column type's
     # zero value, and it does not evaluate the column's DEFAULT expression,
     # because sqlflow names every produced column in the INSERT.
+    # #153's exact shape: a timestamp the handler passed through without a
+    # CAST, so it arrives as VARCHAR and lands in a DateTime column. No Arrow
+    # type describes that pairing, so the table above never writes it.
+    #
+    # clickhouse-go parses a zone-less string in time.Local and offers no
+    # option to change it, so the stored value moved with the host until the
+    # sink began parsing these itself. The runner writes this nine hours ahead
+    # of UTC, where the old behaviour is off by nine hours.
+    temporal_string:
+      column: "DateTime64(3)"
+      value: "2026-09-01 12:00:00.123"
+      expect: "2026-09-01 12:00:00.123"
+
     nulls:
       default:
         outcome: coerced

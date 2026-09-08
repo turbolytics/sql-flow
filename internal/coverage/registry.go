@@ -319,6 +319,51 @@ func NullsFor(integration string) (NullRule, error) {
 	return NullRule{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
 }
 
+// TemporalString is a timestamp that reaches the sink as text rather than as
+// an Arrow timestamp, bound for a temporal column.
+//
+// It has its own declaration because no Arrow type describes it: the column is
+// utf8 and the destination's is a DateTime. That combination is #153, where
+// clickhouse-go parsed the zone-less string in time.Local and stored a value
+// that depended on the host's offset. A type table keyed on Arrow types alone
+// never writes it.
+type TemporalString struct {
+	// Column is the destination column type to write into.
+	Column string `yaml:"column"`
+
+	// Value is the text to write.
+	Value string `yaml:"value"`
+
+	// Expect is what the destination must hold afterwards, whatever zone the
+	// host is in.
+	Expect string `yaml:"expect"`
+}
+
+// TemporalStringFor returns an integration's timestamp-as-text case.
+func TemporalStringFor(integration string) (TemporalString, error) {
+	raw, err := readRegistry("integrations.yml")
+	if err != nil {
+		return TemporalString{}, err
+	}
+
+	var doc struct {
+		Integrations []struct {
+			ID             string         `yaml:"id"`
+			TemporalString TemporalString `yaml:"temporal_string"`
+		} `yaml:"integrations"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return TemporalString{}, fmt.Errorf("coverage: parse integrations.yml: %w", err)
+	}
+
+	for _, entry := range doc.Integrations {
+		if entry.ID == integration {
+			return entry.TemporalString, nil
+		}
+	}
+	return TemporalString{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+}
+
 // NullElementsFor returns an integration's rule for a null held inside a
 // non-null list.
 //
