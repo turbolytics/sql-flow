@@ -104,7 +104,10 @@ integrations:
       date32:
         outcome: exact
         expect: "2026-09-08"
-        columns: [Date32]
+        # Date as well as Date32: the hand-written page claimed both, and a
+        # generated page that dropped one would quietly narrow what sqlflow
+        # supports. Date starts at 1970, which this value is well inside.
+        columns: [Date, Date32]
       "timestamp[s]":
         outcome: exact
         expect: "2026-09-08 12:00:00"

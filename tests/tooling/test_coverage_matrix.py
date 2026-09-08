@@ -1764,3 +1764,57 @@ def test_the_real_registries_agree():
     """The check runs against the shipped files, not only fixtures. A gap here
     is a real gap."""
     assert cm.validate_types(cm.load_lattice(), cm.load_integrations()) == []
+
+
+# --- The published page ----------------------------------------------------
+#
+# Generated from the same declaration the type runner judges, so the page
+# cannot claim something no test proved. Every row of the hand-written table it
+# replaces was measured once, by hand, and nothing held it to the sink.
+
+def test_the_page_is_keyed_by_duckdb_type_not_arrow():
+    """A user writes a CAST and never sees an Arrow type."""
+    md = cm.render_types_page(LATTICE, typed({
+        "int64": {"outcome": "exact", "columns": ["Int64"], "expect": "1"},
+        "utf8": {"outcome": "exact", "columns": ["String"], "expect": "a"},
+    })[0])
+    assert "BIGINT" in md and "VARCHAR" in md
+    assert "`int64`" not in md and "`utf8`" not in md
+
+
+def test_the_page_lists_every_column_type_that_accepts_a_key():
+    md = cm.render_types_page(LATTICE, typed({
+        "int64": {"outcome": "exact", "columns": ["Int64", "Int128"], "expect": "1"},
+        "utf8": {"outcome": "exact", "columns": ["String"], "expect": "a"},
+    })[0])
+    assert "Int64" in md and "Int128" in md
+
+
+def test_the_page_separates_what_is_unsupported():
+    md = cm.render_types_page(LATTICE, typed({
+        "int64": {"outcome": "exact", "columns": ["Int64"], "expect": "1"},
+        "utf8": {"outcome": "unsupported", "code": "user.sink.type_unsupported"},
+    })[0])
+    assert "VARCHAR" in md.split("Unsupported")[1]
+    assert "VARCHAR" not in md.split("Unsupported")[0]
+
+
+def test_the_page_states_a_coercion_rule():
+    """A coercion the page does not state is a surprise the reader meets in
+    production."""
+    md = cm.render_types_page(LATTICE, typed({
+        "int64": {"outcome": "coerced", "columns": ["Int64"],
+                  "rule": "rounded to the nearest whole number", "expect": "1"},
+        "utf8": {"outcome": "exact", "columns": ["String"], "expect": "a"},
+    })[0])
+    assert "rounded to the nearest whole number" in md
+
+
+def test_the_page_says_it_is_generated():
+    """A hand-edited copy of a generated file drifts silently."""
+    md = cm.render_types_page(LATTICE, typed({
+        "int64": {"outcome": "exact", "columns": ["Int64"], "expect": "1"},
+        "utf8": {"outcome": "exact", "columns": ["String"], "expect": "a"},
+    })[0])
+    assert "Do not edit" in md
+    assert "TestIntegrationSinkClickhouse_Types" in md
