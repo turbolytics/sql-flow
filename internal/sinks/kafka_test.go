@@ -13,6 +13,7 @@ import (
 
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/zeebo/assert"
 )
 
@@ -128,6 +129,50 @@ func TestSinkKafka_WriteTableBuffersWhateverItsContextSays(t *testing.T) {
 	pending := len(s.pending)
 	s.mu.Unlock()
 	assert.Equal(t, 1, pending)
+}
+
+// A flush with no deadline must still return.
+//
+// Every production caller passes one. The tumbling manager's context is
+// cancellable but carries no deadline (run/root.go), and the pipeline's drain
+// strips the deadline along with the cancellation via context.WithoutCancel.
+// If only the context could stop a flush, an outage would stop a windowed
+// pipeline publishing with nothing logged, and shutdown would wait for the
+// supervisor to kill the process.
+func TestSinkKafka_FlushReturnsWithoutADeadline(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+
+	// franz-go rejects a record timeout below a second, so this is the floor
+	// rather than a round number.
+	s, err := NewKafkaSink(config.KafkaSink{
+		Brokers: []string{unreachableBroker},
+		Topic:   "sink-test",
+	}, kgo.RecordDeliveryTimeout(time.Second))
+	assert.NoError(t, err)
+	t.Cleanup(func() { s.Close() })
+
+	table := newTestTable(t, []string{"nyc"}, []int64{1})
+	defer table.Release()
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+
+	assert.Error(t, flushWithin(t, s, context.Background(), 10*time.Second))
+
+	// And the row is still owed, so the next attempt re-sends it.
+	assert.Equal(t, 1, s.BufferedRows())
+}
+
+// The default has to be set, or the test above only proves the option exists.
+func TestSinkKafka_HasADeliveryTimeoutByDefault(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	s := newUnreachableKafkaSink(t)
+
+	table := newTestTable(t, []string{"nyc"}, []int64{1})
+	defer table.Release()
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+
+	// Longer than recordDeliveryTimeout, so a sink with no default hangs here.
+	assert.Error(t, flushWithin(t, s, context.Background(),
+		recordDeliveryTimeout+10*time.Second))
 }
 
 // Produce errors must not be swallowed. The pipeline commits its offsets only

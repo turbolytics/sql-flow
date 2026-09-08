@@ -5,12 +5,28 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/config"
 	tkafka "github.com/turbolytics/sql-flow/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
+
+// recordDeliveryTimeout bounds how long franz-go may hold a record the broker
+// has not acknowledged.
+//
+// franz-go retries a produce indefinitely by default, and no caller bounds the
+// wait: the tumbling manager's context is cancellable but carries no deadline,
+// and the pipeline's drain strips the deadline with context.WithoutCancel. So
+// a flush against a hung broker blocked until the run was cancelled. A
+// windowed pipeline stopped publishing every window with nothing logged, and
+// shutdown waited for SIGKILL.
+//
+// Shorter than a supervisor's usual 30s termination grace period, so the drain
+// fails and reports rather than being killed mid-flush. Kafka's own
+// delivery.timeout.ms default of two minutes is far past that.
+const recordDeliveryTimeout = 20 * time.Second
 
 // KafkaSink produces one message per result row, JSON encoded, matching the
 // Python KafkaSink.
@@ -41,6 +57,7 @@ func NewKafkaSink(conf config.KafkaSink, extra ...kgo.Opt) (*KafkaSink, error) {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.AllowAutoTopicCreation(),
+		kgo.RecordDeliveryTimeout(recordDeliveryTimeout),
 	}
 
 	securityOpts, err := tkafka.SecurityOptions(conf.SecurityProtocol, conf.SSL, conf.SASL)
