@@ -275,6 +275,55 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	return []verdict{buffers, keeps, depth}
 }
 
+// deliveredInOrder judges a read-back against at-least-once delivery.
+//
+// sqlflow delivers at-least-once end to end: a row reaches the destination one
+// or more times and is never lost. So this asks whether want appears in got as
+// a subsequence. A repeat passes, because the pipeline commits offsets only
+// after a flush returns nil and replays the batch when it does not, and the
+// tumbling manager keeps a closed window in DuckDB until its flush succeeds.
+// A missing row fails, and so does one that overtook a row written before it.
+//
+// It returns "" when the read-back honours the contract, and a sentence naming
+// the failure otherwise.
+func deliveredInOrder(got, want []Row) string {
+	next := 0
+	for _, w := range want {
+		found := -1
+		for j := next; j < len(got); j++ {
+			if got[j]["id"] == w["id"] {
+				found = j
+				break
+			}
+		}
+		if found >= 0 {
+			next = found + 1
+			continue
+		}
+
+		// Absent from the rest of the read-back. Either it never arrived, or it
+		// arrived before a row written before it -- two different defects, and
+		// the message has to send the reader to the right one.
+		if indexOf(got, w) >= 0 {
+			return "id=" + format(w["id"]) + " reached the destination out of " +
+				"order, before a row written earlier; want " + describe(want) +
+				" in that order, got " + describe(got)
+		}
+		return "id=" + format(w["id"]) + " never reached the destination; want " +
+			describe(want) + ", got " + describe(got)
+	}
+	return ""
+}
+
+func indexOf(rows []Row, want Row) int {
+	for i, r := range rows {
+		if r["id"] == want["id"] {
+			return i
+		}
+	}
+	return -1
+}
+
 func describe(rows []Row) string {
 	if len(rows) == 0 {
 		return "no rows"

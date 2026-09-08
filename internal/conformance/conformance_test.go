@@ -175,6 +175,45 @@ func TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject(t *tes
 	assert.True(t, vs[keepsBatch].failure != "")
 }
 
+// At-least-once permits a repeat. Exact equality does not, which is why the
+// harness used to fail a sink that delivered correctly twice.
+func TestToolingConformanceDelivered_AllowsARepeat(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	want := []Row{{"id": int64(1)}, {"id": int64(2)}}
+	got := []Row{{"id": int64(1)}, {"id": int64(2)}, {"id": int64(2)}}
+
+	assert.Equal(t, "", deliveredInOrder(got, want))
+}
+
+// Loss is the failure the contract does not permit.
+func TestToolingConformanceDelivered_CatchesALostRow(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	want := []Row{{"id": int64(1)}, {"id": int64(2)}, {"id": int64(3)}}
+	got := []Row{{"id": int64(1)}, {"id": int64(3)}}
+
+	assert.True(t, strings.Contains(deliveredInOrder(got, want), "never reached"))
+	assert.True(t, strings.Contains(deliveredInOrder(got, want), "id=2"))
+}
+
+// And so is reordering. A row that arrives before one that preceded it is not
+// a duplicate of anything, so a set comparison would miss it.
+func TestToolingConformanceDelivered_CatchesAReorder(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	want := []Row{{"id": int64(1)}, {"id": int64(2)}, {"id": int64(3)}}
+	got := []Row{{"id": int64(1)}, {"id": int64(3)}, {"id": int64(2)}}
+
+	assert.True(t, strings.Contains(deliveredInOrder(got, want), "out of order"))
+}
+
+// An empty destination loses everything, and the message must say so rather
+// than blaming order.
+func TestToolingConformanceDelivered_CatchesAnEmptyDestination(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	want := []Row{{"id": int64(1)}}
+
+	assert.True(t, strings.Contains(deliveredInOrder(nil, want), "never reached"))
+}
+
 func TestToolingConformanceDescribe_NamesTheRowsItFound(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 	assert.Equal(t, "no rows", describe(nil))
@@ -316,6 +355,65 @@ func (n *neverClearSink) Flush(context.Context) error {
 type lyingSink struct{ *memSink }
 
 func (l *lyingSink) BufferedRows() int { return 0 }
+
+// losingSink delivers everything except its most recent row. At-least-once
+// permits a repeat; it does not permit a row that never arrives.
+type losingSink struct{ *memSink }
+
+func (l *losingSink) Flush(context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.down {
+		return errors.New("destination unreachable")
+	}
+	for i, t := range l.buffered {
+		if i < len(l.buffered)-1 {
+			l.delivered = append(l.delivered, ids(t)...)
+		}
+		t.Release()
+	}
+	l.buffered = nil
+	return nil
+}
+
+// reorderingSink delivers its buffer backwards. Kafka orders within a
+// partition, and a sink that requeues a failed row behind a later one breaks
+// that without losing anything, so a set comparison would call it correct.
+type reorderingSink struct{ *memSink }
+
+func (r *reorderingSink) Flush(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.down {
+		return errors.New("destination unreachable")
+	}
+	for i := len(r.buffered) - 1; i >= 0; i-- {
+		r.delivered = append(r.delivered, ids(r.buffered[i])...)
+		r.buffered[i].Release()
+	}
+	r.buffered = nil
+	return nil
+}
+
+// duplicatingSink delivers every row twice. It is the positive control: the
+// harness must pass it, or the contract has been tightened by accident.
+type duplicatingSink struct{ *memSink }
+
+func (d *duplicatingSink) Flush(context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.down {
+		return errors.New("destination unreachable")
+	}
+	for _, t := range d.buffered {
+		rows := ids(t)
+		d.delivered = append(d.delivered, rows...)
+		d.delivered = append(d.delivered, rows...)
+		t.Release()
+	}
+	d.buffered = nil
+	return nil
+}
 
 // staysDownSink never recovers, so the retry fails rather than delivering.
 type staysDownSink struct{ *memSink }
