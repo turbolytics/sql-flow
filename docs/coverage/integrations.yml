@@ -36,7 +36,19 @@ integrations:
     kind: sink
     implements: [Sink, Prober]
     feature: sink.iceberg
-    exempt: []
+    exempt:
+      - invariant: sink.flush.honours_context
+        reason: >
+          appends through the catalog and the local filesystem, which fail
+          immediately; no flush can still be running when a deadline arrives
+        proven_by: TestSinkIceberg_FlushCannotOutliveItsContext
+      # sink.flush.preserves_order is deliberately not exempt, and reads as
+      # missing. The subject cannot observe delivery order -- a scan reads the
+      # table's data files, and each append writes its own file with a
+      # generated name, so a read-back of [id=2, id=1] turned up on roughly one
+      # run in six. That is a limit of the read-back, not a property of the
+      # sink, and an exemption claiming otherwise would be an excuse. The cell
+      # stays missing until the subject can order a scan by arrival.
 
   - id: sink.sqlcommand
     kind: sink
@@ -46,6 +58,12 @@ integrations:
       - invariant: sink.probe.fails_start
         reason: implements no Prober, so there is no start-time check to fail
         proven_by: TestSinkSqlcommand_ImplementsNoProber
+      - invariant: sink.flush.honours_context
+        reason: >
+          runs the user's SQL on the pipeline's own DuckDB connection, which
+          returns or fails immediately; no flush can still be running when a
+          deadline arrives
+        proven_by: TestSinkSqlcommand_FlushCannotOutliveItsContext
 
   - id: sink.console
     kind: sink
@@ -55,6 +73,11 @@ integrations:
       - invariant: sink.probe.fails_start
         reason: implements no Prober, so there is no start-time check to fail
         proven_by: TestSinkConsole_ImplementsNoProber
+      - invariant: sink.flush.honours_context
+        reason: >
+          writes to an io.Writer, which returns or fails immediately; no flush
+          can still be running when a deadline arrives
+        proven_by: TestSinkConsole_FlushCannotOutliveItsContext
 
   - id: sink.noop
     kind: sink
@@ -78,6 +101,9 @@ integrations:
         reason: has no destination; discarding every row is the contract
         proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.flush.honours_context
+        reason: has no destination; discarding every row is the contract
+        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+      - invariant: sink.flush.empty_is_noop
         reason: has no destination; discarding every row is the contract
         proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.buffer.reports_depth
