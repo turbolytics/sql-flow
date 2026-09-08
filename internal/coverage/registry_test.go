@@ -45,3 +45,29 @@ func TestToolingCoverageRegistry_RejectsAnUnknownKind(t *testing.T) {
 	_, err := Integrations("router")
 	assert.Error(t, err)
 }
+
+// The lattice is the closed set every integration's type table is checked
+// against. A duplicate key silently drops a row, and a key naming no DuckDB
+// cast renders as a blank cell on the integration page.
+func TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed(t *testing.T) {
+	Covers(t, "tooling.coverage")
+
+	entries, err := Lattice()
+	assert.NoError(t, err)
+	assert.Equal(t, len(entries), 29)
+
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if seen[e.Key] {
+			t.Errorf("lattice.yml: duplicate key %q", e.Key)
+		}
+		seen[e.Key] = true
+
+		if len(e.DuckDB) == 0 {
+			t.Errorf("lattice.yml: %q names no DuckDB SQL type", e.Key)
+		}
+		if e.Depth != 1 && e.Depth != 2 {
+			t.Errorf("lattice.yml: %q has depth %d, want 1 or 2", e.Key, e.Depth)
+		}
+	}
+}

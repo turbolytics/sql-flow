@@ -205,3 +205,40 @@ func Integrations(kind string) ([]string, error) {
 	sort.Strings(out)
 	return out, nil
 }
+
+// LatticeEntry is one Arrow type every sink must account for.
+type LatticeEntry struct {
+	// Key is conformance.CanonicalKey's output for the type, not
+	// DataType.String(): those differ, and only the canonical form matches
+	// both what DuckDB emits and what a test constructs.
+	Key string `yaml:"key"`
+
+	// DuckDB names the SQL types a user casts to in handler SQL. The rendered
+	// integration page is keyed by these, because a user writes a CAST and
+	// never sees an Arrow type.
+	DuckDB []string `yaml:"duckdb"`
+
+	// Depth is 1 for a scalar, 2 for a container.
+	Depth int `yaml:"depth"`
+}
+
+// Lattice returns every Arrow type lattice.yml declares, in file order.
+//
+// The set is closed, which is what makes a gap visible: a type an integration
+// does not declare is reported rather than absent. An open set lets a type
+// nobody thought of pass unnoticed, which is the sink.iceberg failure --
+// nothing written down, so nothing could be missing.
+func Lattice() ([]LatticeEntry, error) {
+	raw, err := readRegistry("lattice.yml")
+	if err != nil {
+		return nil, err
+	}
+
+	var doc struct {
+		Lattice []LatticeEntry `yaml:"lattice"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("coverage: parse lattice.yml: %w", err)
+	}
+	return doc.Lattice, nil
+}
