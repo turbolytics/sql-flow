@@ -147,6 +147,10 @@ func TestIntegrationSinkClickhouse_Conformance(t *testing.T) {
 			defer rec.Release()
 			return array.NewTableFromRecords(schema, []arrow.Record{rec})
 		},
+
+		// The conformance table uses the Log engine, which appends and reads
+		// sequentially, so a select with no ORDER BY returns insertion order.
+		OrderedReadBack: true,
 	})
 }
 

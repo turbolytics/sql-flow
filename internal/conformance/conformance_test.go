@@ -91,6 +91,37 @@ func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
 }
 
+// A second flush into the same fault must fail again. Returning nil tells the
+// pipeline to commit offsets for rows that never landed.
+func TestToolingConformanceSinks_AHollowSuccessIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&hollowSink{memSink: newMemSink()}))[noHollowSuccess]
+
+	assert.True(t, strings.Contains(v.failure, "returned nil"))
+}
+
+// A sink that delivers its buffer backwards loses nothing, so keeps_batch
+// holds and only the ordering claim catches it.
+func TestToolingConformanceSinks_AReorderingSinkIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(&reorderingSink{memSink: newMemSink()}))
+
+	assert.Equal(t, "", vs[keepsBatch].failure)
+	assert.True(t, strings.Contains(vs[preservesOrder].failure, "out of order"))
+}
+
+// A subject whose destination cannot report arrival order must skip the
+// ordering claim rather than read a sorted list as evidence.
+func TestToolingConformanceSinks_AnUnorderedReadBackSkipsOrder(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	s := subject(newMemSink())
+	s.OrderedReadBack = false
+
+	vs := verdicts(t, s)
+	assert.True(t, strings.Contains(vs[preservesOrder].skipped, "integrations.yml"))
+	assert.Equal(t, "", vs[preservesOrder].failure)
+}
+
 // A sink that ignores its context cannot be stopped. The pipeline's drain and
 // every other caller reach it only through that context.
 func TestToolingConformanceSinks_ASinkThatIgnoresItsContextIsCaught(t *testing.T) {
@@ -465,6 +496,30 @@ func (d *duplicatingSink) Flush(context.Context) error {
 	return nil
 }
 
+// hollowSink reports success on its second failed flush.
+//
+// #221's defect reached by another route: the first flush records the failure,
+// the second finds an empty error list and returns nil having delivered
+// nothing. The pipeline then commits offsets for rows that never landed.
+type hollowSink struct {
+	*memSink
+	failedWhileDown bool
+}
+
+func (h *hollowSink) Flush(ctx context.Context) error {
+	h.mu.Lock()
+	down, already := h.down, h.failedWhileDown
+	if down {
+		h.failedWhileDown = true
+	}
+	h.mu.Unlock()
+
+	if down && already {
+		return nil
+	}
+	return h.memSink.Flush(ctx)
+}
+
 // deafSink ignores the context it is given: it sleeps past any deadline before
 // reporting the failure.
 //
@@ -552,6 +607,9 @@ func subject(sink breakable) SinkSubject {
 		Heal:        func(*testing.T) { sink.set(false) },
 		ReadBack:    func(*testing.T) []Row { return sink.rows() },
 		Table:       oneRow,
+		// The fakes append in delivery order, so the ordering claim is
+		// judged rather than skipped for every double.
+		OrderedReadBack: true,
 	}
 }
 
@@ -564,7 +622,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 	for _, v := range sinkVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 5, len(out))
+	assert.Equal(t, 7, len(out))
 	return out
 }
 

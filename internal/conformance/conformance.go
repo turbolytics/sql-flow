@@ -55,9 +55,19 @@ type SinkSubject struct {
 	// Heal reverses Break.
 	Heal func(t *testing.T)
 
-	// ReadBack returns every row the destination holds, in delivery order.
-	// It must not go through whatever Break breaks.
+	// ReadBack returns every row the destination holds. It must not go through
+	// whatever Break breaks.
 	ReadBack func(t *testing.T) []Row
+
+	// OrderedReadBack says ReadBack returns rows in the order they arrived.
+	//
+	// False is the default because a destination that cannot report arrival
+	// order is common and the failure is silent: an Iceberg scan returns rows
+	// in data-file order, and a ClickHouse MergeTree returns them in its
+	// ORDER BY key order, so both would satisfy preserves_order while
+	// preserving nothing. The harness skips that claim rather than reading a
+	// sorted list as evidence, and integrations.yml must carry the exemption.
+	OrderedReadBack bool
 
 	// Table returns a one-row table with an int64 "id" column that the
 	// destination accepts. The subject owns the schema because a ClickHouse
@@ -144,7 +154,9 @@ const (
 	reportsDepth = "sink.buffer.reports_depth"
 	emptyIsNoop  = "sink.flush.empty_is_noop"
 
-	honoursContext = "sink.flush.honours_context"
+	honoursContext  = "sink.flush.honours_context"
+	noHollowSuccess = "sink.flush.no_hollow_success"
+	preservesOrder  = "sink.flush.preserves_order"
 )
 
 // sinkVerdicts runs one sequence and judges four invariants from it.
@@ -188,6 +200,8 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			{invariant: keepsBatch, skipped: skip},
 			{invariant: reportsDepth, skipped: skip},
 			{invariant: honoursContext, skipped: skip},
+			{invariant: noHollowSuccess, skipped: skip},
+			{invariant: preservesOrder, skipped: skip},
 		}
 	}
 
@@ -299,10 +313,13 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			"so a sink that ignores it cannot be stopped"
 		// The flush is still running, so nothing below can be judged against
 		// this sink without racing it.
-		return []verdict{empty, buffers, {
-			invariant: keepsBatch,
-			skipped:   "Flush never returned; honours_context names the defect",
-		}, depth, honours}
+		stuck := "Flush never returned; honours_context names the defect"
+		return []verdict{empty, buffers,
+			{invariant: keepsBatch, skipped: stuck},
+			depth, honours,
+			{invariant: noHollowSuccess, skipped: stuck},
+			{invariant: preservesOrder, skipped: stuck},
+		}
 	}
 
 	switch {
@@ -346,7 +363,10 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			failure: "Flush returned nil while the destination was broken, " +
 				"because the rows had already been delivered by WriteTable; " +
 				"there was nothing left to keep",
-		}, depth, honours}
+		}, depth, honours,
+			{invariant: noHollowSuccess, skipped: "the rows were delivered on write"},
+			{invariant: preservesOrder, skipped: "the rows were delivered on write"},
+		}
 	}
 
 	if reports && depth.failure == "" {
@@ -357,11 +377,48 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		}
 	}
 
+	// keeps_batch is judged on what the retry delivers, not on what the
+	// destination holds now.
+	//
+	// A failed Flush does not mean nothing arrived. It means nothing was
+	// acknowledged. A produce request can reach the broker and be applied while
+	// the response is lost, which is exactly what a partition looks like from
+	// the client, and the sink cannot tell the two apart. Requiring the row to
+	// be absent here asserts exactly-once against an at-least-once engine, and
+	// a real broker behind a timeout toxic fails it while behaving correctly.
+	//
+	// The defect this used to aim at -- a sink that delivers before Flush --
+	// is buffers_only's, judged above and before the fault.
 	keeps := verdict{invariant: keepsBatch}
-	if got := s.ReadBack(t); indexOf(got, Row{"id": int64(2)}) >= 0 {
-		keeps.failure = "the destination holds " + describe(got) +
-			" after a Flush that failed; a row the sink could not deliver " +
-			"must stay buffered rather than reach the destination unreported"
+
+	// Step 4. A second row arrives while the destination is still broken, so
+	// the retry has two rows to deliver and an order to deliver them in.
+	third := s.Table(t, 3)
+	if err := sink.WriteTable(ctx, third); err != nil {
+		third.Release()
+		t.Fatalf("conformance: WriteTable while the destination was broken: %v", err)
+	}
+	third.Release()
+
+	if reports && depth.failure == "" {
+		if n := reporter.BufferedRows(); n != 2 {
+			depth.failure = "reports " + strconv.Itoa(n) +
+				" buffered rows after a failed Flush and a second WriteTable; " +
+				"want 2, because both rows are still owed"
+		}
+	}
+
+	// Step 5. Flushing into the same fault must fail again. A sink that clears
+	// its error state after reporting returns nil here having delivered
+	// nothing, and the pipeline commits offsets for rows that never landed.
+	hollow := verdict{invariant: noHollowSuccess}
+	secondBroken, cancelSecond := context.WithTimeout(ctx, deadline)
+	secondErr := sink.Flush(secondBroken)
+	cancelSecond()
+	if secondErr == nil && buffers.failure == "" {
+		hollow.failure = "a second Flush into the same broken destination " +
+			"returned nil; Flush may return nil only when every row since the " +
+			"last success reached the destination"
 	}
 
 	s.Heal(t)
@@ -370,7 +427,8 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			keeps.failure = "Flush after Heal failed with " + err.Error() +
 				"; the retry did not deliver what the failed flush kept"
 		}
-		return []verdict{empty, buffers, keeps, depth, honours}
+		return []verdict{empty, buffers, keeps, depth, honours, hollow,
+			{invariant: preservesOrder, skipped: "the retry never delivered"}}
 	}
 
 	if reports && depth.failure == "" {
@@ -381,13 +439,31 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	}
 
 	got := s.ReadBack(t)
+	want := []Row{{"id": int64(1)}, {"id": int64(2)}, {"id": int64(3)}}
+
 	if keeps.failure == "" {
-		want := []Row{{"id": int64(1)}, {"id": int64(2)}}
 		if bad := rowsArrived(got, want); bad != "" {
 			keeps.failure = "after a failed Flush and a successful retry, " + bad
 		}
 	}
-	return []verdict{empty, buffers, keeps, depth, honours}
+
+	// The same read-back, asked the other question. Loss belongs to
+	// keeps_batch above; this is only about the order the rows arrived in.
+	order := verdict{invariant: preservesOrder}
+	switch {
+	case !s.OrderedReadBack:
+		order.skipped = s.Integration + " reads its destination back in an " +
+			"order that is not the order rows arrived in, so this cannot be " +
+			"judged; exempt it in integrations.yml"
+	case keeps.failure != "":
+		order.skipped = "rows were lost, so there is no order to judge"
+	default:
+		if bad := deliveredInOrder(got, want); bad != "" {
+			order.failure = "after a failed Flush and a successful retry, " + bad
+		}
+	}
+
+	return []verdict{empty, buffers, keeps, depth, honours, hollow, order}
 }
 
 // rowsArrived reports the first row of want that never reached the

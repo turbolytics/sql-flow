@@ -83,6 +83,9 @@ func TestSinkConsole_Conformance(t *testing.T) {
 		Heal:        func(*testing.T) { w.set(false) },
 		ReadBack:    func(t *testing.T) []conformance.Row { return w.rows(t) },
 		Table:       func(t *testing.T, id int64) arrow.Table { return oneRowTable(t, id) },
+		// The writer is a byte stream decoded front to back, so the read-back
+		// is the order the rows were written in.
+		OrderedReadBack: true,
 	})
 }
 
@@ -123,6 +126,8 @@ func TestSinkSqlcommand_Conformance(t *testing.T) {
 			return queryIDs(t, conn, "SELECT id FROM "+target+" ORDER BY arrived")
 		},
 		Table: func(t *testing.T, id int64) arrow.Table { return oneRowTable(t, id) },
+		// arrived is a sequence, so ordering by it is arrival order.
+		OrderedReadBack: true,
 	})
 }
 
