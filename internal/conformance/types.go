@@ -34,6 +34,7 @@ const (
 	typeRoundtrip  = "type.roundtrip"
 	typeNull       = "type.null"
 	typeNested     = "type.nested"
+	typeFidelity   = "type.string.fidelity"
 	typeUndeclared = "type.undeclared.fails_loud"
 )
 
@@ -146,7 +147,8 @@ func typeVerdicts(t *testing.T, s TypeSubject) []verdict {
 		}
 	}
 
-	return []verdict{roundtrip, nulls, judgeNested(t, s), judgeUndeclaredType(t, s)}
+	return []verdict{roundtrip, nulls, judgeNested(t, s),
+		judgeStringFidelity(t, s), judgeUndeclaredType(t, s)}
 }
 
 // judgeTypeRow writes one value of one type into every column type the row
@@ -385,6 +387,113 @@ func judgeNull(rule coverage.NullRule, key, columnType string, got any) string {
 	default:
 		return fmt.Sprintf("%s: the integration declares no default null outcome, "+
 			"so what a null does here is untested and unpublished", key)
+	}
+	return ""
+}
+
+// fidelityCorpus is the set of strings a sink must carry unchanged.
+//
+// Each entry is here because something broke on it, or because something
+// plausibly could. The escapes are #149, where jsonparser returned the bytes
+// between the quotes undecoded and the sink stored them verbatim, so "a\nb"
+// landed as four characters. The empty string is here because a destination
+// that conflates it with NULL loses the difference between sending nothing
+// and sending no characters. The rest cover the byte ranges and delimiters a
+// naive length, escaping or encoding assumption mangles.
+var fidelityCorpus = []struct {
+	name  string
+	value string
+}{
+	{"newline", "a\nb"},
+	{"tab", "a\tb"},
+	{"carriage return", "a\rb"},
+	{"double quote", `say "hi"`},
+	{"single quote", "it's"},
+	{"backslash", `back\slash`},
+	{"backtick and dollar", "`cmd` $var"},
+	{"unicode", "L'Œil café 東京"},
+	{"astral plane", "👁🌍"},
+	{"combining marks", "éà"},
+	{"empty", ""},
+	{"leading and trailing space", "  padded  "},
+	{"null-looking text", "NULL"},
+	{"sql fragment", "'); DROP TABLE t; --"},
+}
+
+// judgeStringFidelity writes each corpus entry through the utf8 row and reads
+// it back.
+//
+// One canonical value per type cannot catch this class of defect. #149
+// corrupted every string carrying a backslash, and the sink's tests passed
+// throughout because they all used tidy strings. The corpus is the test.
+func judgeStringFidelity(t *testing.T, s TypeSubject) verdict {
+	t.Helper()
+	v := verdict{invariant: typeFidelity}
+
+	var utf8Row *coverage.TypeDecl
+	for i := range s.Declared {
+		if s.Declared[i].Key == "utf8" {
+			utf8Row = &s.Declared[i]
+			break
+		}
+	}
+	if utf8Row == nil {
+		v.failure = "the type table has no utf8 row, so nothing here proves a " +
+			"string survives the sink"
+		return v
+	}
+	// A sink that cannot take a string at all has nothing to keep faithfully.
+	if utf8Row.Outcome == "unsupported" {
+		return v
+	}
+
+	for _, columnType := range utf8Row.Columns {
+		for _, entry := range fidelityCorpus {
+			if f := judgeOneString(t, s, columnType, entry.name, entry.value); f != "" {
+				v.failure = f
+				return v
+			}
+		}
+	}
+	return v
+}
+
+func judgeOneString(t *testing.T, s TypeSubject, columnType, name, value string) string {
+	t.Helper()
+
+	b := array.NewStringBuilder(memory.NewGoAllocator())
+	defer b.Release()
+	b.Append(value)
+
+	arr := b.NewArray()
+	defer arr.Release()
+
+	dest := s.Prepare(t, "utf8", columnType)
+	tbl := oneColumnTable(arr)
+	defer tbl.Release()
+
+	ctx := context.Background()
+	err := dest.Sink.WriteTable(ctx, tbl)
+	if err == nil {
+		err = dest.Sink.Flush(ctx)
+	}
+	if err != nil {
+		return fmt.Sprintf("the %s string into %s: the sink refused it: %v",
+			name, columnType, err)
+	}
+
+	got, err := dest.ReadBack(t)
+	if err != nil {
+		return fmt.Sprintf("the %s string into %s: read back: %v", name, columnType, err)
+	}
+	if got == nil {
+		return fmt.Sprintf("the %s string into %s read back as null. An empty "+
+			"string is a value: conflating it with NULL loses the difference "+
+			"between sending nothing and sending no characters", name, columnType)
+	}
+	if s, ok := got.(string); ok && s != value {
+		return fmt.Sprintf("the %s string into %s read back as %q, and %q went in. "+
+			"A string must survive byte for byte", name, columnType, s, value)
 	}
 	return ""
 }
