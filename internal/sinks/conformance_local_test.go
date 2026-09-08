@@ -91,8 +91,14 @@ func TestSinkSqlcommand_Conformance(t *testing.T) {
 	stamp := time.Now().UnixNano()
 	target := fmt.Sprintf("conformance_target_%d", stamp)
 	gate := fmt.Sprintf("conformance_gate_%d", stamp)
+	seq := fmt.Sprintf("conformance_seq_%d", stamp)
 
-	exec(t, conn, "CREATE TABLE "+target+" (id BIGINT)")
+	// arrived orders the read-back by when a row landed rather than by its id.
+	// ORDER BY id sorts, so a sink that delivered [3, 2, 1] would read back
+	// [1, 2, 3] and satisfy preserves_order without preserving anything.
+	exec(t, conn, "CREATE SEQUENCE "+seq+" START 1")
+	exec(t, conn, "CREATE TABLE "+target+
+		" (id BIGINT, arrived BIGINT DEFAULT nextval('"+seq+"'))")
 	exec(t, conn, "CREATE TABLE "+gate+" (open BOOLEAN)")
 	exec(t, conn, "INSERT INTO "+gate+" VALUES (true)")
 
@@ -104,7 +110,7 @@ func TestSinkSqlcommand_Conformance(t *testing.T) {
 		Integration: "sink.sqlcommand",
 		New: func(t *testing.T) core.Sink {
 			s, err := NewSQLCommandSink(conn,
-				"INSERT INTO "+target+" SELECT b.id FROM "+sinkBatchTable+" b, "+gate, nil)
+				"INSERT INTO "+target+" (id) SELECT b.id FROM "+sinkBatchTable+" b, "+gate, nil)
 			assert.NoError(t, err)
 			return s
 		},
@@ -114,7 +120,7 @@ func TestSinkSqlcommand_Conformance(t *testing.T) {
 			exec(t, conn, "INSERT INTO "+gate+" VALUES (true)")
 		},
 		ReadBack: func(t *testing.T) []conformance.Row {
-			return queryIDs(t, conn, "SELECT id FROM "+target+" ORDER BY id")
+			return queryIDs(t, conn, "SELECT id FROM "+target+" ORDER BY arrived")
 		},
 		Table: func(t *testing.T, id int64) arrow.Table { return oneRowTable(t, id) },
 	})
