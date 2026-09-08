@@ -35,7 +35,6 @@ func (s *flakySink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.buffered++
 	return nil
 }
-func (s *flakySink) Batch() (arrow.Table, error) { return nil, nil }
 
 func (s *flakySink) Flush(ctx context.Context) error {
 	s.attempts++

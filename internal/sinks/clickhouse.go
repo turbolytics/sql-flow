@@ -143,13 +143,6 @@ func (s *ClickhouseSink) WriteTable(ctx context.Context, batch arrow.Table) erro
 	return nil
 }
 
-// Batch returns nothing. The Python ClickhouseSink alone among the sinks
-// reports no batch: rows go straight to ClickHouse and are not held for a
-// downstream reader.
-func (s *ClickhouseSink) Batch() (arrow.Table, error) {
-	return nil, nil
-}
-
 // Flush delivers the buffered batches, and keeps them buffered if it cannot.
 //
 // The retry ladder calls Flush again after a retryable failure. Discarding the

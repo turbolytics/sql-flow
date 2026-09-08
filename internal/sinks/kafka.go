@@ -21,7 +21,6 @@ type KafkaSink struct {
 	mu sync.Mutex
 	// pending holds the encoded rows that Flush has not yet had acknowledged.
 	pending [][]byte
-	batch   arrow.Table
 }
 
 // NewKafkaSink builds the sink. Extra client options are appended last, so a
@@ -73,7 +72,6 @@ func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.batch = batch
 	s.pending = append(s.pending, rows...)
 	return nil
 }
@@ -168,12 +166,6 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 	}
 	return fmt.Errorf("kafka sink: %d of %d rows not acknowledged, first: %w",
 		len(keep), len(pending), firstErr)
-}
-
-func (s *KafkaSink) Batch() (arrow.Table, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.batch, nil
 }
 
 func (s *KafkaSink) Close() error {

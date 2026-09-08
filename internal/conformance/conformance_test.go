@@ -230,15 +230,6 @@ func (m *memSink) Flush(context.Context) error {
 	return nil
 }
 
-func (m *memSink) Batch() (arrow.Table, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.buffered) == 0 {
-		return nil, nil
-	}
-	return m.buffered[0], nil
-}
-
 // BufferedRows makes the fakes honest about what they hold, so the harness
 // can judge reports_depth against them the way it does against a real sink.
 func (m *memSink) BufferedRows() int {
@@ -344,7 +335,6 @@ func (n *noDepthSink) WriteTable(ctx context.Context, t arrow.Table) error {
 	return n.inner.WriteTable(ctx, t)
 }
 func (n *noDepthSink) Flush(ctx context.Context) error { return n.inner.Flush(ctx) }
-func (n *noDepthSink) Batch() (arrow.Table, error)     { return n.inner.Batch() }
 func (n *noDepthSink) set(down bool)                   { n.inner.set(down) }
 func (n *noDepthSink) rows() []Row                     { return n.inner.rows() }
 

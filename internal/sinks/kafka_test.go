@@ -146,21 +146,3 @@ func TestSinkKafka_FlushReportsProduceErrors(t *testing.T) {
 	assert.NoError(t, s.WriteTable(context.Background(), table))
 	assert.Error(t, flushWithin(t, s, ctx, 10*time.Second))
 }
-
-// Batch is what the tumbling-window manager reads back after a write.
-func TestSinkKafka_BatchIsTheLastWrite(t *testing.T) {
-	coverage.Covers(t, "sink.kafka")
-	s := newUnreachableKafkaSink(t)
-
-	batch, err := s.Batch()
-	assert.NoError(t, err)
-	assert.Nil(t, batch)
-
-	table := newTestTable(t, []string{"nyc", "sfo"}, []int64{1, 2})
-	defer table.Release()
-	assert.NoError(t, s.WriteTable(context.Background(), table))
-
-	batch, err = s.Batch()
-	assert.NoError(t, err)
-	assert.Equal(t, int64(2), batch.NumRows())
-}

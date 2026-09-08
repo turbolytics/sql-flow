@@ -22,7 +22,6 @@ type ConsoleSink struct {
 	mu      sync.Mutex
 	out     io.Writer
 	pending []byte
-	batch   arrow.Table
 }
 
 func NewConsoleSink() *ConsoleSink {
@@ -45,7 +44,6 @@ func (s *ConsoleSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.batch = batch
 	for _, row := range rows {
 		s.pending = append(s.pending, row...)
 		s.pending = append(s.pending, '\n')
@@ -79,12 +77,6 @@ func (s *ConsoleSink) Flush(ctx context.Context) error {
 		return io.ErrShortWrite
 	}
 	return nil
-}
-
-func (s *ConsoleSink) Batch() (arrow.Table, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.batch, nil
 }
 
 // BufferedRows reports the rows this sink is holding that no flush has

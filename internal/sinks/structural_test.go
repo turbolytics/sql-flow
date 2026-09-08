@@ -63,11 +63,6 @@ func TestSinkNoop_DeliversNothingAndSaysSo(t *testing.T) {
 	assert.NoError(t, s.WriteTable(ctx, table))
 	assert.NoError(t, s.Flush(ctx))
 
-	// Nothing buffered, nothing reported, nothing to lose.
-	batch, err := s.Batch()
-	assert.NoError(t, err)
-	assert.Nil(t, batch)
-
 	// And it cannot fail, so there is never a batch to keep.
 	assert.NoError(t, s.Flush(ctx))
 }
