@@ -141,26 +141,38 @@ const (
 	buffersOnly  = "sink.write.buffers_only"
 	keepsBatch   = "sink.flush.keeps_batch"
 	reportsDepth = "sink.buffer.reports_depth"
+	emptyIsNoop  = "sink.flush.empty_is_noop"
 )
 
-// sinkVerdicts runs one sequence and judges three invariants from it.
+// sinkVerdicts runs one sequence and judges four invariants from it.
 //
-//  1. WriteTable(A). The destination must still be empty -- buffers_only --
+//  0. Flush with nothing buffered. The destination must stay empty --
+//     empty_is_noop.
+//  1. WriteTable(A) and Flush. The destination now holds A, and everything
+//     below runs against a destination in the state production runs against.
+//  2. WriteTable(B). The destination must not have gained B -- buffers_only --
 //     and the sink must report one buffered row -- reports_depth.
-//  2. Break, then Flush must fail. The destination must still be empty and the
-//     sink must still report one row: what it could not deliver, it still owes.
-//  3. Heal, then Flush must succeed. The sink must now report none.
-//  4. The destination must hold exactly A, once -- keeps_batch.
+//  3. Break, then Flush must fail. B must still be absent and the sink must
+//     still report one row: what it could not deliver, it still owes.
+//  4. Heal, then Flush must succeed. The sink must now report none.
+//  5. The destination must hold A then B -- keeps_batch.
 //
-// The three are separate because a sink can hold any one without the others,
-// and together they are what the pipeline depends on. A sink that delivers in
-// WriteTable passes step 4 for the wrong reason: the row reached the
-// destination before the fault, so nothing was ever kept, and the failed
+// The judgments are separate because a sink can hold any one without the
+// others, and together they are what the pipeline depends on. A sink that
+// delivers in WriteTable passes step 5 for the wrong reason: the row reached
+// the destination before the fault, so nothing was ever kept, and the failed
 // flush left the pipeline unable to commit offsets for rows that did go out.
-// That is the Kafka sink's shape, and step 1 is what catches it.
+// Step 2 is what catches it.
 //
-// A sink that discards its buffer on a failed flush passes steps 1 and 2 and
-// holds nothing at step 4, which is the defect #221 fixed for ClickHouse.
+// A sink that discards its buffer on a failed flush passes steps 2 and 3 and
+// holds nothing at step 5, which is the defect #221 fixed for ClickHouse.
+//
+// Step 1 is why the sequence starts with a delivery rather than a fault. A
+// transport can behave differently before it has ever succeeded -- franz-go
+// watches a Produce context only while a topic is unknown, so the Kafka sink
+// took an abort path a resolved topic never reaches -- and a sink that only
+// loses rows after its first successful flush is invisible to a sequence that
+// never performs one.
 func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	t.Helper()
 
@@ -168,6 +180,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		skip := "the subject has nothing to break; exempt " +
 			s.Integration + " in integrations.yml"
 		return []verdict{
+			{invariant: emptyIsNoop, skipped: skip},
 			{invariant: buffersOnly, skipped: skip},
 			{invariant: keepsBatch, skipped: skip},
 			{invariant: reportsDepth, skipped: skip},
@@ -175,18 +188,48 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	}
 
 	sink := s.New(t)
-	row := s.Table(t, 1)
+	ctx := context.Background()
+
+	// Step 0. Nothing is buffered, so nothing may reach the destination. The
+	// pipeline flushes on an interval whether or not a batch arrived, so a sink
+	// that writes here writes on every idle tick.
+	empty := verdict{invariant: emptyIsNoop}
+	if err := sink.Flush(ctx); err != nil {
+		empty.failure = "Flush with nothing buffered returned " + err.Error() +
+			"; an idle flush interval must not fail the pipeline"
+	} else if got := s.ReadBack(t); len(got) != 0 {
+		empty.failure = "the destination holds " + describe(got) +
+			" after a Flush when nothing was buffered"
+	}
+
+	// Step 1. One clean delivery, so every judgment below runs warm.
+	warm := s.Table(t, 1)
+	if err := sink.WriteTable(ctx, warm); err != nil {
+		warm.Release()
+		t.Fatalf("conformance: WriteTable during the pre-warm: %v", err)
+	}
+	if err := sink.Flush(ctx); err != nil {
+		warm.Release()
+		t.Fatalf("conformance: the pre-warm Flush failed against a healthy "+
+			"destination: %v", err)
+	}
+	warm.Release()
+
+	row := s.Table(t, 2)
 	defer row.Release()
 
-	ctx := context.Background()
 	if err := sink.WriteTable(ctx, row); err != nil {
 		t.Fatalf("conformance: WriteTable before any fault: %v", err)
 	}
 
 	// Judged before anything can go wrong, so a write-through sink is named
 	// for what it did rather than for a downstream symptom.
+	//
+	// The test is whether row 2 arrived, not how many rows are present. The
+	// pre-warm already delivered row 1, and a sink that delivers at-least-once
+	// may hold more than one copy of it.
 	buffers := verdict{invariant: buffersOnly}
-	if got := s.ReadBack(t); len(got) != 0 {
+	if got := s.ReadBack(t); indexOf(got, Row{"id": int64(2)}) >= 0 {
 		buffers.failure = "the destination holds " + describe(got) +
 			" after WriteTable and before any Flush; only Flush may deliver, " +
 			"because the pipeline commits offsets on what Flush reports"
@@ -227,7 +270,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 				"broken and nothing had been delivered, so %s's Break did not "+
 				"break it", s.Integration)
 		}
-		return []verdict{buffers, {
+		return []verdict{empty, buffers, {
 			invariant: keepsBatch,
 			failure: "Flush returned nil while the destination was broken, " +
 				"because the rows had already been delivered by WriteTable; " +
@@ -244,7 +287,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	}
 
 	keeps := verdict{invariant: keepsBatch}
-	if got := s.ReadBack(t); len(got) != 0 {
+	if got := s.ReadBack(t); indexOf(got, Row{"id": int64(2)}) >= 0 {
 		keeps.failure = "the destination holds " + describe(got) +
 			" after a Flush that failed; a row the sink could not deliver " +
 			"must stay buffered rather than reach the destination unreported"
@@ -256,7 +299,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			keeps.failure = "Flush after Heal failed with " + err.Error() +
 				"; the retry did not deliver what the failed flush kept"
 		}
-		return []verdict{buffers, keeps, depth}
+		return []verdict{empty, buffers, keeps, depth}
 	}
 
 	if reports && depth.failure == "" {
@@ -268,11 +311,12 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 
 	got := s.ReadBack(t)
 	if keeps.failure == "" {
-		if bad := deliveredInOrder(got, []Row{{"id": int64(1)}}); bad != "" {
+		want := []Row{{"id": int64(1)}, {"id": int64(2)}}
+		if bad := deliveredInOrder(got, want); bad != "" {
 			keeps.failure = "after a failed Flush and a successful retry, " + bad
 		}
 	}
-	return []verdict{buffers, keeps, depth}
+	return []verdict{empty, buffers, keeps, depth}
 }
 
 // deliveredInOrder judges a read-back against at-least-once delivery.

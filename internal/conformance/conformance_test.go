@@ -32,7 +32,9 @@ func TestToolingConformanceSinks_ASinkThatDropsItsBatchIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&dropSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, v.failure != "")
-	assert.True(t, strings.Contains(v.failure, "no rows"))
+	// The pre-warm row still arrived, so the read-back is not empty. What is
+	// missing is the row the failed flush was supposed to have kept.
+	assert.True(t, strings.Contains(v.failure, "id=2 never reached"))
 }
 
 // A sink that delivers on WriteTable rather than on Flush: the Kafka sink's
@@ -65,15 +67,18 @@ func TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly(t *testing.T) {
 //
 // The duplication itself is legal: delivery is at-least-once, so keeps_batch
 // holds. What does not hold is the depth. A buffer that never drains grows
-// without bound, and reports_depth is the claim that catches it -- the count
-// must fall to zero once a flush has succeeded.
+// without bound, and reports_depth is the claim that catches it.
+//
+// The pre-warm flush is what exposes it here: that buffer should be empty
+// afterwards, so the row written next is the only one owed. This sink still
+// holds the pre-warm row, and reports two.
 func TestToolingConformanceSinks_ASinkThatNeverDrainsIsCaught(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 	vs := verdicts(t, subject(&neverClearSink{memSink: newMemSink()}))
 
 	assert.Equal(t, "", vs[keepsBatch].failure)
 	assert.True(t, strings.Contains(vs[reportsDepth].failure,
-		"buffered rows after a Flush that succeeded"))
+		"reports 2 buffered rows after one WriteTable"))
 }
 
 // A retry that fails is not the same defect, and the message must not blame
@@ -83,6 +88,16 @@ func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&staysDownSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
+}
+
+// A flush with nothing buffered must reach nothing. The pipeline flushes on an
+// interval whether or not a batch arrived, so a sink that writes here writes on
+// every idle tick.
+func TestToolingConformanceSinks_AnEagerEmptyFlushIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&eagerFlushSink{memSink: newMemSink()}))[emptyIsNoop]
+
+	assert.True(t, strings.Contains(v.failure, "nothing was buffered"))
 }
 
 // The contract's positive control, run through the whole harness rather than
@@ -440,11 +455,42 @@ func (d *duplicatingSink) Flush(context.Context) error {
 	return nil
 }
 
-// staysDownSink never recovers, so the retry fails rather than delivering.
-type staysDownSink struct{ *memSink }
+// eagerFlushSink writes even when nothing is buffered. The pipeline flushes on
+// an interval whether or not a batch arrived, so this sink writes on every idle
+// tick.
+type eagerFlushSink struct{ *memSink }
 
-func (s *staysDownSink) Flush(context.Context) error {
-	return errors.New("destination unreachable")
+func (e *eagerFlushSink) Flush(ctx context.Context) error {
+	e.mu.Lock()
+	if !e.down && len(e.buffered) == 0 {
+		e.delivered = append(e.delivered, 0)
+	}
+	e.mu.Unlock()
+	return e.memSink.Flush(ctx)
+}
+
+// staysDownSink never recovers, so the retry fails rather than delivering.
+//
+// It fails only once Break has been called. The sequence opens with a clean
+// delivery, and a double that failed that too would abort the run as a broken
+// subject rather than exercising the retry this exists to test.
+type staysDownSink struct {
+	*memSink
+	broken bool
+}
+
+func (s *staysDownSink) Flush(ctx context.Context) error {
+	s.mu.Lock()
+	if s.down {
+		s.broken = true
+	}
+	broken := s.broken
+	s.mu.Unlock()
+
+	if broken {
+		return errors.New("destination unreachable")
+	}
+	return s.memSink.Flush(ctx)
 }
 
 // --- Helpers ---------------------------------------------------------------
@@ -492,7 +538,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 	for _, v := range sinkVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 3, len(out))
+	assert.Equal(t, 4, len(out))
 	return out
 }
 
