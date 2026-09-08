@@ -80,9 +80,6 @@ integrations:
       - invariant: sink.flush.honours_context
         reason: has no destination; discarding every row is the contract
         proven_by: TestSinkNoop_DeliversNothingAndSaysSo
-      - invariant: sink.batch.reports_buffer
-        reason: has no destination; discarding every row is the contract
-        proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.buffer.reports_depth
         reason: has no destination; it holds nothing, so there is no depth to report
         proven_by: TestSinkNoop_DeliversNothingAndSaysSo

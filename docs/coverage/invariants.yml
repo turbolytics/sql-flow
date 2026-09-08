@@ -96,14 +96,6 @@ invariants:
     requires: []
     enforced: true
 
-  - id: sink.batch.reports_buffer
-    family: resilience
-    class: safety
-    applies_to: sink
-    claim: Batch returns what is buffered, and nil when nothing is.
-    verified_by: harness
-    requires: []
-
   - id: sink.error.classifies
     family: resilience
     class: safety
