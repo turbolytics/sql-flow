@@ -45,3 +45,69 @@ func TestToolingCoverageRegistry_RejectsAnUnknownKind(t *testing.T) {
 	_, err := Integrations("router")
 	assert.Error(t, err)
 }
+
+// The lattice is the closed set every integration's type table is checked
+// against. A duplicate key silently drops a row, and a key naming no DuckDB
+// cast renders as a blank cell on the integration page.
+func TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed(t *testing.T) {
+	Covers(t, "tooling.coverage")
+
+	entries, err := Lattice()
+	assert.NoError(t, err)
+	assert.Equal(t, len(entries), 29)
+
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if seen[e.Key] {
+			t.Errorf("lattice.yml: duplicate key %q", e.Key)
+		}
+		seen[e.Key] = true
+
+		if len(e.DuckDB) == 0 {
+			t.Errorf("lattice.yml: %q names no DuckDB SQL type", e.Key)
+		}
+		if e.Depth != 1 && e.Depth != 2 {
+			t.Errorf("lattice.yml: %q has depth %d, want 1 or 2", e.Key, e.Depth)
+		}
+	}
+}
+
+// Every lattice key must carry an outcome, or the sink's behaviour on that
+// type is undeclared and the matrix cannot tell a gap from a pass.
+func TestToolingCoverageRegistry_ClickhouseDeclaresEveryLatticeKey(t *testing.T) {
+	Covers(t, "tooling.coverage")
+
+	declared, err := TypesFor("sink.clickhouse")
+	assert.NoError(t, err)
+
+	byKey := map[string]TypeDecl{}
+	for _, d := range declared {
+		byKey[d.Key] = d
+	}
+
+	entries, err := Lattice()
+	assert.NoError(t, err)
+	for _, e := range entries {
+		d, ok := byKey[e.Key]
+		if !ok {
+			t.Errorf("sink.clickhouse declares no outcome for %q", e.Key)
+			continue
+		}
+		switch d.Outcome {
+		case "exact":
+			if len(d.Columns) == 0 {
+				t.Errorf("sink.clickhouse: %q is exact and names no column type", e.Key)
+			}
+		case "coerced":
+			if d.Rule == "" {
+				t.Errorf("sink.clickhouse: %q is coerced with no rule", e.Key)
+			}
+		case "unsupported":
+			if d.Code == "" {
+				t.Errorf("sink.clickhouse: %q is unsupported with no code", e.Key)
+			}
+		default:
+			t.Errorf("sink.clickhouse: %q has outcome %q", e.Key, d.Outcome)
+		}
+	}
+}

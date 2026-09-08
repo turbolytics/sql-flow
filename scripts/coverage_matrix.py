@@ -38,6 +38,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REGISTRY = os.path.join(REPO, "docs", "coverage", "features.yml")
 INVARIANTS = os.path.join(REPO, "docs", "coverage", "invariants.yml")
 INTEGRATIONS = os.path.join(REPO, "docs", "coverage", "integrations.yml")
+LATTICE = os.path.join(REPO, "docs", "coverage", "lattice.yml")
 # The JSON is the artifact CI diffs; the markdown is a view rendered from it.
 MATRIX_JSON = os.path.join(REPO, "docs", "coverage", "matrix.json")
 MATRIX_MD = os.path.join(REPO, "docs", "coverage", "matrix.md")
@@ -75,6 +76,10 @@ KINDS = ("sink", "source", "handler", "pipeline")
 # attribute the same claim.
 VERIFIERS = ("harness", "typetable")
 
+# What a type table may say a sink does with an Arrow type. Anything else is a
+# typo, and a typo must not reach the matrix as a missing cell.
+OUTCOMES = ("exact", "coerced", "unsupported")
+
 PIPELINE = "pipeline"
 
 # A pipeline configuration is an integration of the harness, though no
@@ -96,6 +101,11 @@ def load_invariants():
 def load_integrations():
     with open(INTEGRATIONS) as fh:
         return yaml.safe_load(fh)["integrations"]
+
+
+def load_lattice():
+    with open(LATTICE) as fh:
+        return yaml.safe_load(fh)["lattice"]
 
 
 def validate_registries(invariants, integrations, features):
@@ -177,6 +187,62 @@ def validate_registries(invariants, integrations, features):
                 problems.append(
                     f"integrations.yml: {iid} is a {integ.get('kind')} but "
                     f"{inv['id']} applies_to {inv.get('applies_to')}")
+
+    return problems
+
+
+def validate_types(lattice, integrations):
+    """Every problem in a type table, one line each. Empty when consistent.
+
+    The lattice is closed, so a key outside it is a typo and a key inside it
+    that a sink does not declare is a gap. Both are reported here rather than
+    rendered as a missing cell: "missing" is the signal the matrix exists to
+    carry, and it must not be spendable on a misspelling.
+
+    A sink with no type table gets no lines at all. One sink has a table in
+    this revision and five do not, and 29 lines each would bury the one that
+    does. The absent tables are visible as missing cells, which is the right
+    signal for a sink whose type behaviour nobody has written down.
+    """
+    problems = []
+    keys = {entry["key"] for entry in lattice}
+
+    for integ in integrations:
+        types = integ.get("types")
+        if not types:
+            continue
+
+        iid = integ["id"]
+        for key, decl in sorted(types.items()):
+            if key not in keys:
+                problems.append(
+                    f"integrations.yml: {iid} declares type {key!r}, "
+                    "which lattice.yml does not list")
+                continue
+
+            outcome = decl.get("outcome")
+            if outcome not in OUTCOMES:
+                problems.append(
+                    f"integrations.yml: {iid} type {key!r} outcome "
+                    f"{outcome!r} is not one of {OUTCOMES}")
+            # A coercion stated as an outcome and no rule is an excuse. The
+            # rule is what the integration page publishes, and what a reader
+            # needs to predict what their column will hold.
+            if outcome == "coerced" and not decl.get("rule"):
+                problems.append(
+                    f"integrations.yml: {iid} type {key!r} is coerced with no rule")
+            if outcome == "unsupported" and not decl.get("code"):
+                problems.append(
+                    f"integrations.yml: {iid} type {key!r} is unsupported with no code")
+            if outcome in ("exact", "coerced") and not decl.get("columns"):
+                problems.append(
+                    f"integrations.yml: {iid} type {key!r} is {outcome} but names "
+                    "no destination column type to write it to")
+
+        for key in sorted(keys - set(types)):
+            problems.append(
+                f"integrations.yml: {iid} has a type table and declares no "
+                f"outcome for {key!r}, which lattice.yml lists")
 
     return problems
 
@@ -992,6 +1058,7 @@ def main():
     # Before any test result is read: a registry typo would otherwise reach
     # the matrix as a missing cell.
     problems = validate_registries(invariants, integrations, features)
+    problems += validate_types(load_lattice(), integrations)
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)

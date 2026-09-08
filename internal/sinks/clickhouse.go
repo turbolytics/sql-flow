@@ -359,10 +359,28 @@ func arrowValue(arr arrow.Array, i int) (any, error) {
 		return arrowListValue(l, i)
 	}
 
+	// Convertibility first, absence second. The null check used to come
+	// first, so a null of a type this switch does not handle returned nil and
+	// was stored as NULL -- and an all-null column is the ordinary shape of a
+	// field the producer stopped sending. An INTERVAL or a DECIMAL arriving
+	// all-null therefore reached the destination silently, while the same
+	// column with one value in it failed the batch.
+	//
+	// Reading a null slot is safe: an Arrow accessor returns the zero value
+	// for it rather than panicking, and the result is discarded below.
+	v, err := arrowScalar(arr, i)
+	if err != nil {
+		return nil, err
+	}
 	if arr.IsNull(i) {
 		return nil, nil
 	}
+	return v, nil
+}
 
+// arrowScalar converts one non-list Arrow cell, or reports that the sink has
+// no conversion for its type.
+func arrowScalar(arr arrow.Array, i int) (any, error) {
 	switch a := arr.(type) {
 	case *array.Boolean:
 		return a.Value(i), nil
@@ -401,7 +419,11 @@ func arrowValue(arr arrow.Array, i int) (any, error) {
 	case *array.Date64:
 		return a.Value(i).ToTime(), nil
 	default:
-		return nil, fmt.Errorf("unsupported arrow type %s", arr.DataType())
+		// Coded, because this is the user's column and not sqlflow's bug. An
+		// uncoded error reaches the operator as system.internal.unexpected,
+		// which sends them to file a report rather than to cast the column.
+		return nil, errs.New(errs.CodeSinkTypeUnsupported,
+			"unsupported arrow type %s", arr.DataType())
 	}
 }
 
@@ -430,7 +452,11 @@ func arrowListValue(l *array.List, row int) (any, error) {
 		}
 		rv := reflect.ValueOf(v)
 		if !rv.Type().AssignableTo(out.Type().Elem()) {
-			return nil, fmt.Errorf("list element %s is not assignable to %s", rv.Type(), out.Type().Elem())
+			// The same defect one level down: goElemType renders an element
+			// type the value switch converts to something else. It is the
+			// user's column type either way.
+			return nil, errs.New(errs.CodeSinkTypeUnsupported,
+				"list element %s is not assignable to %s", rv.Type(), out.Type().Elem())
 		}
 		out = reflect.Append(out, rv)
 	}

@@ -21,34 +21,37 @@ This design builds it, with ClickHouse as the first column.
 
 ## What the lattice is
 
-DuckDB 1.5.2 emits 24 distinct scalar Arrow types across 72 SQL type names,
-plus six type constructors. Measured on 2026-09-07 by casting `NULL` to every
-name `duckdb_types()` reports and reading the Arrow schema back.
+DuckDB 1.5.2 emits 23 scalar Arrow keys and six type constructors. Measured on
+2026-09-08 through `internal/duckdb.Open`, the engine's own ADBC connection,
+by casting `NULL` to each SQL type and reading the Arrow schema back.
 
-The 24 scalars collapse into 23 keys, because `DECIMAL(p, s)` is a family:
+The binding matters. pyarrow prints `string`, `double`, `date32[day]` and
+`decimal128(38, 0)` where arrow-go prints `utf8`, `float64`, `date32` and
+`decimal(38, 0)`. An earlier revision of this file carried the pyarrow forms,
+and every key in it was wrong.
 
 | Arrow key | DuckDB SQL types that produce it |
 |---|---|
-| `bool` | `BOOLEAN`, `LOGICAL` |
+| `bool` | `BOOLEAN` |
 | `int8` | `TINYINT` |
 | `int16` | `SMALLINT` |
 | `int32` | `INTEGER` |
-| `int64` | `BIGINT`, `OID` |
+| `int64` | `BIGINT` |
 | `uint8` | `UTINYINT` |
 | `uint16` | `USMALLINT` |
 | `uint32` | `UINTEGER` |
 | `uint64` | `UBIGINT` |
-| `float` | `REAL` |
-| `double` | `DOUBLE` |
-| `decimal128(*, *)` | `DECIMAL(p, s)`, `NUMERIC`, `HUGEINT`, `UHUGEINT` |
-| `string` | `VARCHAR`, `JSON`, `UUID`, `CHAR` |
-| `binary` | `BLOB`, `BIT`, `VARINT`, `GEOMETRY` |
-| `date32[day]` | `DATE` |
+| `float32` | `REAL` |
+| `float64` | `DOUBLE` |
+| `decimal(*, *)` | `DECIMAL(p, s)`, `HUGEINT`, `UHUGEINT` |
+| `utf8` | `VARCHAR`, `UUID`, `JSON` |
+| `binary` | `BLOB`, `BIT`, `VARINT` |
+| `date32` | `DATE` |
 | `time64[us]` | `TIME`, `TIMETZ` |
 | `time64[ns]` | `TIME_NS` |
 | `timestamp[s]` | `TIMESTAMP_S` |
 | `timestamp[ms]` | `TIMESTAMP_MS` |
-| `timestamp[us]` | `TIMESTAMP`, `DATETIME` |
+| `timestamp[us]` | `TIMESTAMP` |
 | `timestamp[ns]` | `TIMESTAMP_NS` |
 | `timestamp[us, tz=*]` | `TIMESTAMPTZ` |
 | `month_day_nano_interval` | `INTERVAL` |
@@ -59,16 +62,36 @@ And six constructors:
 |---|---|
 | `list<T>` | `T[]` |
 | `fixed_size_list<T>[n]` | `T[n]` |
-| `struct<...>` | `STRUCT(...)` |
-| `map<K, V>` | `MAP(K, V)` |
-| `sparse_union<...>` | `UNION(...)` |
-| `dictionary<values=string, indices=uint8>` | `ENUM` |
+| `struct` | `STRUCT(...)` |
+| `map` | `MAP(K, V)` |
+| `sparse_union` | `UNION(...)` |
+| `dictionary` | `ENUM` |
+
+### The key is canonical, not raw
+
+`DataType.String()` cannot be the key. DuckDB's ADBC output names a list's
+child `l`, and `arrow.ListOf` names it `item`:
+
+```
+DuckDB, through ADBC     list<l: int32, nullable>
+arrow.ListOf(int32)      list<item: int32, nullable>
+```
+
+The same logical type has two spellings, decided by whoever built it. A
+declaration keyed on the raw string would match one and silently miss the
+other, and the one it missed is the engine's.
+
+So `internal/conformance` owns `CanonicalKey(arrow.DataType) string`, which
+drops child names and nullability and renders the constructors as the table
+above spells them. Scalars are unchanged: `CanonicalKey` of `int64` is
+`int64`. The declaration and the runtime then agree by construction, and a
+DuckDB upgrade that renames a child field cannot invalidate the registry.
 
 Twenty-nine keys at depth 1: 23 scalars and 6 constructors. The spec of
 2026-09-06 recorded 26; that count predates the measurement and this file
 replaces it.
 
-`HUGEINT` maps to `decimal128(38, 0)`, not to an integer type. DuckDB promotes
+`HUGEINT` maps to `decimal(38, 0)`, not to an integer type. DuckDB promotes
 integer overflow to `HUGEINT`, so a user reaches this key by accident.
 
 ### The timezone key is host dependent
@@ -127,21 +150,23 @@ integration:
 ```yaml
 lattice:
   - key: int64
-    duckdb: [BIGINT, OID]
-    value: 9223372036854775807
+    duckdb: [BIGINT]
     depth: 1
 
   - key: "timestamp[us, tz=*]"
     duckdb: [TIMESTAMPTZ]
-    value: "2026-09-07T12:00:00Z"
-    session_tz: Asia/Tokyo
     depth: 1
 
   - key: "list<int64>"
     duckdb: ["BIGINT[]"]
-    element: int64
     depth: 2
 ```
+
+The YAML declares the key set. It carries no test value: encoding one value
+per Arrow type in YAML means writing a decoder for 29 types, and the values
+belong where the Arrow builders already are. `internal/conformance` owns the
+value table, and a test holds its keys equal to this file — the same two
+statements that must agree as `Kinds()` and `Integrations()`.
 
 The lattice is what makes a gap visible. Without it, a type nobody thought of is
 invisible, which is the failure `integrations.yml` names as the Iceberg failure:
@@ -162,17 +187,17 @@ types that accept it:
       int64:
         outcome: exact
         columns: [Int64, Nullable(Int64)]
-      string:
+      utf8:
         outcome: exact
         columns: [String, LowCardinality(String), FixedString(36), Enum8('a' = 1)]
       "timestamp[us, tz=*]":
         outcome: coerced
         rule: stored as the same UTC instant; the column's own zone governs rendering
         columns: [DateTime, DateTime64(3)]
-      "decimal128(*, *)":
+      "decimal(*, *)":
         outcome: unsupported
         code: user.sink.type_unsupported
-      "struct<...>":
+      struct:
         outcome: unsupported
         code: user.sink.type_unsupported
     nulls:
@@ -186,14 +211,14 @@ types that accept it:
         rule: the element type's zero value
 ```
 
-A key takes a *list* of column types. That is how `string` reproduces the
+A key takes a *list* of column types. That is how `utf8` reproduces the
 page's "`String`, `LowCardinality(String)`, `Enum`, `FixedString`" row with no
 new machinery: every listed column type is exercised, and the cell is covered
 only when all of them pass.
 
 The declaration is written by hand and the test judges it. It is not generated
 from the sink. A table derived from the sink can never report that the sink is
-missing a type, and "the sink is missing `decimal128`" is exactly what this must
+missing a type, and "the sink is missing `decimal`" is exactly what this must
 report.
 
 ### `internal/conformance/types.go`
@@ -269,7 +294,7 @@ no log line. The page's `NULL` row covers null columns and null lists, not this
 position.
 
 **Eight lattice keys fail the batch and the page names two of them.**
-`decimal128`, `month_day_nano_interval`, `time64[us]`, `time64[ns]`,
+`decimal`, `month_day_nano_interval`, `time64[us]`, `time64[ns]`,
 `dictionary`, `map`, `sparse_union` and `fixed_size_list` all fall to
 `arrowValue`'s default at `clickhouse.go:404`. The page's Known limits section
 names `Map` and `Tuple`. `HUGEINT` is the one a user hits without asking for it.
