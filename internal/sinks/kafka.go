@@ -9,6 +9,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	tkafka "github.com/turbolytics/sql-flow/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -27,6 +28,22 @@ import (
 // fails and reports rather than being killed mid-flush. Kafka's own
 // delivery.timeout.ms default of two minutes is far past that.
 const recordDeliveryTimeout = 20 * time.Second
+
+// kafkaSinkError codes a flush failure, teaching sinkError the two franz-go
+// errors it cannot recognise.
+//
+// isUnreachable matches syscall and net errors. A record that expired waiting
+// for a broker that never answered carries neither, and a client closed out
+// from under a flush carries neither. Both are the same partition a refused
+// connection is, reported by a timer or a shutdown rather than by the kernel.
+// Coding them as a rejected write exits 1 and labels the error metric for a
+// bug, which is what the bare fmt.Errorf here used to do.
+func kafkaSinkError(err error, format string, args ...any) error {
+	if errors.Is(err, kgo.ErrRecordTimeout) || errors.Is(err, kgo.ErrClientClosed) {
+		return errs.Wrap(errs.CodeSinkUnreachable, err, format, args...)
+	}
+	return sinkError(err, format, args...)
+}
 
 // KafkaSink produces one message per result row, JSON encoded, matching the
 // Python KafkaSink.
@@ -181,8 +198,8 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 	if firstErr == nil {
 		firstErr = errors.New("not acknowledged")
 	}
-	return fmt.Errorf("kafka sink: %d of %d rows not acknowledged, first: %w",
-		len(keep), len(pending), firstErr)
+	return kafkaSinkError(firstErr, "kafka sink: %d of %d rows not acknowledged",
+		len(keep), len(pending))
 }
 
 func (s *KafkaSink) Close() error {

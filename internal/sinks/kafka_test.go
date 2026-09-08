@@ -13,6 +13,7 @@ import (
 
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/zeebo/assert"
 )
@@ -173,6 +174,44 @@ func TestSinkKafka_HasADeliveryTimeoutByDefault(t *testing.T) {
 	// Longer than recordDeliveryTimeout, so a sink with no default hangs here.
 	assert.Error(t, flushWithin(t, s, context.Background(),
 		recordDeliveryTimeout+10*time.Second))
+}
+
+// A dead broker must exit 12, not 1.
+//
+// errs.CodeOf falls back to system.internal.unexpected for an uncoded error, so
+// a bare fmt.Errorf tells a supervisor the pipeline hit a bug and labels the
+// error metric the same way. Both are wrong, and both are what an operator
+// reads first.
+func TestSinkKafka_FlushCodesAnUnreachableBroker(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	s := newUnreachableKafkaSink(t)
+
+	table := newTestTable(t, []string{"nyc"}, []int64{1})
+	defer table.Release()
+	assert.NoError(t, s.WriteTable(context.Background(), table))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := flushWithin(t, s, ctx, 10*time.Second)
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
+	assert.Equal(t, errs.ExitSinkUnreachable, errs.ExitCode(err))
+}
+
+// A record that expired waiting for a broker that never answered is the same
+// failure as a refused connection.
+//
+// isUnreachable matches syscall and net errors and has no reason to know
+// franz-go's sentinel, so the sink classifies it. Coding it as a rejected write
+// would exit 1 again -- and the delivery timeout makes this the common error
+// against a broker that is down.
+func TestSinkKafka_ARecordTimeoutIsUnreachable(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	err := kafkaSinkError(kgo.ErrRecordTimeout, "kafka sink: %d rows", 1)
+
+	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
+	assert.Equal(t, errs.ExitSinkUnreachable, errs.ExitCode(err))
 }
 
 // Produce errors must not be swallowed. The pipeline commits its offsets only
