@@ -71,3 +71,43 @@ func TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed(t *testing.T) {
 		}
 	}
 }
+
+// Every lattice key must carry an outcome, or the sink's behaviour on that
+// type is undeclared and the matrix cannot tell a gap from a pass.
+func TestToolingCoverageRegistry_ClickhouseDeclaresEveryLatticeKey(t *testing.T) {
+	Covers(t, "tooling.coverage")
+
+	declared, err := TypesFor("sink.clickhouse")
+	assert.NoError(t, err)
+
+	byKey := map[string]TypeDecl{}
+	for _, d := range declared {
+		byKey[d.Key] = d
+	}
+
+	entries, err := Lattice()
+	assert.NoError(t, err)
+	for _, e := range entries {
+		d, ok := byKey[e.Key]
+		if !ok {
+			t.Errorf("sink.clickhouse declares no outcome for %q", e.Key)
+			continue
+		}
+		switch d.Outcome {
+		case "exact":
+			if len(d.Columns) == 0 {
+				t.Errorf("sink.clickhouse: %q is exact and names no column type", e.Key)
+			}
+		case "coerced":
+			if d.Rule == "" {
+				t.Errorf("sink.clickhouse: %q is coerced with no rule", e.Key)
+			}
+		case "unsupported":
+			if d.Code == "" {
+				t.Errorf("sink.clickhouse: %q is unsupported with no code", e.Key)
+			}
+		default:
+			t.Errorf("sink.clickhouse: %q has outcome %q", e.Key, d.Outcome)
+		}
+	}
+}

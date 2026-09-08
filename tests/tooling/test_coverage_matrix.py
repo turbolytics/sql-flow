@@ -1672,3 +1672,95 @@ def test_render_says_what_safety_alone_cannot_prove():
     s = snap()
     s.update(inv_snap(invariants=[SAFETY, LIVENESS]))
     assert "never flushes" in cm.render(s)
+
+
+# --- The type lattice ------------------------------------------------------
+#
+# The lattice is closed, so a key outside it is a typo and a key inside it
+# that a sink does not declare is a gap. Both must be reported rather than
+# rendered as a missing cell: "missing" is the signal the matrix exists to
+# carry, and it must not be spendable on a misspelling.
+
+LATTICE = [
+    {"key": "int64", "duckdb": ["BIGINT"], "depth": 1},
+    {"key": "utf8", "duckdb": ["VARCHAR"], "depth": 1},
+]
+
+
+def typed(types):
+    return [{"id": "sink.clickhouse", "kind": "sink",
+             "feature": "sink.clickhouse", "types": types}]
+
+
+def test_a_type_key_outside_the_lattice_is_reported():
+    problems = cm.validate_types(LATTICE, typed({
+        "int64": {"outcome": "exact", "columns": ["Int64"]},
+        "utf8": {"outcome": "exact", "columns": ["String"]},
+        "decimal128(38, 0)": {"outcome": "unsupported",
+                              "code": "user.sink.type_unsupported"},
+    }))
+    assert any("decimal128(38, 0)" in p and "lattice.yml" in p for p in problems)
+
+
+def test_a_lattice_key_the_sink_does_not_declare_is_reported():
+    problems = cm.validate_types(LATTICE, typed({
+        "int64": {"outcome": "exact", "columns": ["Int64"]},
+    }))
+    assert any("utf8" in p and "sink.clickhouse" in p for p in problems)
+
+
+def test_a_sink_with_no_type_table_is_not_reported_key_by_key():
+    """One sink has a table in this revision. Five do not, and 29 lines each
+    would bury the one that does."""
+    problems = cm.validate_types(
+        LATTICE, [{"id": "sink.kafka", "kind": "sink", "feature": "sink.kafka"}])
+    assert problems == []
+
+
+def test_a_coerced_row_without_a_rule_is_reported():
+    """A coercion stated as an outcome and no rule is an excuse. The rule is
+    what the integration page publishes."""
+    problems = cm.validate_types(LATTICE, typed({
+        "int64": {"outcome": "coerced", "columns": ["Int64"]},
+        "utf8": {"outcome": "exact", "columns": ["String"]},
+    }))
+    assert any("int64" in p and "rule" in p for p in problems)
+
+
+def test_an_unsupported_row_without_a_code_is_reported():
+    problems = cm.validate_types(LATTICE, typed({
+        "int64": {"outcome": "unsupported"},
+        "utf8": {"outcome": "exact", "columns": ["String"]},
+    }))
+    assert any("int64" in p and "code" in p for p in problems)
+
+
+def test_a_supported_row_naming_no_column_is_reported():
+    """Nothing to write it to means nothing was proven."""
+    problems = cm.validate_types(LATTICE, typed({
+        "int64": {"outcome": "exact", "columns": []},
+        "utf8": {"outcome": "exact", "columns": ["String"]},
+    }))
+    assert any("int64" in p and "column" in p for p in problems)
+
+
+def test_an_unknown_outcome_is_reported():
+    problems = cm.validate_types(LATTICE, typed({
+        "int64": {"outcome": "probably fine", "columns": ["Int64"]},
+        "utf8": {"outcome": "exact", "columns": ["String"]},
+    }))
+    assert any("probably fine" in p for p in problems)
+
+
+def test_a_consistent_table_reports_nothing():
+    problems = cm.validate_types(LATTICE, typed({
+        "int64": {"outcome": "exact", "columns": ["Int64"]},
+        "utf8": {"outcome": "unsupported", "code": "user.sink.type_unsupported"},
+    }))
+    assert problems == []
+
+
+def test_the_real_registries_agree():
+    """The check runs against the shipped files, not only fixtures. A gap here
+    is a real gap."""
+    assert cm.validate_types(cm.load_lattice(), cm.load_integrations()) == []

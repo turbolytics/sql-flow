@@ -242,3 +242,61 @@ func Lattice() ([]LatticeEntry, error) {
 	}
 	return doc.Lattice, nil
 }
+
+// TypeDecl is one integration's declared outcome for one Arrow type.
+type TypeDecl struct {
+	// Key is the lattice.yml key. It is the mapping key in the YAML, so
+	// TypesFor fills it in rather than the parser.
+	Key string `yaml:"-"`
+
+	// Outcome is exact, coerced or unsupported.
+	Outcome string `yaml:"outcome"`
+
+	// Rule states a coercion in prose, for the rendered page. Required when
+	// Outcome is coerced: a coercion with no rule is an excuse, and a reader
+	// cannot predict what their column will hold.
+	Rule string `yaml:"rule"`
+
+	// Code is the errs code an unsupported type must fail with.
+	Code string `yaml:"code"`
+
+	// Columns are the destination column types that accept this key. Every one
+	// is exercised, and the cell is covered only when all of them pass.
+	Columns []string `yaml:"columns"`
+}
+
+// TypesFor returns one integration's type table, sorted by key.
+//
+// Sorted rather than in file order: a YAML mapping carries no order, so file
+// order is whatever the parser chose, and a runner iterating it would report
+// its rows in a different sequence run to run.
+func TypesFor(integration string) ([]TypeDecl, error) {
+	raw, err := readRegistry("integrations.yml")
+	if err != nil {
+		return nil, err
+	}
+
+	var doc struct {
+		Integrations []struct {
+			ID    string              `yaml:"id"`
+			Types map[string]TypeDecl `yaml:"types"`
+		} `yaml:"integrations"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("coverage: parse integrations.yml: %w", err)
+	}
+
+	for _, entry := range doc.Integrations {
+		if entry.ID != integration {
+			continue
+		}
+		out := make([]TypeDecl, 0, len(entry.Types))
+		for key, decl := range entry.Types {
+			decl.Key = key
+			out = append(out, decl)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+		return out, nil
+	}
+	return nil, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+}
