@@ -130,8 +130,110 @@ lattice:
   # A constructor is one key however deep it nests. An unsupported constructor
   # fails on its outermost type, so struct-of-struct proves nothing a struct
   # does not: "unsupported" has no depth.
+  # One list key per element type a sink might convert. This looks repetitive
+  # and it is the point: a sink converts a list element through a different
+  # code path than a bare column -- in ClickHouse, goElemType rather than
+  # arrowValue -- and the two are switches over the same type set that nothing
+  # holds equal. A divergence shows up as one element type that works alone
+  # and fails inside an Array.
+  - key: "list<bool>"
+    duckdb: ["BOOLEAN[]"]
+    depth: 2
+
+  - key: "list<int8>"
+    duckdb: ["TINYINT[]"]
+    depth: 2
+
+  - key: "list<int16>"
+    duckdb: ["SMALLINT[]"]
+    depth: 2
+
+  - key: "list<int32>"
+    duckdb: ["INTEGER[]"]
+    depth: 2
+
   - key: "list<int64>"
     duckdb: ["BIGINT[]"]
+    depth: 2
+
+  - key: "list<uint8>"
+    duckdb: ["UTINYINT[]"]
+    depth: 2
+
+  - key: "list<uint16>"
+    duckdb: ["USMALLINT[]"]
+    depth: 2
+
+  - key: "list<uint32>"
+    duckdb: ["UINTEGER[]"]
+    depth: 2
+
+  - key: "list<uint64>"
+    duckdb: ["UBIGINT[]"]
+    depth: 2
+
+  - key: "list<float32>"
+    duckdb: ["REAL[]"]
+    depth: 2
+
+  - key: "list<float64>"
+    duckdb: ["DOUBLE[]"]
+    depth: 2
+
+  - key: "list<utf8>"
+    duckdb: ["VARCHAR[]"]
+    depth: 2
+
+  - key: "list<binary>"
+    duckdb: ["BLOB[]"]
+    depth: 2
+
+  - key: "list<date32>"
+    duckdb: ["DATE[]"]
+    depth: 2
+
+  - key: "list<timestamp[s]>"
+    duckdb: ["TIMESTAMP_S[]"]
+    depth: 2
+
+  - key: "list<timestamp[ms]>"
+    duckdb: ["TIMESTAMP_MS[]"]
+    depth: 2
+
+  - key: "list<timestamp[us]>"
+    duckdb: ["TIMESTAMP[]"]
+    depth: 2
+
+  - key: "list<timestamp[ns]>"
+    duckdb: ["TIMESTAMP_NS[]"]
+    depth: 2
+
+  - key: "list<timestamp[us, tz=*]>"
+    duckdb: ["TIMESTAMPTZ[]"]
+    depth: 2
+
+  # A container holding something the sink cannot convert. These are the rows
+  # that prove a list does not launder its element: an unsupported element
+  # must fail the batch from inside a supported container, exactly as it does
+  # on its own.
+  - key: "list<decimal(*, *)>"
+    duckdb: ["DECIMAL(p, s)[]", "HUGEINT[]"]
+    depth: 2
+
+  - key: "list<time64[us]>"
+    duckdb: ["TIME[]"]
+    depth: 2
+
+  # Depth 3, two witnesses. A sink nests through one recursive pair, so depth 4
+  # re-runs the code depth 3 already ran. list-of-struct is the second witness
+  # because struct is unsupported: it proves the recursion carries the failure
+  # up rather than flattening it away.
+  - key: "list<list<int64>>"
+    duckdb: ["BIGINT[][]"]
+    depth: 2
+
+  - key: "list<struct>"
+    duckdb: ["STRUCT(...)[]"]
     depth: 2
 
   - key: "fixed_size_list<int32>[3]"

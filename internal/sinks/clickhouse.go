@@ -440,7 +440,15 @@ func arrowListValue(l *array.List, row int) (any, error) {
 		start, end = l.ValueOffsets(row)
 	}
 
-	out := reflect.MakeSlice(goSliceType(l.DataType().(*arrow.ListType).Elem()), 0, int(end-start))
+	// Decided from the element type before any element is read, so an empty or
+	// null list of an unsupported type fails here rather than reaching the
+	// driver as a slice of the wrong thing.
+	sliceType, err := goSliceType(l.DataType().(*arrow.ListType).Elem())
+	if err != nil {
+		return nil, err
+	}
+
+	out := reflect.MakeSlice(sliceType, 0, int(end-start))
 	for i := start; i < end; i++ {
 		v, err := arrowValue(values, int(i))
 		if err != nil {
@@ -465,43 +473,61 @@ func arrowListValue(l *array.List, row int) (any, error) {
 
 // goSliceType maps an Arrow element type to the Go slice type the driver
 // expects for Array(T), recursing so a nested list becomes [][]T.
-func goSliceType(elem arrow.DataType) reflect.Type {
-	return reflect.SliceOf(goElemType(elem))
+func goSliceType(elem arrow.DataType) (reflect.Type, error) {
+	t, err := goElemType(elem)
+	if err != nil {
+		return nil, err
+	}
+	return reflect.SliceOf(t), nil
 }
 
-func goElemType(dt arrow.DataType) reflect.Type {
+// goElemType maps an Arrow element type to the Go type the driver's Array
+// column appender accepts, or reports that the sink has no conversion for it.
+//
+// It reports rather than falling back to string. The fallback made an empty
+// or null list of any type at all produce a []string, and neither has an
+// element for arrowValue to reject, so a null Array(DECIMAL) reached the
+// driver as an empty []string and failed there with an uncoded message --
+// while the same column carrying one value failed with a coded one. The
+// element type must be decided from the type, not from the elements.
+func goElemType(dt arrow.DataType) (reflect.Type, error) {
 	switch t := dt.(type) {
 	case *arrow.ListType:
 		return goSliceType(t.Elem())
 	case *arrow.BooleanType:
-		return reflect.TypeOf(false)
+		return reflect.TypeOf(false), nil
 	case *arrow.Int8Type:
-		return reflect.TypeOf(int8(0))
+		return reflect.TypeOf(int8(0)), nil
 	case *arrow.Int16Type:
-		return reflect.TypeOf(int16(0))
+		return reflect.TypeOf(int16(0)), nil
 	case *arrow.Int32Type:
-		return reflect.TypeOf(int32(0))
+		return reflect.TypeOf(int32(0)), nil
 	case *arrow.Int64Type:
-		return reflect.TypeOf(int64(0))
+		return reflect.TypeOf(int64(0)), nil
 	case *arrow.Uint8Type:
-		return reflect.TypeOf(uint8(0))
+		return reflect.TypeOf(uint8(0)), nil
 	case *arrow.Uint16Type:
-		return reflect.TypeOf(uint16(0))
+		return reflect.TypeOf(uint16(0)), nil
 	case *arrow.Uint32Type:
-		return reflect.TypeOf(uint32(0))
+		return reflect.TypeOf(uint32(0)), nil
 	case *arrow.Uint64Type:
-		return reflect.TypeOf(uint64(0))
+		return reflect.TypeOf(uint64(0)), nil
 	case *arrow.Float32Type:
-		return reflect.TypeOf(float32(0))
+		return reflect.TypeOf(float32(0)), nil
 	case *arrow.Float64Type:
-		return reflect.TypeOf(float64(0))
+		return reflect.TypeOf(float64(0)), nil
 	case *arrow.TimestampType, *arrow.Date32Type, *arrow.Date64Type:
-		return reflect.TypeOf(time.Time{})
+		return reflect.TypeOf(time.Time{}), nil
 	case *arrow.BinaryType, *arrow.LargeBinaryType:
-		return reflect.TypeOf([]byte(nil))
+		return reflect.TypeOf([]byte(nil)), nil
+	case *arrow.StringType, *arrow.LargeStringType:
+		return reflect.TypeOf(""), nil
 	default:
-		// String and anything else the element switch renders as a string.
-		return reflect.TypeOf("")
+		// Named, not defaulted. This switch must hold the same type set as
+		// arrowScalar: a type one accepts and the other does not is a column
+		// that works alone and fails inside an Array, or the reverse.
+		return nil, errs.New(errs.CodeSinkTypeUnsupported,
+			"unsupported arrow list element type %s", dt)
 	}
 }
 

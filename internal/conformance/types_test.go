@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -89,7 +90,47 @@ func (s *typeSink) value() any {
 	if chunk.IsNull(0) {
 		return nil
 	}
+	// Strings come back as strings, so the fidelity corpus is compared rather
+	// than skipped past a failed type assertion.
+	if str, ok := chunk.(*array.String); ok {
+		return str.Value(0)
+	}
 	return chunk
+}
+
+// lastString returns the single string value of the last delivered table, or
+// "" when there is none.
+func (s *typeSink) lastString() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.delivered == nil || s.delivered.NumCols() == 0 {
+		return ""
+	}
+	str, ok := s.delivered.Column(0).Data().Chunk(0).(*array.String)
+	if !ok || str.IsNull(0) {
+		return ""
+	}
+	return str.Value(0)
+}
+
+// secondElementIsNull reports whether the second element of the delivered
+// list row is null, which is the question a real destination answers with a
+// query rather than by inspecting Arrow.
+func (s *typeSink) secondElementIsNull() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.delivered == nil || s.delivered.NumCols() == 0 {
+		return false
+	}
+	list, ok := s.delivered.Column(0).Data().Chunk(0).(*array.List)
+	if !ok {
+		return false
+	}
+	values := list.ListValues()
+	if values.Len() < 2 {
+		return false
+	}
+	return values.IsNull(1)
 }
 
 func typeSubject(s *typeSink, declared []coverage.TypeDecl) TypeSubject {
@@ -101,6 +142,11 @@ func typeSubject(s *typeSink, declared []coverage.TypeDecl) TypeSubject {
 			return TypeDestination{
 				Sink:     core.Sink(s),
 				ReadBack: func(t *testing.T) (any, error) { return s.value(), nil },
+				// The double keeps what it is given, so its second element is
+				// null exactly when the written one was.
+				ReadBackNullElement: func(t *testing.T) (bool, error) {
+					return s.secondElementIsNull(), nil
+				},
 			}
 		},
 	}
@@ -109,10 +155,19 @@ func typeSubject(s *typeSink, declared []coverage.TypeDecl) TypeSubject {
 func TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 
+	// A container row and a string row are both part of honouring the table:
+	// type.nested and type.string.fidelity each refuse to pass on a table that
+	// declares nothing they can exercise.
 	declared := []coverage.TypeDecl{
 		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+		{Key: "utf8", Outcome: "exact", Columns: []string{"String"}},
+		{Key: "list<int64>", Outcome: "exact", Columns: []string{"Array(Int64)"}},
 	}
-	Types(t, typeSubject(newTypeSink("int64"), declared))
+	s := typeSubject(newTypeSink("int64", "utf8", "list<int64>"), declared)
+	// The double keeps every value it is given, nulls included.
+	s.ListElementNulls = coverage.NullRule{Outcome: "exact"}
+
+	Types(t, s)
 }
 
 // The defect the runner exists to catch: a table claiming exact for a type
@@ -214,6 +269,116 @@ func TestToolingConformanceTypes_ANullWithNoDeclaredOutcomeIsCaught(t *testing.T
 	subject.Nulls = coverage.NullRule{}
 
 	assertTypeFailure(t, typeVerdicts(t, subject), typeNull, "int64")
+}
+
+// A container that takes an element the sink cannot convert has laundered it:
+// the row lands, the column reads back, and one value in it is a fiction.
+// This is what type.nested means by "never silently flattened".
+func TestToolingConformanceTypes_AnUnsupportedElementInsideAListIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "list<struct>", Outcome: "unsupported", Code: "user.sink.type_unsupported"},
+	}
+	// The double takes the list despite its element, which is the defect.
+	s := typeSubject(newTypeSink("list<struct>"), declared)
+	s.ListElementNulls = coverage.NullRule{Outcome: "coerced", Rule: "the element zero value"}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeNested, "list<struct>")
+}
+
+// A null inside a list has no error path. The sink either keeps it, drops it,
+// or substitutes a value, and all three look identical from outside.
+func TestToolingConformanceTypes_ANullElementAgainstTheWrongRuleIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "list<int64>", Outcome: "exact", Columns: []string{"Array(Int64)"}},
+	}
+	s := typeSubject(newTypeSink("list<int64>"), declared)
+	// The double keeps the null it is given, so a table claiming the element
+	// is coerced to a zero value is wrong about it -- and a published page
+	// would be warning readers about a coercion that does not happen.
+	s.ListElementNulls = coverage.NullRule{Outcome: "coerced", Rule: "the element zero value"}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeNested, "list<int64>")
+}
+
+// A subject with no container rows cannot prove the invariant, and must say so
+// rather than pass vacuously.
+func TestToolingConformanceTypes_ATableWithNoContainerRowsIsNotNestedProof(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+	}
+	s := typeSubject(newTypeSink("int64"), declared)
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeNested, "no container")
+}
+
+// #149's defect: jsonparser returns the bytes between a string's quotes with
+// escapes undecoded, and the sink stored them verbatim. Every affected value
+// round-tripped through tests that used one tidy string.
+func TestToolingConformanceTypes_AMangledStringIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "utf8", Outcome: "exact", Columns: []string{"String"}},
+	}
+	s := typeSubject(newTypeSink("utf8"), declared)
+	s.Prepare = func(t *testing.T, key, columnType string) TypeDestination {
+		sink := newTypeSink("utf8")
+		return TypeDestination{
+			Sink: core.Sink(sink),
+			// A destination that drops backslashes, which is the shape of the
+			// defect: no error, and the row is simply wrong.
+			ReadBack: func(t *testing.T) (any, error) {
+				return strings.ReplaceAll(sink.lastString(), "\\", ""), nil
+			},
+		}
+	}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeFidelity, "backslash")
+}
+
+// The empty string is a value, not an absence. A destination that conflates
+// them loses the difference between sending nothing and sending no characters.
+func TestToolingConformanceTypes_AnEmptyStringReadBackAsNullIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "utf8", Outcome: "exact", Columns: []string{"String"}},
+	}
+	s := typeSubject(newTypeSink("utf8"), declared)
+	s.Prepare = func(t *testing.T, key, columnType string) TypeDestination {
+		sink := newTypeSink("utf8")
+		return TypeDestination{
+			Sink: core.Sink(sink),
+			ReadBack: func(t *testing.T) (any, error) {
+				if sink.lastString() == "" {
+					return nil, nil
+				}
+				return sink.lastString(), nil
+			},
+		}
+	}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeFidelity, "empty")
+}
+
+// An integration with no string row cannot prove the claim and must say so.
+func TestToolingConformanceTypes_ATableWithNoStringRowIsNotFidelityProof(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+		{Key: "list<int64>", Outcome: "exact", Columns: []string{"Array(Int64)"}},
+	}
+	s := typeSubject(newTypeSink("int64", "list<int64>"), declared)
+	s.ListElementNulls = coverage.NullRule{Outcome: "exact"}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeFidelity, "no utf8 row")
 }
 
 // A marker carries an integration id, so a subject without one would emit

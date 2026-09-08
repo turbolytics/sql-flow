@@ -54,7 +54,7 @@ func TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed(t *testing.T) {
 
 	entries, err := Lattice()
 	assert.NoError(t, err)
-	assert.Equal(t, len(entries), 29)
+	assert.Equal(t, len(entries), 51)
 
 	seen := map[string]bool{}
 	for _, e := range entries {

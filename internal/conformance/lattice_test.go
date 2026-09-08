@@ -140,6 +140,34 @@ func TestToolingConformanceLattice_EveryKeyBuildsANull(t *testing.T) {
 	}
 }
 
+// The third null position. A sink that drops it, or silently substitutes a
+// value for it, does so without an error, so only a direct test sees it.
+func TestToolingConformanceLattice_BuildsAListWithANullElement(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	arr, err := LatticeListWithNullElement("list<int64>")
+	assert.NoError(t, err)
+	defer arr.Release()
+
+	assert.Equal(t, arr.Len(), 1)
+	assert.Equal(t, arr.IsNull(0), false)
+
+	values := arr.(*array.List).ListValues()
+	assert.Equal(t, values.Len(), 3)
+	assert.Equal(t, values.IsNull(0), false)
+	assert.Equal(t, values.IsNull(1), true)
+	assert.Equal(t, values.IsNull(2), false)
+}
+
+// A key that is not a list has no element to null, and asking for one is a
+// mistake worth naming rather than a nil to dereference later.
+func TestToolingConformanceLattice_RejectsANullElementOnANonList(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	_, err := LatticeListWithNullElement("int64")
+	assert.Error(t, err)
+}
+
 // The union's null lives one level down, so it is checked there rather than
 // left unchecked. A sink that reads the child sees a null; one that reads the
 // union sees a value.
