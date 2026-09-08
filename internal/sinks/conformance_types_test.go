@@ -48,11 +48,14 @@ func TestIntegrationSinkClickhouse_Types(t *testing.T) {
 	assert.NoError(t, err)
 	nulls, err := coverage.NullsFor("sink.clickhouse")
 	assert.NoError(t, err)
+	elemNulls, err := coverage.NullElementsFor("sink.clickhouse")
+	assert.NoError(t, err)
 
 	conformance.Types(t, conformance.TypeSubject{
-		Integration: "sink.clickhouse",
-		Declared:    declared,
-		Nulls:       nulls,
+		Integration:      "sink.clickhouse",
+		Declared:         declared,
+		Nulls:            nulls,
+		ListElementNulls: elemNulls,
 
 		Prepare: func(t *testing.T, key, columnType string) conformance.TypeDestination {
 			// An unsupported row fails before any INSERT is built, so the
@@ -97,6 +100,28 @@ func TestIntegrationSinkClickhouse_Types(t *testing.T) {
 						return nil, nil
 					}
 					return rendered, nil
+				},
+
+				// ClickHouse arrays are 1-indexed, so v[2] is the null the
+				// runner wrote between two values. Asking the server is the
+				// only way to tell [1, 0, 3] from [1, NULL, 3]: the list
+				// itself is not null in either case.
+				ReadBackNullElement: func(t *testing.T) (bool, error) {
+					rows, err := sink.conn.Query(context.Background(),
+						"SELECT v[2] IS NULL FROM "+table+" LIMIT 1")
+					if err != nil {
+						return false, err
+					}
+					defer rows.Close()
+
+					if !rows.Next() {
+						return false, rows.Err()
+					}
+					var isNull uint8
+					if err := rows.Scan(&isNull); err != nil {
+						return false, err
+					}
+					return isNull == 1, rows.Err()
 				},
 			}
 		},

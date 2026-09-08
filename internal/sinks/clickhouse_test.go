@@ -59,6 +59,67 @@ func TestSinkClickhouse_ANullOfAnUnsupportedTypeStillFails(t *testing.T) {
 	}
 }
 
+// goElemType used to fall back to string for any type it did not name, so a
+// list of an unsupported type became a []string. An empty or null list has no
+// element for arrowValue to reject, so it reached the driver and failed there
+// with an uncoded message -- while the same column carrying one value failed
+// with a coded one. The element type must be decided from the type.
+func TestSinkClickhouse_ANullListOfAnUnsupportedTypeFailsWithACode(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+
+	lt := arrow.ListOf(&arrow.Decimal128Type{Precision: 38, Scale: 0})
+	b := array.NewBuilder(memory.NewGoAllocator(), lt).(*array.ListBuilder)
+	defer b.Release()
+	b.AppendNull()
+
+	arr := b.NewArray()
+	defer arr.Release()
+
+	_, err := arrowValue(arr, 0)
+	assert.Error(t, err)
+	if !errs.HasCode(err, errs.CodeSinkTypeUnsupported) {
+		t.Fatalf("code = %s, want %s", errs.CodeOf(err), errs.CodeSinkTypeUnsupported)
+	}
+}
+
+// An empty list is the same defect with a different shape: present, and with
+// no element to check.
+func TestSinkClickhouse_AnEmptyListOfAnUnsupportedTypeFailsWithACode(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+
+	lt := arrow.ListOf(&arrow.Decimal128Type{Precision: 38, Scale: 0})
+	b := array.NewBuilder(memory.NewGoAllocator(), lt).(*array.ListBuilder)
+	defer b.Release()
+	b.Append(true)
+
+	arr := b.NewArray()
+	defer arr.Release()
+
+	_, err := arrowValue(arr, 0)
+	assert.Error(t, err)
+	if !errs.HasCode(err, errs.CodeSinkTypeUnsupported) {
+		t.Fatalf("code = %s, want %s", errs.CodeOf(err), errs.CodeSinkTypeUnsupported)
+	}
+}
+
+// The fix must not reject an empty list of a type the sink does convert: an
+// empty Array(T) is a legitimate value, and #150 made a null list one.
+func TestSinkClickhouse_AnEmptyListOfASupportedTypeIsStillEmpty(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+
+	b := array.NewBuilder(memory.NewGoAllocator(),
+		arrow.ListOf(arrow.PrimitiveTypes.Int64)).(*array.ListBuilder)
+	defer b.Release()
+	b.Append(true)
+
+	arr := b.NewArray()
+	defer arr.Release()
+
+	v, err := arrowValue(arr, 0)
+	assert.NoError(t, err)
+	assert.DeepEqual(t, v, []int64{})
+}
+
 // The fix must not make a null of a supported type fail: that null is the
 // column's absence, and it is stored as NULL or as the zero value.
 func TestSinkClickhouse_ANullOfASupportedTypeIsStillNil(t *testing.T) {

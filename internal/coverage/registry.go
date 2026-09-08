@@ -302,6 +302,37 @@ func NullsFor(integration string) (NullRule, error) {
 	return NullRule{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
 }
 
+// NullElementsFor returns an integration's rule for a null held inside a
+// non-null list.
+//
+// Separate from NullsFor because the answers differ: a ClickHouse column can
+// be Nullable and its Array(T) elements cannot, so the column-level rule says
+// nothing about what a list holds.
+func NullElementsFor(integration string) (NullRule, error) {
+	raw, err := readRegistry("integrations.yml")
+	if err != nil {
+		return NullRule{}, err
+	}
+
+	var doc struct {
+		Integrations []struct {
+			ID    string              `yaml:"id"`
+			Nulls map[string]NullRule `yaml:"nulls"`
+		} `yaml:"integrations"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return NullRule{}, fmt.Errorf("coverage: parse integrations.yml: %w", err)
+	}
+
+	for _, entry := range doc.Integrations {
+		if entry.ID != integration {
+			continue
+		}
+		return entry.Nulls["list_element"], nil
+	}
+	return NullRule{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+}
+
 // TypesFor returns one integration's type table, sorted by key.
 //
 // Sorted rather than in file order: a YAML mapping carries no order, so file
