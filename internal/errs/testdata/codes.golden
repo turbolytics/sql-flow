@@ -11,6 +11,7 @@ system.state.internal
 user.config.invalid
 user.config.not_found
 user.config.parse_failed
+user.config.template_undefined
 user.data.invalid
 user.data.malformed
 user.sink.invalid
@@ -18,4 +19,5 @@ user.source.invalid
 user.source.security_invalid
 user.sql.bind_failed
 user.sql.invalid
+user.sql.parse_failed
 user.sql.type_unsupported
