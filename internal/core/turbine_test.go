@@ -712,6 +712,50 @@ func TestCoreConsumeLoop_ProcessBatchSavesTheProcessedOffsets(t *testing.T) {
 	assert.Equal(t, int64(3), got.Offset)
 }
 
+// failingInvokeHandler fails the way a handler whose SQL is wrong for one
+// batch does: the writes it managed before the failure are already in the open
+// state transaction.
+type failingInvokeHandler struct{ fakeHandler }
+
+func (h *failingInvokeHandler) Invoke(ctx context.Context) (arrow.Table, error) {
+	return nil, errors.New("handler SQL failed halfway")
+}
+
+// A handler failure the error policy swallows must still discard that batch's
+// half-written state.
+//
+// The sink-write and flush paths both roll back for this reason. The Invoke
+// path did not, so under IGNORE or DLQ the pipeline committed whatever SQL had
+// applied before the failure, together with the offsets for the batch that
+// failed. State then differed from what a replay would produce, with nothing
+// logged and no error returned.
+func TestCoreConsumeLoop_AnIgnoredHandlerFailureRollsBackItsPartialState(t *testing.T) {
+	coverage.Covers(t, "core.consume_loop")
+	var events []string
+	src := &markingSource{fakeSource: fakeSource{
+		batches: [][]Message{kafkaMessages("events", 0, 0, 4)},
+	}}
+	store := &fakeOffsetStore{events: &events}
+	conn := &txConn{events: &events}
+
+	tb := NewTurbine(src, &failingInvokeHandler{}, &orderingSink{events: &events}, 4,
+		time.Second, &sync.Mutex{}, PipelineErrorPolicies{Policy: PolicyIgnore},
+		WithStateStore(store, conn))
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	// The rollback comes first, so the commit below cannot adopt the failed
+	// batch's writes. Offsets still advance: IGNORE means the batch is
+	// discarded, and holding its position would replay it forever.
+	assert.Equal(t, []string{"rollback", "flush", "save-offsets", "commit"}, events)
+
+	assert.Equal(t, 1, len(store.saved))
+	got, ok := store.saved[0].Get("events", 0)
+	assert.That(t, ok)
+	assert.Equal(t, int64(3), got.Offset)
+}
+
 // Without a state store the pipeline behaves exactly as before: no
 // transaction calls at all, and the source is still committed.
 func TestCoreConsumeLoop_ProcessBatchNoStateStoreIsUnchanged(t *testing.T) {

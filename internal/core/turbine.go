@@ -798,6 +798,19 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 		if policyErr := t.applyErrorPolicy(ctx, err, phaseHandlerInvoke, "Handler invocation failed"); policyErr != nil {
 			return policyErr
 		}
+		// The policy swallowed the failure, so this batch is discarded rather
+		// than fatal -- but the handler's writes up to the point it failed are
+		// still in the open state transaction. Discard them with the batch
+		// they belong to, exactly as the sink-write and flush paths below do.
+		// Committing them would leave state that no replay reproduces, with
+		// nothing logged and no error returned.
+		//
+		// The rollback ends the transaction and the next one begins with it,
+		// so the commit below still saves this batch's offsets: IGNORE means
+		// the batch is dropped, and holding its position would replay it
+		// forever.
+		t.rollbackState(ctx)
+
 		// The batch yielded no table, so there is nothing to write; the
 		// source is still committed so the failed batch is not replayed
 		// forever.
