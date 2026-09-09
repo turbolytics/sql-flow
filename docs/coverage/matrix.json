@@ -1236,11 +1236,19 @@
             "TestConfigValidation_ReportsMissingFile"
           ],
           "skipped": [
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/basic.agg.mem.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/basic.agg.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.kafka.raw.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.kafka.windowed.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/bluesky.postgres.windowed.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/csv.filesystem.join.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/csv.mem.join.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/enrich.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.clickhouse.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.mem.iceberg.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.sasl-tls.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/kafka.structured.disk.yml",
+            "TestConfigValidation_ExampleConfigsBuildRealComponents/tumbling.window.yml",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/udf.yml"
           ]
         },
