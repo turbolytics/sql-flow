@@ -30,7 +30,7 @@ Verified against the code on 2026-09-08, not assumed:
 | No repo example materializes a dimension | `dev/config/examples/*.yml` | every join example uses `CREATE VIEW` or `ATTACH` |
 | A materialized row count is free | `duckdb_tables().estimated_size` | `CREATE TABLE dim AS SELECT * FROM range(5)` reports `5`, no scan |
 | The engine can derive its reference tables | `json_serialize_sql` | returns `BASE_TABLE` nodes with `table_name`, `schema_name`, `catalog_name`, and the `join_type` |
-| README undercounts the instruments | `README.md:655` | says twelve; fourteen exist (`sink_buffered_rows` and `sink_retry_count` are undocumented) |
+| README undercounts the instruments | `README.md:655` | says twelve; sixteen exist (`sink_buffered_rows`, `sink_retry_count` and both `internal/webhook` instruments are undocumented) |
 
 ## The three counts
 
@@ -218,7 +218,7 @@ exporter and gathering the registry, not read off the spec.
 | `reference_table_rows` | gauge | rows | `table` | `reference_table_rows` |
 
 One instrument is removed: the `sink_buffered_rows` gauge, which the two
-counters derive. The engine exports fourteen today and seventeen after this.
+counters derive. The engine exports sixteen today and nineteen after this.
 
 `sink_flush_num_rows` is unchanged. Changing an instrument's type renames the
 exported series regardless — the gauge exports as `sink_flush_num_rows` and a
@@ -276,7 +276,7 @@ SQL the operator already wrote.
 | `internal/cli/run/root.go` | call it after `InitTables`; pass `WithSinkRole` |
 | `internal/cli/run/managers.go` | pass `WithSinkRole("manager")` |
 | `docs/coverage/invariants.yml` | `sink.rows.counted_on_delivery` |
-| `README.md` | metrics table: four new rows plus the undocumented `sink_retry_count`; "Twelve instruments" becomes seventeen |
+| `README.md` | metrics table: four new rows plus the undocumented `sink_retry_count`; "Twelve instruments" becomes nineteen, and the webhook pair gets its own note |
 
 ## Testing
 
