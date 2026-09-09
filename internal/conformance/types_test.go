@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -90,12 +91,13 @@ func (s *typeSink) value() any {
 	if chunk.IsNull(0) {
 		return nil
 	}
-	// Strings come back as strings, so the fidelity corpus is compared rather
-	// than skipped past a failed type assertion.
+	// Rendered, not returned raw. A real destination answers with a string, so
+	// a double that answers with an Arrow array would slip past the value
+	// comparison on a failed type assertion and prove less than it looks.
 	if str, ok := chunk.(*array.String); ok {
 		return str.Value(0)
 	}
-	return chunk
+	return chunk.ValueStr(0)
 }
 
 // lastString returns the single string value of the last delivered table, or
@@ -158,12 +160,26 @@ func TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses(t *testing.T) 
 	// A container row and a string row are both part of honouring the table:
 	// type.nested and type.string.fidelity each refuse to pass on a table that
 	// declares nothing they can exercise.
+	// The expectations are the canonical values internal/conformance/lattice.go
+	// writes, rendered the way the double answers. int64 writes its type's
+	// minimum, so a value stored one width too narrow wraps and is caught here.
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
-		{Key: "utf8", Outcome: "exact", Columns: []string{"String"}},
-		{Key: "list<int64>", Outcome: "exact", Columns: []string{"Array(Int64)"}},
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "-9223372036854775808"}}},
+		// The second entry is #153's shape: text bound for a temporal column,
+		// which no Arrow key describes. The double keeps what it is given, so
+		// the text it stores is the text it took whatever zone the host is in.
+		{Key: "utf8", Outcome: "exact", Columns: []coverage.ColumnDecl{
+			{Type: "String", Expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"},
+			{Type: "DateTime64(3)", Value: "2026-09-01 12:00:00.123",
+				Expect: "2026-09-01 12:00:00.123", Instant: true},
+		}},
+		{Key: "list<int64>", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Array(Int64)", Expect: "[-9223372036854775808,-9223372036854775808,-9223372036854775808]"}}},
+		// Arrow's own rendering, in UTC. It is the same string whether the host
+		// is in UTC or nine hours ahead, which is the property
+		// type.timestamp.instant asks for.
+		{Key: "timestamp[us]", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "DateTime64(6)", Expect: "2026-09-08T12:00:00.123456Z"}}},
 	}
-	s := typeSubject(newTypeSink("int64", "utf8", "list<int64>"), declared)
+	s := typeSubject(newTypeSink("int64", "utf8", "list<int64>", "timestamp[us]"), declared)
 	// The double keeps every value it is given, nulls included.
 	s.ListElementNulls = coverage.NullRule{Outcome: "exact"}
 
@@ -176,7 +192,7 @@ func TestToolingConformanceTypes_ATypeDeclaredExactThatFailsIsCaught(t *testing.
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "v"}}},
 	}
 	v := typeVerdicts(t, typeSubject(newTypeSink(), declared))
 	assertTypeFailure(t, v, typeRoundtrip, "int64")
@@ -215,7 +231,7 @@ func TestToolingConformanceTypes_AnUndeclaredTypeThatSucceedsIsCaught(t *testing
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "v"}}},
 	}
 	v := typeVerdicts(t, typeSubject(newPermissiveTypeSink(), declared))
 	assertTypeFailure(t, v, typeUndeclared, "float16")
@@ -227,7 +243,7 @@ func TestToolingConformanceTypes_ANullReadBackAsAValueIsCaught(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "v"}}},
 	}
 	s := newTypeSink("int64")
 	subject := typeSubject(s, declared)
@@ -249,7 +265,7 @@ func TestToolingConformanceTypes_ANullDeclaredCoercedThatSurvivesIsCaught(t *tes
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "v"}}},
 	}
 	subject := typeSubject(newTypeSink("int64"), declared)
 	subject.Nulls = coverage.NullRule{Outcome: "coerced", Rule: "the zero value"}
@@ -263,7 +279,7 @@ func TestToolingConformanceTypes_ANullWithNoDeclaredOutcomeIsCaught(t *testing.T
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "v"}}},
 	}
 	subject := typeSubject(newTypeSink("int64"), declared)
 	subject.Nulls = coverage.NullRule{}
@@ -293,7 +309,7 @@ func TestToolingConformanceTypes_ANullElementAgainstTheWrongRuleIsCaught(t *test
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "list<int64>", Outcome: "exact", Columns: []string{"Array(Int64)"}},
+		{Key: "list<int64>", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Array(Int64)", Expect: "v"}}},
 	}
 	s := typeSubject(newTypeSink("list<int64>"), declared)
 	// The double keeps the null it is given, so a table claiming the element
@@ -310,7 +326,7 @@ func TestToolingConformanceTypes_ATableWithNoContainerRowsIsNotNestedProof(t *te
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "v"}}},
 	}
 	s := typeSubject(newTypeSink("int64"), declared)
 
@@ -324,7 +340,7 @@ func TestToolingConformanceTypes_AMangledStringIsCaught(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "utf8", Outcome: "exact", Columns: []string{"String"}},
+		{Key: "utf8", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "String", Expect: "v"}}},
 	}
 	s := typeSubject(newTypeSink("utf8"), declared)
 	s.Prepare = func(t *testing.T, key, columnType string) TypeDestination {
@@ -348,7 +364,7 @@ func TestToolingConformanceTypes_AnEmptyStringReadBackAsNullIsCaught(t *testing.
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "utf8", Outcome: "exact", Columns: []string{"String"}},
+		{Key: "utf8", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "String", Expect: "v"}}},
 	}
 	s := typeSubject(newTypeSink("utf8"), declared)
 	s.Prepare = func(t *testing.T, key, columnType string) TypeDestination {
@@ -372,13 +388,160 @@ func TestToolingConformanceTypes_ATableWithNoStringRowIsNotFidelityProof(t *test
 	coverage.Covers(t, "tooling.conformance")
 
 	declared := []coverage.TypeDecl{
-		{Key: "int64", Outcome: "exact", Columns: []string{"Int64"}},
-		{Key: "list<int64>", Outcome: "exact", Columns: []string{"Array(Int64)"}},
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "v"}}},
+		{Key: "list<int64>", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Array(Int64)", Expect: "v"}}},
 	}
 	s := typeSubject(newTypeSink("int64", "list<int64>"), declared)
 	s.ListElementNulls = coverage.NullRule{Outcome: "exact"}
 
 	assertTypeFailure(t, typeVerdicts(t, s), typeFidelity, "no utf8 row")
+}
+
+// The hole this closes: a sink that takes a value, stores something else, and
+// returns it without an error passed type.roundtrip for as long as the
+// read-back was not nil.
+func TestToolingConformanceTypes_AValueChangedInFlightIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "utf8", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "String", Expect: "hello"}}},
+	}
+	s := typeSubject(newTypeSink("utf8"), declared)
+	s.Prepare = func(t *testing.T, key, columnType string) TypeDestination {
+		sink := newTypeSink("utf8")
+		return TypeDestination{
+			Sink: core.Sink(sink),
+			// A destination that stores something other than what it took.
+			ReadBack: func(t *testing.T) (any, error) { return "something else", nil },
+		}
+	}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeRoundtrip, "something else")
+}
+
+// A row claiming a value survives and declaring no expectation cannot be
+// judged, and must say so rather than pass.
+func TestToolingConformanceTypes_AnExactRowWithNoExpectationIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64"}}},
+	}
+	s := typeSubject(newTypeSink("int64"), declared)
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeRoundtrip, "no expect")
+}
+
+// An unsupported row needs no expectation: it never reaches a destination.
+func TestToolingConformanceTypes_AnUnsupportedRowNeedsNoExpectation(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "unsupported", Code: "user.sink.type_unsupported"},
+	}
+	for _, entry := range typeVerdicts(t, typeSubject(newTypeSink(), declared)) {
+		if entry.invariant == typeRoundtrip && entry.failure != "" {
+			t.Fatalf("type.roundtrip failed on an unsupported row: %s", entry.failure)
+		}
+	}
+}
+
+// #153's defect: clickhouse-go parses a zone-less string in time.Local, so the
+// stored value depended on the host's offset. A test on a UTC laptop saw
+// nothing wrong, which is why the runner moves the host zone before it writes.
+func TestToolingConformanceTypes_AHostZoneLeakIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "timestamp[us]", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "DateTime64(6)", Expect: "2026-09-08 12:00:00.123456"}}},
+		{Key: "utf8", Outcome: "exact", Columns: []coverage.ColumnDecl{
+			{Type: "DateTime64(3)", Value: "2026-09-01 12:00:00.123",
+				Expect: "2026-09-01 12:00:00.123", Instant: true},
+		}},
+	}
+	s := typeSubject(newTypeSink("timestamp[us]", "utf8"), declared)
+	s.Prepare = func(t *testing.T, key, columnType string) TypeDestination {
+		sink := newTypeSink("timestamp[us]", "utf8")
+		return TypeDestination{
+			Sink: core.Sink(sink),
+			// A destination that renders in whatever zone the host is in,
+			// which is the shape of a leak.
+			ReadBack: func(t *testing.T) (any, error) {
+				return "2026-09-08 21:00:00.123456", nil
+			},
+		}
+	}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeInstant, "2026-09-08 21:00:00.123456")
+}
+
+// A table with no temporal row cannot prove the claim and must say so.
+func TestToolingConformanceTypes_ATableWithNoTemporalRowIsNotInstantProof(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "-128"}}},
+	}
+	assertTypeFailure(t, typeVerdicts(t, typeSubject(newTypeSink("int64"), declared)),
+		typeInstant, "no temporal row")
+}
+
+// #153 itself: a zone-less string stored shifted by the host's offset. The
+// probe writes nine hours ahead of UTC, so the old behaviour lands at 21:00.
+func TestToolingConformanceTypes_ATemporalStringShiftedByTheHostIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "timestamp[us]", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "DateTime64(6)", Expect: "2026-09-08T12:00:00.123456Z"}}},
+		{Key: "utf8", Outcome: "exact", Columns: []coverage.ColumnDecl{
+			{Type: "DateTime64(3)", Value: "2026-09-01 12:00:00.123",
+				Expect: "2026-09-01 12:00:00.123", Instant: true},
+		}},
+	}
+	s := typeSubject(newTypeSink("timestamp[us]", "utf8"), declared)
+	s.Prepare = func(t *testing.T, key, columnType string) TypeDestination {
+		sink := newTypeSink("timestamp[us]", "utf8")
+		return TypeDestination{
+			Sink: core.Sink(sink),
+			ReadBack: func(t *testing.T) (any, error) {
+				if key == "utf8" {
+					return "2026-09-01 21:00:00.123", nil
+				}
+				return "2026-09-08T12:00:00.123456Z", nil
+			},
+		}
+	}
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeInstant, "21:00:00.123")
+}
+
+// A table that marks no pair instant leaves #153's shape unproven, and the
+// cell would claim a regression it never wrote.
+func TestToolingConformanceTypes_ANoInstantPairIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "timestamp[us]", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "DateTime64(6)", Expect: "2026-09-08T12:00:00.123456Z"}}},
+	}
+	s := typeSubject(newTypeSink("timestamp[us]"), declared)
+
+	assertTypeFailure(t, typeVerdicts(t, s), typeInstant, "instant")
+}
+
+// The runner must put the host zone back. A verdict that leaves the process
+// nine hours from UTC corrupts every test that runs after it.
+func TestToolingConformanceTypes_TheHostZoneIsRestored(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	before := time.Local
+	declared := []coverage.TypeDecl{
+		{Key: "timestamp[us]", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "DateTime64(6)", Expect: "2026-09-08 12:00:00.123456"}}},
+	}
+	typeVerdicts(t, typeSubject(newTypeSink("timestamp[us]"), declared))
+
+	if time.Local != before {
+		t.Fatalf("time.Local is %v, and it was %v before the run", time.Local, before)
+	}
 }
 
 // A marker carries an integration id, so a subject without one would emit

@@ -125,7 +125,11 @@ coverage-check: coverage-write
 	@# Last, because it is the least specific. A failing test changes the
 	@# matrix too, so checking staleness first reports "regenerate the file"
 	@# for a problem no regeneration fixes.
-	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md || { \
+	@# clickhouse-types.mdx is here too. It is what the ClickHouse integration
+	@# page publishes, and a generated file nothing diffs drifts back into a
+	@# hand-written one, which is the problem it was added to solve.
+	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md \
+		docs/coverage/clickhouse-types.mdx || { \
 		echo ""; \
 		echo "The coverage matrix is out of date."; \
 		echo "Run 'make coverage-matrix' and commit the result."; \
