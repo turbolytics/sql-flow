@@ -49,6 +49,8 @@ names every one of them.
 | `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | 16 |
 | `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 45 |
 | `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 73 |
+| `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — | 1 |
+| `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — | 1 |
 | `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 7 |
 | `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — | 7 |
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
@@ -57,7 +59,7 @@ names every one of them.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 79 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 14 |
 
-**34 features declared. 34 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**36 features declared. 36 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -104,6 +106,36 @@ a smell for one that deserves a test of its own.
 - `state.offsets` (release) — via `test_state_durability_survives_a_restart`
 - `state.corruption` (release) — via `test_lifecycle_exit_codes_carry_the_error_code`
 - `config.validation` (release) — via `test_config_validation_accepts_a_shipped_example`
+- `validate.schema` (unit) — via `TestValidateNoSideEffects_Issue120TypoIsNamed`
+
+## Unattributed unit tests (23)
+
+These carry no `coverage.Covers` marker, so they cover nothing.
+Add the marker, or add the feature to `features.yml` first.
+
+- `TestValidateCommand_JSONIsTheContract`
+- `TestValidateCommand_MissingFileFails`
+- `TestValidateCommand_TextSaysWhatItSkipped`
+- `TestValidateCommand_ValidConfigSucceeds`
+- `TestValidateNoSideEffects_CleanConfigIsOK`
+- `TestValidateReport_DiagnosticOrderIsStable`
+- `TestValidateReport_SurvivesJSONRoundTrip`
+- `TestValidateReport_WarningKeepsOK`
+- `TestValidateReportsEveryDiagnostic_TwoFaultsOneRun`
+- `TestValidateSchema_CommandsMustBeASequence`
+- `TestValidateSchema_MalformedYAMLIsOneDiagnostic`
+- `TestValidateSchema_ValidConfigPasses`
+- `TestValidateSkipIsExplicit_UnparseableTemplateSkipsSchema`
+- `TestValidateTemplate_AllVariablesDefinedPasses`
+- `TestValidateTemplate_CollectsFilterArguments`
+- `TestValidateTemplate_CollectsReferencesWithPositions`
+- `TestValidateTemplate_ControlStructureMarksIncomplete`
+- `TestValidateTemplate_DefaultFilterMakesAVariableOptional`
+- `TestValidateTemplate_IncompleteWalkSuppressesUnused`
+- `TestValidateTemplate_MissingVariableNamesItsNeighbour`
+- `TestValidateTemplate_ParseErrorIsReturned`
+- `TestValidateTemplate_ReportsEveryMissingVariable`
+- `TestValidateTemplate_UnsuppliedInputIsAWarning`
 
 
 # Invariant matrix
