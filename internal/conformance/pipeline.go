@@ -240,18 +240,67 @@ func checkCommitAfterFlush(t *testing.T, s PipelineSubject, trigger Trigger) err
 			trigger, run.err)
 	}
 
+	return judgeCommitOrder(trigger, run.events, s.KeepsState)
+}
+
+// judgeCommitOrder holds one run's events against the order every trigger must
+// produce: flush first, then the offsets and the state commit together.
+//
+// Separated from the run so the harness's own tests can drive it with a
+// sequence rather than a pipeline, which is the only way to assert what it
+// tolerates deterministically.
+//
+// The interval trigger tolerates repeated commit cycles and no other does.
+// Its ticker keeps firing while the run winds down, and a tick with nothing
+// buffered commits state on its own -- deliberately, because DuckDB's now()
+// freezes inside an open transaction, so an idle stateful pipeline still has
+// to close one. How many of those land depends on how long shutdown takes, so
+// asserting the exact event list there asserts the speed of the machine: it
+// failed main on 1fd39a9 and cost three CI runs before this.
+//
+// Every other trigger sets the interval to an hour, so no tick can fire and a
+// second cycle is the loop committing twice for one flush. That is a defect,
+// and it is still caught.
+func judgeCommitOrder(trigger Trigger, events []string, keepsState bool) error {
+	cycle := []string{"save-offsets", "commit"}
+
 	want := []string{"flush"}
-	if s.KeepsState {
-		want = append(want, "save-offsets", "commit")
+	if keepsState {
+		want = append(want, cycle...)
 	}
-	if !sameOrder(run.events, want) {
+
+	got := events
+	if trigger == TriggerInterval && keepsState {
+		got = collapseIdleCycles(events, cycle)
+	}
+
+	if !sameOrder(got, want) {
 		return fmt.Errorf(
 			"%s: the pipeline did %s; want %s. Committing before the flush "+
 				"records progress past rows the sink never wrote, so a restart "+
 				"skips them and nothing looks wrong",
-			trigger, list(run.events), list(want))
+			trigger, list(events), list(want))
 	}
 	return nil
+}
+
+// collapseIdleCycles drops repetitions of a trailing cycle, keeping the first.
+//
+// It collapses only whole cycles at the end of the run, so a bare commit or a
+// half-written pair survives to be judged: the atomicity of offsets and state
+// is what pipeline.state.with_offsets rests on, and an idle tick that lost
+// half of it is a defect rather than a tick.
+func collapseIdleCycles(events, cycle []string) []string {
+	out := events
+	for len(out) >= 2*len(cycle) {
+		tail := out[len(out)-len(cycle):]
+		prev := out[len(out)-2*len(cycle) : len(out)-len(cycle)]
+		if !sameOrder(tail, cycle) || !sameOrder(prev, cycle) {
+			break
+		}
+		out = out[:len(out)-len(cycle)]
+	}
+	return out
 }
 
 // checkNothingOnFailure fails the flush and holds every position still.
