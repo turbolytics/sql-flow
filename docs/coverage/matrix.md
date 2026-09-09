@@ -25,14 +25,14 @@ names every one of them.
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | 28 |
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
-| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 23 |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 40 |
-| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 25 |
+| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 24 |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 41 |
+| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 26 |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
-| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 22 |
-| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 16 |
+| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 23 |
+| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 17 |
 | `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — | 3 |
-| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 71 |
+| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 72 |
 | `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
 | `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 8 |
@@ -49,12 +49,12 @@ names every one of them.
 | `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | 16 |
 | `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 45 |
 | `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 73 |
-| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 7 |
+| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 9 |
 | `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — | 7 |
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 88 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 90 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 15 |
 
 **34 features declared. 34 have at least one passing test attributed at every level they require, so 0 gap(s).**
@@ -65,7 +65,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**31 invariants declared: 27 safety and 4 liveness. Of 130 (invariant, integration) cells: 52 proven, 50 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
+**32 invariants declared: 28 safety and 4 liveness. Of 136 (invariant, integration) cells: 57 proven, 51 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -76,7 +76,7 @@ does anything at all.
 
 ## Why invariants, and not the test count
 
-`sink.retry` carries 71 attributed tests, more than anything
+`sink.retry` carries 72 attributed tests, more than anything
 else in the `sink` layer. `sink.error.classifies`, an invariant
 of that same layer, is proven on 0 of the 5
 integrations it applies to.
@@ -105,6 +105,31 @@ a smell for one that deserves a test of its own.
 - `state.corruption` (release) — via `test_lifecycle_exit_codes_carry_the_error_code`
 - `config.validation` (release) — via `test_config_validation_accepts_a_shipped_example`
 
+## Unattributed unit tests (19)
+
+These carry no `coverage.Covers` marker, so they cover nothing.
+Add the marker, or add the feature to `features.yml` first.
+
+- `TestCheckReferenceTablesExcludesManagedTables`
+- `TestCheckReferenceTablesLogsCount`
+- `TestCheckReferenceTablesNoHandlerSQL`
+- `TestCheckReferenceTablesSurvivesACountError`
+- `TestCheckReferenceTablesWarnsOnEmpty`
+- `TestCountingCountsDeliveredRowsOnce`
+- `TestCountingDoesNotInventBufferedRows`
+- `TestCountingForwardsBufferedRows`
+- `TestCountingNilBatchIsNoop`
+- `TestCountingNilProviderRecordsNothing`
+- `TestHandlerRowsReadIsRowsNotMessages`
+- `TestNewWrapsWithRowCounters`
+- `TestReferenceTablesDeduplicates`
+- `TestReferenceTablesExcludesCTEs`
+- `TestReferenceTablesExcludesManagedTables`
+- `TestReferenceTablesFindsNestedJoin`
+- `TestReferenceTablesKeepsCatalogQualification`
+- `TestReferenceTablesUnparseableSQL`
+- `TestWithSinkRoleSetsTheRole`
+
 
 # Invariant matrix
 
@@ -131,6 +156,7 @@ invariant's `requires` is filled in, and none is yet.
 | `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
 | `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. Delivery is at-least-once, so a row that arrives twice holds the claim and a row that never arrives breaks it. *(violated once: #221)* | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
 | `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. *(violated once: #221)* | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
+| `sink.rows.counted_on_delivery` | sink_rows_written counts a row once, when a Flush acknowledged it. A failed flush counts nothing; the retry that delivers those rows counts them. | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | ❌ missing |
 | `sink.flush.preserves_order` | Rows reach the destination in WriteTable order, across a retry. Repeats are permitted, because delivery is at-least-once; a row that overtakes one written before it is not. | ✅ i | ✅ i | ❌ missing | ✅ u | ✅ u | — exempt |
 | `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ✅ i | ✅ i | — exempt | — exempt | — exempt | — exempt |
 | `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ✅ i | ✅ i | ✅ u | ✅ u | ✅ u | — exempt |
