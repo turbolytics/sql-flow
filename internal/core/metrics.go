@@ -47,6 +47,10 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		return nil, fmt.Errorf("message_count: %w", err)
 	}
 
+	// The unit stays "count", which the exporter drops as unitless, so this
+	// exports as error_count_total. A descriptive unit would rename it to
+	// error_count_errors_total and break every dashboard built on the current
+	// name. Measured against the exporter, not inferred.
 	if m.ErrorCount, err = meter.Int64Counter(
 		"error_count",
 		metric.WithDescription("Number of errors that occurred during pipeline execution"),
@@ -118,7 +122,7 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 	if m.StateCommitLatency, err = meter.Float64Histogram(
 		"state_commit_latency",
 		metric.WithDescription("Latency of committing state and offsets together"),
-		metric.WithUnit("s"),
+		metric.WithUnit("seconds"),
 	); err != nil {
 		return nil, fmt.Errorf("state_commit_latency: %w", err)
 	}
