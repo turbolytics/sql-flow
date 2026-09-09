@@ -48,7 +48,7 @@ names every one of them.
 | `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ | 4 |
 | `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | 16 |
 | `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 45 |
-| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 73 |
+| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 101 |
 | `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — | 1 |
 | `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — | 1 |
 | `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 7 |
@@ -108,11 +108,12 @@ a smell for one that deserves a test of its own.
 - `config.validation` (release) — via `test_config_validation_accepts_a_shipped_example`
 - `validate.schema` (unit) — via `TestValidateNoSideEffects_Issue120TypoIsNamed`
 
-## Unattributed unit tests (23)
+## Unattributed unit tests (24)
 
 These carry no `coverage.Covers` marker, so they cover nothing.
 Add the marker, or add the feature to `features.yml` first.
 
+- `TestConfigSchema_TypeEnumsComeFromTheRegistries`
 - `TestValidateCommand_JSONIsTheContract`
 - `TestValidateCommand_MissingFileFails`
 - `TestValidateCommand_TextSaysWhatItSkipped`
