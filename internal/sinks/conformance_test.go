@@ -88,8 +88,18 @@ func TestIntegrationSinkClickhouse_Conformance(t *testing.T) {
 	// The harness's own reads must not cross the fault it injects, or a
 	// broken destination would look like an empty one.
 	direct := mustDirectSink(t, ch, table)
+	// Log rather than MergeTree, because the read-back has to observe the order
+	// rows arrived in. MergeTree stores a part sorted by its ORDER BY key, so
+	// on a MergeTree table a sink that delivered [3, 2, 1] reads back [1, 2, 3]
+	// and satisfies preserves_order without preserving anything. An arrival
+	// timestamp does not rescue it: now64() can resolve to the same value for
+	// every row of one insert block, and the sink flushes a batch as one block.
+	//
+	// Log appends and reads sequentially, so insertion order survives. The sink
+	// builds INSERT INTO <table> (<columns>) from the Arrow schema and does not
+	// care which engine backs the table.
 	assert.NoError(t, direct.conn.Exec(ctx,
-		"CREATE TABLE "+table+" (id Int64) ENGINE = MergeTree() ORDER BY id"))
+		"CREATE TABLE "+table+" (id Int64) ENGINE = Log"))
 
 	dsn := clickhouseDSN(proxy.Addr)
 
@@ -107,8 +117,10 @@ func TestIntegrationSinkClickhouse_Conformance(t *testing.T) {
 		Heal:  proxy.Heal,
 
 		ReadBack: func(t *testing.T) []conformance.Row {
+			// No ORDER BY: the Log engine returns rows in the order they were
+			// inserted, which is the order this read-back has to report.
 			rows, err := direct.conn.Query(context.Background(),
-				"SELECT id FROM "+table+" ORDER BY id")
+				"SELECT id FROM "+table)
 			assert.NoError(t, err)
 			defer rows.Close()
 
@@ -135,6 +147,10 @@ func TestIntegrationSinkClickhouse_Conformance(t *testing.T) {
 			defer rec.Release()
 			return array.NewTableFromRecords(schema, []arrow.Record{rec})
 		},
+
+		// The conformance table uses the Log engine, which appends and reads
+		// sequentially, so a select with no ORDER BY returns insertion order.
+		OrderedReadBack: true,
 	})
 }
 

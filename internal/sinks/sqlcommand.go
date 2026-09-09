@@ -46,16 +46,6 @@ func (s *SQLCommandSink) WriteTable(ctx context.Context, batch arrow.Table) erro
 	return nil
 }
 
-func (s *SQLCommandSink) Batch() (arrow.Table, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if len(s.tables) == 0 {
-		return nil, nil
-	}
-	return s.tables[len(s.tables)-1], nil
-}
-
 // Flush runs the sink SQL over the buffered rows, and keeps them buffered if
 // it cannot.
 //

@@ -43,7 +43,8 @@ invariants:
     applies_to: sink
     claim: >
       A failed Flush leaves every undelivered row buffered. The next Flush
-      re-attempts them.
+      re-attempts them. Delivery is at-least-once, so a row that arrives twice
+      holds the claim and a row that never arrives breaks it.
     verified_by: harness
     requires: []
     enforced: true
@@ -64,7 +65,10 @@ invariants:
     family: resilience
     class: safety
     applies_to: sink
-    claim: Rows reach the destination in WriteTable order, across a retry.
+    claim: >
+      Rows reach the destination in WriteTable order, across a retry. Repeats
+      are permitted, because delivery is at-least-once; a row that overtakes one
+      written before it is not.
     verified_by: harness
     requires: []
 
@@ -95,14 +99,6 @@ invariants:
     verified_by: harness
     requires: []
     enforced: true
-
-  - id: sink.batch.reports_buffer
-    family: resilience
-    class: safety
-    applies_to: sink
-    claim: Batch returns what is buffered, and nil when nothing is.
-    verified_by: harness
-    requires: []
 
   - id: sink.error.classifies
     family: resilience

@@ -24,7 +24,6 @@ type probeSink struct {
 
 func (s *probeSink) WriteTable(ctx context.Context, b arrow.Table) error { return nil }
 func (s *probeSink) Flush(ctx context.Context) error                     { return nil }
-func (s *probeSink) Batch() (arrow.Table, error)                         { return nil, nil }
 
 func (s *probeSink) Probe(ctx context.Context) error {
 	s.probes++

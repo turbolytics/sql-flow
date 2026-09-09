@@ -199,18 +199,6 @@ func TestSinkClickhouse_NewRequiresTable(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// Batch mirrors the Python ClickhouseSink, which alone among the sinks
-// returns nothing: the rows go straight to ClickHouse and are not held for a
-// downstream reader.
-func TestSinkClickhouse_BatchIsNil(t *testing.T) {
-	coverage.Covers(t, "sink.clickhouse")
-	s := newLiveClickhouseSink(t, "")
-
-	batch, err := s.Batch()
-	assert.NoError(t, err)
-	assert.Nil(t, batch)
-}
-
 // clickhouseTestDSN points the live tests at the dev-stack ClickHouse.
 func clickhouseTestDSN() string {
 	if dsn := os.Getenv("SQLFLOW_CLICKHOUSE_DSN"); dsn != "" {

@@ -774,15 +774,6 @@ func (s *recordingSink) Flush(ctx context.Context) error {
 	return nil
 }
 
-func (s *recordingSink) Batch() (arrow.Table, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.inner != nil {
-		return s.inner.Batch()
-	}
-	return nil, nil
-}
-
 func (s *recordingSink) Rows() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()

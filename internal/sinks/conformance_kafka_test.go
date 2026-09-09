@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/testcontainers/testcontainers-go"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/turbolytics/sql-flow/internal/config"
@@ -47,8 +48,14 @@ func TestIntegrationSinkKafka_Conformance(t *testing.T) {
 	assert.NoError(t, err)
 	t.Cleanup(func() { _ = nw.Remove(context.Background()) })
 
+	// One partition, because Kafka orders within a partition and nothing else.
+	// franz-go's default UniformBytesPartitioner switches partition every
+	// 64 KiB, so on a multi-partition topic preserves_order would be
+	// untestable rather than false. The sink lets the broker auto-create the
+	// topic, so the partition count is the broker's default to set.
 	broker, err := tckafka.Run(ctx, sinkBrokerImage,
 		network.WithNetwork([]string{"kafka"}, nw),
+		testcontainers.WithEnv(map[string]string{"KAFKA_NUM_PARTITIONS": "1"}),
 	)
 	assert.NoError(t, err)
 	t.Cleanup(func() { _ = broker.Terminate(context.Background()) })
@@ -91,6 +98,11 @@ func TestIntegrationSinkKafka_Conformance(t *testing.T) {
 		},
 
 		Table: func(t *testing.T, id int64) arrow.Table { return oneRowTable(t, id) },
+
+		// consumeIDs reads the topic from the earliest offset, and the topic
+		// has one partition, so the read-back is offset order -- which is the
+		// order the broker acknowledged the records in.
+		OrderedReadBack: true,
 	})
 }
 

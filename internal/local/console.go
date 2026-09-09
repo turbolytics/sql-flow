@@ -31,13 +31,6 @@ func (s *ConsoleSink) WriteTable(batch arrow.Table) error {
 	return nil
 }
 
-func (s *ConsoleSink) Batch() (arrow.Table, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return nil, nil
-}
-
 func (s *ConsoleSink) Flush() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
