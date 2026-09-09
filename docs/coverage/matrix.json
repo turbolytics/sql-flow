@@ -238,6 +238,7 @@
             "TestIntegrationSinkClickhouse_Types/type.null",
             "TestIntegrationSinkClickhouse_Types/type.roundtrip",
             "TestIntegrationSinkClickhouse_Types/type.string.fidelity",
+            "TestIntegrationSinkClickhouse_Types/type.timestamp.instant",
             "TestIntegrationSinkClickhouse_Types/type.undeclared.fails_loud"
           ]
         },
@@ -1388,9 +1389,12 @@
             "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.null",
             "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.roundtrip",
             "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.string.fidelity",
+            "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.timestamp.instant",
             "TestToolingConformanceTypes_ADoubleThatHonoursItsTablePasses/type.undeclared.fails_loud",
             "TestToolingConformanceTypes_AFailureWithTheWrongCodeIsCaught",
+            "TestToolingConformanceTypes_AHostZoneLeakIsCaught",
             "TestToolingConformanceTypes_AMangledStringIsCaught",
+            "TestToolingConformanceTypes_ANoTemporalStringCaseIsCaught",
             "TestToolingConformanceTypes_ANullDeclaredCoercedThatSurvivesIsCaught",
             "TestToolingConformanceTypes_ANullElementAgainstTheWrongRuleIsCaught",
             "TestToolingConformanceTypes_ANullReadBackAsAValueIsCaught",
@@ -1399,11 +1403,17 @@
             "TestToolingConformanceTypes_ASubjectWithoutAnIntegrationIdIsRejected",
             "TestToolingConformanceTypes_ATableWithNoContainerRowsIsNotNestedProof",
             "TestToolingConformanceTypes_ATableWithNoStringRowIsNotFidelityProof",
+            "TestToolingConformanceTypes_ATableWithNoTemporalRowIsNotInstantProof",
+            "TestToolingConformanceTypes_ATemporalStringShiftedByTheHostIsCaught",
             "TestToolingConformanceTypes_ATypeDeclaredExactThatFailsIsCaught",
             "TestToolingConformanceTypes_ATypeDeclaredUnsupportedThatWorksIsCaught",
+            "TestToolingConformanceTypes_AValueChangedInFlightIsCaught",
             "TestToolingConformanceTypes_AnEmptyStringReadBackAsNullIsCaught",
+            "TestToolingConformanceTypes_AnExactRowWithNoExpectationIsCaught",
             "TestToolingConformanceTypes_AnUndeclaredTypeThatSucceedsIsCaught",
-            "TestToolingConformanceTypes_AnUnsupportedElementInsideAListIsCaught"
+            "TestToolingConformanceTypes_AnUnsupportedElementInsideAListIsCaught",
+            "TestToolingConformanceTypes_AnUnsupportedRowNeedsNoExpectation",
+            "TestToolingConformanceTypes_TheHostZoneIsRestored"
           ]
         },
         "integration": {
@@ -3149,8 +3159,10 @@
             "tests": []
           },
           "integration": {
-            "status": "missing",
-            "tests": []
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Types/type.timestamp.instant"
+            ]
           },
           "release": {
             "status": "missing",
