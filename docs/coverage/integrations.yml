@@ -122,6 +122,35 @@ integrations:
             value: "2026-09-01 12:00:00.123"
             expect: "2026-09-01 12:00:00.123"
             instant: true
+          # The destinations that parse the text rather than storing it. The
+          # hand-written page has claimed all of these since it was measured
+          # by hand, and nothing had ever written one: the value belonged to
+          # the Arrow key, and utf8 already carried the hostile string
+          # type.string.fidelity needs.
+          #
+          # Decimal matters most. The type is unsupported natively, so the
+          # string form is the only route to a Decimal column at all.
+          # The enum carries a member at 0 deliberately. A null into a
+          # non-Nullable Enum stores the column type's zero value like any
+          # other column, but an Enum with no member at 0 cannot render what
+          # it then holds: reading the row fails with UNKNOWN_ELEMENT_OF_ENUM,
+          # so the row is written and unreadable. An Enum that may receive
+          # nulls needs a zero member or Nullable.
+          - type: "Enum8('' = 0, 'a' = 1, 'b' = 2)"
+            value: "a"
+            expect: "a"
+          - type: "FixedString(36)"
+            value: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+            expect: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+          - type: "UUID"
+            value: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+            expect: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+          - type: "IPv4"
+            value: "192.168.1.1"
+            expect: "192.168.1.1"
+          - type: "Decimal(10, 2)"
+            value: "1234.56"
+            expect: "1234.56"
       binary:
         outcome: exact
         # Base64, because the value is bytes rather than text. 0xFF is not a
