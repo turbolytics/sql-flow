@@ -166,6 +166,7 @@ sqlflow [command]
 | Command | Purpose |
 |---|---|
 | `run` | Run a pipeline against a live source |
+| `validate` | Check a pipeline offline and report every fault at once |
 | `dev invoke` | Run a pipeline's handler against a static file |
 | `config validate` | Validate a config against the JSON Schema |
 | `config example` | Print a commented example configuration |
@@ -197,6 +198,42 @@ $ sqlflow run -c dev/config/examples/benchmark.structured.mem.yml \
 ...
 {"messages_consumed":2000,"num_errors":0}
 ```
+
+### `sqlflow validate`
+
+Checks a pipeline without running it. `validate` reaches no broker and no
+sink, executes nothing from the `commands` block, and reports every fault it
+finds in one pass rather than stopping at the first.
+
+```
+sqlflow validate <config> [--json]
+```
+
+It renders the config's template, then checks the result against the config
+schema. Both halves of the template's variable use are reported, which is what
+makes a misspelled name obvious:
+
+```
+$ sqlflow validate pipeline.yml
+pipeline.yml:8:49: error: [user.config.template_undefined] template variable
+  SQLFLOW_AZURE_CONNECTION_STRING is not defined and renders as an empty
+  string, but a similar name is supplied and never read
+    did you mean: [SQLFLOW_AZURE_STORAGE_CONNECTION_STRING]
+supplied but never read: [SQLFLOW_AZURE_STORAGE_CONNECTION_STRING]
+```
+
+A variable the config reads with no `default` filter is a required input. When
+it is unset, `validate` warns rather than failing, so a config still checks in
+CI where no secret is set. A missing name that closely resembles a supplied one
+is a different matter: that resemblance is evidence of a typo, and it fails.
+
+`--json` emits the same report as a document, with a `checks` array beside the
+diagnostics. A check that could not run reports `skipped` with a reason and
+never reports `pass`, so a consumer can tell "checked and fine" from "not
+checked".
+
+Exit codes follow the error taxonomy: `0` when the config is sound, `10` for a
+fault the user has to fix.
 
 ### `sqlflow dev invoke`
 

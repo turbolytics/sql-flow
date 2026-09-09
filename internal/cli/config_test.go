@@ -10,11 +10,20 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// schemas/config.json is now the config spec itself, not a copy of one. It was
-// mirrored from the Python engine's sqlflow/static/schemas/config.json, and a
-// test compared the two byte for byte; with that engine gone there is nothing
-// left to drift from, and editing the schema here no longer needs a second
-// edit somewhere else.
+// The config schema is generated from internal/config, so the Go types are the
+// config format and the schema is an artifact of them. Edit the structs, their
+// yaml tags or their doc comments, then run `make schema`.
+//
+// It has been three things in turn. First a copy of the Python engine's
+// sqlflow/static/schemas/config.json, with a test comparing the two byte for
+// byte. Then, once that engine was dropped, the spec itself, hand-edited and
+// answerable to nothing. Neither survived contact with drift: a hand-written
+// schema states the format a second time, and the second statement is never
+// the one the engine reads. `type: webhook` was rejected by `config validate`
+// while `run` accepted it, for exactly that reason.
+//
+// internal/schema/schema_test.go holds the committed file equal to the types,
+// and holds the type enums equal to the registries the engine builds from.
 
 func TestConfigValidation_ExampleMatchesPythonOutput(t *testing.T) {
 	coverage.Covers(t, "config.validation")

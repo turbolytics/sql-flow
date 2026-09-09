@@ -102,6 +102,20 @@ func Kinds() []string {
 	return out
 }
 
+// ConfigTypes lists the handler names a config may write, sorted. Kinds
+// returns the registry's short names; these are the long ones users type.
+//
+// The generated config schema builds its handler enum from this, so a handler
+// the engine can build is always one the schema accepts.
+func ConfigTypes() []string {
+	out := make([]string, 0, len(configTypes))
+	for name := range configTypes {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
 	kind, ok := configTypes[c.Type]
 	if !ok {

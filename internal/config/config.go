@@ -13,8 +13,13 @@ type Error struct {
 }
 
 // SinkFormat
+//
+// Closed value sets carry jsonschema enum tags. Go has no enum type, so
+// without them the generated schema would accept any string where the
+// hand-written one accepted one of a few, and validation would get weaker as
+// a side effect of generating it.
 type SinkFormat struct {
-	Type string `yaml:"type"`
+	Type string `yaml:"type" jsonschema:"enum=parquet"`
 }
 
 // Various Sink Configs
@@ -34,13 +39,15 @@ type KafkaSSL struct {
 
 // KafkaSASL configures SASL authentication for a Kafka connection.
 type KafkaSASL struct {
-	Mechanism string `yaml:"mechanism"`
+	Mechanism string `yaml:"mechanism" jsonschema:"enum=PLAIN,enum=SCRAM-SHA-256,enum=SCRAM-SHA-512,enum=GSSAPI"`
 	Username  string `yaml:"username"`
 	Password  string `yaml:"password"`
 }
 
 type KafkaSink struct {
-	Brokers          []string   `yaml:"brokers"`
+	// List of Kafka brokers.
+	Brokers []string `yaml:"brokers"`
+	// Target Kafka topic.
 	Topic            string     `yaml:"topic"`
 	SecurityProtocol string     `yaml:"security_protocol,omitempty"`
 	SSL              *KafkaSSL  `yaml:"ssl,omitempty"`
@@ -51,7 +58,7 @@ type ConsoleSink struct{}
 
 type SQLCommandSubstitution struct {
 	Var  string `yaml:"var"`
-	Type string `yaml:"type"`
+	Type string `yaml:"type" jsonschema:"enum=uuid4"`
 }
 
 type SQLCommandSink struct {
@@ -64,16 +71,31 @@ type ClickhouseSink struct {
 	Table string `yaml:"table"`
 }
 
-// Unified Sink
+// Sink is where result rows go. One block per destination, and the type field
+// selects which one the pipeline builds.
+//
+// The same shape serves three places: a pipeline's sink, the dead-letter queue
+// a failed record diverts to, and the sink a managed window collects into.
 type Sink struct {
-	Type       string          `yaml:"type"`
-	Format     *SinkFormat     `yaml:"format,omitempty"`
-	Kafka      *KafkaSink      `yaml:"kafka,omitempty"`
-	Console    *ConsoleSink    `yaml:"console,omitempty"`
+	// Sink identifier.
+	Type string `yaml:"type"`
+	// Format settings (e.g., for Parquet).
+	Format *SinkFormat `yaml:"format,omitempty"`
+	// Kafka-specific sink configuration.
+	Kafka *KafkaSink `yaml:"kafka,omitempty"`
+	// Console output sink configuration.
+	Console *ConsoleSink `yaml:"console,omitempty"`
+	// SQL-command sink configuration.
 	SQLCommand *SQLCommandSink `yaml:"sqlcommand,omitempty"`
-	Iceberg    *IcebergSink    `yaml:"iceberg,omitempty"`
+	// Iceberg-specific sink configuration.
+	Iceberg *IcebergSink `yaml:"iceberg,omitempty"`
+	// ClickHouse-specific sink configuration.
 	Clickhouse *ClickhouseSink `yaml:"clickhouse,omitempty"`
-	Retry      *SinkRetry      `yaml:"retry,omitempty"`
+	// Bounds how long this sink keeps trying a destination that is not
+	// answering. Omit to accept the defaults; set max_attempts to 1 to turn
+	// retrying off. The kafka sink ignores this: franz-go already retries a
+	// produce with its own backoff.
+	Retry *SinkRetry `yaml:"retry,omitempty"`
 }
 
 // SinkRetry bounds how long a sink keeps trying a destination that is not
@@ -83,17 +105,25 @@ type Sink struct {
 // The Kafka sink ignores this. franz-go already retries a produce with its own
 // backoff, and a second ladder on top of that one is worse than none.
 type SinkRetry struct {
-	MaxAttempts      int `yaml:"max_attempts,omitempty"`
+	// Total attempts, including the first. 1 disables retrying.
+	MaxAttempts int `yaml:"max_attempts,omitempty"`
+	// Wait before the first retry. Doubles each attempt.
 	InitialBackoffMS int `yaml:"initial_backoff_ms,omitempty"`
-	MaxBackoffMS     int `yaml:"max_backoff_ms,omitempty"`
-	DeadlineSeconds  int `yaml:"deadline_seconds,omitempty"`
+	// Ceiling on the backoff.
+	MaxBackoffMS int `yaml:"max_backoff_ms,omitempty"`
+	// Bounds the whole ladder, not one attempt. Keep it below
+	// pipeline.flush_interval_seconds: the retry runs inside the open state
+	// transaction, whose clock the window depends on.
+	DeadlineSeconds int `yaml:"deadline_seconds,omitempty"`
 }
 
 // Tumbling Window Manager
 type TumblingWindow struct {
-	CollectSQL       string `yaml:"collect_closed_windows_sql"`
-	DeleteSQL        string `yaml:"delete_closed_windows_sql"`
-	PollIntervalSecs int    `yaml:"poll_interval_seconds"`
+	CollectSQL string `yaml:"collect_closed_windows_sql"`
+	DeleteSQL  string `yaml:"delete_closed_windows_sql"`
+	// How often to collect closed windows. Optional; the manager applies its
+	// own default when this is absent or not positive.
+	PollIntervalSecs int `yaml:"poll_interval_seconds,omitempty"`
 }
 
 // Table Manager
@@ -109,31 +139,34 @@ type TableSQL struct {
 	Manager *TableManager `yaml:"manager,omitempty"`
 }
 
-// Tables
+// Tables holds the SQL tables the pipeline creates before it consumes.
 type Tables struct {
+	// List of tables with their SQL definitions and management configurations.
 	SQL []TableSQL `yaml:"sql"`
 }
 
-// UDFs
+// UDF registers a user-defined function the handler SQL can call.
 type UDF struct {
 	FunctionName string `yaml:"function_name"`
 	ImportPath   string `yaml:"import_path"`
 }
 
-// SQL Command
+// SQLCommand is one statement run at startup, before any table is created.
 type SQLCommand struct {
+	// Name of the command for reference.
 	Name string `yaml:"name"`
-	SQL  string `yaml:"sql"`
+	// SQL statements to execute.
+	SQL string `yaml:"sql"`
 }
 
 // Source Types
 type KafkaSource struct {
 	Brokers         []string `yaml:"brokers"`
 	GroupID         string   `yaml:"group_id"`
-	AutoOffsetReset string   `yaml:"auto_offset_reset"`
+	AutoOffsetReset string   `yaml:"auto_offset_reset" jsonschema:"enum=earliest,enum=latest"`
 	Topics          []string `yaml:"topics"`
 
-	SecurityProtocol string     `yaml:"security_protocol,omitempty"`
+	SecurityProtocol string     `yaml:"security_protocol,omitempty" jsonschema:"enum=SASL_SSL,enum=SSL,enum=SASL_PLAINTEXT,enum=PLAINTEXT"`
 	SSL              *KafkaSSL  `yaml:"ssl,omitempty"`
 	SASL             *KafkaSASL `yaml:"sasl,omitempty"`
 }
@@ -152,7 +185,7 @@ type WebhookHMAC struct {
 }
 
 type WebhookSource struct {
-	SignatureType string       `yaml:"signature_type,omitempty"`
+	SignatureType string       `yaml:"signature_type,omitempty" jsonschema:"enum=hmac"`
 	HMAC          *WebhookHMAC `yaml:"hmac,omitempty"`
 }
 
@@ -176,8 +209,11 @@ type Handler struct {
 // OnError configures what happens to a message or batch that fails.
 // The dlq block is a full sink definition, used when policy is DLQ.
 type OnError struct {
-	Policy string `yaml:"policy"`
-	DLQ    *Sink  `yaml:"dlq,omitempty"`
+	// Defines how errors should be handled.
+	Policy string `yaml:"policy" jsonschema:"enum=RAISE,enum=IGNORE,enum=DLQ"`
+	// Dead-letter queue configuration. Failed messages will be routed to this
+	// sink.
+	DLQ *Sink `yaml:"dlq,omitempty"`
 }
 
 // StateConf points the pipeline's DuckDB at a file, so tables the handler
@@ -185,26 +221,41 @@ type OnError struct {
 // the same database, which is what makes state and offsets recoverable
 // together.
 type StateConf struct {
+	// File backing the pipeline's DuckDB database. Window state and Kafka
+	// offsets are stored here and committed together.
 	Path string `yaml:"path"`
 }
 
-// Pipeline
+// Pipeline is the source, the query, and the destination.
 type Pipeline struct {
-	Name                 string     `yaml:"name,omitempty"`
-	Description          string     `yaml:"description,omitempty"`
-	Source               Source     `yaml:"source"`
-	Handler              Handler    `yaml:"handler"`
-	Sink                 Sink       `yaml:"sink"`
-	BatchSize            int        `yaml:"batch_size,omitempty"`
-	FlushIntervalSeconds int        `yaml:"flush_interval_seconds,omitempty"`
-	State                *StateConf `yaml:"state,omitempty"`
-	OnError              *OnError   `yaml:"on_error,omitempty"`
+	// Name of the pipeline.
+	Name string `yaml:"name,omitempty"`
+	// Description of the pipeline.
+	Description string `yaml:"description,omitempty"`
+	// Configuration for the data source.
+	Source  Source  `yaml:"source"`
+	Handler Handler `yaml:"handler"`
+	Sink    Sink    `yaml:"sink"`
+	// Messages accumulated before the handler runs. Larger batches trade
+	// latency for throughput.
+	BatchSize int `yaml:"batch_size,omitempty"`
+	// Longest a partial batch waits before it is invoked anyway.
+	FlushIntervalSeconds int `yaml:"flush_interval_seconds,omitempty"`
+	// Where the pipeline keeps its DuckDB state. Absent means in-memory, and
+	// state is lost on a crash.
+	State *StateConf `yaml:"state,omitempty"`
+	// Global error handling strategy for the pipeline.
+	OnError *OnError `yaml:"on_error,omitempty"`
 }
 
-// Conf
+// Conf is a whole pipeline file.
 type Conf struct {
-	Pipeline Pipeline     `yaml:"pipeline"`
-	Tables   *Tables      `yaml:"tables,omitempty"`
-	UDFs     []UDF        `yaml:"udfs,omitempty"`
+	// Main pipeline configuration.
+	Pipeline Pipeline `yaml:"pipeline"`
+	// Predefined SQL tables used in the pipeline.
+	Tables *Tables `yaml:"tables,omitempty"`
+	// List of User-Defined Functions (UDFs) to be used in SQL queries.
+	UDFs []UDF `yaml:"udfs,omitempty"`
+	// List of SQL commands to execute before processing the pipeline.
 	Commands []SQLCommand `yaml:"commands,omitempty"`
 }

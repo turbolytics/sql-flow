@@ -156,6 +156,14 @@ features:
     description: Validates a config against the schema and reports where it is wrong.
     requires: [unit, release]
 
+  - id: validate.template
+    description: Reports referenced, provided, missing, and unused template variables.
+    requires: [unit]
+
+  - id: validate.schema
+    description: Validates a rendered config against the config JSON Schema, naming the line.
+    requires: [unit]
+
   # --- Observability ------------------------------------------------------
   - id: observability.metrics
     description: Exports pipeline counters and histograms over Prometheus.
