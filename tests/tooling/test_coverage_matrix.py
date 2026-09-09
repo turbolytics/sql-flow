@@ -1694,8 +1694,8 @@ def typed(types):
 
 def test_a_type_key_outside_the_lattice_is_reported():
     problems = cm.validate_types(LATTICE, typed({
-        "int64": {"outcome": "exact", "columns": ["Int64"]},
-        "utf8": {"outcome": "exact", "columns": ["String"]},
+        "int64": {"outcome": "exact", "columns": [{"type": "Int64", "expect": "v"}]},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "v"}]},
         "decimal128(38, 0)": {"outcome": "unsupported",
                               "code": "user.sink.type_unsupported"},
     }))
@@ -1704,7 +1704,7 @@ def test_a_type_key_outside_the_lattice_is_reported():
 
 def test_a_lattice_key_the_sink_does_not_declare_is_reported():
     problems = cm.validate_types(LATTICE, typed({
-        "int64": {"outcome": "exact", "columns": ["Int64"]},
+        "int64": {"outcome": "exact", "columns": [{"type": "Int64", "expect": "v"}]},
     }))
     assert any("utf8" in p and "sink.clickhouse" in p for p in problems)
 
@@ -1721,8 +1721,8 @@ def test_a_coerced_row_without_a_rule_is_reported():
     """A coercion stated as an outcome and no rule is an excuse. The rule is
     what the integration page publishes."""
     problems = cm.validate_types(LATTICE, typed({
-        "int64": {"outcome": "coerced", "columns": ["Int64"]},
-        "utf8": {"outcome": "exact", "columns": ["String"]},
+        "int64": {"outcome": "coerced", "columns": [{"type": "Int64", "expect": "v"}]},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "v"}]},
     }))
     assert any("int64" in p and "rule" in p for p in problems)
 
@@ -1730,7 +1730,7 @@ def test_a_coerced_row_without_a_rule_is_reported():
 def test_an_unsupported_row_without_a_code_is_reported():
     problems = cm.validate_types(LATTICE, typed({
         "int64": {"outcome": "unsupported"},
-        "utf8": {"outcome": "exact", "columns": ["String"]},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "v"}]},
     }))
     assert any("int64" in p and "code" in p for p in problems)
 
@@ -1739,22 +1739,22 @@ def test_a_supported_row_naming_no_column_is_reported():
     """Nothing to write it to means nothing was proven."""
     problems = cm.validate_types(LATTICE, typed({
         "int64": {"outcome": "exact", "columns": []},
-        "utf8": {"outcome": "exact", "columns": ["String"]},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "v"}]},
     }))
     assert any("int64" in p and "column" in p for p in problems)
 
 
 def test_an_unknown_outcome_is_reported():
     problems = cm.validate_types(LATTICE, typed({
-        "int64": {"outcome": "probably fine", "columns": ["Int64"]},
-        "utf8": {"outcome": "exact", "columns": ["String"]},
+        "int64": {"outcome": "probably fine", "columns": [{"type": "Int64", "expect": "v"}]},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "v"}]},
     }))
     assert any("probably fine" in p for p in problems)
 
 
 def test_a_consistent_table_reports_nothing():
     problems = cm.validate_types(LATTICE, typed({
-        "int64": {"outcome": "exact", "columns": ["Int64"]},
+        "int64": {"outcome": "exact", "columns": [{"type": "Int64", "expect": "v"}]},
         "utf8": {"outcome": "unsupported", "code": "user.sink.type_unsupported"},
     }))
     assert problems == []
@@ -1775,8 +1775,8 @@ def test_the_real_registries_agree():
 def test_the_page_is_keyed_by_duckdb_type_not_arrow():
     """A user writes a CAST and never sees an Arrow type."""
     md = cm.render_types_page(LATTICE, typed({
-        "int64": {"outcome": "exact", "columns": ["Int64"], "expect": "1"},
-        "utf8": {"outcome": "exact", "columns": ["String"], "expect": "a"},
+        "int64": {"outcome": "exact", "columns": [{"type": "Int64", "expect": "1"}]},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "a"}]},
     })[0])
     assert "BIGINT" in md and "VARCHAR" in md
     assert "`int64`" not in md and "`utf8`" not in md
@@ -1784,15 +1784,15 @@ def test_the_page_is_keyed_by_duckdb_type_not_arrow():
 
 def test_the_page_lists_every_column_type_that_accepts_a_key():
     md = cm.render_types_page(LATTICE, typed({
-        "int64": {"outcome": "exact", "columns": ["Int64", "Int128"], "expect": "1"},
-        "utf8": {"outcome": "exact", "columns": ["String"], "expect": "a"},
+        "int64": {"outcome": "exact", "columns": [{"type": "Int64", "expect": "1"}, {"type": "Int128", "expect": "1"}]},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "a"}]},
     })[0])
     assert "Int64" in md and "Int128" in md
 
 
 def test_the_page_separates_what_is_unsupported():
     md = cm.render_types_page(LATTICE, typed({
-        "int64": {"outcome": "exact", "columns": ["Int64"], "expect": "1"},
+        "int64": {"outcome": "exact", "columns": [{"type": "Int64", "expect": "1"}]},
         "utf8": {"outcome": "unsupported", "code": "user.sink.type_unsupported"},
     })[0])
     assert "VARCHAR" in md.split("Unsupported")[1]
@@ -1803,9 +1803,9 @@ def test_the_page_states_a_coercion_rule():
     """A coercion the page does not state is a surprise the reader meets in
     production."""
     md = cm.render_types_page(LATTICE, typed({
-        "int64": {"outcome": "coerced", "columns": ["Int64"],
-                  "rule": "rounded to the nearest whole number", "expect": "1"},
-        "utf8": {"outcome": "exact", "columns": ["String"], "expect": "a"},
+        "int64": {"outcome": "coerced", "columns": [{"type": "Int64", "expect": "1"}],
+                  "rule": "rounded to the nearest whole number"},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "a"}]},
     })[0])
     assert "rounded to the nearest whole number" in md
 
@@ -1813,8 +1813,8 @@ def test_the_page_states_a_coercion_rule():
 def test_the_page_says_it_is_generated():
     """A hand-edited copy of a generated file drifts silently."""
     md = cm.render_types_page(LATTICE, typed({
-        "int64": {"outcome": "exact", "columns": ["Int64"], "expect": "1"},
-        "utf8": {"outcome": "exact", "columns": ["String"], "expect": "a"},
+        "int64": {"outcome": "exact", "columns": [{"type": "Int64", "expect": "1"}]},
+        "utf8": {"outcome": "exact", "columns": [{"type": "String", "expect": "a"}]},
     })[0])
     assert "Do not edit" in md
     assert "TestIntegrationSinkClickhouse_Types" in md

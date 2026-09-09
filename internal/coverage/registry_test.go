@@ -72,6 +72,39 @@ func TestToolingCoverageRegistry_LatticeIsClosedAndWellFormed(t *testing.T) {
 	}
 }
 
+// The unit is a pair, not a key. DuckDB's VARCHAR is the universal text
+// carrier and ClickHouse reparses text into UUID, Decimal and Enum, so one
+// Arrow key reaches destinations that each demand different content.
+func TestToolingCoverageRegistry_AColumnCarriesItsOwnValue(t *testing.T) {
+	Covers(t, "tooling.coverage")
+
+	declared, err := TypesFor("sink.clickhouse")
+	assert.NoError(t, err)
+
+	for _, d := range declared {
+		if d.Outcome == "unsupported" {
+			continue
+		}
+		if len(d.Columns) == 0 {
+			t.Errorf("%s is %s and names no column", d.Key, d.Outcome)
+		}
+		for _, c := range d.Columns {
+			if c.Type == "" {
+				t.Errorf("%s has a column entry with no type", d.Key)
+			}
+			if c.Expect == "" {
+				t.Errorf("%s into %s names no expect", d.Key, c.Type)
+			}
+			// Only text is reparsed by a destination, so only the utf8 row
+			// may override the value it writes.
+			if c.Value != "" && d.Key != "utf8" {
+				t.Errorf("%s into %s declares a value, and only utf8 may: a "+
+					"destination reparses text and nothing else", d.Key, c.Type)
+			}
+		}
+	}
+}
+
 // Every lattice key must carry an outcome, or the sink's behaviour on that
 // type is undeclared and the matrix cannot tell a gap from a pass.
 func TestToolingCoverageRegistry_ClickhouseDeclaresEveryLatticeKey(t *testing.T) {

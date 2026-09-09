@@ -45,148 +45,198 @@ integrations:
     types:
       bool:
         outcome: exact
-        expect: "true"
         # Both columns hold what was written; only the rendering differs.
-        expect_per_column: {UInt8: "1"}
-        columns: [Bool, UInt8]
+        columns:
+          - type: Bool
+            expect: "true"
+          - type: UInt8
+            expect: "1"
       int8:
         outcome: exact
-        expect: "-128"
-        columns: [Int8]
+        columns:
+          - type: Int8
+            expect: "-128"
       int16:
         outcome: exact
-        expect: "-32768"
-        columns: [Int16]
+        columns:
+          - type: Int16
+            expect: "-32768"
       int32:
         outcome: exact
-        expect: "-2147483648"
-        columns: [Int32]
+        columns:
+          - type: Int32
+            expect: "-2147483648"
       int64:
         outcome: exact
-        expect: "-9223372036854775808"
-        columns: [Int64]
+        columns:
+          - type: Int64
+            expect: "-9223372036854775808"
       uint8:
         outcome: exact
-        expect: "255"
-        columns: [UInt8]
+        columns:
+          - type: UInt8
+            expect: "255"
       uint16:
         outcome: exact
-        expect: "65535"
-        columns: [UInt16]
+        columns:
+          - type: UInt16
+            expect: "65535"
       uint32:
         outcome: exact
-        expect: "4294967295"
-        columns: [UInt32]
+        columns:
+          - type: UInt32
+            expect: "4294967295"
       uint64:
         outcome: exact
-        expect: "18446744073709551615"
-        columns: [UInt64]
+        columns:
+          - type: UInt64
+            expect: "18446744073709551615"
       float32:
         outcome: exact
-        expect: "3.4028235e38"
-        columns: [Float32]
+        columns:
+          - type: Float32
+            expect: "3.4028235e38"
       float64:
         outcome: exact
-        expect: "1.7976931348623157e308"
-        columns: [Float64]
+        columns:
+          - type: Float64
+            expect: "1.7976931348623157e308"
+      # The universal text carrier, and the row that makes the pair the unit
+      # rather than the key. ClickHouse reparses text into a UUID, a Decimal
+      # and an Enum, and each demands different content, so a column entry may
+      # override the value the lattice sends.
       utf8:
         outcome: exact
-        expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
-        columns: [String, LowCardinality(String)]
+        columns:
+          - type: String
+            expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
+          - type: LowCardinality(String)
+            expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
+          # #153's shape: a timestamp the handler passed through without a
+          # CAST, so it arrives as text and lands in a temporal column. No
+          # Arrow key describes that pairing. clickhouse-go parses a zone-less
+          # string in time.Local, so the stored value moved with the host until
+          # the sink began parsing these itself; `instant` is what puts this
+          # pair under the shifted clock.
+          - type: "DateTime64(3)"
+            value: "2026-09-01 12:00:00.123"
+            expect: "2026-09-01 12:00:00.123"
+            instant: true
       binary:
         outcome: exact
         # Base64, because the value is bytes rather than text. 0xFF is not a
         # character, and a UTF-8 file cannot carry it as one: writing "\xff"
         # here declares code point U+00FF, which is two bytes, and the row
         # would fail against a sink that stored exactly what it was given.
-        expect: !!binary AP9/gA==
-        columns: [String]
+        columns:
+          - type: String
+            expect: !!binary AP9/gA==
       date32:
         outcome: exact
-        expect: "2026-09-08"
         # Date as well as Date32: the hand-written page claimed both, and a
         # generated page that dropped one would quietly narrow what sqlflow
         # supports. Date starts at 1970, which this value is well inside.
-        columns: [Date, Date32]
+        columns:
+          - type: Date
+            expect: "2026-09-08"
+          - type: Date32
+            expect: "2026-09-08"
       "timestamp[s]":
         outcome: exact
-        expect: "2026-09-08 12:00:00"
-        columns: [DateTime]
+        columns:
+          - type: DateTime
+            expect: "2026-09-08 12:00:00"
       "timestamp[ms]":
         outcome: exact
-        expect: "2026-09-08 12:00:00.123"
-        columns: ["DateTime64(3)"]
+        columns:
+          - type: "DateTime64(3)"
+            expect: "2026-09-08 12:00:00.123"
       "timestamp[us]":
         outcome: exact
-        expect: "2026-09-08 12:00:00.123456"
-        columns: ["DateTime64(6)"]
+        columns:
+          - type: "DateTime64(6)"
+            expect: "2026-09-08 12:00:00.123456"
       "timestamp[ns]":
         outcome: exact
-        expect: "2026-09-08 12:00:00.123456789"
-        columns: ["DateTime64(9)"]
+        columns:
+          - type: "DateTime64(9)"
+            expect: "2026-09-08 12:00:00.123456789"
 
       # #153's defect, stated as an outcome: the instant survives and the zone
       # does not. The column's own zone governs how the server renders it.
       "timestamp[us, tz=*]":
         outcome: coerced
-        expect: "2026-09-08 12:00:00.123456"
         rule: stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering
-        columns: ["DateTime64(6)"]
+        columns:
+          - type: "DateTime64(6)"
+            expect: "2026-09-08 12:00:00.123456"
 
       # #150 added Array(T), the one container the sink converts. Each row's
       # columns mirror its element's row, because ClickHouse's Array(T) takes
       # the element type the bare column takes.
       "list<bool>":
         outcome: exact
-        expect: "[true,true,true]"
-        columns: ["Array(Bool)"]
+        columns:
+          - type: "Array(Bool)"
+            expect: "[true,true,true]"
       "list<int8>":
         outcome: exact
-        expect: "[-128,-128,-128]"
-        columns: ["Array(Int8)"]
+        columns:
+          - type: "Array(Int8)"
+            expect: "[-128,-128,-128]"
       "list<int16>":
         outcome: exact
-        expect: "[-32768,-32768,-32768]"
-        columns: ["Array(Int16)"]
+        columns:
+          - type: "Array(Int16)"
+            expect: "[-32768,-32768,-32768]"
       "list<int32>":
         outcome: exact
-        expect: "[-2147483648,-2147483648,-2147483648]"
-        columns: ["Array(Int32)"]
+        columns:
+          - type: "Array(Int32)"
+            expect: "[-2147483648,-2147483648,-2147483648]"
       "list<int64>":
         outcome: exact
-        expect: "[-9223372036854775808,-9223372036854775808,-9223372036854775808]"
-        columns: ["Array(Int64)"]
+        columns:
+          - type: "Array(Int64)"
+            expect: "[-9223372036854775808,-9223372036854775808,-9223372036854775808]"
       "list<uint8>":
         outcome: exact
-        expect: "[255,255,255]"
-        columns: ["Array(UInt8)"]
+        columns:
+          - type: "Array(UInt8)"
+            expect: "[255,255,255]"
       "list<uint16>":
         outcome: exact
-        expect: "[65535,65535,65535]"
-        columns: ["Array(UInt16)"]
+        columns:
+          - type: "Array(UInt16)"
+            expect: "[65535,65535,65535]"
       "list<uint32>":
         outcome: exact
-        expect: "[4294967295,4294967295,4294967295]"
-        columns: ["Array(UInt32)"]
+        columns:
+          - type: "Array(UInt32)"
+            expect: "[4294967295,4294967295,4294967295]"
       "list<uint64>":
         outcome: exact
-        expect: "[18446744073709551615,18446744073709551615,18446744073709551615]"
-        columns: ["Array(UInt64)"]
+        columns:
+          - type: "Array(UInt64)"
+            expect: "[18446744073709551615,18446744073709551615,18446744073709551615]"
       "list<float32>":
         outcome: exact
-        expect: "[3.4028235e38,3.4028235e38,3.4028235e38]"
-        columns: ["Array(Float32)"]
+        columns:
+          - type: "Array(Float32)"
+            expect: "[3.4028235e38,3.4028235e38,3.4028235e38]"
       "list<float64>":
         outcome: exact
-        expect: "[1.7976931348623157e308,1.7976931348623157e308,1.7976931348623157e308]"
-        columns: ["Array(Float64)"]
+        columns:
+          - type: "Array(Float64)"
+            expect: "[1.7976931348623157e308,1.7976931348623157e308,1.7976931348623157e308]"
       "list<utf8>":
         outcome: exact
         # toString escapes a quote, a backslash and a tab inside an array
         # element. The stored value is the canonical string, which the
         # bare utf8 row and type.string.fidelity both check byte for byte.
-        expect: '[''L\''Œil 👁 "quoted" back\\slash\ttab'',''L\''Œil 👁 "quoted" back\\slash\ttab'',''L\''Œil 👁 "quoted" back\\slash\ttab'']'
-        columns: ["Array(String)"]
+        columns:
+          - type: "Array(String)"
+            expect: '[''L\''Œil 👁 "quoted" back\\slash\ttab'',''L\''Œil 👁 "quoted" back\\slash\ttab'',''L\''Œil 👁 "quoted" back\\slash\ttab'']'
       # Array(String), not an Array of some binary type: ClickHouse has no
       # separate binary column, exactly as the bare binary row records.
       "list<binary>":
@@ -195,40 +245,48 @@ integrations:
         # addition: ClickHouse renders an array element's NUL as the two
         # characters \0 and leaves the other bytes raw, so the expectation
         # mixes literal backslashes with bytes no UTF-8 file can carry.
-        expect: !!binary WydcMP9/gCcsJ1ww/3+AJywnXDD/f4AnXQ==
-        columns: ["Array(String)"]
+        columns:
+          - type: "Array(String)"
+            expect: !!binary WydcMP9/gCcsJ1ww/3+AJywnXDD/f4AnXQ==
       "list<date32>":
         outcome: exact
-        expect: "['2026-09-08','2026-09-08','2026-09-08']"
-        columns: ["Array(Date32)"]
+        columns:
+          - type: "Array(Date32)"
+            expect: "['2026-09-08','2026-09-08','2026-09-08']"
       "list<timestamp[s]>":
         outcome: exact
-        expect: "['2026-09-08 12:00:00','2026-09-08 12:00:00','2026-09-08 12:00:00']"
-        columns: ["Array(DateTime)"]
+        columns:
+          - type: "Array(DateTime)"
+            expect: "['2026-09-08 12:00:00','2026-09-08 12:00:00','2026-09-08 12:00:00']"
       "list<timestamp[ms]>":
         outcome: exact
-        expect: "['2026-09-08 12:00:00.123','2026-09-08 12:00:00.123','2026-09-08 12:00:00.123']"
-        columns: ["Array(DateTime64(3))"]
+        columns:
+          - type: "Array(DateTime64(3))"
+            expect: "['2026-09-08 12:00:00.123','2026-09-08 12:00:00.123','2026-09-08 12:00:00.123']"
       "list<timestamp[us]>":
         outcome: exact
-        expect: "['2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456']"
-        columns: ["Array(DateTime64(6))"]
+        columns:
+          - type: "Array(DateTime64(6))"
+            expect: "['2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456']"
       "list<timestamp[ns]>":
         outcome: exact
-        expect: "['2026-09-08 12:00:00.123456789','2026-09-08 12:00:00.123456789','2026-09-08 12:00:00.123456789']"
-        columns: ["Array(DateTime64(9))"]
+        columns:
+          - type: "Array(DateTime64(9))"
+            expect: "['2026-09-08 12:00:00.123456789','2026-09-08 12:00:00.123456789','2026-09-08 12:00:00.123456789']"
       "list<timestamp[us, tz=*]>":
         outcome: coerced
-        expect: "['2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456']"
         rule: stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering
-        columns: ["Array(DateTime64(6))"]
+        columns:
+          - type: "Array(DateTime64(6))"
+            expect: "['2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456']"
 
       # goElemType recurses, so a nested list becomes [][]T rather than a
       # slice the driver rejects.
       "list<list<int64>>":
         outcome: exact
-        expect: "[[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808]]"
-        columns: ["Array(Array(Int64))"]
+        columns:
+          - type: "Array(Array(Int64))"
+            expect: "[[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808]]"
 
       # A list does not launder its element. arrowListValue recurses into
       # arrowValue for each one, so an element the sink cannot convert fails
@@ -292,19 +350,6 @@ integrations:
     # table above is. ClickHouse raises nothing and stores the column type's
     # zero value, and it does not evaluate the column's DEFAULT expression,
     # because sqlflow names every produced column in the INSERT.
-    # #153's exact shape: a timestamp the handler passed through without a
-    # CAST, so it arrives as VARCHAR and lands in a DateTime column. No Arrow
-    # type describes that pairing, so the table above never writes it.
-    #
-    # clickhouse-go parses a zone-less string in time.Local and offers no
-    # option to change it, so the stored value moved with the host until the
-    # sink began parsing these itself. The runner writes this nine hours ahead
-    # of UTC, where the old behaviour is off by nine hours.
-    temporal_string:
-      column: "DateTime64(3)"
-      value: "2026-09-01 12:00:00.123"
-      expect: "2026-09-01 12:00:00.123"
-
     nulls:
       default:
         outcome: coerced

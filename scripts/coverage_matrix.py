@@ -218,7 +218,9 @@ def render_types_page(lattice, integration):
         if decl["outcome"] == "unsupported":
             unsupported.append("- %s" % casts)
             continue
-        cols = ", ".join("`%s`" % c for c in decl.get("columns", []))
+        # A column entry, not a name: the value written belongs to the (key,
+        # column) pair, and the page publishes the pair's destination type.
+        cols = ", ".join("`%s`" % c["type"] for c in decl.get("columns", []))
         supported.append("| %s | %s | %s |" % (casts, cols, decl.get("rule", "")))
 
     out = [
@@ -309,6 +311,22 @@ def validate_types(lattice, integrations):
                 problems.append(
                     f"integrations.yml: {iid} type {key!r} is {outcome} but names "
                     "no destination column type to write it to")
+            for col in decl.get("columns", []):
+                if not col.get("type"):
+                    problems.append(
+                        f"integrations.yml: {iid} type {key!r} has a column entry "
+                        "with no type")
+                if not col.get("expect"):
+                    problems.append(
+                        f"integrations.yml: {iid} type {key!r} into "
+                        f"{col.get('type')!r} names no expect, so nothing checks "
+                        "what the destination holds")
+                # Text is the only thing a destination reparses, so a value on
+                # any other key would be built and then ignored.
+                if col.get("value") and key != "utf8":
+                    problems.append(
+                        f"integrations.yml: {iid} type {key!r} into "
+                        f"{col.get('type')!r} declares a value, and only utf8 may")
 
         for key in sorted(keys - set(types)):
             problems.append(

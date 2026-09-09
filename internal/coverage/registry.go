@@ -257,29 +257,40 @@ type TypeDecl struct {
 	// cannot predict what their column will hold.
 	Rule string `yaml:"rule"`
 
-	// Expect is what the destination must hold after the row is written, as
-	// the subject's ReadBack renders it. Required when Outcome is exact or
-	// coerced.
-	//
-	// Declared rather than derived from the run. A test that records whatever
-	// the sink returned compares the sink to itself and proves nothing, and
-	// this value is what the published page's "exact" means.
-	Expect string `yaml:"expect"`
-
-	// ExpectPerColumn overrides Expect for one destination column type.
-	//
-	// A row can name several column types that hold the same value and render
-	// it differently: an Arrow bool is `true` in a ClickHouse Bool column and
-	// `1` in a UInt8 one, and both store what was written. One expectation per
-	// row would force dropping one of the columns, and the page publishes both.
-	ExpectPerColumn map[string]string `yaml:"expect_per_column"`
-
 	// Code is the errs code an unsupported type must fail with.
 	Code string `yaml:"code"`
 
-	// Columns are the destination column types that accept this key. Every one
-	// is exercised, and the cell is covered only when all of them pass.
-	Columns []string `yaml:"columns"`
+	// Columns are the destination column types that accept this key, each
+	// carrying what to write and what must come back. Every one is exercised,
+	// and the cell is covered only when all of them pass.
+	//
+	// The pair is the unit rather than the key. One Arrow key reaches several
+	// destinations that demand different content -- DuckDB's VARCHAR is the
+	// universal text carrier, and ClickHouse reparses text into UUID, Decimal
+	// and Enum -- so the value belongs here.
+	Columns []ColumnDecl `yaml:"columns"`
+}
+
+// ColumnDecl is one destination column type, and what the integration claims
+// about writing this Arrow key into it.
+type ColumnDecl struct {
+	// Type is the destination column type, as its DDL spells it.
+	Type string `yaml:"type"`
+
+	// Value overrides the key's canonical value. Empty means the canonical
+	// one. Only the utf8 row may set it: text is the only thing a destination
+	// reparses, and a value declared for any other key would be ignored.
+	Value string `yaml:"value"`
+
+	// Expect is what the destination must hold afterwards, as ReadBack renders
+	// it. Declared rather than recorded from a run: a table copied from the
+	// sink compares the sink to itself.
+	Expect string `yaml:"expect"`
+
+	// Instant marks a pair the timestamp claim must exercise with the host
+	// clock moved off UTC. It is how a text value bound for a temporal column
+	// -- #153's shape, which no Arrow key describes -- reaches that verdict.
+	Instant bool `yaml:"instant"`
 }
 
 // NullRule is what an integration does with a null, when the destination
@@ -317,51 +328,6 @@ func NullsFor(integration string) (NullRule, error) {
 		return entry.Nulls["default"], nil
 	}
 	return NullRule{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
-}
-
-// TemporalString is a timestamp that reaches the sink as text rather than as
-// an Arrow timestamp, bound for a temporal column.
-//
-// It has its own declaration because no Arrow type describes it: the column is
-// utf8 and the destination's is a DateTime. That combination is #153, where
-// clickhouse-go parsed the zone-less string in time.Local and stored a value
-// that depended on the host's offset. A type table keyed on Arrow types alone
-// never writes it.
-type TemporalString struct {
-	// Column is the destination column type to write into.
-	Column string `yaml:"column"`
-
-	// Value is the text to write.
-	Value string `yaml:"value"`
-
-	// Expect is what the destination must hold afterwards, whatever zone the
-	// host is in.
-	Expect string `yaml:"expect"`
-}
-
-// TemporalStringFor returns an integration's timestamp-as-text case.
-func TemporalStringFor(integration string) (TemporalString, error) {
-	raw, err := readRegistry("integrations.yml")
-	if err != nil {
-		return TemporalString{}, err
-	}
-
-	var doc struct {
-		Integrations []struct {
-			ID             string         `yaml:"id"`
-			TemporalString TemporalString `yaml:"temporal_string"`
-		} `yaml:"integrations"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return TemporalString{}, fmt.Errorf("coverage: parse integrations.yml: %w", err)
-	}
-
-	for _, entry := range doc.Integrations {
-		if entry.ID == integration {
-			return entry.TemporalString, nil
-		}
-	}
-	return TemporalString{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
 }
 
 // NullElementsFor returns an integration's rule for a null held inside a

@@ -50,15 +50,12 @@ func TestIntegrationSinkClickhouse_Types(t *testing.T) {
 	assert.NoError(t, err)
 	elemNulls, err := coverage.NullElementsFor("sink.clickhouse")
 	assert.NoError(t, err)
-	temporalString, err := coverage.TemporalStringFor("sink.clickhouse")
-	assert.NoError(t, err)
 
 	conformance.Types(t, conformance.TypeSubject{
 		Integration:      "sink.clickhouse",
 		Declared:         declared,
 		Nulls:            nulls,
 		ListElementNulls: elemNulls,
-		TemporalString:   temporalString,
 
 		Prepare: func(t *testing.T, key, columnType string) conformance.TypeDestination {
 			// An unsupported row fails before any INSERT is built, so the

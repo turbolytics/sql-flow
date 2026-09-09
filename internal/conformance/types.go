@@ -84,12 +84,6 @@ type TypeSubject struct {
 	// cannot, so the column-level rule says nothing about what a list holds.
 	ListElementNulls coverage.NullRule
 
-	// TemporalString is a timestamp that reaches the sink as text, bound for a
-	// temporal column. No Arrow type describes that pairing, and it is the
-	// exact shape of #153, so a table keyed on Arrow types alone never writes
-	// it.
-	TemporalString coverage.TemporalString
-
 	// Prepare creates a destination with a single column "v" of columnType,
 	// and a sink writing to it.
 	//
@@ -169,11 +163,12 @@ func judgeTypeRow(t *testing.T, s TypeSubject, d coverage.TypeDecl, null bool) s
 	// once, to no particular column.
 	columns := d.Columns
 	if d.Outcome == "unsupported" {
-		columns = []string{""}
+		columns = []coverage.ColumnDecl{{}}
 	}
 
-	for _, columnType := range columns {
-		arr, err := LatticeArray(d.Key, null)
+	for _, c := range columns {
+		columnType := c.Type
+		arr, err := rowArray(d.Key, c, null)
 		if err != nil {
 			return fmt.Sprintf("%s: %v", d.Key, err)
 		}
@@ -223,10 +218,7 @@ func judgeTypeRow(t *testing.T, s TypeSubject, d coverage.TypeDecl, null bool) s
 		// A non-null read-back is not proof the value survived. A sink that
 		// takes a value, stores something else and returns it without an
 		// error satisfies everything above.
-		want := d.Expect
-		if override, ok := d.ExpectPerColumn[columnType]; ok {
-			want = override
-		}
+		want := c.Expect
 		if want == "" {
 			return fmt.Sprintf("%s into %s is declared %s and the table names no "+
 				"expect, so nothing checks what the destination holds. A row that "+
@@ -240,6 +232,18 @@ func judgeTypeRow(t *testing.T, s TypeSubject, d coverage.TypeDecl, null bool) s
 		}
 	}
 	return ""
+}
+
+// rowArray builds the array one (key, column) pair writes.
+//
+// A column entry may carry its own value, which is how the destinations that
+// reparse text get covered: a UUID column and a Decimal column both take a
+// utf8 batch column and demand different content in it.
+func rowArray(key string, c coverage.ColumnDecl, null bool) (arrow.Array, error) {
+	if c.Value != "" && !null {
+		return LatticeString(c.Value), nil
+	}
+	return LatticeArray(key, null)
 }
 
 // judgeNested proves that a container carries what it holds, and hides
@@ -294,10 +298,11 @@ func judgeListElementNull(t *testing.T, s TypeSubject, d coverage.TypeDecl) stri
 	// once, to no particular column.
 	columns := d.Columns
 	if d.Outcome == "unsupported" {
-		columns = []string{""}
+		columns = []coverage.ColumnDecl{{}}
 	}
 
-	for _, columnType := range columns {
+	for _, c := range columns {
+		columnType := c.Type
 		arr, err := LatticeListWithNullElement(d.Key)
 		if err != nil {
 			return fmt.Sprintf("%s: %v", d.Key, err)
@@ -434,18 +439,41 @@ func judgeTimestampInstant(t *testing.T, s TypeSubject) verdict {
 	t.Helper()
 	v := verdict{invariant: typeInstant}
 
+	// Two shapes reach this claim. A temporal Arrow key is the obvious one. A
+	// pair marked instant is the other: a text value bound for a temporal
+	// column, which is #153 and which no Arrow key describes.
 	var temporal []coverage.TypeDecl
+	instants := 0
 	for _, d := range s.Declared {
 		if d.Outcome == "unsupported" {
 			continue
 		}
 		if strings.HasPrefix(d.Key, "timestamp[") || d.Key == "date32" {
 			temporal = append(temporal, d)
+			continue
+		}
+		var marked []coverage.ColumnDecl
+		for _, c := range d.Columns {
+			if c.Instant {
+				marked = append(marked, c)
+			}
+		}
+		if len(marked) > 0 {
+			instants += len(marked)
+			temporal = append(temporal, coverage.TypeDecl{
+				Key: d.Key, Outcome: d.Outcome, Code: d.Code, Columns: marked,
+			})
 		}
 	}
 	if len(temporal) == 0 {
 		v.failure = "the type table declares no temporal row, so nothing here " +
 			"proves a timestamp keeps its instant"
+		return v
+	}
+	if instants == 0 {
+		v.failure = "the type table marks no column entry instant, so a timestamp " +
+			"that arrives as text is unproven. That pairing is #153, and no Arrow " +
+			"key describes it"
 		return v
 	}
 
@@ -462,60 +490,7 @@ func judgeTimestampInstant(t *testing.T, s TypeSubject) verdict {
 			return v
 		}
 	}
-	if f := judgeTemporalString(t, s); f != "" {
-		v.failure = "with the host nine hours ahead of UTC: " + f
-	}
 	return v
-}
-
-// judgeTemporalString writes a timestamp that arrives as text into a temporal
-// column.
-//
-// This is #153's exact shape, and no Arrow type describes it: the batch column
-// is utf8 and the destination's is a DateTime, so a table keyed on Arrow types
-// writes every timestamp as an Arrow timestamp and never as the string a
-// handler passes through without a CAST. The driver parsed that string in
-// time.Local, so the stored value moved with the host.
-func judgeTemporalString(t *testing.T, s TypeSubject) string {
-	t.Helper()
-
-	ts := s.TemporalString
-	if ts.Column == "" || ts.Value == "" || ts.Expect == "" {
-		return "the integration declares no temporal_string case, so a timestamp " +
-			"that arrives as text is unproven. That pairing is #153, and no Arrow " +
-			"type describes it"
-	}
-
-	b := array.NewStringBuilder(memory.NewGoAllocator())
-	defer b.Release()
-	b.Append(ts.Value)
-
-	arr := b.NewArray()
-	defer arr.Release()
-
-	dest := s.Prepare(t, "utf8", ts.Column)
-	tbl := oneColumnTable(arr)
-	defer tbl.Release()
-
-	ctx := context.Background()
-	err := dest.Sink.WriteTable(ctx, tbl)
-	if err == nil {
-		err = dest.Sink.Flush(ctx)
-	}
-	if err != nil {
-		return fmt.Sprintf("%q into %s: the sink refused it: %v", ts.Value, ts.Column, err)
-	}
-
-	got, err := dest.ReadBack(t)
-	if err != nil {
-		return fmt.Sprintf("%q into %s: read back: %v", ts.Value, ts.Column, err)
-	}
-	if rendered, ok := got.(string); ok && rendered != ts.Expect {
-		return fmt.Sprintf("%q into %s read back as %q, and the table expects %q. "+
-			"A zone-less timestamp is UTC wherever the process runs",
-			ts.Value, ts.Column, rendered, ts.Expect)
-	}
-	return ""
 }
 
 // fidelityCorpus is the set of strings a sink must carry unchanged.
@@ -574,9 +549,15 @@ func judgeStringFidelity(t *testing.T, s TypeSubject) verdict {
 		return v
 	}
 
-	for _, columnType := range utf8Row.Columns {
+	for _, c := range utf8Row.Columns {
+		// A column that reparses the text -- a UUID, a Decimal, a temporal
+		// column -- cannot take an arbitrary string, so the corpus goes only
+		// to the columns that store text as text.
+		if c.Value != "" {
+			continue
+		}
 		for _, entry := range fidelityCorpus {
-			if f := judgeOneString(t, s, columnType, entry.name, entry.value); f != "" {
+			if f := judgeOneString(t, s, c.Type, entry.name, entry.value); f != "" {
 				v.failure = f
 				return v
 			}
