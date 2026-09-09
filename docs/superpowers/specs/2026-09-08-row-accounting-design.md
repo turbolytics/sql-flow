@@ -103,7 +103,7 @@ makes the buffered-versus-delivered ratio meaningful.
 The `sink_buffered_rows` gauge is deleted. The two counters derive it:
 
 ```promql
-sink_rows_accepted_rows_total - sink_rows_written_rows_total
+sink_rows_accepted_total - sink_rows_written_total
 ```
 
 Rows accepted but not yet acknowledged are the rows the sink is holding. The
@@ -202,28 +202,34 @@ never asked for.
 
 Four new instruments. The Prometheus exporter appends the unit and then
 `_total`, which is why `message_count` reads as `message_count_messages_total`
-today; the instrument names therefore carry no `_total` of their own.
+today. It skips the unit when the name already contains it, so
+`handler_rows_read` exports as `handler_rows_read_total` rather than repeating
+the word. Instrument names therefore carry no `_total` of their own, and a name
+that ends in its unit is the way to avoid a doubled suffix.
+
+Verified on 2026-09-09 by registering every name below against the real
+exporter and gathering the registry, not read off the spec.
 
 | Instrument | Type | Unit | Attributes | Exported as |
 |---|---|---|---|---|
-| `handler_rows_read` | counter | rows | — | `handler_rows_read_rows_total` |
-| `sink_rows_accepted` | counter | rows | `sink`, `role` | `sink_rows_accepted_rows_total` |
-| `sink_rows_written` | counter | rows | `sink`, `role` | `sink_rows_written_rows_total` |
-| `reference_table_rows` | gauge | rows | `table` | `reference_table_rows_rows` |
+| `handler_rows_read` | counter | rows | — | `handler_rows_read_total` |
+| `sink_rows_accepted` | counter | rows | `sink`, `role` | `sink_rows_accepted_total` |
+| `sink_rows_written` | counter | rows | `sink`, `role` | `sink_rows_written_total` |
+| `reference_table_rows` | gauge | rows | `table` | `reference_table_rows` |
 
 One instrument is removed: the `sink_buffered_rows` gauge, which the two
 counters derive. The engine exports fourteen today and seventeen after this.
 
 `sink_flush_num_rows` is unchanged. Changing an instrument's type renames the
-exported series regardless — the gauge exports as `sink_flush_num_rows_rows`
-and a counter would export as `sink_flush_num_rows_rows_total` — so there is no
-in-place upgrade to be had, and the gauge remains a legitimate signal for batch
-sizing and flush shape.
+exported series regardless — the gauge exports as `sink_flush_num_rows` and a
+counter would export as `sink_flush_num_rows_total` — so there is no in-place
+upgrade to be had, and the gauge remains a legitimate signal for batch sizing
+and flush shape.
 
 `sink_buffered_rows` is removed, so `sink_rows_buffered` is a free name. The
-counter is still called `sink_rows_accepted`, on tense: "buffered" describes
-what a sink is holding now, and a monotonic count of rows that entered the
-buffer is not that. The trio reads as read, accepted, written.
+counter is called `sink_rows_accepted` on tense: "buffered" describes what a
+sink is holding now, and a monotonic count of rows that entered the buffer is
+not that. The trio reads as read, accepted, written.
 
 ## Invariant
 
