@@ -60,6 +60,14 @@ Each adjacent ratio isolates one kind of loss:
   the buffer and were never acknowledged. A ratio that stays below 1 is a sink
   that is not draining, which is the #221 class as a running number.
 
+**Every ratio is a floor, not an equality.** sqlflow is at-least-once: a crash
+between the flush and the offset commit replays the batch, and the sink writes
+those rows again. After any normal recovery a ratio can exceed 1.
+
+Alert on a ratio that is low. Never alert on one that is not exactly 1, or a
+healthy restart pages somebody. The README says this beside the ratios, because
+an operator meets them there rather than here.
+
 ## Design
 
 ### Where the counters attach
@@ -131,17 +139,25 @@ The gauge was never documented in the README, so nothing published changes.
 
 ### Rows the SQL ran over
 
-`handler_rows_read` counts successful `handler.Write` calls in `turbine.go`. It
-needs no change to the `Handler` interface.
+`handler_rows_read` reports the rows the handler put into the `batch` table.
+The `Handler` interface gains a method for it:
 
-Every handler today buffers one row per message — `StructuredBatchHandler` and
-`InferredMemBatchHandler` both append the raw message to `rawBatch` and build
-one Arrow row from each — so this equals the rows in the `batch` table.
+```go
+// RowsRead reports the rows the last Invoke ingested into the batch table.
+RowsRead() int64
+```
 
-If a handler ever expands one message into several rows, this stops being a row
-count and must move onto the `Handler` interface as a real one. The instrument
-is named for rows because that is what it measures; the day that stops being
-true, the name is the thing that has to stay honest.
+`turbine.go` records it after `Invoke` returns.
+
+The cheaper version — counting successful `handler.Write` calls in the pipeline
+— was rejected. It counts messages, and it is wrong on a path that exists
+today: when `inferSchema` or `buildRecord` fails, `Invoke` produces no table at
+all, so the SQL ran over nothing while the count already moved. A metric named
+for rows that reports messages, and overstates them on a failure path, is the
+defect this whole design exists to remove.
+
+Reporting zero for a failed `Invoke` is the honest answer, and it is what the
+interface gives. The cost is one method on four handlers.
 
 ### Reference table row counts at startup
 
@@ -156,9 +172,16 @@ The steps:
 1. Serialize the handler SQL with `json_serialize_sql`.
 2. Walk the AST for `BASE_TABLE` nodes, collecting
    `catalog_name`/`schema_name`/`table_name`.
-3. Drop `batch`, and drop every name the `tables:` block created. Managed
+3. Drop every name declared in the AST's `cte_map`. DuckDB emits a CTE
+   reference as a `BASE_TABLE` node, so `WITH recent AS (...) SELECT ... FROM
+   recent` yields `recent` alongside the real tables. Counting it fails,
+   because the CTE does not exist outside its own query, and every pipeline
+   using `WITH` would log a warning at every start. A check that cries wolf is
+   worse than no check. The declared names are in the same AST, so the fix
+   costs one more walk.
+4. Drop `batch`, and drop every name the `tables:` block created. Managed
    aggregate tables legitimately start empty; a dimension table does not.
-4. Count each remaining table, timed, choosing the query by catalog:
+5. Count each remaining table, timed, choosing the query by catalog:
    - Local catalog: `SELECT COUNT(*)`. Measured at 0.37s against a 417MB,
      20M-row CSV view on 2026-09-08. Cheap enough to be unconditional.
    - Attached catalog, which the AST reports as a non-empty `catalog_name`:
@@ -171,6 +194,11 @@ The query runs on the signal context, so a SIGTERM during startup stops it
 rather than waiting it out. `sinks.New` bounds its dial the same way
 (`run/root.go:293`), and startup work in this repo is interruptible rather
 than time-capped.
+
+`dev invoke` runs it too. `internal/cli/dev.go:86` executes the same
+`InitCommands`, and the developer iterating on a join against a fixture is the
+person most likely to have an empty dimension table. Wiring it only into `run`
+would hide the warning from the one workflow built for finding this.
 
 The output is a log line and a gauge:
 
@@ -248,8 +276,31 @@ Add to `docs/coverage/invariants.yml`, in the `resilience` family:
   requires: []
 ```
 
-The conformance harness already supplies `Break` and `Heal`, so the subject is
-a break, a failed flush, a heal, and an assertion that the counter moved once.
+The subject is a break, a failed flush, a heal, and an assertion that the
+counter moved once. `Break` and `Heal` already exist.
+
+**The harness has to apply the decorator, or this invariant proves nothing.**
+Conformance subjects build their sinks directly —
+`NewIcebergSink(ctx, catalogName, "default.rows")` in
+`sinks/conformance_pipeline_test.go:91` — and the harness wraps that in its own
+`recordingSink` before handing it to a real `core.NewTurbine`
+(`pipeline.go:542`). Nothing in that path goes through `sinks.New`, so the
+counters would be absent and the assertion would pass against an
+uninstrumented sink.
+
+So `recordingSink` wraps with the row counters. Every subject then proves the
+invariant for free, which is the reason to fix it here rather than writing one
+unit test against the decorator.
+
+The decorator stays in `sinks.New` rather than moving into `core.Turbine`. The
+DLQ and the window managers own sinks the pipeline never holds, and a
+Turbine-level wrap would miss both — which is the blind spot this design
+started from.
+
+The decorator sits **outside** the retry ladder, so one logical flush is one
+call. The totals come out the same either way, since `retrying.WriteTable`
+delegates and a failed attempt adds nothing, but the invariant needs the
+position pinned to mean anything.
 
 ## Not doing
 
@@ -318,10 +369,13 @@ about these names during design were wrong until I ran exactly this.
 | `internal/core/metrics.go` | add `HandlerRowsRead`, `ReferenceTableRows`; drop `SinkBufferedRows`; `state_commit_latency` unit `s` to `seconds`; comment why `error_count` keeps unit `count` |
 | `internal/sinks/metrics.go` | add the row counters the decorator records through |
 | `internal/sinks/init.go` | counting decorator, `WithSinkRole` option |
-| `internal/core/turbine.go` | record `handler_rows_read` on accepted writes; drop `recordBufferedRows` and its two call sites |
-| `internal/core/reftables.go` | new: AST walk, count, log, record gauge |
+| `internal/core/turbine.go` | record `handler_rows_read` after `Invoke`; add `RowsRead` to the `Handler` interface; drop `recordBufferedRows` and its two call sites |
+| `internal/handlers/*.go` | `RowsRead` on the structured, inferred-mem, inferred-disk and noop handlers |
+| `internal/core/reftables.go` | new: AST walk with CTE exclusion, count, log, record gauge |
 | `internal/cli/run/root.go` | call it after `InitTables`; pass `WithSinkRole` |
 | `internal/cli/run/managers.go` | pass `WithSinkRole("manager")` |
+| `internal/cli/dev.go` | call the reference-table check after `InitCommands` |
+| `internal/conformance/pipeline.go` | `recordingSink` wraps with the row counters, and `passthroughHandler` gains `RowsRead` |
 | `internal/sinks/metrics.go` | comment why `sink_retry_count` keeps unit `count` |
 | `internal/cli/run/metrics_test.go` | assert the exact set of exported series names |
 | `docs/coverage/invariants.yml` | `sink.rows.counted_on_delivery` |
@@ -331,6 +385,8 @@ about these names during design were wrong until I ran exactly this.
 
 - A failed flush followed by a successful one counts the rows once. This is the
   invariant, and it runs in the conformance harness against a real sink.
+- The harness's sink actually carries the counters. Without this the invariant
+  above passes against an uninstrumented sink and proves nothing.
 - Across that same break and heal, `accepted - written` rises to the buffered
   row count and returns to zero. This is the derived gauge, proven against the
   case that motivates it.
@@ -338,7 +394,13 @@ about these names during design were wrong until I ran exactly this.
   regression the `managers/tumbling.go` blind spot would otherwise reproduce.
 - DLQ rows carry `role="dlq"` and do not sum into the pipeline series.
 - The AST walk returns `locations` for the `csv.mem.join.yml` handler SQL, and
-  excludes `batch`.
+  excludes `batch`. That query nests its join inside a subquery, so this also
+  covers the recursive descent.
+- A handler SQL with a `WITH` clause excludes the CTE name and counts nothing
+  for it. This is the false-positive case, and it is the one most likely to be
+  reintroduced.
+- `handler_rows_read` reports zero for a batch whose `Invoke` failed schema
+  inference, not the message count.
 - A table declared in `tables:` is excluded from the reference set.
 - A reference table with zero rows logs at warn.
 - A table in an attached catalog is probed with `EXISTS`, not counted, and
