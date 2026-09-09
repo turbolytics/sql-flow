@@ -158,14 +158,32 @@ The steps:
    `catalog_name`/`schema_name`/`table_name`.
 3. Drop `batch`, and drop every name the `tables:` block created. Managed
    aggregate tables legitimately start empty; a dimension table does not.
-4. Run one `SELECT COUNT(*)` per remaining table, timed.
+4. Count each remaining table, timed, choosing the query by catalog:
+   - Local catalog: `SELECT COUNT(*)`. Measured at 0.37s against a 417MB,
+     20M-row CSV view on 2026-09-08. Cheap enough to be unconditional.
+   - Attached catalog, which the AST reports as a non-empty `catalog_name`:
+     `SELECT EXISTS(SELECT 1 FROM t LIMIT 1)`. A full count there is a
+     sequential scan on somebody else's server, and `kafka.postgres.join.yml`
+     is that shape. The exact number is not what the operator needs; the
+     difference between some rows and none is.
+
+The query runs on the signal context, so a SIGTERM during startup stops it
+rather than waiting it out. `sinks.New` bounds its dial the same way
+(`run/root.go:293`), and startup work in this repo is interruptible rather
+than time-capped.
 
 The output is a log line and a gauge:
 
 ```
 INFO  reference table locations: 14203 rows in 412ms
 WARN  reference table locations: 0 rows, joined by handler SQL
+INFO  reference table pgusersdb.users: has rows, checked in 31ms
+WARN  reference table pgusersdb.users: empty, joined by handler SQL
 ```
+
+An attached table reports presence rather than a number, and the log says
+which it is. `reference_table_rows` is recorded only where a real count ran;
+an absent series and a zero are different facts.
 
 A count that errors logs a warning and startup continues. A table that does not
 exist fails later at prepare, which is static validation's job (#169), not
@@ -268,4 +286,6 @@ SQL the operator already wrote.
   excludes `batch`.
 - A table declared in `tables:` is excluded from the reference set.
 - A reference table with zero rows logs at warn.
+- A table in an attached catalog is probed with `EXISTS`, not counted, and
+  records no `reference_table_rows` series.
 - A count that errors logs at warn and startup proceeds.
