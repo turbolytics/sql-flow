@@ -15,3 +15,8 @@ dist/
 
 # Test output the coverage matrix is generated from.
 .coverage/
+
+# Skills are repo tooling; worktrees and session state stay ignored.
+!.claude/
+.claude/*
+!.claude/skills/
