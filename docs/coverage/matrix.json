@@ -668,7 +668,9 @@
             "TestHandlerStructured_ListElementSeesRowsIngestedAfterPrepare",
             "TestHandlerStructured_MultipleRecords",
             "TestHandlerStructured_NestedStruct",
-            "TestHandlerStructured_SingleRecord"
+            "TestHandlerStructured_SingleRecord",
+            "TestStructuredInit_ReleasesTruncatedStorage",
+            "TestStructuredInvoke_DoesNotLeakNativeMemory"
           ]
         },
         "integration": {
