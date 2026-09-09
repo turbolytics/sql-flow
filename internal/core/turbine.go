@@ -100,6 +100,15 @@ type Handler interface {
 	Init(ctx context.Context) error
 	Write(msg []byte) error
 	Invoke(ctx context.Context) (arrow.Table, error)
+
+	// RowsRead reports the rows the last Invoke ingested into the batch table.
+	//
+	// It is the denominator of the enrichment ratio, so it has to count rows
+	// the SQL actually ran over. An Invoke that failed schema inference
+	// produced no table at all and reports zero, however many messages were
+	// written to it -- counting accepted writes instead would overstate the
+	// denominator on exactly the path where rows were lost.
+	RowsRead() int64
 }
 
 type Stats struct {
@@ -791,6 +800,12 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	t.lock.Unlock()
 
 	b1 := time.Now()
+
+	// Recorded before the error branch below. A failed Invoke reports zero,
+	// which is the honest number, and skipping the record entirely would
+	// freeze the ratio's denominator through every failing batch -- hiding
+	// loss in exactly the case where rows were lost.
+	t.metrics.HandlerRowsRead.Add(ctx, t.handler.RowsRead())
 
 	if err != nil {
 		t.recordError(ctx, err, phaseHandlerInvoke, "error invoking handler")

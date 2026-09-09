@@ -11,6 +11,7 @@ import (
 // descriptions and units the Python engine exports.
 type Metrics struct {
 	MessageCount           metric.Int64Counter
+	HandlerRowsRead        metric.Int64Counter
 	ErrorCount             metric.Int64Counter
 	SourceReadLatency      metric.Float64Histogram
 	SinkFlushLatency       metric.Float64Histogram
@@ -45,6 +46,17 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("messages"),
 	); err != nil {
 		return nil, fmt.Errorf("message_count: %w", err)
+	}
+
+	// The denominator of the enrichment ratio. message_count counts messages,
+	// which stops being the same number the moment a message is rejected or a
+	// batch fails to ingest.
+	if m.HandlerRowsRead, err = meter.Int64Counter(
+		"handler_rows_read",
+		metric.WithDescription("Rows the handler ingested into the batch table, which the pipeline SQL ran over"),
+		metric.WithUnit("rows"),
+	); err != nil {
+		return nil, fmt.Errorf("handler_rows_read: %w", err)
 	}
 
 	// The unit stays "count", which the exporter drops as unitless, so this

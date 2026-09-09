@@ -113,6 +113,7 @@ func exportedNames(t *testing.T) []string {
 
 	ctx := context.Background()
 	m.MessageCount.Add(ctx, 1)
+	m.HandlerRowsRead.Add(ctx, 1)
 	m.ErrorCount.Add(ctx, 1)
 	m.SourceReadLatency.Record(ctx, 1)
 	m.SinkFlushLatency.Record(ctx, 1)
@@ -155,6 +156,7 @@ func TestExportedSeriesNames(t *testing.T) {
 		"batch_processing_latency_seconds",
 		"consumer_lag_messages",
 		"error_count_total",
+		"handler_rows_read_total",
 		"message_count_messages_total",
 		"sink_buffered_rows",
 		"sink_flush_count_flushes_total",

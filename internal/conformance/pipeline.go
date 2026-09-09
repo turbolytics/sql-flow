@@ -790,8 +790,9 @@ func (s *recordingSink) Flushes() int {
 // smallest handler that produces something a sink can be given. What the
 // handler does is not what these invariants are about.
 type passthroughHandler struct {
-	mu   sync.Mutex
-	rows int
+	mu       sync.Mutex
+	rows     int
+	rowsRead int64
 }
 
 func (h *passthroughHandler) Init(context.Context) error { return nil }
@@ -803,10 +804,17 @@ func (h *passthroughHandler) Write([]byte) error {
 	return nil
 }
 
+func (h *passthroughHandler) RowsRead() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.rowsRead
+}
+
 func (h *passthroughHandler) Invoke(context.Context) (arrow.Table, error) {
 	h.mu.Lock()
 	n := h.rows
 	h.rows = 0
+	h.rowsRead = int64(n)
 	h.mu.Unlock()
 
 	if n == 0 {
