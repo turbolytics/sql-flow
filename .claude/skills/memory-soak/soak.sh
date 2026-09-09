@@ -9,7 +9,8 @@
 #
 # Environment:
 #   SOAK_NETWORK   docker network the source lives on   (default dev_default)
-#   SOAK_ENV       names of env vars to pass through     (default: every SQLFLOW_*)
+#   SOAK_ENV       names of env vars to pass through     (default: every SQLFLOW_*;
+#                  set to "" to pass nothing)
 #   SOAK_PPROF     host port for pprof                   (default 6060)
 #   SOAK_METRICS   host port for prometheus              (default 8000)
 set -euo pipefail
@@ -30,7 +31,7 @@ fi
 docker rm -f "$name" >/dev/null 2>&1 || true
 docker run -d --name "$name" --network "$net" \
   -p "$pprof_port:6060" -p "$metrics_port:8000" \
-  "${env_args[@]}" \
+  ${env_args[@]+"${env_args[@]}"} \
   -v "$(cd "$(dirname "$config")" && pwd)":/conf \
   "$image" run "/conf/$(basename "$config")" --pprof --metrics=prometheus --with-http-debug >/dev/null
 echo "started $name from $image; sampling for $minutes minutes into $out/"
