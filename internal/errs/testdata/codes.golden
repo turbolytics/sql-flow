@@ -15,6 +15,7 @@ user.config.template_undefined
 user.data.invalid
 user.data.malformed
 user.sink.invalid
+user.sink.type_unsupported
 user.source.invalid
 user.source.security_invalid
 user.sql.bind_failed
