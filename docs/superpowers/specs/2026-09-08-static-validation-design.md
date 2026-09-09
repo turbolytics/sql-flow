@@ -297,42 +297,22 @@ lines, with no executor machinery built before there is a second caller.
     requires: [unit]
 ```
 
-`docs/coverage/invariants.yml`:
+Nothing is added to `docs/coverage/invariants.yml`.
 
-```yaml
-  - id: validate.no_side_effects
-    family: contract
-    class: safety
-    applies_to: validate_check
-    claim: >
-      Validation opens no network connection, writes no file, and executes no
-      statement from the config's commands block unless --run-commands is set.
-    verified_by: named
-    requires: []
-    enforced: true
+An earlier draft of this spec declared three: `validate.no_side_effects`,
+`validate.reports_every_diagnostic` and `validate.skip_is_explicit`. They do
+not belong there. The invariant matrix describes what the engine holds true at
+runtime, across every integration of a kind -- a sink that never loses a
+buffered batch, a source that never commits an offset for a row the sink did
+not take. Validation is tooling. It runs before the pipeline, touches nothing,
+and has no integrations to hold the claim across.
 
-  - id: validate.reports_every_diagnostic
-    family: contract
-    class: liveness
-    applies_to: validate_check
-    claim: >
-      A config with several independent faults reports all of them in one run.
-      No check stops at the first failure.
-    verified_by: named
-    requires: []
-    enforced: true
-
-  - id: validate.skip_is_explicit
-    family: contract
-    class: safety
-    applies_to: validate_check
-    claim: >
-      A check that cannot run reports skipped with a reason. It never reports
-      pass, and never reports a failure it cannot substantiate.
-    verified_by: named
-    requires: []
-    enforced: true
-```
+The three properties are still enforced, by name, in
+`internal/validate`: tests named `TestValidateNoSideEffects*`,
+`TestValidateReportsEveryDiagnostic*` and `TestValidateSkipIsExplicit*`. The
+last is the one that matters, and its reasoning belongs in this spec rather
+than in a matrix cell: a model obeys its linter, so a check that cannot run
+must report skipped with a reason and never pass.
 
 The regression test for all of this is #120's config: the real file, with the
 real typo, asserting the exact diagnostics.
