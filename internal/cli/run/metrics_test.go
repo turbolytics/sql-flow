@@ -9,9 +9,14 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	prom "github.com/prometheus/client_golang/prometheus"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/turbolytics/sql-flow/internal/webhook"
 	"github.com/zeebo/assert"
 	"go.opentelemetry.io/otel/exporters/prometheus"
@@ -132,6 +137,28 @@ func exportedNames(t *testing.T) []string {
 	wm.RequestCount.Add(ctx, 1)
 	wm.RequestDuration.Record(ctx, 1)
 
+	// The row counters are declared in internal/sinks, not core.NewMetrics, so
+	// a core-only sweep would miss them and let the README document series no
+	// test knows about. Driven through the real constructor rather than
+	// re-declared here, so a rename over there fails this.
+	sink, err := sinks.New(ctx, config.Sink{Type: "console"}, nil,
+		sinks.WithMeterProvider(mp), sinks.WithSinkRole("pipeline"))
+	assert.NoError(t, err)
+
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+	}, nil)
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	b.Field(0).(*array.Int64Builder).Append(1)
+	rec := b.NewRecord()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	rec.Release()
+	b.Release()
+
+	assert.NoError(t, sink.WriteTable(ctx, tbl))
+	assert.NoError(t, sink.Flush(ctx))
+	tbl.Release()
+
 	families, err := reg.Gather()
 	assert.NoError(t, err)
 
@@ -162,6 +189,8 @@ func TestExportedSeriesNames(t *testing.T) {
 		"sink_flush_count_flushes_total",
 		"sink_flush_latency_seconds",
 		"sink_flush_num_rows",
+		"sink_rows_accepted_total",
+		"sink_rows_written_total",
 		"source_read_latency_seconds",
 		"state_commit_count_commits_total",
 		"state_commit_latency_seconds",
