@@ -46,11 +46,18 @@ jobs:
       # -json so the coverage job can read this run instead of repeating it.
       # tee keeps the events in the log, where a failure is the line carrying
       # "Action":"fail" and its test name.
+      #
+      # -race because the conformance harness coordinates goroutines, and two
+      # of its races reached main: a WaitGroup whose Add ran on the pipeline's
+      # goroutine while Wait ran on the harness's, and a channel closed by one
+      # goroutine while another was sending on it. The second panicked a CI run
+      # outright, and neither reproduced by re-running. The detector found both
+      # on the first pass.
       - name: Test Unit
         run: |
           mkdir -p .coverage
           set -o pipefail
-          go test -short -json ./... | tee .coverage/go.json
+          go test -short -race -json ./... | tee .coverage/go.json
 
       # always(): a failing suite is exactly when the matrix needs this report,
       # so it can name the feature that broke rather than reporting nothing.
