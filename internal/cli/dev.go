@@ -15,6 +15,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/turbolytics/sql-flow/internal/handlers"
+	"github.com/turbolytics/sql-flow/internal/logging"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"go.uber.org/zap"
 )
@@ -92,6 +93,19 @@ func devInvoke(
 
 	if err := core.InitTables(conn, conf); err != nil {
 		return nil, fmt.Errorf("failed to initialize tables: %w", err)
+	}
+
+	// dev invoke runs the reference-table check too. The developer iterating
+	// on a join against a fixture is the person most likely to have an empty
+	// dimension table, and wiring this only into `run` would hide the warning
+	// from the workflow built for finding it.
+	//
+	// A real logger, not zap.NewNop: the warning is the whole point, and it
+	// goes to stderr rather than to out, which carries the result rows.
+	if l, err := logging.New(); err == nil {
+		if err := core.CheckReferenceTables(ctx, conn, conf, nil, l); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := core.InitUDFs(conf); err != nil {

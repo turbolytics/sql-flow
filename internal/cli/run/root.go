@@ -276,6 +276,17 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to create metrics: %w", err)
 			}
 
+			// A dimension table that did not load is the enrichment failure
+			// nothing else makes visible. Reported before the pipeline
+			// consumes anything, and on the signal context so a SIGTERM during
+			// startup stops the count rather than waiting it out.
+			//
+			// It runs here rather than beside InitTables because it records a
+			// gauge, and the metrics do not exist until now.
+			if err := core.CheckReferenceTables(ctx, conn, conf, pipelineMetrics, l); err != nil {
+				return err
+			}
+
 			src, err := sources.New(
 				conf.Pipeline.Source,
 				logger,

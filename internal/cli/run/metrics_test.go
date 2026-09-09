@@ -125,6 +125,7 @@ func exportedNames(t *testing.T) []string {
 	m.StateCommitCount.Add(ctx, 1)
 	m.StateSizeBytes.Record(ctx, 1)
 	m.StateTableRows.Record(ctx, 1)
+	m.ReferenceTableRows.Record(ctx, 1)
 
 	wm, err := webhook.NewMetrics(mp)
 	assert.NoError(t, err)
@@ -157,6 +158,7 @@ func TestExportedSeriesNames(t *testing.T) {
 		"error_count_total",
 		"handler_rows_read_total",
 		"message_count_messages_total",
+		"reference_table_rows",
 		"sink_flush_count_flushes_total",
 		"sink_flush_latency_seconds",
 		"sink_flush_num_rows",

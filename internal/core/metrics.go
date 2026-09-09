@@ -22,6 +22,7 @@ type Metrics struct {
 	StateCommitCount       metric.Int64Counter
 	StateSizeBytes         metric.Int64Gauge
 	StateTableRows         metric.Int64Gauge
+	ReferenceTableRows     metric.Int64Gauge
 	ConsumerLag            metric.Int64Gauge
 }
 
@@ -155,6 +156,22 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("rows"),
 	); err != nil {
 		return nil, fmt.Errorf("state_table_rows: %w", err)
+	}
+
+	// Recorded once, at startup, so the series reports what the table held
+	// when the pipeline started. The pipeline does not re-count: rescanning a
+	// CSV or crossing the wire to Postgres on an interval is a cost the
+	// operator never asked for.
+	//
+	// It appears whenever the handler SQL joins a table, with or without a
+	// state path, so it is not one of the state instruments despite sharing
+	// their shape.
+	if m.ReferenceTableRows, err = meter.Int64Gauge(
+		"reference_table_rows",
+		metric.WithDescription("Rows a table joined by the handler SQL held when the pipeline started"),
+		metric.WithUnit("rows"),
+	); err != nil {
+		return nil, fmt.Errorf("reference_table_rows: %w", err)
 	}
 
 	return &m, nil

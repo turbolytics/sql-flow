@@ -5,9 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/config"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // batchTable is declared in stats.go: the transient table the handlers create
@@ -98,6 +105,161 @@ func ReferenceTables(
 		out = append(out, tbl)
 	}
 	return out, nil
+}
+
+// CheckReferenceTables counts the tables the handler SQL joins and reports
+// what it found.
+//
+// This is a diagnostic, not a gate. A count that fails logs a warning and the
+// pipeline starts: a table that does not exist fails later at prepare, which
+// is static validation's job, and refusing to start on an empty dimension is a
+// UX decision nobody has made yet. A warning is reversible; a refusal is not.
+//
+// m may be nil, for callers with no metrics.
+func CheckReferenceTables(
+	ctx context.Context,
+	conn adbc.Connection,
+	conf *config.Conf,
+	m *Metrics,
+	l *zap.Logger,
+) error {
+	sql := conf.Pipeline.Handler.SQL
+	if strings.TrimSpace(sql) == "" {
+		return nil
+	}
+
+	// The repo's development logger stacktraces every warning. Here that
+	// buries the one fact the operator needs -- which table is empty, already
+	// in the fields -- under a frame list pointing at this file, which tells
+	// them nothing. Errors still carry theirs.
+	l = l.WithOptions(zap.AddStacktrace(zapcore.ErrorLevel))
+
+	var managed []string
+	if conf.Tables != nil {
+		for _, t := range conf.Tables.SQL {
+			managed = append(managed, t.Name)
+		}
+	}
+
+	tables, err := ReferenceTables(ctx, conn, sql, managed)
+	if err != nil {
+		// Unreadable SQL is the static validator's finding, not a reason to
+		// stop a pipeline DuckDB may still accept.
+		l.Warn("could not derive reference tables from handler sql", zap.Error(err))
+		return nil
+	}
+
+	for _, tbl := range tables {
+		start := time.Now()
+
+		// A full count on an ATTACHed catalog is a sequential scan on somebody
+		// else's server. The difference between some rows and none is the fact
+		// worth having, and EXISTS gets it for the price of one row.
+		if tbl.Attached() {
+			has, err := refTableHasRows(ctx, conn, tbl)
+			if err != nil {
+				l.Warn("could not probe reference table",
+					zap.String("table", tbl.Qualified()), zap.Error(err))
+				continue
+			}
+			if !has {
+				l.Warn("reference table is empty, joined by handler SQL",
+					zap.String("table", tbl.Qualified()),
+					zap.Duration("took", time.Since(start)))
+				continue
+			}
+			l.Info("reference table has rows",
+				zap.String("table", tbl.Qualified()),
+				zap.Duration("took", time.Since(start)))
+			continue
+		}
+
+		n, err := countRefTable(ctx, conn, tbl)
+		if err != nil {
+			l.Warn("could not count reference table",
+				zap.String("table", tbl.Qualified()), zap.Error(err))
+			continue
+		}
+
+		took := time.Since(start)
+		if m != nil {
+			m.ReferenceTableRows.Record(ctx, n,
+				metric.WithAttributes(attribute.String("table", tbl.Qualified())))
+		}
+
+		if n == 0 {
+			l.Warn("reference table has 0 rows, joined by handler SQL",
+				zap.String("table", tbl.Qualified()),
+				zap.Int64("rows", n),
+				zap.Duration("took", took))
+			continue
+		}
+		l.Info("reference table loaded",
+			zap.String("table", tbl.Qualified()),
+			zap.Int64("rows", n),
+			zap.Duration("took", took))
+	}
+	return nil
+}
+
+// countRefTable returns the table's row count. Named apart from stats.go's
+// countRows, which counts a managed state table by name.
+func countRefTable(ctx context.Context, conn adbc.Connection, tbl RefTable) (int64, error) {
+	var n int64
+	err := scalar(ctx, conn, "SELECT COUNT(*) FROM "+tbl.Qualified(),
+		func(rec arrow.Record) error {
+			col, ok := rec.Column(0).(*array.Int64)
+			if !ok {
+				return fmt.Errorf("COUNT(*) returned %T", rec.Column(0))
+			}
+			n = col.Value(0)
+			return nil
+		})
+	return n, err
+}
+
+// refTableHasRows reports whether the table holds anything, without counting it.
+func refTableHasRows(ctx context.Context, conn adbc.Connection, tbl RefTable) (bool, error) {
+	var has bool
+	err := scalar(ctx, conn,
+		"SELECT EXISTS(SELECT 1 FROM "+tbl.Qualified()+" LIMIT 1)",
+		func(rec arrow.Record) error {
+			col, ok := rec.Column(0).(*array.Boolean)
+			if !ok {
+				return fmt.Errorf("EXISTS returned %T", rec.Column(0))
+			}
+			has = col.Value(0)
+			return nil
+		})
+	return has, err
+}
+
+// scalar runs a query and hands its first record to read.
+func scalar(ctx context.Context, conn adbc.Connection, sql string, read func(arrow.Record) error) error {
+	stmt, err := conn.NewStatement()
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	if err := stmt.SetSqlQuery(sql); err != nil {
+		return err
+	}
+
+	reader, _, err := stmt.ExecuteQuery(ctx)
+	if err != nil {
+		return err
+	}
+	defer reader.Release()
+
+	for reader.Next() {
+		rec := reader.Record()
+		if rec.NumRows() == 0 {
+			continue
+		}
+		return read(rec)
+	}
+	return fmt.Errorf("query returned no rows: %s", sql)
 }
 
 // serializeSQL returns DuckDB's JSON AST for the query, without executing it.
