@@ -260,9 +260,37 @@ type TypeDecl struct {
 	// Code is the errs code an unsupported type must fail with.
 	Code string `yaml:"code"`
 
-	// Columns are the destination column types that accept this key. Every one
-	// is exercised, and the cell is covered only when all of them pass.
-	Columns []string `yaml:"columns"`
+	// Columns are the destination column types that accept this key, each
+	// carrying what to write and what must come back. Every one is exercised,
+	// and the cell is covered only when all of them pass.
+	//
+	// The pair is the unit rather than the key. One Arrow key reaches several
+	// destinations that demand different content -- DuckDB's VARCHAR is the
+	// universal text carrier, and ClickHouse reparses text into UUID, Decimal
+	// and Enum -- so the value belongs here.
+	Columns []ColumnDecl `yaml:"columns"`
+}
+
+// ColumnDecl is one destination column type, and what the integration claims
+// about writing this Arrow key into it.
+type ColumnDecl struct {
+	// Type is the destination column type, as its DDL spells it.
+	Type string `yaml:"type"`
+
+	// Value overrides the key's canonical value. Empty means the canonical
+	// one. Only the utf8 row may set it: text is the only thing a destination
+	// reparses, and a value declared for any other key would be ignored.
+	Value string `yaml:"value"`
+
+	// Expect is what the destination must hold afterwards, as ReadBack renders
+	// it. Declared rather than recorded from a run: a table copied from the
+	// sink compares the sink to itself.
+	Expect string `yaml:"expect"`
+
+	// Instant marks a pair the timestamp claim must exercise with the host
+	// clock moved off UTC. It is how a text value bound for a temporal column
+	// -- #153's shape, which no Arrow key describes -- reaches that verdict.
+	Instant bool `yaml:"instant"`
 }
 
 // NullRule is what an integration does with a null, when the destination

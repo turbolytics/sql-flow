@@ -161,6 +161,19 @@ func LatticeArray(key string, null bool) (arrow.Array, error) {
 	return b.NewArray(), nil
 }
 
+// LatticeString builds a one-row utf8 array holding v. The caller releases it.
+//
+// It exists for the column entries that declare their own value. A UUID, a
+// Decimal or an Enum column reparses text, so the pair needs content the key's
+// canonical value cannot supply: the canonical utf8 value is the hostile
+// string type.string.fidelity needs, and no UUID column will take it.
+func LatticeString(v string) arrow.Array {
+	b := array.NewStringBuilder(memory.NewGoAllocator())
+	defer b.Release()
+	b.Append(v)
+	return b.NewArray()
+}
+
 // LatticeListWithNullElement builds a one-row list holding [value, null,
 // value]. The caller releases it.
 //

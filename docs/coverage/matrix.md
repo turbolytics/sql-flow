@@ -26,7 +26,7 @@ names every one of them.
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 23 |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 39 |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 40 |
 | `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 25 |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
 | `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 22 |
@@ -56,8 +56,8 @@ names every one of them.
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 79 |
-| `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 14 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 88 |
+| `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 15 |
 
 **36 features declared. 36 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
@@ -67,7 +67,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**31 invariants declared: 27 safety and 4 liveness. Of 130 (invariant, integration) cells: 51 proven, 51 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
+**31 invariants declared: 27 safety and 4 liveness. Of 130 (invariant, integration) cells: 52 proven, 50 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -199,7 +199,7 @@ drains. An invariant holds only if it holds on all four.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `type.roundtrip` | Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error. *(violated once: #147, #150, #151)* | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `type.null` | A null in every declared type reads back as declared. | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `type.timestamp.instant` | A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type. *(violated once: #153)* | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| `type.timestamp.instant` | A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type. *(violated once: #153)* | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `type.nested` | list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened. | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `type.string.fidelity` | Unicode, escapes and the empty string round-trip byte for byte. *(violated once: #149)* | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
 | `type.undeclared.fails_loud` | An Arrow type absent from the table fails the batch with a coded error. Never coerced silently. | ❌ missing | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing |

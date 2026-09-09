@@ -24,8 +24,20 @@ install-tools:
 	@echo "creating resultscache directory... '/tmp/sqlflow/resultscache'"
 	$(shell mkdir -p /tmp/sqlflow/resultscache)
 
+# The merge driver .gitattributes names for the generated coverage matrix.
+#
+# Git resolves a driver by name from local config, which is not something a
+# repository can ship, so this has to be configured per clone. `true` succeeds
+# and leaves the current branch's copy in place; coverage-check regenerates it
+# and fails if that copy is wrong, so the resolution is safe to automate and
+# the manual step buys nothing.
+.PHONY: git-merge-drivers
+git-merge-drivers:
+	git config merge.coverage-generated.name "keep ours; coverage-check regenerates"
+	git config merge.coverage-generated.driver true
+
 .PHONY: setup-dev
-setup-dev: install-tools
+setup-dev: install-tools git-merge-drivers
 
 # The Go checks and the image tests. There is no Python suite: the engine it
 # covered is gone, and what remains of the package is harness for the image
@@ -113,7 +125,11 @@ coverage-check: coverage-write
 	@# Last, because it is the least specific. A failing test changes the
 	@# matrix too, so checking staleness first reports "regenerate the file"
 	@# for a problem no regeneration fixes.
-	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md || { \
+	@# clickhouse-types.mdx is here too. It is what the ClickHouse integration
+	@# page publishes, and a generated file nothing diffs drifts back into a
+	@# hand-written one, which is the problem it was added to solve.
+	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md \
+		docs/coverage/clickhouse-types.mdx || { \
 		echo ""; \
 		echo "The coverage matrix is out of date."; \
 		echo "Run 'make coverage-matrix' and commit the result."; \
