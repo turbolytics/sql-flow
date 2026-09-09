@@ -1,78 +1,12 @@
-# List of SQL commands to execute before processing the pipeline.
-commands:
-  -
-    # Name of the command for reference.
-    name: <string>
-    # SQL statements to execute.
-    sql: <string>
-# Predefined SQL tables used in the pipeline.
-tables:
-  # List of tables with their SQL definitions and management configurations.
-  sql:
-    -
-      name: <string>
-      sql: <string>
-      manager:
-        tumbling_window:
-          collect_closed_windows_sql: <string>
-          delete_closed_windows_sql: <string>
-          poll_interval_seconds: <integer>
-        sink:
-          # Sink identifier.
-          type: kafka | noop | iceberg | console | sqlcommand | clickhouse
-          # Format settings (e.g., for Parquet).
-          format:
-            type: parquet
-          # Kafka-specific sink configuration.
-          kafka:
-            # List of Kafka brokers.
-            brokers:
-              - <array>
-            # Target Kafka topic.
-            topic: <string>
-          # SQL-command sink configuration.
-          sqlcommand:
-            sql: <string>
-            substitutions:
-              -
-                var: <string>
-                type: uuid4
-          # Iceberg-specific sink configuration.
-          iceberg:
-            catalog_name: <string>
-            table_name: <string>
-          # ClickHouse-specific sink configuration.
-          clickhouse:
-            dsn: <string>
-            table: <string>
-          # Console output sink configuration.
-          console:
-          # Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.
-          retry:
-            # Total attempts, including the first. 1 disables retrying.
-            max_attempts: <integer>
-            # Wait before the first retry. Doubles each attempt.
-            initial_backoff_ms: <integer>
-            # Ceiling on the backoff.
-            max_backoff_ms: <integer>
-            # Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on.
-            deadline_seconds: <integer>
-# List of User-Defined Functions (UDFs) to be used in SQL queries.
-udfs:
-  -
-    function_name: <string>
-    import_path: <string>
 # Main pipeline configuration.
 pipeline:
   # Name of the pipeline.
   name: <string>
   # Description of the pipeline.
   description: <string>
-  batch_size: <integer>
-  flush_interval_seconds: <integer>
   # Configuration for the data source.
   source:
-    type: kafka | websocket | webhook
+    type: kafka | webhook | websocket
     kafka:
       brokers:
         - <array>
@@ -83,8 +17,8 @@ pipeline:
       security_protocol: SASL_SSL | SSL | SASL_PLAINTEXT | PLAINTEXT
       ssl:
         ca_location: <string>
-        key_location: <string>
         certificate_location: <string>
+        key_location: <string>
         key_password: <string>
         endpoint_identification_algorithm: <string>
       sasl:
@@ -99,6 +33,8 @@ pipeline:
         header: <string>
         sig_key: <string>
         secret: <string>
+    error:
+      policy: <string>
   handler:
     type: handlers.InferredDiskBatch | handlers.InferredMemBatch | handlers.StructuredBatch
     sql: <string>
@@ -106,7 +42,7 @@ pipeline:
     table: <string>
   sink:
     # Sink identifier.
-    type: kafka | noop | iceberg | console | sqlcommand | clickhouse
+    type: clickhouse | console | iceberg | kafka | noop | sqlcommand
     # Format settings (e.g., for Parquet).
     format:
       type: parquet
@@ -117,6 +53,19 @@ pipeline:
         - <array>
       # Target Kafka topic.
       topic: <string>
+      security_protocol: <string>
+      ssl:
+        ca_location: <string>
+        certificate_location: <string>
+        key_location: <string>
+        key_password: <string>
+        endpoint_identification_algorithm: <string>
+      sasl:
+        mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
+        username: <string>
+        password: <string>
+    # Console output sink configuration.
+    console:
     # SQL-command sink configuration.
     sqlcommand:
       sql: <string>
@@ -132,9 +81,10 @@ pipeline:
     clickhouse:
       dsn: <string>
       table: <string>
-    # Console output sink configuration.
-    console:
-    # Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.
+    # Bounds how long this sink keeps trying a destination that is not
+    # answering. Omit to accept the defaults; set max_attempts to 1 to turn
+    # retrying off. The kafka sink ignores this: franz-go already retries a
+    # produce with its own backoff.
     retry:
       # Total attempts, including the first. 1 disables retrying.
       max_attempts: <integer>
@@ -142,16 +92,30 @@ pipeline:
       initial_backoff_ms: <integer>
       # Ceiling on the backoff.
       max_backoff_ms: <integer>
-      # Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on.
+      # Bounds the whole ladder, not one attempt. Keep it below
+      # pipeline.flush_interval_seconds: the retry runs inside the open state
+      # transaction, whose clock the window depends on.
       deadline_seconds: <integer>
+  # Messages accumulated before the handler runs. Larger batches trade
+  # latency for throughput.
+  batch_size: <integer>
+  # Longest a partial batch waits before it is invoked anyway.
+  flush_interval_seconds: <integer>
+  # Where the pipeline keeps its DuckDB state. Absent means in-memory, and
+  # state is lost on a crash.
+  state:
+    # File backing the pipeline's DuckDB database. Window state and Kafka
+    # offsets are stored here and committed together.
+    path: <string>
   # Global error handling strategy for the pipeline.
   on_error:
     # Defines how errors should be handled.
     policy: RAISE | IGNORE | DLQ
-    # Dead-letter queue configuration. Failed messages will be routed to this sink.
+    # Dead-letter queue configuration. Failed messages will be routed to this
+    # sink.
     dlq:
       # Sink identifier.
-      type: kafka | noop | iceberg | console | sqlcommand | clickhouse
+      type: clickhouse | console | iceberg | kafka | noop | sqlcommand
       # Format settings (e.g., for Parquet).
       format:
         type: parquet
@@ -162,6 +126,19 @@ pipeline:
           - <array>
         # Target Kafka topic.
         topic: <string>
+        security_protocol: <string>
+        ssl:
+          ca_location: <string>
+          certificate_location: <string>
+          key_location: <string>
+          key_password: <string>
+          endpoint_identification_algorithm: <string>
+        sasl:
+          mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
+          username: <string>
+          password: <string>
+      # Console output sink configuration.
+      console:
       # SQL-command sink configuration.
       sqlcommand:
         sql: <string>
@@ -177,9 +154,10 @@ pipeline:
       clickhouse:
         dsn: <string>
         table: <string>
-      # Console output sink configuration.
-      console:
-      # Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.
+      # Bounds how long this sink keeps trying a destination that is not
+      # answering. Omit to accept the defaults; set max_attempts to 1 to turn
+      # retrying off. The kafka sink ignores this: franz-go already retries a
+      # produce with its own backoff.
       retry:
         # Total attempts, including the first. 1 disables retrying.
         max_attempts: <integer>
@@ -187,9 +165,89 @@ pipeline:
         initial_backoff_ms: <integer>
         # Ceiling on the backoff.
         max_backoff_ms: <integer>
-        # Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on.
+        # Bounds the whole ladder, not one attempt. Keep it below
+        # pipeline.flush_interval_seconds: the retry runs inside the open state
+        # transaction, whose clock the window depends on.
         deadline_seconds: <integer>
-  # Where the pipeline keeps its DuckDB state. Absent means in-memory, and state is lost on a crash.
-  state:
-    # File backing the pipeline's DuckDB database. Window state and Kafka offsets are stored here and committed together.
-    path: <string>
+# Predefined SQL tables used in the pipeline.
+tables:
+  # List of tables with their SQL definitions and management configurations.
+  sql:
+    -
+      name: <string>
+      sql: <string>
+      manager:
+        tumbling_window:
+          collect_closed_windows_sql: <string>
+          delete_closed_windows_sql: <string>
+          # How often to collect closed windows. Optional; the manager applies its
+          # own default when this is absent or not positive.
+          poll_interval_seconds: <integer>
+        sink:
+          # Sink identifier.
+          type: clickhouse | console | iceberg | kafka | noop | sqlcommand
+          # Format settings (e.g., for Parquet).
+          format:
+            type: parquet
+          # Kafka-specific sink configuration.
+          kafka:
+            # List of Kafka brokers.
+            brokers:
+              - <array>
+            # Target Kafka topic.
+            topic: <string>
+            security_protocol: <string>
+            ssl:
+              ca_location: <string>
+              certificate_location: <string>
+              key_location: <string>
+              key_password: <string>
+              endpoint_identification_algorithm: <string>
+            sasl:
+              mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
+              username: <string>
+              password: <string>
+          # Console output sink configuration.
+          console:
+          # SQL-command sink configuration.
+          sqlcommand:
+            sql: <string>
+            substitutions:
+              -
+                var: <string>
+                type: uuid4
+          # Iceberg-specific sink configuration.
+          iceberg:
+            catalog_name: <string>
+            table_name: <string>
+          # ClickHouse-specific sink configuration.
+          clickhouse:
+            dsn: <string>
+            table: <string>
+          # Bounds how long this sink keeps trying a destination that is not
+          # answering. Omit to accept the defaults; set max_attempts to 1 to turn
+          # retrying off. The kafka sink ignores this: franz-go already retries a
+          # produce with its own backoff.
+          retry:
+            # Total attempts, including the first. 1 disables retrying.
+            max_attempts: <integer>
+            # Wait before the first retry. Doubles each attempt.
+            initial_backoff_ms: <integer>
+            # Ceiling on the backoff.
+            max_backoff_ms: <integer>
+            # Bounds the whole ladder, not one attempt. Keep it below
+            # pipeline.flush_interval_seconds: the retry runs inside the open state
+            # transaction, whose clock the window depends on.
+            deadline_seconds: <integer>
+# List of User-Defined Functions (UDFs) to be used in SQL queries.
+udfs:
+  -
+    function_name: <string>
+    import_path: <string>
+# List of SQL commands to execute before processing the pipeline.
+commands:
+  -
+    # Name of the command for reference.
+    name: <string>
+    # SQL statements to execute.
+    sql: <string>

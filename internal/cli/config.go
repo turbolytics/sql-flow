@@ -117,8 +117,14 @@ func processProperties(properties []schemaProperty, level int) []string {
 	for _, prop := range properties {
 		value := prop.Node
 
-		if value.Description != "" {
-			out = append(out, fmt.Sprintf("%s# %s", indent, value.Description))
+		// Every line gets its own marker. A description now comes from a Go
+		// doc comment and can run to several lines; prefixing only the first
+		// leaves the rest as bare text, which is not valid YAML.
+		for _, line := range strings.Split(value.Description, "\n") {
+			if line == "" {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%s# %s", indent, line))
 		}
 
 		placeholder := value.placeholder()

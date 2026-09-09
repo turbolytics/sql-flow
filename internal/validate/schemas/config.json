@@ -1,262 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
+  "$id": "https://turbolytics.io/schemas/config.json",
   "properties": {
-    "commands": {
-      "type": "array",
-      "description": "List of SQL commands to execute before processing the pipeline.",
-      "items": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Name of the command for reference."
-          },
-          "sql": {
-            "type": "string",
-            "description": "SQL statements to execute."
-          }
-        },
-        "required": [
-          "name",
-          "sql"
-        ]
-      }
-    },
-    "tables": {
-      "type": "object",
-      "description": "Predefined SQL tables used in the pipeline.",
-      "properties": {
-        "sql": {
-          "type": "array",
-          "description": "List of tables with their SQL definitions and management configurations.",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "sql": {
-                "type": "string"
-              },
-              "manager": {
-                "type": "object",
-                "properties": {
-                  "tumbling_window": {
-                    "type": "object",
-                    "properties": {
-                      "collect_closed_windows_sql": {
-                        "type": "string"
-                      },
-                      "delete_closed_windows_sql": {
-                        "type": "string"
-                      },
-                      "poll_interval_seconds": {
-                        "type": "integer",
-                        "default": 10
-                      }
-                    },
-                    "required": [
-                      "collect_closed_windows_sql",
-                      "delete_closed_windows_sql"
-                    ]
-                  },
-                  "sink": {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "kafka",
-                          "noop",
-                          "iceberg",
-                          "console",
-                          "sqlcommand",
-                          "clickhouse"
-                        ],
-                        "description": "Sink identifier."
-                      },
-                      "format": {
-                        "type": "object",
-                        "description": "Format settings (e.g., for Parquet).",
-                        "properties": {
-                          "type": {
-                            "type": "string",
-                            "enum": [
-                              "parquet"
-                            ]
-                          }
-                        },
-                        "required": [
-                          "type"
-                        ]
-                      },
-                      "kafka": {
-                        "type": "object",
-                        "description": "Kafka-specific sink configuration.",
-                        "properties": {
-                          "brokers": {
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "format": "hostname"
-                            },
-                            "description": "List of Kafka brokers."
-                          },
-                          "topic": {
-                            "type": "string",
-                            "description": "Target Kafka topic."
-                          }
-                        },
-                        "required": [
-                          "brokers",
-                          "topic"
-                        ]
-                      },
-                      "sqlcommand": {
-                        "type": "object",
-                        "description": "SQL-command sink configuration.",
-                        "properties": {
-                          "sql": {
-                            "type": "string"
-                          },
-                          "substitutions": {
-                            "type": "array",
-                            "items": {
-                              "type": "object",
-                              "properties": {
-                                "var": {
-                                  "type": "string"
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "enum": [
-                                    "uuid4"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "var",
-                                "type"
-                              ]
-                            }
-                          }
-                        },
-                        "required": [
-                          "sql"
-                        ]
-                      },
-                      "iceberg": {
-                        "type": "object",
-                        "description": "Iceberg-specific sink configuration.",
-                        "properties": {
-                          "catalog_name": {
-                            "type": "string"
-                          },
-                          "table_name": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "catalog_name",
-                          "table_name"
-                        ]
-                      },
-                      "clickhouse": {
-                        "type": "object",
-                        "description": "ClickHouse-specific sink configuration.",
-                        "properties": {
-                          "dsn": {
-                            "type": "string"
-                          },
-                          "table": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "dsn",
-                          "table"
-                        ]
-                      },
-                      "console": {
-                        "type": "object",
-                        "description": "Console output sink configuration.",
-                        "properties": {}
-                      },
-                      "retry": {
-                        "type": "object",
-                        "description": "Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.",
-                        "properties": {
-                          "max_attempts": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "default": 4,
-                            "description": "Total attempts, including the first. 1 disables retrying."
-                          },
-                          "initial_backoff_ms": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "default": 100,
-                            "description": "Wait before the first retry. Doubles each attempt."
-                          },
-                          "max_backoff_ms": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "default": 2000,
-                            "description": "Ceiling on the backoff."
-                          },
-                          "deadline_seconds": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "default": 10,
-                            "description": "Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on."
-                          }
-                        },
-                        "additionalProperties": false
-                      }
-                    },
-                    "required": [
-                      "type"
-                    ]
-                  }
-                },
-                "required": [
-                  "tumbling_window",
-                  "sink"
-                ]
-              }
-            },
-            "required": [
-              "name",
-              "sql",
-              "manager"
-            ]
-          }
-        }
-      }
-    },
-    "udfs": {
-      "type": "array",
-      "description": "List of User-Defined Functions (UDFs) to be used in SQL queries.",
-      "items": {
-        "type": "object",
-        "properties": {
-          "function_name": {
-            "type": "string"
-          },
-          "import_path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "function_name",
-          "import_path"
-        ]
-      }
-    },
     "pipeline": {
-      "type": "object",
-      "description": "Main pipeline configuration.",
       "properties": {
         "name": {
           "type": "string",
@@ -266,34 +12,23 @@
           "type": "string",
           "description": "Description of the pipeline."
         },
-        "batch_size": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "flush_interval_seconds": {
-          "type": "integer",
-          "minimum": 30
-        },
         "source": {
-          "type": "object",
-          "description": "Configuration for the data source.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "kafka",
-                "websocket",
-                "webhook"
+                "webhook",
+                "websocket"
               ]
             },
             "kafka": {
-              "type": "object",
               "properties": {
                 "brokers": {
-                  "type": "array",
                   "items": {
                     "type": "string"
-                  }
+                  },
+                  "type": "array"
                 },
                 "group_id": {
                   "type": "string"
@@ -306,10 +41,10 @@
                   ]
                 },
                 "topics": {
-                  "type": "array",
                   "items": {
                     "type": "string"
-                  }
+                  },
+                  "type": "array"
                 },
                 "security_protocol": {
                   "type": "string",
@@ -321,15 +56,14 @@
                   ]
                 },
                 "ssl": {
-                  "type": "object",
                   "properties": {
                     "ca_location": {
                       "type": "string"
                     },
-                    "key_location": {
+                    "certificate_location": {
                       "type": "string"
                     },
-                    "certificate_location": {
+                    "key_location": {
                       "type": "string"
                     },
                     "key_password": {
@@ -338,10 +72,11 @@
                     "endpoint_identification_algorithm": {
                       "type": "string"
                     }
-                  }
+                  },
+                  "additionalProperties": false,
+                  "type": "object"
                 },
                 "sasl": {
-                  "type": "object",
                   "properties": {
                     "mechanism": {
                       "type": "string",
@@ -359,6 +94,8 @@
                       "type": "string"
                     }
                   },
+                  "additionalProperties": false,
+                  "type": "object",
                   "required": [
                     "mechanism",
                     "username",
@@ -366,6 +103,8 @@
                   ]
                 }
               },
+              "additionalProperties": false,
+              "type": "object",
               "required": [
                 "brokers",
                 "group_id",
@@ -374,19 +113,18 @@
               ]
             },
             "websocket": {
-              "type": "object",
               "properties": {
                 "uri": {
-                  "type": "string",
-                  "format": "uri"
+                  "type": "string"
                 }
               },
+              "additionalProperties": false,
+              "type": "object",
               "required": [
                 "uri"
               ]
             },
             "webhook": {
-              "type": "object",
               "properties": {
                 "signature_type": {
                   "type": "string",
@@ -395,7 +133,6 @@
                   ]
                 },
                 "hmac": {
-                  "type": "object",
                   "properties": {
                     "header": {
                       "type": "string"
@@ -407,21 +144,39 @@
                       "type": "string"
                     }
                   },
+                  "additionalProperties": false,
+                  "type": "object",
                   "required": [
                     "header",
                     "sig_key",
                     "secret"
                   ]
                 }
-              }
+              },
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "error": {
+              "properties": {
+                "policy": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "policy"
+              ]
             }
           },
+          "additionalProperties": false,
+          "type": "object",
           "required": [
             "type"
-          ]
+          ],
+          "description": "Configuration for the data source."
         },
         "handler": {
-          "type": "object",
           "properties": {
             "type": {
               "type": "string",
@@ -441,29 +196,28 @@
               "type": "string"
             }
           },
+          "additionalProperties": false,
+          "type": "object",
           "required": [
             "type",
             "sql"
           ]
         },
         "sink": {
-          "type": "object",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
+                "clickhouse",
+                "console",
+                "iceberg",
                 "kafka",
                 "noop",
-                "iceberg",
-                "console",
-                "sqlcommand",
-                "clickhouse"
+                "sqlcommand"
               ],
               "description": "Sink identifier."
             },
             "format": {
-              "type": "object",
-              "description": "Format settings (e.g., for Parquet).",
               "properties": {
                 "type": {
                   "type": "string",
@@ -472,43 +226,98 @@
                   ]
                 }
               },
+              "additionalProperties": false,
+              "type": "object",
               "required": [
                 "type"
-              ]
+              ],
+              "description": "Format settings (e.g., for Parquet)."
             },
             "kafka": {
-              "type": "object",
-              "description": "Kafka-specific sink configuration.",
               "properties": {
                 "brokers": {
-                  "type": "array",
                   "items": {
-                    "type": "string",
-                    "format": "hostname"
+                    "type": "string"
                   },
+                  "type": "array",
                   "description": "List of Kafka brokers."
                 },
                 "topic": {
                   "type": "string",
                   "description": "Target Kafka topic."
+                },
+                "security_protocol": {
+                  "type": "string"
+                },
+                "ssl": {
+                  "properties": {
+                    "ca_location": {
+                      "type": "string"
+                    },
+                    "certificate_location": {
+                      "type": "string"
+                    },
+                    "key_location": {
+                      "type": "string"
+                    },
+                    "key_password": {
+                      "type": "string"
+                    },
+                    "endpoint_identification_algorithm": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object"
+                },
+                "sasl": {
+                  "properties": {
+                    "mechanism": {
+                      "type": "string",
+                      "enum": [
+                        "PLAIN",
+                        "SCRAM-SHA-256",
+                        "SCRAM-SHA-512",
+                        "GSSAPI"
+                      ]
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "password": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "mechanism",
+                    "username",
+                    "password"
+                  ]
                 }
               },
+              "additionalProperties": false,
+              "type": "object",
               "required": [
                 "brokers",
                 "topic"
-              ]
+              ],
+              "description": "Kafka-specific sink configuration."
+            },
+            "console": {
+              "properties": {},
+              "additionalProperties": false,
+              "type": "object",
+              "description": "Console output sink configuration."
             },
             "sqlcommand": {
-              "type": "object",
-              "description": "SQL-command sink configuration.",
               "properties": {
                 "sql": {
                   "type": "string"
                 },
                 "substitutions": {
-                  "type": "array",
                   "items": {
-                    "type": "object",
                     "properties": {
                       "var": {
                         "type": "string"
@@ -520,20 +329,24 @@
                         ]
                       }
                     },
+                    "additionalProperties": false,
+                    "type": "object",
                     "required": [
                       "var",
                       "type"
                     ]
-                  }
+                  },
+                  "type": "array"
                 }
               },
+              "additionalProperties": false,
+              "type": "object",
               "required": [
                 "sql"
-              ]
+              ],
+              "description": "SQL-command sink configuration."
             },
             "iceberg": {
-              "type": "object",
-              "description": "Iceberg-specific sink configuration.",
               "properties": {
                 "catalog_name": {
                   "type": "string"
@@ -542,14 +355,15 @@
                   "type": "string"
                 }
               },
+              "additionalProperties": false,
+              "type": "object",
               "required": [
                 "catalog_name",
                 "table_name"
-              ]
+              ],
+              "description": "Iceberg-specific sink configuration."
             },
             "clickhouse": {
-              "type": "object",
-              "description": "ClickHouse-specific sink configuration.",
               "properties": {
                 "dsn": {
                   "type": "string"
@@ -558,55 +372,67 @@
                   "type": "string"
                 }
               },
+              "additionalProperties": false,
+              "type": "object",
               "required": [
                 "dsn",
                 "table"
-              ]
-            },
-            "console": {
-              "type": "object",
-              "description": "Console output sink configuration.",
-              "properties": {}
+              ],
+              "description": "ClickHouse-specific sink configuration."
             },
             "retry": {
-              "type": "object",
-              "description": "Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.",
               "properties": {
                 "max_attempts": {
                   "type": "integer",
-                  "minimum": 1,
-                  "default": 4,
                   "description": "Total attempts, including the first. 1 disables retrying."
                 },
                 "initial_backoff_ms": {
                   "type": "integer",
-                  "minimum": 0,
-                  "default": 100,
                   "description": "Wait before the first retry. Doubles each attempt."
                 },
                 "max_backoff_ms": {
                   "type": "integer",
-                  "minimum": 0,
-                  "default": 2000,
                   "description": "Ceiling on the backoff."
                 },
                 "deadline_seconds": {
                   "type": "integer",
-                  "minimum": 0,
-                  "default": 10,
-                  "description": "Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on."
+                  "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "type": "object",
+              "description": "Bounds how long this sink keeps trying a destination that is not\nanswering. Omit to accept the defaults; set max_attempts to 1 to turn\nretrying off. The kafka sink ignores this: franz-go already retries a\nproduce with its own backoff."
             }
           },
+          "additionalProperties": false,
+          "type": "object",
           "required": [
             "type"
           ]
         },
-        "on_error": {
+        "batch_size": {
+          "type": "integer",
+          "description": "Messages accumulated before the handler runs. Larger batches trade\nlatency for throughput."
+        },
+        "flush_interval_seconds": {
+          "type": "integer",
+          "description": "Longest a partial batch waits before it is invoked anyway."
+        },
+        "state": {
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "File backing the pipeline's DuckDB database. Window state and Kafka\noffsets are stored here and committed together."
+            }
+          },
+          "additionalProperties": false,
           "type": "object",
-          "description": "Global error handling strategy for the pipeline.",
+          "required": [
+            "path"
+          ],
+          "description": "Where the pipeline keeps its DuckDB state. Absent means in-memory, and\nstate is lost on a crash."
+        },
+        "on_error": {
           "properties": {
             "policy": {
               "type": "string",
@@ -615,28 +441,23 @@
                 "IGNORE",
                 "DLQ"
               ],
-              "default": "raise",
               "description": "Defines how errors should be handled."
             },
             "dlq": {
-              "type": "object",
-              "description": "Dead-letter queue configuration. Failed messages will be routed to this sink.",
               "properties": {
                 "type": {
                   "type": "string",
                   "enum": [
+                    "clickhouse",
+                    "console",
+                    "iceberg",
                     "kafka",
                     "noop",
-                    "iceberg",
-                    "console",
-                    "sqlcommand",
-                    "clickhouse"
+                    "sqlcommand"
                   ],
                   "description": "Sink identifier."
                 },
                 "format": {
-                  "type": "object",
-                  "description": "Format settings (e.g., for Parquet).",
                   "properties": {
                     "type": {
                       "type": "string",
@@ -645,43 +466,98 @@
                       ]
                     }
                   },
+                  "additionalProperties": false,
+                  "type": "object",
                   "required": [
                     "type"
-                  ]
+                  ],
+                  "description": "Format settings (e.g., for Parquet)."
                 },
                 "kafka": {
-                  "type": "object",
-                  "description": "Kafka-specific sink configuration.",
                   "properties": {
                     "brokers": {
-                      "type": "array",
                       "items": {
-                        "type": "string",
-                        "format": "hostname"
+                        "type": "string"
                       },
+                      "type": "array",
                       "description": "List of Kafka brokers."
                     },
                     "topic": {
                       "type": "string",
                       "description": "Target Kafka topic."
+                    },
+                    "security_protocol": {
+                      "type": "string"
+                    },
+                    "ssl": {
+                      "properties": {
+                        "ca_location": {
+                          "type": "string"
+                        },
+                        "certificate_location": {
+                          "type": "string"
+                        },
+                        "key_location": {
+                          "type": "string"
+                        },
+                        "key_password": {
+                          "type": "string"
+                        },
+                        "endpoint_identification_algorithm": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "type": "object"
+                    },
+                    "sasl": {
+                      "properties": {
+                        "mechanism": {
+                          "type": "string",
+                          "enum": [
+                            "PLAIN",
+                            "SCRAM-SHA-256",
+                            "SCRAM-SHA-512",
+                            "GSSAPI"
+                          ]
+                        },
+                        "username": {
+                          "type": "string"
+                        },
+                        "password": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": [
+                        "mechanism",
+                        "username",
+                        "password"
+                      ]
                     }
                   },
+                  "additionalProperties": false,
+                  "type": "object",
                   "required": [
                     "brokers",
                     "topic"
-                  ]
+                  ],
+                  "description": "Kafka-specific sink configuration."
+                },
+                "console": {
+                  "properties": {},
+                  "additionalProperties": false,
+                  "type": "object",
+                  "description": "Console output sink configuration."
                 },
                 "sqlcommand": {
-                  "type": "object",
-                  "description": "SQL-command sink configuration.",
                   "properties": {
                     "sql": {
                       "type": "string"
                     },
                     "substitutions": {
-                      "type": "array",
                       "items": {
-                        "type": "object",
                         "properties": {
                           "var": {
                             "type": "string"
@@ -693,20 +569,24 @@
                             ]
                           }
                         },
+                        "additionalProperties": false,
+                        "type": "object",
                         "required": [
                           "var",
                           "type"
                         ]
-                      }
+                      },
+                      "type": "array"
                     }
                   },
+                  "additionalProperties": false,
+                  "type": "object",
                   "required": [
                     "sql"
-                  ]
+                  ],
+                  "description": "SQL-command sink configuration."
                 },
                 "iceberg": {
-                  "type": "object",
-                  "description": "Iceberg-specific sink configuration.",
                   "properties": {
                     "catalog_name": {
                       "type": "string"
@@ -715,14 +595,15 @@
                       "type": "string"
                     }
                   },
+                  "additionalProperties": false,
+                  "type": "object",
                   "required": [
                     "catalog_name",
                     "table_name"
-                  ]
+                  ],
+                  "description": "Iceberg-specific sink configuration."
                 },
                 "clickhouse": {
-                  "type": "object",
-                  "description": "ClickHouse-specific sink configuration.",
                   "properties": {
                     "dsn": {
                       "type": "string"
@@ -731,83 +612,380 @@
                       "type": "string"
                     }
                   },
+                  "additionalProperties": false,
+                  "type": "object",
                   "required": [
                     "dsn",
                     "table"
-                  ]
-                },
-                "console": {
-                  "type": "object",
-                  "description": "Console output sink configuration.",
-                  "properties": {}
+                  ],
+                  "description": "ClickHouse-specific sink configuration."
                 },
                 "retry": {
-                  "type": "object",
-                  "description": "Bounds how long this sink keeps trying a destination that is not answering. Omit to accept the defaults; set max_attempts to 1 to turn retrying off. The kafka sink ignores this: franz-go already retries a produce with its own backoff.",
                   "properties": {
                     "max_attempts": {
                       "type": "integer",
-                      "minimum": 1,
-                      "default": 4,
                       "description": "Total attempts, including the first. 1 disables retrying."
                     },
                     "initial_backoff_ms": {
                       "type": "integer",
-                      "minimum": 0,
-                      "default": 100,
                       "description": "Wait before the first retry. Doubles each attempt."
                     },
                     "max_backoff_ms": {
                       "type": "integer",
-                      "minimum": 0,
-                      "default": 2000,
                       "description": "Ceiling on the backoff."
                     },
                     "deadline_seconds": {
                       "type": "integer",
-                      "minimum": 0,
-                      "default": 10,
-                      "description": "Bounds the whole ladder, not one attempt. Keep it below pipeline.flush_interval_seconds: the retry runs inside the open state transaction, whose clock the window depends on."
+                      "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
                     }
                   },
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "type": "object",
+                  "description": "Bounds how long this sink keeps trying a destination that is not\nanswering. Omit to accept the defaults; set max_attempts to 1 to turn\nretrying off. The kafka sink ignores this: franz-go already retries a\nproduce with its own backoff."
                 }
               },
+              "additionalProperties": false,
+              "type": "object",
               "required": [
                 "type"
-              ]
+              ],
+              "description": "Dead-letter queue configuration. Failed messages will be routed to this\nsink."
             }
           },
+          "additionalProperties": false,
+          "type": "object",
           "required": [
             "policy"
-          ]
-        },
-        "state": {
-          "type": "object",
-          "description": "Where the pipeline keeps its DuckDB state. Absent means in-memory, and state is lost on a crash.",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "File backing the pipeline's DuckDB database. Window state and Kafka offsets are stored here and committed together."
-            }
-          },
-          "required": [
-            "path"
           ],
-          "additionalProperties": false
+          "description": "Global error handling strategy for the pipeline."
         }
       },
+      "additionalProperties": false,
+      "type": "object",
       "required": [
-        "batch_size",
         "source",
         "handler",
         "sink"
       ],
-      "additionalProperties": false
+      "description": "Main pipeline configuration."
+    },
+    "tables": {
+      "properties": {
+        "sql": {
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "sql": {
+                "type": "string"
+              },
+              "manager": {
+                "properties": {
+                  "tumbling_window": {
+                    "properties": {
+                      "collect_closed_windows_sql": {
+                        "type": "string"
+                      },
+                      "delete_closed_windows_sql": {
+                        "type": "string"
+                      },
+                      "poll_interval_seconds": {
+                        "type": "integer",
+                        "description": "How often to collect closed windows. Optional; the manager applies its\nown default when this is absent or not positive."
+                      }
+                    },
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "collect_closed_windows_sql",
+                      "delete_closed_windows_sql"
+                    ]
+                  },
+                  "sink": {
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "clickhouse",
+                          "console",
+                          "iceberg",
+                          "kafka",
+                          "noop",
+                          "sqlcommand"
+                        ],
+                        "description": "Sink identifier."
+                      },
+                      "format": {
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "parquet"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "type"
+                        ],
+                        "description": "Format settings (e.g., for Parquet)."
+                      },
+                      "kafka": {
+                        "properties": {
+                          "brokers": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array",
+                            "description": "List of Kafka brokers."
+                          },
+                          "topic": {
+                            "type": "string",
+                            "description": "Target Kafka topic."
+                          },
+                          "security_protocol": {
+                            "type": "string"
+                          },
+                          "ssl": {
+                            "properties": {
+                              "ca_location": {
+                                "type": "string"
+                              },
+                              "certificate_location": {
+                                "type": "string"
+                              },
+                              "key_location": {
+                                "type": "string"
+                              },
+                              "key_password": {
+                                "type": "string"
+                              },
+                              "endpoint_identification_algorithm": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "type": "object"
+                          },
+                          "sasl": {
+                            "properties": {
+                              "mechanism": {
+                                "type": "string",
+                                "enum": [
+                                  "PLAIN",
+                                  "SCRAM-SHA-256",
+                                  "SCRAM-SHA-512",
+                                  "GSSAPI"
+                                ]
+                              },
+                              "username": {
+                                "type": "string"
+                              },
+                              "password": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "type": "object",
+                            "required": [
+                              "mechanism",
+                              "username",
+                              "password"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "brokers",
+                          "topic"
+                        ],
+                        "description": "Kafka-specific sink configuration."
+                      },
+                      "console": {
+                        "properties": {},
+                        "additionalProperties": false,
+                        "type": "object",
+                        "description": "Console output sink configuration."
+                      },
+                      "sqlcommand": {
+                        "properties": {
+                          "sql": {
+                            "type": "string"
+                          },
+                          "substitutions": {
+                            "items": {
+                              "properties": {
+                                "var": {
+                                  "type": "string"
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "uuid4"
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "var",
+                                "type"
+                              ]
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "sql"
+                        ],
+                        "description": "SQL-command sink configuration."
+                      },
+                      "iceberg": {
+                        "properties": {
+                          "catalog_name": {
+                            "type": "string"
+                          },
+                          "table_name": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "catalog_name",
+                          "table_name"
+                        ],
+                        "description": "Iceberg-specific sink configuration."
+                      },
+                      "clickhouse": {
+                        "properties": {
+                          "dsn": {
+                            "type": "string"
+                          },
+                          "table": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "dsn",
+                          "table"
+                        ],
+                        "description": "ClickHouse-specific sink configuration."
+                      },
+                      "retry": {
+                        "properties": {
+                          "max_attempts": {
+                            "type": "integer",
+                            "description": "Total attempts, including the first. 1 disables retrying."
+                          },
+                          "initial_backoff_ms": {
+                            "type": "integer",
+                            "description": "Wait before the first retry. Doubles each attempt."
+                          },
+                          "max_backoff_ms": {
+                            "type": "integer",
+                            "description": "Ceiling on the backoff."
+                          },
+                          "deadline_seconds": {
+                            "type": "integer",
+                            "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
+                          }
+                        },
+                        "additionalProperties": false,
+                        "type": "object",
+                        "description": "Bounds how long this sink keeps trying a destination that is not\nanswering. Omit to accept the defaults; set max_attempts to 1 to turn\nretrying off. The kafka sink ignores this: franz-go already retries a\nproduce with its own backoff."
+                      }
+                    },
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "tumbling_window",
+                  "sink"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "name",
+              "sql"
+            ],
+            "description": "SQL Tables"
+          },
+          "type": "array",
+          "description": "List of tables with their SQL definitions and management configurations."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "sql"
+      ],
+      "description": "Predefined SQL tables used in the pipeline."
+    },
+    "udfs": {
+      "items": {
+        "properties": {
+          "function_name": {
+            "type": "string"
+          },
+          "import_path": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "function_name",
+          "import_path"
+        ],
+        "description": "UDF registers a user-defined function the handler SQL can call."
+      },
+      "type": "array",
+      "description": "List of User-Defined Functions (UDFs) to be used in SQL queries."
+    },
+    "commands": {
+      "items": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the command for reference."
+          },
+          "sql": {
+            "type": "string",
+            "description": "SQL statements to execute."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "sql"
+        ],
+        "description": "SQLCommand is one statement run at startup, before any table is created."
+      },
+      "type": "array",
+      "description": "List of SQL commands to execute before processing the pipeline."
     }
   },
+  "additionalProperties": false,
+  "type": "object",
   "required": [
     "pipeline"
   ],
-  "additionalProperties": false
+  "description": "Conf is a whole pipeline file."
 }

@@ -79,6 +79,18 @@ coverage-matrix: sqlflow-image
 		$(PY) pytest tests/release -q
 	@$(MAKE) --no-print-directory coverage-write
 
+# Regenerates the config JSON Schema from the Go types.
+#
+# The schema is an artifact, not a source file: internal/config is the config
+# format, and this reflects it. A golden test fails when the committed file is
+# stale, the same way codes.golden guards the error registry.
+#
+# Run this after changing a config struct, its yaml tags, or its doc comments.
+.PHONY: schema
+schema:
+	UPDATE_GOLDEN=1 go test ./internal/schema/ -run TestConfigSchema_CommittedFileMatchesTheTypes
+	@echo "regenerated internal/validate/schemas/config.json"
+
 # Renders the matrix from reports that already exist. Runs no tests.
 .PHONY: coverage-write
 coverage-write:
