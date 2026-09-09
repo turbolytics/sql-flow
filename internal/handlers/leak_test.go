@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 )
 
 // residentAnonBytes is the process's anonymous resident memory. That is the
@@ -76,6 +77,7 @@ func TestInferredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("soak-shaped test, skipped under -short")
 	}
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, closeConn := newADBCConn(t)
 	defer closeConn()
 
@@ -135,6 +137,7 @@ func TestInferredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
 // leak above, because those buffers were DuckDB's, not the allocator's. It is
 // here so the other half of the refcount contract is enforced too.
 func TestInferredInvoke_ReleasesIngestRecord(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
 	conn, closeConn := newADBCConn(t)
 	defer closeConn()
 
