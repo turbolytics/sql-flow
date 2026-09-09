@@ -61,6 +61,17 @@ invariants:
     requires: []
     violated_once: ["#221"]
 
+  - id: sink.rows.counted_on_delivery
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      sink_rows_written counts a row once, when a Flush acknowledged it. A
+      failed flush counts nothing; the retry that delivers those rows counts
+      them.
+    verified_by: harness
+    requires: []
+
   - id: sink.flush.preserves_order
     family: resilience
     class: safety

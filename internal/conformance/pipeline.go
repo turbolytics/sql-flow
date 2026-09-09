@@ -29,6 +29,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Trigger is what makes the consume loop process a batch.
@@ -479,10 +480,11 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	rec := &Recorder{failOffsets: f.offsets}
 	src := &recordingSource{rec: rec}
 
-	sink := &recordingSink{rec: rec}
+	var inner core.Sink
 	if s.NewSink != nil {
-		sink.inner = s.NewSink(t)
+		inner = s.NewSink(t)
 	}
+	sink := newRecordingSink(rec, inner, nil)
 	// Break the destination where there is one, so the flush fails the way it
 	// would in production. Only a subject with nothing to break needs the
 	// harness to fake it.
@@ -539,7 +541,10 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 		interval = time.Hour
 	}
 
-	tb := core.NewTurbine(src, &passthroughHandler{}, sink, batchSize, interval,
+	// sink.counted, not sink: the pipeline must drive the same wrapper a real
+	// deployment gets, or sink.rows.counted_on_delivery is asserted against a
+	// sink that counts nothing.
+	tb := core.NewTurbine(src, &passthroughHandler{}, sink.counted, batchSize, interval,
 		&sync.Mutex{}, core.PipelineErrorPolicies{}, s.Options(rec)...)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -733,9 +738,25 @@ type recordingSink struct {
 	inner core.Sink
 	fail  bool
 
+	// counted is this sink wrapped in the row counters, and it is what the
+	// pipeline is given.
+	counted core.Sink
+
 	mu      sync.Mutex
 	rows    int64
 	flushes int
+}
+
+// newRecordingSink builds the sink the harness hands the pipeline.
+//
+// The row counters are applied here rather than left to sinks.New, which this
+// path never reaches: subjects construct their sinks directly. Without them,
+// sink.rows.counted_on_delivery would assert against an uninstrumented sink
+// and pass while proving nothing.
+func newRecordingSink(rec *Recorder, inner core.Sink, mp metric.MeterProvider) *recordingSink {
+	s := &recordingSink{rec: rec, inner: inner}
+	s.counted = core.NewCountingSink(s, mp, "conformance", "pipeline")
+	return s
 }
 
 func (s *recordingSink) WriteTable(ctx context.Context, batch arrow.Table) error {

@@ -688,7 +688,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 	for _, v := range sinkVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 9, len(out))
+	assert.Equal(t, 10, len(out))
 	return out
 }
 
@@ -878,4 +878,23 @@ func TestToolingConformancePipelines_JudgeOneLivenessClaim(t *testing.T) {
 
 	assert.Equal(t, "", vs[flushEventually].failure)
 	assert.Equal(t, "", vs[flushEventually].skipped)
+}
+
+// TestHarnessSinkCarriesRowCounters guards why sink.rows.counted_on_delivery
+// is worth declaring at all.
+//
+// Subjects build their sinks directly -- NewIcebergSink and friends -- and the
+// harness wraps that in recordingSink before handing it to the pipeline.
+// Nothing in that path passes through sinks.New, where the counters live. If
+// the harness does not apply them itself, the invariant asserts against an
+// uninstrumented sink and passes while proving nothing.
+func TestHarnessSinkCarriesRowCounters(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	s := newRecordingSink(&Recorder{}, nil, nil)
+
+	// The counted wrapper is what the pipeline is handed, not the bare
+	// recordingSink.
+	assert.That(t, s.counted != nil)
+	assert.That(t, s.counted != core.Sink(s))
 }
