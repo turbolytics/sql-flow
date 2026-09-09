@@ -108,8 +108,6 @@ func (s *recordingSink) Flush(ctx context.Context) error {
 	return nil
 }
 
-func (s *recordingSink) Batch() (arrow.Table, error) { return nil, nil }
-
 func (s *recordingSink) counts() (int64, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

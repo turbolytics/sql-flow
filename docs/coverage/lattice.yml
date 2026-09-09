@@ -1,0 +1,257 @@
+# Every Arrow type DuckDB can hand a sink, and nothing else.
+#
+# Measured on 2026-09-08 through internal/duckdb.Open -- the engine's own ADBC
+# connection -- by casting NULL to each SQL type and reading the Arrow schema
+# back. pyarrow is a different binding that prints different names, and an
+# earlier draft keyed on its spellings: `string` for `utf8`, `double` for
+# `float64`, `decimal128(38, 0)` for `decimal(38, 0)`. Every key in it was
+# wrong, and nothing would have caught that until a row silently matched
+# nothing.
+#
+# The set is closed. A type key an integration declares that is not here is a
+# typo, and a typo must not reach the matrix as a missing cell. A key here
+# that an integration does not declare is a gap, and reporting that gap is why
+# this file exists: nothing written down means nothing can be missing, which
+# is how Iceberg shipped for months with a test that skipped and printed "ok".
+#
+# `key` is conformance.CanonicalKey's output, not DataType.String(). See
+# internal/conformance/lattice.go for why those differ.
+#
+# `duckdb` lists the SQL types a user casts to in handler SQL. The rendered
+# integration page is keyed by these rather than by the Arrow key, because a
+# user writes a CAST and never sees an Arrow type.
+#
+# `depth` is 1 for a scalar and 2 for a container. Depth is bounded by the
+# code's recursion, not by the type space: a sink nests through one pair of
+# functions, so depth 4 re-runs what depth 3 already ran.
+
+lattice:
+  # --- Booleans and integers -----------------------------------------------
+  - key: bool
+    duckdb: [BOOLEAN]
+    depth: 1
+
+  - key: int8
+    duckdb: [TINYINT]
+    depth: 1
+
+  - key: int16
+    duckdb: [SMALLINT]
+    depth: 1
+
+  - key: int32
+    duckdb: [INTEGER]
+    depth: 1
+
+  - key: int64
+    duckdb: [BIGINT]
+    depth: 1
+
+  - key: uint8
+    duckdb: [UTINYINT]
+    depth: 1
+
+  - key: uint16
+    duckdb: [USMALLINT]
+    depth: 1
+
+  - key: uint32
+    duckdb: [UINTEGER]
+    depth: 1
+
+  - key: uint64
+    duckdb: [UBIGINT]
+    depth: 1
+
+  # --- Floating point and decimals -----------------------------------------
+  - key: float32
+    duckdb: [REAL]
+    depth: 1
+
+  - key: float64
+    duckdb: [DOUBLE]
+    depth: 1
+
+  # HUGEINT is here and not with the integers. DuckDB promotes integer
+  # overflow to HUGEINT, so a user reaches this key without asking for it.
+  - key: "decimal(*, *)"
+    duckdb: ["DECIMAL(p, s)", HUGEINT, UHUGEINT]
+    depth: 1
+
+  # --- Bytes ---------------------------------------------------------------
+  - key: utf8
+    duckdb: [VARCHAR, UUID, JSON]
+    depth: 1
+
+  - key: binary
+    duckdb: [BLOB, BIT, VARINT]
+    depth: 1
+
+  # --- Dates and times -----------------------------------------------------
+  - key: date32
+    duckdb: [DATE]
+    depth: 1
+
+  # TIMETZ is here and under no zoned key: DuckDB drops the zone on the way to
+  # Arrow, which is a coercion a type table must state rather than inherit.
+  - key: "time64[us]"
+    duckdb: [TIME, TIMETZ]
+    depth: 1
+
+  - key: "time64[ns]"
+    duckdb: [TIME_NS]
+    depth: 1
+
+  - key: "timestamp[s]"
+    duckdb: [TIMESTAMP_S]
+    depth: 1
+
+  - key: "timestamp[ms]"
+    duckdb: [TIMESTAMP_MS]
+    depth: 1
+
+  - key: "timestamp[us]"
+    duckdb: [TIMESTAMP]
+    depth: 1
+
+  - key: "timestamp[ns]"
+    duckdb: [TIMESTAMP_NS]
+    depth: 1
+
+  - key: "timestamp[us, tz=*]"
+    duckdb: [TIMESTAMPTZ]
+    depth: 1
+
+  - key: month_day_nano_interval
+    duckdb: [INTERVAL]
+    depth: 1
+
+  # --- Constructors --------------------------------------------------------
+  # A constructor is one key however deep it nests. An unsupported constructor
+  # fails on its outermost type, so struct-of-struct proves nothing a struct
+  # does not: "unsupported" has no depth.
+  # One list key per element type a sink might convert. This looks repetitive
+  # and it is the point: a sink converts a list element through a different
+  # code path than a bare column -- in ClickHouse, goElemType rather than
+  # arrowValue -- and the two are switches over the same type set that nothing
+  # holds equal. A divergence shows up as one element type that works alone
+  # and fails inside an Array.
+  - key: "list<bool>"
+    duckdb: ["BOOLEAN[]"]
+    depth: 2
+
+  - key: "list<int8>"
+    duckdb: ["TINYINT[]"]
+    depth: 2
+
+  - key: "list<int16>"
+    duckdb: ["SMALLINT[]"]
+    depth: 2
+
+  - key: "list<int32>"
+    duckdb: ["INTEGER[]"]
+    depth: 2
+
+  - key: "list<int64>"
+    duckdb: ["BIGINT[]"]
+    depth: 2
+
+  - key: "list<uint8>"
+    duckdb: ["UTINYINT[]"]
+    depth: 2
+
+  - key: "list<uint16>"
+    duckdb: ["USMALLINT[]"]
+    depth: 2
+
+  - key: "list<uint32>"
+    duckdb: ["UINTEGER[]"]
+    depth: 2
+
+  - key: "list<uint64>"
+    duckdb: ["UBIGINT[]"]
+    depth: 2
+
+  - key: "list<float32>"
+    duckdb: ["REAL[]"]
+    depth: 2
+
+  - key: "list<float64>"
+    duckdb: ["DOUBLE[]"]
+    depth: 2
+
+  - key: "list<utf8>"
+    duckdb: ["VARCHAR[]"]
+    depth: 2
+
+  - key: "list<binary>"
+    duckdb: ["BLOB[]"]
+    depth: 2
+
+  - key: "list<date32>"
+    duckdb: ["DATE[]"]
+    depth: 2
+
+  - key: "list<timestamp[s]>"
+    duckdb: ["TIMESTAMP_S[]"]
+    depth: 2
+
+  - key: "list<timestamp[ms]>"
+    duckdb: ["TIMESTAMP_MS[]"]
+    depth: 2
+
+  - key: "list<timestamp[us]>"
+    duckdb: ["TIMESTAMP[]"]
+    depth: 2
+
+  - key: "list<timestamp[ns]>"
+    duckdb: ["TIMESTAMP_NS[]"]
+    depth: 2
+
+  - key: "list<timestamp[us, tz=*]>"
+    duckdb: ["TIMESTAMPTZ[]"]
+    depth: 2
+
+  # A container holding something the sink cannot convert. These are the rows
+  # that prove a list does not launder its element: an unsupported element
+  # must fail the batch from inside a supported container, exactly as it does
+  # on its own.
+  - key: "list<decimal(*, *)>"
+    duckdb: ["DECIMAL(p, s)[]", "HUGEINT[]"]
+    depth: 2
+
+  - key: "list<time64[us]>"
+    duckdb: ["TIME[]"]
+    depth: 2
+
+  # Depth 3, two witnesses. A sink nests through one recursive pair, so depth 4
+  # re-runs the code depth 3 already ran. list-of-struct is the second witness
+  # because struct is unsupported: it proves the recursion carries the failure
+  # up rather than flattening it away.
+  - key: "list<list<int64>>"
+    duckdb: ["BIGINT[][]"]
+    depth: 2
+
+  - key: "list<struct>"
+    duckdb: ["STRUCT(...)[]"]
+    depth: 2
+
+  - key: "fixed_size_list<int32>[3]"
+    duckdb: ["INTEGER[3]"]
+    depth: 2
+
+  - key: struct
+    duckdb: ["STRUCT(...)"]
+    depth: 2
+
+  - key: map
+    duckdb: ["MAP(K, V)"]
+    depth: 2
+
+  - key: sparse_union
+    duckdb: ["UNION(...)"]
+    depth: 2
+
+  - key: dictionary
+    duckdb: [ENUM]
+    depth: 2

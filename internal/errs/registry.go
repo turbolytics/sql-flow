@@ -42,6 +42,7 @@ const (
 	CodeSourceSecurityInvalid Code = "user.source.security_invalid"
 	CodeSourceInvalid         Code = "user.source.invalid"
 	CodeSinkInvalid           Code = "user.sink.invalid"
+	CodeSinkTypeUnsupported   Code = "user.sink.type_unsupported"
 
 	// Source and sink failures that are not the user's doing.
 	CodeSourceUnreachable Code = "system.source.unreachable"
@@ -137,6 +138,11 @@ var registry = map[Code]Definition{
 		CodeSinkInvalid,
 		"The sink configuration is incomplete or contradictory.",
 		"Correct the sink block. A missing required field is the usual cause.",
+	},
+	CodeSinkTypeUnsupported: {
+		CodeSinkTypeUnsupported,
+		"A result column has an Arrow type the sink cannot convert.",
+		"Cast the column in the handler SQL to a type the sink's type table declares.",
 	},
 	CodeSourceUnreachable: {
 		CodeSourceUnreachable,

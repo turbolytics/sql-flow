@@ -309,27 +309,6 @@ func TestSinkIceberg_EmptyBatchAppendsNothing(t *testing.T) {
 	assert.Equal(t, int64(0), icebergRowCount(t, catalogName, tableName))
 }
 
-// Batch is what the tumbling-window manager reads back after a write.
-func TestSinkIceberg_BatchIsTheLastWrite(t *testing.T) {
-	coverage.Covers(t, "sink.iceberg")
-	catalogName, tableName := newLocalIcebergTable(t)
-
-	s, err := NewIcebergSink(context.Background(), catalogName, tableName)
-	assert.NoError(t, err)
-
-	batch, err := s.Batch()
-	assert.NoError(t, err)
-	assert.Nil(t, batch)
-
-	table := newTestTable(t, []string{"nyc", "sfo"}, []int64{1, 2})
-	defer table.Release()
-	assert.NoError(t, s.WriteTable(context.Background(), table))
-
-	batch, err = s.Batch()
-	assert.NoError(t, err)
-	assert.Equal(t, int64(2), batch.NumRows())
-}
-
 // A table the catalog does not have must fail the start. Discovering it on the
 // first flush instead loses the batch and every offset behind it.
 func TestSinkIceberg_MissingTableFailsTheStart(t *testing.T) {

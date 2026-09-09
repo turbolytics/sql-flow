@@ -68,16 +68,6 @@ func (s *IcebergSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	return nil
 }
 
-func (s *IcebergSink) Batch() (arrow.Table, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if len(s.tables) == 0 {
-		return nil, nil
-	}
-	return s.tables[len(s.tables)-1], nil
-}
-
 // Flush appends the buffered batches, and keeps whatever it could not append.
 //
 // The retry ladder calls Flush again after a retryable failure. Discarding the

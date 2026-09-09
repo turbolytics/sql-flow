@@ -22,6 +22,18 @@ tables:
           ON agg_city_count (bucket, city);
 
       manager:
+          # A window closes against the stream's own clock, not wall clock.
+          # max(bucket) is the newest window the data has reached, so a window
+          # closes only once the stream has moved past it. That keeps the
+          # result identical whether the data arrives live or as a replay.
+          #
+          # With now() here instead, a pipeline running behind real time by
+          # more than the grace period closes a window whose rows are still
+          # arriving and publishes it in parts, once per poll. Downstream those
+          # parts are indistinguishable from an at-least-once duplicate.
+          #
+          # The trade: the newest window waits for a later one, so a stream
+          # that stops leaves its final window unpublished.
         tumbling_window:
           poll_interval_seconds: 3600
           collect_closed_windows_sql: |
@@ -30,10 +42,10 @@ tables:
               city,
               count
             FROM agg_city_count
-            WHERE bucket < (now()::timestamptz - INTERVAL '3600' SECOND)
+            WHERE bucket < (SELECT max(bucket) FROM agg_city_count) - INTERVAL '3600' SECOND
           delete_closed_windows_sql: |
             DELETE FROM agg_city_count
-            WHERE bucket < (now()::timestamptz - INTERVAL '3600' SECOND)
+            WHERE bucket < (SELECT max(bucket) FROM agg_city_count) - INTERVAL '3600' SECOND
 
         sink:
           type: console
