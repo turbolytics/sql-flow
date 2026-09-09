@@ -264,19 +264,68 @@ A warning is reversible; a refusal to start is not.
 **Any new config key.** Nothing here is declared. Every fact is derived from
 SQL the operator already wrote.
 
+## Repairing the existing surface
+
+Enumerating every instrument for this change turned up four defects in the
+surface that already ships. All four are fixed here. A design whose premise is
+that an operator can trust the metrics endpoint cannot leave that endpoint
+misdocumented.
+
+**1. The README documents twelve of sixteen instruments.** It omits
+`sink_retry_count`, `sink_buffered_rows` (removed here), and both
+`internal/webhook` instruments, which record under the `sqlflow.sources.http`
+meter rather than `sqlflow`. The metrics section is rewritten to list all
+nineteen, grouped, each with its exported Prometheus name beside the instrument
+name. The two differ, and only the exported name is queryable.
+
+**2. `state_commit_latency` declares its unit as `s`.** Every other latency
+declares `seconds`. It becomes `seconds`.
+
+The change is name-neutral: the exporter normalizes UCUM `s` to `seconds`
+before appending it, so the series stays `state_commit_latency_seconds`.
+Verified 2026-09-09 against the real exporter, because a unit edit that renamed
+a series would break dashboards silently.
+
+**3. `error_count` and `sink_retry_count` declare unit `count`, which the
+exporter drops as unitless.** They stay exactly as they are.
+
+Giving either a descriptive unit renames it — `error_count_total` becomes
+`error_count_errors_total`, measured, not assumed — which breaks every
+dashboard built on the current name and buys nothing. `metrics.go` gets a
+comment recording that, so the inconsistency is not tidied up later by someone
+who has not run the exporter.
+
+**4. `reference_table_rows` is not a state metric.** It carries a `table`
+attribute like `state_table_rows`, but it appears whenever the handler SQL
+joins a table, with or without a state path. The README gives it its own group
+rather than folding it in with the four that require a state path.
+
+### The names become machine-checked
+
+A test registers the real `core.Metrics`, `sinks` and `webhook` instruments
+against a Prometheus exporter, gathers the registry, and asserts the exact set
+of exported series names.
+
+This is what makes the README table trustworthy rather than aspirational. It
+also catches an OTel upgrade that changes unit suffixing, which would otherwise
+rename every series in this repo with no test failing. Three of my own claims
+about these names during design were wrong until I ran exactly this.
+
 ## Files touched
 
 | File | Change |
 |---|---|
-| `internal/core/metrics.go` | add `HandlerRowsRead`, `ReferenceTableRows`; drop `SinkBufferedRows` |
+| `internal/core/metrics.go` | add `HandlerRowsRead`, `ReferenceTableRows`; drop `SinkBufferedRows`; `state_commit_latency` unit `s` to `seconds`; comment why `error_count` keeps unit `count` |
 | `internal/sinks/metrics.go` | add the row counters the decorator records through |
 | `internal/sinks/init.go` | counting decorator, `WithSinkRole` option |
 | `internal/core/turbine.go` | record `handler_rows_read` on accepted writes; drop `recordBufferedRows` and its two call sites |
 | `internal/core/reftables.go` | new: AST walk, count, log, record gauge |
 | `internal/cli/run/root.go` | call it after `InitTables`; pass `WithSinkRole` |
 | `internal/cli/run/managers.go` | pass `WithSinkRole("manager")` |
+| `internal/sinks/metrics.go` | comment why `sink_retry_count` keeps unit `count` |
+| `internal/cli/run/metrics_test.go` | assert the exact set of exported series names |
 | `docs/coverage/invariants.yml` | `sink.rows.counted_on_delivery` |
-| `README.md` | metrics table: four new rows plus the undocumented `sink_retry_count`; "Twelve instruments" becomes nineteen, and the webhook pair gets its own note |
+| `README.md` | rewrite the metrics section: all nineteen, grouped, with exported names; note the `sqlflow.sources.http` meter; "Twelve instruments" becomes nineteen |
 
 ## Testing
 
@@ -295,3 +344,7 @@ SQL the operator already wrote.
 - A table in an attached catalog is probed with `EXISTS`, not counted, and
   records no `reference_table_rows` series.
 - A count that errors logs at warn and startup proceeds.
+- The exported series names match the README exactly, asserted as a set so a
+  new instrument fails the test until it is documented.
+- `state_commit_latency` still exports as `state_commit_latency_seconds` after
+  the unit change. This is the regression the unit edit could cause.
