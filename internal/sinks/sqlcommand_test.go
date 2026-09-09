@@ -291,24 +291,3 @@ func TestSinkSqlcommand_ReportsASQLError(t *testing.T) {
 	assert.NoError(t, s.WriteTable(context.Background(), table))
 	assert.Error(t, s.Flush(context.Background()))
 }
-
-// Batch is what the tumbling-window manager reads back after a write.
-func TestSinkSqlcommand_BatchIsTheLastWrite(t *testing.T) {
-	coverage.Covers(t, "sink.sqlcommand")
-	conn := newSinkTestConn(t)
-
-	s, err := NewSQLCommandSink(conn, "SELECT 1", nil)
-	assert.NoError(t, err)
-
-	batch, err := s.Batch()
-	assert.NoError(t, err)
-	assert.Nil(t, batch)
-
-	table := newTestTable(t, []string{"nyc", "sfo"}, []int64{1, 2})
-	defer table.Release()
-	assert.NoError(t, s.WriteTable(context.Background(), table))
-
-	batch, err = s.Batch()
-	assert.NoError(t, err)
-	assert.Equal(t, int64(2), batch.NumRows())
-}

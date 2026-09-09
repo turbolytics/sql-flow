@@ -5,12 +5,45 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	tkafka "github.com/turbolytics/sql-flow/internal/kafka"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
+
+// recordDeliveryTimeout bounds how long franz-go may hold a record the broker
+// has not acknowledged.
+//
+// franz-go retries a produce indefinitely by default, and no caller bounds the
+// wait: the tumbling manager's context is cancellable but carries no deadline,
+// and the pipeline's drain strips the deadline with context.WithoutCancel. So
+// a flush against a hung broker blocked until the run was cancelled. A
+// windowed pipeline stopped publishing every window with nothing logged, and
+// shutdown waited for SIGKILL.
+//
+// Shorter than a supervisor's usual 30s termination grace period, so the drain
+// fails and reports rather than being killed mid-flush. Kafka's own
+// delivery.timeout.ms default of two minutes is far past that.
+const recordDeliveryTimeout = 20 * time.Second
+
+// kafkaSinkError codes a flush failure, teaching sinkError the two franz-go
+// errors it cannot recognise.
+//
+// isUnreachable matches syscall and net errors. A record that expired waiting
+// for a broker that never answered carries neither, and a client closed out
+// from under a flush carries neither. Both are the same partition a refused
+// connection is, reported by a timer or a shutdown rather than by the kernel.
+// Coding them as a rejected write exits 1 and labels the error metric for a
+// bug, which is what the bare fmt.Errorf here used to do.
+func kafkaSinkError(err error, format string, args ...any) error {
+	if errors.Is(err, kgo.ErrRecordTimeout) || errors.Is(err, kgo.ErrClientClosed) {
+		return errs.Wrap(errs.CodeSinkUnreachable, err, format, args...)
+	}
+	return sinkError(err, format, args...)
+}
 
 // KafkaSink produces one message per result row, JSON encoded, matching the
 // Python KafkaSink.
@@ -21,7 +54,6 @@ type KafkaSink struct {
 	mu sync.Mutex
 	// pending holds the encoded rows that Flush has not yet had acknowledged.
 	pending [][]byte
-	batch   arrow.Table
 }
 
 // NewKafkaSink builds the sink. Extra client options are appended last, so a
@@ -42,6 +74,7 @@ func NewKafkaSink(conf config.KafkaSink, extra ...kgo.Opt) (*KafkaSink, error) {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.AllowAutoTopicCreation(),
+		kgo.RecordDeliveryTimeout(recordDeliveryTimeout),
 	}
 
 	securityOpts, err := tkafka.SecurityOptions(conf.SecurityProtocol, conf.SSL, conf.SASL)
@@ -73,7 +106,6 @@ func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.batch = batch
 	s.pending = append(s.pending, rows...)
 	return nil
 }
@@ -166,14 +198,37 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 	if firstErr == nil {
 		firstErr = errors.New("not acknowledged")
 	}
-	return fmt.Errorf("kafka sink: %d of %d rows not acknowledged, first: %w",
-		len(keep), len(pending), firstErr)
+	return kafkaSinkError(firstErr, "kafka sink: %d of %d rows not acknowledged",
+		len(keep), len(pending))
 }
 
-func (s *KafkaSink) Batch() (arrow.Table, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.batch, nil
+// Probe checks the broker before the first batch arrives.
+//
+// Without it a wrong broker list produces a pipeline that starts normally,
+// logs "consumer loop starting", and fails at the first flush. With a long
+// flush interval that is minutes later, and a supervisor reports the pipeline
+// healthy for every one of them. sinks.New probes any sink implementing
+// Prober, so implementing it here is the whole change.
+//
+// Ping asks the seed brokers for metadata, which is the cheapest request that
+// proves one of them answered.
+//
+// It runs off this goroutine because Ping does not reliably return when its
+// context ends. Against a broker that accepts the connection and then never
+// answers -- a partition rather than a refusal -- it was still running six
+// seconds after a three second deadline. probe() runs before the pipeline has
+// consumed anything, so a probe that cannot be bounded hangs the start instead
+// of failing it, which is the failure the probe exists to prevent.
+func (s *KafkaSink) Probe(ctx context.Context) error {
+	done := make(chan error, 1)
+	go func() { done <- s.client.Ping(ctx) }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *KafkaSink) Close() error {

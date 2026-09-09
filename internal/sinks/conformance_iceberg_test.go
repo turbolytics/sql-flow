@@ -70,6 +70,11 @@ func TestSinkIceberg_Conformance(t *testing.T) {
 		},
 
 		Table: func(t *testing.T, id int64) arrow.Table { return oneRowTable(t, id) },
+
+		// OrderedReadBack stays false. A scan reads the table's data files, and
+		// each append writes its own file with a generated name, so the rows
+		// come back in file order rather than append order. Observed: a
+		// read-back of [id=2, id=1] on roughly one run in six.
 	})
 }
 

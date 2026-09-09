@@ -80,7 +80,6 @@ type MetadataWriter interface {
 type Sink interface {
 	WriteTable(ctx context.Context, batch arrow.Table) error
 	Flush(ctx context.Context) error
-	Batch() (arrow.Table, error)
 }
 
 // BufferedRowReporter is implemented by a sink that can say how many rows it

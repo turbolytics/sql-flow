@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -32,7 +33,9 @@ func TestToolingConformanceSinks_ASinkThatDropsItsBatchIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&dropSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, v.failure != "")
-	assert.True(t, strings.Contains(v.failure, "no rows"))
+	// The pre-warm row still arrived, so the read-back is not empty. What is
+	// missing is the row the failed flush was supposed to have kept.
+	assert.True(t, strings.Contains(v.failure, "id=2 never reached"))
 }
 
 // A sink that delivers on WriteTable rather than on Flush: the Kafka sink's
@@ -61,12 +64,22 @@ func TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly(t *testing.T) {
 	assert.True(t, vs[keepsBatch].failure != "")
 }
 
-// A sink that keeps the batch but never clears it delivers the row twice.
-func TestToolingConformanceSinks_ASinkThatDeliversTwiceIsCaught(t *testing.T) {
+// A sink that never clears its buffer re-delivers everything on every flush.
+//
+// The duplication itself is legal: delivery is at-least-once, so keeps_batch
+// holds. What does not hold is the depth. A buffer that never drains grows
+// without bound, and reports_depth is the claim that catches it.
+//
+// The pre-warm flush is what exposes it here: that buffer should be empty
+// afterwards, so the row written next is the only one owed. This sink still
+// holds the pre-warm row, and reports two.
+func TestToolingConformanceSinks_ASinkThatNeverDrainsIsCaught(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
-	v := verdicts(t, subject(&neverClearSink{memSink: newMemSink()}))[keepsBatch]
+	vs := verdicts(t, subject(&neverClearSink{memSink: newMemSink()}))
 
-	assert.True(t, strings.Contains(v.failure, "id=1, id=1"))
+	assert.Equal(t, "", vs[keepsBatch].failure)
+	assert.True(t, strings.Contains(vs[reportsDepth].failure,
+		"reports 2 buffered rows after one WriteTable"))
 }
 
 // A retry that fails is not the same defect, and the message must not blame
@@ -76,6 +89,104 @@ func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 	v := verdicts(t, subject(&staysDownSink{memSink: newMemSink()}))[keepsBatch]
 
 	assert.True(t, strings.Contains(v.failure, "Flush after Heal failed"))
+}
+
+func TestToolingConformanceSinks_ASlowProbeIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&slowProbeSink{memSink: newMemSink()}))[probeFailsStart]
+
+	assert.True(t, strings.Contains(v.failure, "had not returned"))
+}
+
+func TestToolingConformanceSinks_AProbeThatCannotFailIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&blindProbeSink{memSink: newMemSink()}))[probeFailsStart]
+
+	assert.True(t, strings.Contains(v.failure, "returned nil"))
+}
+
+func TestToolingConformanceSinks_ASinkThatCannotCloseTwiceIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&closeOnceSink{memSink: newMemSink()}))[closeIdempotent]
+
+	assert.True(t, strings.Contains(v.failure, "second Close"))
+}
+
+// A sink implementing neither is skipped, and the registry must exempt it.
+func TestToolingConformanceSinks_ASinkWithNoProbeOrCloseIsSkipped(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(newMemSink()))
+
+	assert.True(t, strings.Contains(vs[probeFailsStart].skipped, "integrations.yml"))
+	assert.True(t, strings.Contains(vs[closeIdempotent].skipped, "integrations.yml"))
+}
+
+// A second flush into the same fault must fail again. Returning nil tells the
+// pipeline to commit offsets for rows that never landed.
+func TestToolingConformanceSinks_AHollowSuccessIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&hollowSink{memSink: newMemSink()}))[noHollowSuccess]
+
+	assert.True(t, strings.Contains(v.failure, "returned nil"))
+}
+
+// A sink that delivers its buffer backwards loses nothing, so keeps_batch
+// holds and only the ordering claim catches it.
+func TestToolingConformanceSinks_AReorderingSinkIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(&reorderingSink{memSink: newMemSink()}))
+
+	assert.Equal(t, "", vs[keepsBatch].failure)
+	assert.True(t, strings.Contains(vs[preservesOrder].failure, "out of order"))
+}
+
+// A subject whose destination cannot report arrival order must skip the
+// ordering claim rather than read a sorted list as evidence.
+func TestToolingConformanceSinks_AnUnorderedReadBackSkipsOrder(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	s := subject(newMemSink())
+	s.OrderedReadBack = false
+
+	vs := verdicts(t, s)
+	assert.True(t, strings.Contains(vs[preservesOrder].skipped, "integrations.yml"))
+	assert.Equal(t, "", vs[preservesOrder].failure)
+}
+
+// A sink that ignores its context cannot be stopped. The pipeline's drain and
+// every other caller reach it only through that context.
+func TestToolingConformanceSinks_ASinkThatIgnoresItsContextIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&deafSink{memSink: newMemSink()}))[honoursContext]
+
+	assert.True(t, strings.Contains(v.failure, "did not return"))
+}
+
+// A flush with nothing buffered must reach nothing. The pipeline flushes on an
+// interval whether or not a batch arrived, so a sink that writes here writes on
+// every idle tick.
+func TestToolingConformanceSinks_AnEagerEmptyFlushIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&eagerFlushSink{memSink: newMemSink()}))[emptyIsNoop]
+
+	assert.True(t, strings.Contains(v.failure, "nothing was buffered"))
+}
+
+// The contract's positive control, run through the whole harness rather than
+// the comparison alone: a sink that delivers each row twice is conformant.
+func TestToolingConformanceSinks_ADuplicatingSinkPasses(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(&duplicatingSink{memSink: newMemSink()}))
+
+	assert.Equal(t, "", vs[keepsBatch].failure)
+	assert.Equal(t, "", vs[buffersOnly].failure)
+}
+
+// And a sink that loses the row it could not deliver still fails.
+func TestToolingConformanceSinks_ALosingSinkIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	v := verdicts(t, subject(&losingSink{memSink: newMemSink()}))[keepsBatch]
+
+	assert.True(t, strings.Contains(v.failure, "never reached"))
 }
 
 func TestToolingConformanceSinks_ASinkThatMisreportsItsDepthIsCaught(t *testing.T) {
@@ -175,6 +286,45 @@ func TestToolingConformanceSinks_AWriteThroughSinkIsNotBlamedOnTheSubject(t *tes
 	assert.True(t, vs[keepsBatch].failure != "")
 }
 
+// At-least-once permits a repeat. Exact equality does not, which is why the
+// harness used to fail a sink that delivered correctly twice.
+func TestToolingConformanceDelivered_AllowsARepeat(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	want := []Row{{"id": int64(1)}, {"id": int64(2)}}
+	got := []Row{{"id": int64(1)}, {"id": int64(2)}, {"id": int64(2)}}
+
+	assert.Equal(t, "", deliveredInOrder(got, want))
+}
+
+// Loss is the failure the contract does not permit.
+func TestToolingConformanceDelivered_CatchesALostRow(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	want := []Row{{"id": int64(1)}, {"id": int64(2)}, {"id": int64(3)}}
+	got := []Row{{"id": int64(1)}, {"id": int64(3)}}
+
+	assert.True(t, strings.Contains(deliveredInOrder(got, want), "never reached"))
+	assert.True(t, strings.Contains(deliveredInOrder(got, want), "id=2"))
+}
+
+// And so is reordering. A row that arrives before one that preceded it is not
+// a duplicate of anything, so a set comparison would miss it.
+func TestToolingConformanceDelivered_CatchesAReorder(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	want := []Row{{"id": int64(1)}, {"id": int64(2)}, {"id": int64(3)}}
+	got := []Row{{"id": int64(1)}, {"id": int64(3)}, {"id": int64(2)}}
+
+	assert.True(t, strings.Contains(deliveredInOrder(got, want), "out of order"))
+}
+
+// An empty destination loses everything, and the message must say so rather
+// than blaming order.
+func TestToolingConformanceDelivered_CatchesAnEmptyDestination(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	want := []Row{{"id": int64(1)}}
+
+	assert.True(t, strings.Contains(deliveredInOrder(nil, want), "never reached"))
+}
+
 func TestToolingConformanceDescribe_NamesTheRowsItFound(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 	assert.Equal(t, "no rows", describe(nil))
@@ -228,15 +378,6 @@ func (m *memSink) Flush(context.Context) error {
 	}
 	m.buffered = nil
 	return nil
-}
-
-func (m *memSink) Batch() (arrow.Table, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.buffered) == 0 {
-		return nil, nil
-	}
-	return m.buffered[0], nil
 }
 
 // BufferedRows makes the fakes honest about what they hold, so the harness
@@ -326,11 +467,177 @@ type lyingSink struct{ *memSink }
 
 func (l *lyingSink) BufferedRows() int { return 0 }
 
-// staysDownSink never recovers, so the retry fails rather than delivering.
-type staysDownSink struct{ *memSink }
+// losingSink delivers everything except its most recent row. At-least-once
+// permits a repeat; it does not permit a row that never arrives.
+type losingSink struct{ *memSink }
 
-func (s *staysDownSink) Flush(context.Context) error {
+func (l *losingSink) Flush(context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.down {
+		return errors.New("destination unreachable")
+	}
+	for i, t := range l.buffered {
+		if i < len(l.buffered)-1 {
+			l.delivered = append(l.delivered, ids(t)...)
+		}
+		t.Release()
+	}
+	l.buffered = nil
+	return nil
+}
+
+// reorderingSink delivers its buffer backwards. Kafka orders within a
+// partition, and a sink that requeues a failed row behind a later one breaks
+// that without losing anything, so a set comparison would call it correct.
+type reorderingSink struct{ *memSink }
+
+func (r *reorderingSink) Flush(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.down {
+		return errors.New("destination unreachable")
+	}
+	for i := len(r.buffered) - 1; i >= 0; i-- {
+		r.delivered = append(r.delivered, ids(r.buffered[i])...)
+		r.buffered[i].Release()
+	}
+	r.buffered = nil
+	return nil
+}
+
+// duplicatingSink delivers every row twice. It is the positive control: the
+// harness must pass it, or the contract has been tightened by accident.
+type duplicatingSink struct{ *memSink }
+
+func (d *duplicatingSink) Flush(context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.down {
+		return errors.New("destination unreachable")
+	}
+	for _, t := range d.buffered {
+		rows := ids(t)
+		d.delivered = append(d.delivered, rows...)
+		d.delivered = append(d.delivered, rows...)
+		t.Release()
+	}
+	d.buffered = nil
+	return nil
+}
+
+// slowProbeSink ladders its probe. probe() dials once and does not retry,
+// because the supervisor's restart is already the retry, so a ladder here only
+// delays the report.
+type slowProbeSink struct{ *memSink }
+
+func (s *slowProbeSink) Probe(context.Context) error {
+	// Past the grace the harness allows, so it is judged for laddering rather
+	// than for using the deadline it was given.
+	time.Sleep(3 * probeTimeout)
 	return errors.New("destination unreachable")
+}
+
+// blindProbeSink cannot fail. A probe that certifies a destination which is not
+// there is worse than no probe: the pipeline starts and the operator is told
+// the dependency is fine.
+type blindProbeSink struct{ *memSink }
+
+func (b *blindProbeSink) Probe(context.Context) error { return nil }
+
+// closeOnceSink fails its second Close. More than one shutdown path reaches
+// Close, and the second must not change the exit status.
+type closeOnceSink struct {
+	*memSink
+	closed bool
+}
+
+func (c *closeOnceSink) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return errors.New("close of closed sink")
+	}
+	c.closed = true
+	return nil
+}
+
+// hollowSink reports success on its second failed flush.
+//
+// #221's defect reached by another route: the first flush records the failure,
+// the second finds an empty error list and returns nil having delivered
+// nothing. The pipeline then commits offsets for rows that never landed.
+type hollowSink struct {
+	*memSink
+	failedWhileDown bool
+}
+
+func (h *hollowSink) Flush(ctx context.Context) error {
+	h.mu.Lock()
+	down, already := h.down, h.failedWhileDown
+	if down {
+		h.failedWhileDown = true
+	}
+	h.mu.Unlock()
+
+	if down && already {
+		return nil
+	}
+	return h.memSink.Flush(ctx)
+}
+
+// deafSink ignores the context it is given: it sleeps past any deadline before
+// reporting the failure.
+//
+// Every caller reaches the sink through that context. A flush interval that
+// elapsed, a cancelled run and a SIGTERM have no other way to stop a flush, so
+// a sink that ignores it cannot be stopped at all.
+type deafSink struct{ *memSink }
+
+func (d *deafSink) Flush(ctx context.Context) error {
+	err := d.memSink.Flush(ctx)
+	if err != nil {
+		time.Sleep(2 * flushTimeout)
+	}
+	return err
+}
+
+// eagerFlushSink writes even when nothing is buffered. The pipeline flushes on
+// an interval whether or not a batch arrived, so this sink writes on every idle
+// tick.
+type eagerFlushSink struct{ *memSink }
+
+func (e *eagerFlushSink) Flush(ctx context.Context) error {
+	e.mu.Lock()
+	if !e.down && len(e.buffered) == 0 {
+		e.delivered = append(e.delivered, 0)
+	}
+	e.mu.Unlock()
+	return e.memSink.Flush(ctx)
+}
+
+// staysDownSink never recovers, so the retry fails rather than delivering.
+//
+// It fails only once Break has been called. The sequence opens with a clean
+// delivery, and a double that failed that too would abort the run as a broken
+// subject rather than exercising the retry this exists to test.
+type staysDownSink struct {
+	*memSink
+	broken bool
+}
+
+func (s *staysDownSink) Flush(ctx context.Context) error {
+	s.mu.Lock()
+	if s.down {
+		s.broken = true
+	}
+	broken := s.broken
+	s.mu.Unlock()
+
+	if broken {
+		return errors.New("destination unreachable")
+	}
+	return s.memSink.Flush(ctx)
 }
 
 // --- Helpers ---------------------------------------------------------------
@@ -344,7 +651,6 @@ func (n *noDepthSink) WriteTable(ctx context.Context, t arrow.Table) error {
 	return n.inner.WriteTable(ctx, t)
 }
 func (n *noDepthSink) Flush(ctx context.Context) error { return n.inner.Flush(ctx) }
-func (n *noDepthSink) Batch() (arrow.Table, error)     { return n.inner.Batch() }
 func (n *noDepthSink) set(down bool)                   { n.inner.set(down) }
 func (n *noDepthSink) rows() []Row                     { return n.inner.rows() }
 
@@ -367,6 +673,9 @@ func subject(sink breakable) SinkSubject {
 		Heal:        func(*testing.T) { sink.set(false) },
 		ReadBack:    func(*testing.T) []Row { return sink.rows() },
 		Table:       oneRow,
+		// The fakes append in delivery order, so the ordering claim is
+		// judged rather than skipped for every double.
+		OrderedReadBack: true,
 	}
 }
 
@@ -379,7 +688,7 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 	for _, v := range sinkVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 3, len(out))
+	assert.Equal(t, 9, len(out))
 	return out
 }
 

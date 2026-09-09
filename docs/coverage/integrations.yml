@@ -22,7 +22,7 @@ integrations:
   # --- Sinks ---------------------------------------------------------------
   - id: sink.kafka
     kind: sink
-    implements: [Sink]
+    implements: [Sink, Prober]
     feature: sink.kafka
     exempt: []
 
@@ -249,11 +249,33 @@ integrations:
         outcome: coerced
         rule: the element type's zero value, because ClickHouse's Array(T) holds no nulls unless T is Nullable
 
+  # implements listed Prober and the sink has never had a Probe method. The
+  # constructor loads the catalog and the table, so an absent table does fail
+  # the start -- but through NewIcebergSink, not through the interface
+  # sinks.New probes.
   - id: sink.iceberg
     kind: sink
-    implements: [Sink, Prober]
+    implements: [Sink]
     feature: sink.iceberg
-    exempt: []
+    exempt:
+      - invariant: sink.probe.fails_start
+        reason: implements no Prober, so there is no start-time check to fail
+        proven_by: TestSinkIceberg_ImplementsNoProber
+      - invariant: lifecycle.close.idempotent
+        reason: implements no Close; it holds no client to release
+        proven_by: TestSinkIceberg_ImplementsNoCloser
+      - invariant: sink.flush.honours_context
+        reason: >
+          appends through the catalog and the local filesystem, which fail
+          immediately; no flush can still be running when a deadline arrives
+        proven_by: TestSinkIceberg_FlushCannotOutliveItsContext
+      # sink.flush.preserves_order is deliberately not exempt, and reads as
+      # missing. The subject cannot observe delivery order -- a scan reads the
+      # table's data files, and each append writes its own file with a
+      # generated name, so a read-back of [id=2, id=1] turned up on roughly one
+      # run in six. That is a limit of the read-back, not a property of the
+      # sink, and an exemption claiming otherwise would be an excuse. The cell
+      # stays missing until the subject can order a scan by arrival.
 
   - id: sink.sqlcommand
     kind: sink
@@ -263,6 +285,17 @@ integrations:
       - invariant: sink.probe.fails_start
         reason: implements no Prober, so there is no start-time check to fail
         proven_by: TestSinkSqlcommand_ImplementsNoProber
+      - invariant: sink.flush.honours_context
+        reason: >
+          runs the user's SQL on the pipeline's own DuckDB connection, which
+          returns or fails immediately; no flush can still be running when a
+          deadline arrives
+        proven_by: TestSinkSqlcommand_FlushCannotOutliveItsContext
+      - invariant: lifecycle.close.idempotent
+        reason: >
+          implements no Close; the DuckDB connection belongs to the pipeline
+          and this sink must not close it
+        proven_by: TestSinkSqlcommand_ImplementsNoCloser
 
   - id: sink.console
     kind: sink
@@ -272,6 +305,16 @@ integrations:
       - invariant: sink.probe.fails_start
         reason: implements no Prober, so there is no start-time check to fail
         proven_by: TestSinkConsole_ImplementsNoProber
+      - invariant: sink.flush.honours_context
+        reason: >
+          writes to an io.Writer, which returns or fails immediately; no flush
+          can still be running when a deadline arrives
+        proven_by: TestSinkConsole_FlushCannotOutliveItsContext
+      - invariant: lifecycle.close.idempotent
+        reason: >
+          implements no Close; the io.Writer belongs to its caller and this
+          sink must not close it
+        proven_by: TestSinkConsole_ImplementsNoCloser
 
   - id: sink.noop
     kind: sink
@@ -297,7 +340,7 @@ integrations:
       - invariant: sink.flush.honours_context
         reason: has no destination; discarding every row is the contract
         proven_by: TestSinkNoop_DeliversNothingAndSaysSo
-      - invariant: sink.batch.reports_buffer
+      - invariant: sink.flush.empty_is_noop
         reason: has no destination; discarding every row is the contract
         proven_by: TestSinkNoop_DeliversNothingAndSaysSo
       - invariant: sink.buffer.reports_depth
@@ -309,6 +352,9 @@ integrations:
       - invariant: sink.probe.fails_start
         reason: implements no Prober, so there is no start-time check to fail
         proven_by: TestSinkNoop_ImplementsNoProber
+      - invariant: lifecycle.close.idempotent
+        reason: implements no Close; it holds nothing to release
+        proven_by: TestSinkNoop_ImplementsNoCloser
 
   # The conformance harness's own doubles run under this id.
   #

@@ -24,11 +24,6 @@ func (n *NoopSink) Flush(ctx context.Context) error {
 	return nil
 }
 
-func (n *NoopSink) Batch() (arrow.Table, error) {
-	// No operation performed, return nil
-	return nil, nil
-}
-
 // Option configures how a sink is built.
 type Option func(*options)
 

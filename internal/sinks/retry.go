@@ -72,8 +72,6 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (r *retrying) Batch() (arrow.Table, error) { return r.inner.Batch() }
-
 // WriteTable is not retried. It buffers into the sink rather than reaching the
 // destination, so there is nothing here for a backoff to wait on.
 func (r *retrying) WriteTable(ctx context.Context, batch arrow.Table) error {

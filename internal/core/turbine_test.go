@@ -120,8 +120,6 @@ func (s *fakeSink) Flush(ctx context.Context) error {
 	return nil
 }
 
-func (s *fakeSink) Batch() (arrow.Table, error) { return nil, nil }
-
 func newTestTurbine(src Source, h Handler, sink Sink, batchSize int) *Turbine {
 	return NewTurbine(src, h, sink, batchSize, time.Second, &sync.Mutex{}, PipelineErrorPolicies{})
 }
@@ -221,8 +219,6 @@ func (s *recordingSink) Flush(ctx context.Context) error {
 	s.flushes++
 	return nil
 }
-
-func (s *recordingSink) Batch() (arrow.Table, error) { return nil, nil }
 
 func mixedMessages(bad string, good int) []Message {
 	msgs := []Message{{Value: []byte(bad)}}
@@ -565,8 +561,6 @@ func (s *orderingSink) Flush(ctx context.Context) error {
 	*s.events = append(*s.events, "flush")
 	return nil
 }
-
-func (s *orderingSink) Batch() (arrow.Table, error) { return nil, nil }
 
 // fakeOffsetStore stands in for the DuckDB-backed store so the ordering test
 // needs no database.
