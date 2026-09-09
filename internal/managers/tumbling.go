@@ -159,8 +159,12 @@ func (m *Tumbling) collectClosed(ctx context.Context) (arrow.Table, error) {
 		return nil, err
 	}
 
+	// NewTableFromRecords returns the table holding one reference, and the
+	// records are retained by the table's columns, so releasing them here
+	// leaves the table as the sole owner. Retaining the table again here
+	// leaked every batch: the caller releases once, the count never reached
+	// zero, and the native Arrow buffers behind each row were never freed.
 	table := array.NewTableFromRecords(reader.Schema(), records)
-	table.Retain()
 	for _, rec := range records {
 		rec.Release()
 	}

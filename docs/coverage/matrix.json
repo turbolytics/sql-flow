@@ -599,7 +599,9 @@
             "TestHandlerInferredMem_TopLevelColumnsStillComeFromFirstRow",
             "TestHandlerInferredMem_UnionsDeeplyNestedStructFields",
             "TestHandlerInferredMem_UnionsNestedStructFieldsAcrossMessages",
-            "TestHandlerInferredMem_UnionsStructValuedFieldAddedLater"
+            "TestHandlerInferredMem_UnionsStructValuedFieldAddedLater",
+            "TestInferredInvoke_DoesNotLeakNativeMemory",
+            "TestInferredInvoke_ReleasesIngestRecord"
           ]
         },
         "integration": {

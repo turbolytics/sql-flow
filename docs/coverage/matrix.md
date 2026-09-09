@@ -33,7 +33,7 @@ names every one of them.
 | `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 16 |
 | `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — | 3 |
 | `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 71 |
-| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
+| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 48 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
 | `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 8 |
 | `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 25 |
