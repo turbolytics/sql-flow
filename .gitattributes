@@ -1,0 +1,22 @@
+# The coverage matrix is generated and checked in, which is deliberate: a
+# coverage change shows up in review rather than nowhere. The cost is that
+# every concurrent branch conflicts on it, because two branches render two
+# different repo states over the same dense regions -- cell counts, the
+# invariant tables, per-feature test lists -- and none of it is an independent
+# edit git can reconcile.
+#
+# Resolving those conflicts by hand is busywork with no judgement in it. The
+# file is derived, so any resolution is provisional: `make coverage-check`
+# regenerates it and fails if what is committed does not match what the suites
+# reported. A wrong auto-resolution cannot reach main, it just stops being a
+# manual step.
+#
+# The driver keeps the current branch's copy and exits. Configure it once with
+# `make setup-dev`, or directly:
+#
+#     git config merge.coverage-generated.driver true
+#
+# Without that config git falls back to a normal merge and conflicts as before,
+# so a fresh clone is never worse off than it is today.
+docs/coverage/matrix.json merge=coverage-generated
+docs/coverage/matrix.md   merge=coverage-generated
