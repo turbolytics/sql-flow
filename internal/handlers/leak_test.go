@@ -72,11 +72,10 @@ func settle() {
 // buffers DuckDB handed back for every row. Measured on v1.0.6 that cost
 // about 44 bytes per message and grew for as long as the process lived. This
 // loop pushes half a million messages, which leaked over 20 MiB then, against
-// a threshold of 8 MiB now.
+// a threshold of 8 MiB now. It runs in under a second, so it belongs in the
+// -short pass: a leak linear in messages needs message volume to show, not
+// wall clock, and this is the pass CI runs on every change.
 func TestInferredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("soak-shaped test, skipped under -short")
-	}
 	coverage.Covers(t, "handler.inferred_mem")
 	conn, closeConn := newADBCConn(t)
 	defer closeConn()
