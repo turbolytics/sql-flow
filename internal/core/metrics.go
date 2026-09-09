@@ -16,7 +16,6 @@ type Metrics struct {
 	SourceReadLatency      metric.Float64Histogram
 	SinkFlushLatency       metric.Float64Histogram
 	SinkFlushNumRows       metric.Int64Gauge
-	SinkBufferedRows       metric.Int64Gauge
 	SinkFlushCount         metric.Int64Counter
 	BatchProcessingLatency metric.Float64Histogram
 	StateCommitLatency     metric.Float64Histogram
@@ -95,17 +94,12 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		return nil, fmt.Errorf("sink_flush_num_rows: %w", err)
 	}
 
-	// A sink holds every row a flush could not deliver, and nothing bounds
-	// that buffer. Today a failed flush stops the pipeline, so the buffer dies
-	// with the process; the day a flush failure stops being fatal, this gauge
-	// is what tells an operator the buffer is growing rather than draining.
-	if m.SinkBufferedRows, err = meter.Int64Gauge(
-		"sink_buffered_rows",
-		metric.WithDescription("Rows the sink is holding that no flush has delivered yet"),
-		metric.WithUnit("rows"),
-	); err != nil {
-		return nil, fmt.Errorf("sink_buffered_rows: %w", err)
-	}
+	// sink_buffered_rows was here. The depth is now derived as
+	// sink_rows_accepted minus sink_rows_written, which yields a rate the
+	// gauge could not and cannot misreport itself the way a sink's own count
+	// can. The gauge was also already dead for the ClickHouse and Iceberg
+	// sinks: the retry wrapper declares only WriteTable and Flush, so it hid
+	// the BufferedRowReporter the recording depended on.
 
 	if m.SinkFlushCount, err = meter.Int64Counter(
 		"sink_flush_count",

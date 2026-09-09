@@ -29,6 +29,16 @@ type Option func(*options)
 
 type options struct {
 	meterProvider metric.MeterProvider
+	role          string
+}
+
+// WithSinkRole names what this sink is for: "pipeline", "dlq" or "manager".
+//
+// It separates the row-count series. Without it, DLQ rows sum into the same
+// counter as delivered rows and the end-to-end ratio overstates delivery --
+// the metric would report the pipeline healthier the more records it rejected.
+func WithSinkRole(role string) Option {
+	return func(o *options) { o.role = role }
 }
 
 // WithMeterProvider supplies the provider the retry counter records through.
@@ -70,14 +80,24 @@ func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Op
 		return nil, err
 	}
 
+	role := o.role
+	if role == "" {
+		role = "pipeline"
+	}
+
 	policy := RetryPolicyFrom(sink.Retry)
 	if !retriesHelp(sink.Type) || !policy.Enabled() {
-		return built, nil
+		return core.NewCountingSink(built, o.meterProvider, sink.Type, role), nil
 	}
 
 	r := newRetrying(built, policy)
 	r.onRetry = retryCounter(o.meterProvider, sink.Type)
-	return r, nil
+
+	// Outside the ladder, so one logical flush is one counted flush. The
+	// totals come out the same either way -- retrying.WriteTable delegates and
+	// a failed attempt adds nothing -- but the invariant needs the position
+	// pinned to mean anything.
+	return core.NewCountingSink(r, o.meterProvider, sink.Type, role), nil
 }
 
 // retriesHelp reports whether a retry ladder belongs around a sink type.
