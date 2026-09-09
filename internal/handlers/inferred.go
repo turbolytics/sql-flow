@@ -36,7 +36,7 @@ type InferredMemBatchHandler struct {
 	// provenance; empty for sources that do not.
 	metadata []core.Message
 
-	alloc      *memory.GoAllocator
+	alloc      memory.Allocator
 	conn       adbc.Connection
 	ingestStmt adbc.Statement
 	logger     *zap.Logger
@@ -196,8 +196,12 @@ func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, erro
 		records = append(records, rec)
 	}
 
+	// NewTableFromRecords returns the table holding one reference, and the
+	// records are retained by the table's columns, so releasing them here
+	// leaves the table as the sole owner. Retaining the table again here
+	// leaked every batch: the caller releases once, the count never reached
+	// zero, and the native Arrow buffers behind each row were never freed.
 	result := array.NewTableFromRecords(reader.Schema(), records)
-	result.Retain()
 
 	for _, rec := range records {
 		rec.Release()
