@@ -747,6 +747,58 @@ def read_status(directory):
     return status
 
 
+def page_snapshot(features, invariants, integrations, status):
+    """The page's input: the same entries the full snapshot carries, built
+    from the status files and the registries instead of from test reports.
+
+    A row the status directory lacks reads as missing where the registry
+    requires it: a feature added before the next generation renders honestly
+    rather than crashing the page, and the gate's staleness check is what
+    catches the directory being behind.
+    """
+    out = {"features": [], "gaps": [], "invariants": [], "invariant_gaps": []}
+
+    for feature in features:
+        required = set(feature.get("requires", []))
+        rows = status["features"].get(feature["id"], {})
+        levels = {}
+        for lvl in LEVELS:
+            fallback = "missing" if lvl in required else "not_required"
+            levels[lvl] = {"status": rows.get(lvl, fallback)}
+        out["features"].append({
+            "id": feature["id"],
+            "description": feature["description"],
+            "requires": sorted(required),
+            "levels": levels,
+        })
+    out["gaps"] = feature_gaps(out["features"])
+
+    kinds = by_kind(integrations)
+    exemptions = exemptions_of(integrations)
+    for inv in invariants:
+        entry = declare(inv)
+        for integ in kinds.get(inv["applies_to"], []):
+            # The registry is the declaration. A status row that disagrees
+            # with an exemption is stale, and the gate reports that; the
+            # page does not repeat the disagreement.
+            if (inv["id"], integ["id"]) in exemptions:
+                levels = {lvl: {"status": "exempt"} for lvl in LEVELS}
+            else:
+                rows = status["integrations"].get(integ["id"], {}).get(inv["id"], {})
+                levels = {lvl: {"status": rows.get(lvl, "missing")} for lvl in LEVELS}
+            entry["integrations"][integ["id"]] = levels
+        out["invariants"].append(entry)
+    out["invariant_gaps"] = invariant_gaps(out["invariants"])
+
+    return out
+
+
+def render_page(features, invariants, integrations, status):
+    """matrix.md, from committed files alone."""
+    ps = page_snapshot(features, invariants, integrations, status)
+    return render(ps) + "\n" + render_invariants(ps)
+
+
 def status(entries):
     """A level is covered only if something there actually ran and passed."""
     if not entries:
@@ -837,7 +889,7 @@ def render(snap):
     lines = [
         "# Feature coverage matrix",
         "",
-        "Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.",
+        "Generated from `docs/coverage/status/` by `make coverage-page`.",
         "Do not edit by hand.",
         "",
         "Features are declared in `docs/coverage/features.yml`. A test attaches",
@@ -853,23 +905,19 @@ def render(snap):
         "a pass is how `sink.iceberg` shipped for months without ever being",
         "written to.",
         "",
-        "The Tests column counts what attributes to the feature, so a thinly",
-        "covered one is visible at a glance. `docs/coverage/matrix.json`",
-        "names every one of them.",
+        "Only statuses are committed. Test names and counts are in the coverage",
+        "report CI publishes on every run: they change whenever a test is",
+        "added, and this page changes only when a status does.",
         "",
-        "| Feature | What it does | " + " | ".join(LEVELS) + " | Tests |",
-        "| --- | --- | " + " | ".join("---" for _ in LEVELS) + " | --- |",
+        "| Feature | What it does | " + " | ".join(LEVELS) + " |",
+        "| --- | --- | " + " | ".join("---" for _ in LEVELS) + " |",
     ]
 
     for feature in snap["features"]:
         cells = " | ".join(MARK[feature["levels"][lvl]["status"]]
                            for lvl in LEVELS)
-        count = sum(len(feature["levels"][lvl].get("tests", []))
-                    for lvl in LEVELS)
         lines.append(
-            f"| `{feature['id']}` | {feature['description']} | "
-            f"{cells} | {count or '—'} |"
-        )
+            f"| `{feature['id']}` | {feature['description']} | {cells} |")
 
     covered = sum(
         1 for f in snap["features"]
@@ -919,27 +967,6 @@ def render(snap):
                 "",
             ]
 
-        argument = strongest_argument(snap)
-        if argument:
-            feature, tests, invariant, proven, applicable = argument
-            lines += [
-                "## Why invariants, and not the test count",
-                "",
-                f"`{feature}` carries {tests} attributed tests, more than anything",
-                f"else in the `{domain(feature)}` layer. `{invariant}`, an invariant",
-                f"of that same layer, is proven on {proven} of the {applicable}",
-                "integrations it applies to.",
-                "",
-                "Those two numbers are the argument. Tests accumulate around the",
-                "code that was written; an invariant is the claim that code exists",
-                "to uphold. A suite can exercise a retry ladder in every direction",
-                "and never ask whether the sink underneath keeps the rows the",
-                "ladder re-sends -- and if it does not, every one of those tests",
-                "passes while the pipeline loses data. The feature table calls that",
-                "covered. This one does not.",
-                "",
-            ]
-
     if snap["gaps"]:
         lines += ["## Gaps", "",
                   "These fail `make coverage-matrix`. There is no baseline: a gap",
@@ -949,48 +976,6 @@ def render(snap):
             lines.append(
                 f"- `{gap['feature']}` requires **{gap['level']}** coverage "
                 f"and is *{gap['status']}*.")
-        lines.append("")
-
-    # Secondary attribution is visible on purpose. One test per feature is the
-    # goal; a feature every test claims second is one no test is about, and
-    # this is where that shows.
-    by_marker = []
-    for feature in snap["features"]:
-        for level in LEVELS:
-            cell = feature["levels"][level]
-            tests = cell.get("tests", [])
-            if tests and len(cell.get("by_marker", [])) == len(tests):
-                by_marker.append((feature["id"], level, tests))
-    if by_marker:
-        lines += [
-            "## Covered only by another test's marker",
-            "",
-            "Every test that covers these claims something else first. That is",
-            "legitimate for a capability an end-to-end run proves in passing, and",
-            "a smell for one that deserves a test of its own.",
-            "",
-        ]
-        for fid, level, names in by_marker:
-            lines.append(f"- `{fid}` ({level}) — via {', '.join(f'`{n}`' for n in names)}")
-        lines.append("")
-
-    for level in LEVELS:
-        names = snap["unattributed"].get(level, [])
-        if names:
-            lines += [
-                f"## Unattributed {level} tests ({len(names)})",
-                "",
-                "These carry no `coverage.Covers` marker, so they cover nothing.",
-                "Add the marker, or add the feature to `features.yml` first.",
-                "",
-            ]
-            lines += [f"- `{n}`" for n in names]
-            lines.append("")
-
-    if snap["unknown_markers"]:
-        lines += ["## Markers naming an unknown feature", ""]
-        for entry in snap["unknown_markers"]:
-            lines.append(f"- `{entry['test']}` marks `{entry['feature']}`")
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -1150,7 +1135,7 @@ def render_invariants(snap):
     lines = [
         "# Invariant matrix",
         "",
-        "Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.",
+        "Generated from `docs/coverage/status/` by `make coverage-page`.",
         "Do not edit by hand.",
         "",
         "Invariants are declared in `docs/coverage/invariants.yml`, integrations",
@@ -1162,9 +1147,9 @@ def render_invariants(snap):
         "A covered cell names the levels that proved it: `u` unit, `i`",
         "integration, `r` release. That is the question the matrix exists to",
         "answer -- proven with a fake, or against the real thing, or in the",
-        "shipped image. **exempt** carries its reason in the JSON, and",
-        "**missing** means no evidence. Nothing here fails the build until an",
-        "invariant's `requires` is filled in, and none is yet.",
+        "shipped image. **exempt** carries its reason in `integrations.yml`,",
+        "and **missing** means no evidence. Nothing here fails the build until",
+        "an invariant's `requires` is filled in, and none is yet.",
         "",
     ]
 
@@ -1244,13 +1229,6 @@ def render_invariants(snap):
             lines.append(
                 f"- `{gap['invariant']}` on `{gap['integration']}` requires "
                 f"**{gap['level']}** and is *{gap['status']}*.")
-        lines.append("")
-
-    if snap["unknown_invariant_markers"]:
-        lines += ["## Markers naming an unknown invariant or integration", ""]
-        for entry in snap["unknown_invariant_markers"]:
-            lines.append(f"- `{entry['test']}` marks `{entry['invariant']}` "
-                         f"on `{entry['integration']}`")
         lines.append("")
 
     return "\n".join(lines) + "\n"
