@@ -196,11 +196,23 @@ jobs:
       - name: Check the coverage matrix
         run: make coverage-check
 
-      # The matrix is the diff a reviewer reads. When the check fails because
-      # it is stale, the regenerated file is more useful than the log line.
-      - name: Upload the regenerated matrix
-        if: failure()
+      # The report carries every test name and count, which left the committed
+      # page so that a PR adding a test changes nothing under docs/coverage.
+      # Published on every run, not only on failure, or the names live nowhere.
+      - name: Publish the coverage report
+        if: always()
+        run: |
+          if [ -f .coverage/report.md ]; then
+            cat .coverage/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the coverage report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-matrix
-          path: docs/coverage/
+          name: coverage-report
+          path: |
+            .coverage/matrix.json
+            .coverage/report.md
+            docs/coverage/status/
+            docs/coverage/matrix.md
