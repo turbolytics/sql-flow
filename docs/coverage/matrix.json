@@ -1276,6 +1276,7 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestDLQRowsCarryTheDLQRole",
             "TestExportedSeriesNames",
             "TestObservabilityMetrics_StateGaugesNoProviderRecordsNothing",
             "TestObservabilityMetrics_StateGaugesReportsSizeAndRows",
@@ -1284,7 +1285,8 @@
             "TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase",
             "TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure",
             "TestObservabilityMetrics_StatsHandler_ReportsState",
-            "TestStateCommitLatencyUnitIsNameNeutral"
+            "TestStateCommitLatencyUnitIsNameNeutral",
+            "TestWindowManagerRowsAreCounted"
           ]
         },
         "integration": {

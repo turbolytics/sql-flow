@@ -49,7 +49,7 @@ names every one of them.
 | `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | 16 |
 | `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 45 |
 | `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 73 |
-| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 9 |
+| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 11 |
 | `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — | 7 |
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
