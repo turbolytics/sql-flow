@@ -89,7 +89,9 @@ coverage-matrix: sqlflow-image
 .PHONY: schema
 schema:
 	UPDATE_GOLDEN=1 go test ./internal/schema/ -run TestConfigSchema_CommittedFileMatchesTheTypes
+	UPDATE_GOLDEN=1 go test ./internal/cli/ -run TestConfigValidation_ExampleMatchesPythonOutput
 	@echo "regenerated internal/validate/schemas/config.json"
+	@echo "regenerated internal/cli/testdata/config_example.golden"
 
 # Renders the matrix from reports that already exist. Runs no tests.
 .PHONY: coverage-write

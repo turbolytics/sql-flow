@@ -9,6 +9,7 @@ import (
 
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	tkafka "github.com/turbolytics/sql-flow/internal/kafka"
 	"github.com/turbolytics/sql-flow/internal/webhook"
 	"github.com/turbolytics/sql-flow/internal/websocket"
 	"github.com/zeebo/assert"
@@ -111,4 +112,65 @@ func TestSinkRetry_NewUnsupportedSource(t *testing.T) {
 	coverage.Covers(t, "sink.retry")
 	_, err := New(config.Source{Type: "carrier-pigeon"}, zap.NewNop(), nil)
 	assert.Error(t, err)
+}
+
+// The fetch block has to reach franz-go and the source, or it is a setting
+// that validates and does nothing. The depth is the read-ahead bound.
+func TestSourceKafka_NewAppliesTheFetchBlock(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	s, err := New(config.Source{
+		Type: "kafka",
+		Kafka: &config.KafkaSource{
+			Brokers:         []string{"localhost:9092"},
+			GroupID:         "g",
+			AutoOffsetReset: "earliest",
+			Topics:          []string{"t"},
+			Fetch:           &config.KafkaFetch{Prefetch: 7},
+		},
+	}, zap.NewNop(), nil)
+	assert.NoError(t, err)
+
+	src, ok := s.(*tkafka.Source)
+	assert.That(t, ok)
+	assert.Equal(t, 7, src.ChannelBuffer())
+	assert.NoError(t, src.Close())
+}
+
+// An absent block is the default depth, not the unbounded 100 the source
+// carried before the block existed.
+func TestSourceKafka_NewWithoutAFetchBlockIsBounded(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	s, err := New(config.Source{
+		Type: "kafka",
+		Kafka: &config.KafkaSource{
+			Brokers:         []string{"localhost:9092"},
+			GroupID:         "g",
+			AutoOffsetReset: "earliest",
+			Topics:          []string{"t"},
+		},
+	}, zap.NewNop(), nil)
+	assert.NoError(t, err)
+
+	src, ok := s.(*tkafka.Source)
+	assert.That(t, ok)
+	assert.Equal(t, config.DefaultKafkaFetchPrefetch, src.ChannelBuffer())
+	assert.NoError(t, src.Close())
+}
+
+// A bound that cannot hold fails when the pipeline is built, before it
+// consumes anything, rather than being clamped somewhere inside franz-go.
+func TestSourceKafka_NewRejectsAnImpossibleFetchBlock(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	_, err := New(config.Source{
+		Type: "kafka",
+		Kafka: &config.KafkaSource{
+			Brokers:         []string{"localhost:9092"},
+			GroupID:         "g",
+			AutoOffsetReset: "earliest",
+			Topics:          []string{"t"},
+			Fetch:           &config.KafkaFetch{MaxBytes: 1 << 20, MaxPartitionBytes: 2 << 20},
+		},
+	}, zap.NewNop(), nil)
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "max_partition_bytes"))
 }
