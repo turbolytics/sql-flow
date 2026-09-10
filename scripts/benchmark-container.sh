@@ -69,6 +69,21 @@ echo ""
 echo "--- Running sqlflow in-network (batch_size=$BATCH_SIZE, group=$GROUP_ID, state=${STATE_PATH:-memory}) ---"
 echo ""
 
+# Every other SQLFLOW_ variable in the caller's environment is forwarded, so a
+# config templated on one can be swept from outside the script. The five below
+# are set here and win. Without this a sweep of, say, SQLFLOW_PREFETCH renders
+# its default in every run and the runs come out identical.
+extra_env=()
+while IFS='=' read -r name _; do
+    case "$name" in
+        SQLFLOW_KAFKA_BROKERS|SQLFLOW_DUCKDB_LIB|SQLFLOW_GROUP_ID|SQLFLOW_TOPIC|SQLFLOW_BATCH_SIZE|SQLFLOW_STATE_PATH|SQLFLOW_PYTHON) continue ;;
+        SQLFLOW_*) extra_env+=(-e "$name=${!name}") ;;
+    esac
+done < <(env)
+if [ ${#extra_env[@]} -gt 0 ]; then
+    echo "Forwarding: ${extra_env[*]}"
+fi
+
 docker run --rm --network "$NETWORK" \
     -v "$PWD/bin/sqlflow-linux":/sqlflow \
     -v "$PWD/bin/libduckdb-linux.so":/duckdb/libduckdb.so \
@@ -79,6 +94,7 @@ docker run --rm --network "$NETWORK" \
     -e SQLFLOW_TOPIC="$TOPIC" \
     -e SQLFLOW_BATCH_SIZE="$BATCH_SIZE" \
     -e SQLFLOW_STATE_PATH="$STATE_PATH" \
+    ${extra_env[@]+"${extra_env[@]}"} \
     "$RUN_IMAGE" \
     sh -c '
         # Two memory numbers, sampled at 100ms because memory.peak needs
