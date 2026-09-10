@@ -515,6 +515,47 @@ def test_the_committed_registries_load_and_validate():
         "sink", "source", "handler", "pipeline"}
 
 
+# --- Gaps are a function of statuses -----------------------------------------
+#
+# The page will build entries from status files rather than from test
+# reports, and it must reach the same gaps. So a gap is computed from an
+# entry's statuses and its requires, by one function both paths call.
+
+def test_feature_gaps_reads_only_status_and_requires():
+    entries = [{
+        "id": "sink.clickhouse", "requires": ["unit", "release"],
+        "levels": {"unit": {"status": "covered"},
+                   "integration": {"status": "not_required"},
+                   "release": {"status": "skipped"}},
+    }]
+    assert cm.feature_gaps(entries) == [
+        {"feature": "sink.clickhouse", "level": "release", "status": "skipped"}]
+
+
+def test_invariant_gaps_skips_an_exempt_cell():
+    entries = [{
+        "id": "sink.flush.keeps_batch", "requires": ["unit"], "enforced": True,
+        "integrations": {
+            "sink.console": {lvl: {"status": "exempt"} for lvl in cm.LEVELS},
+            "sink.clickhouse": {lvl: {"status": "missing"} for lvl in cm.LEVELS},
+        },
+    }]
+    gaps = cm.invariant_gaps(entries)
+    assert {"invariant": "sink.flush.keeps_batch", "integration": "sink.clickhouse",
+            "level": "unit", "status": "missing"} in gaps
+    assert {"invariant": "sink.flush.keeps_batch", "integration": "sink.clickhouse",
+            "level": "any", "status": "missing"} in gaps
+    assert not any(g["integration"] == "sink.console" for g in gaps)
+
+
+def test_declare_carries_the_declaration_and_nothing_else():
+    entry = cm.declare(dict(INVARIANTS[0], claim="a claim\nwrapped", tracked_by="#1"))
+    assert entry["claim"] == "a claim wrapped"
+    assert entry["tracked_by"] == "#1"
+    assert entry["integrations"] == {}
+    assert "violated_once" not in entry
+
+
 def test_every_committed_invariant_is_unenforced_in_this_revision():
     """This revision reports and fails nothing. Filling in a requires is a
     later change, and legal only once every non-exempt integration has a

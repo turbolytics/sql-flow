@@ -516,46 +516,16 @@ def snapshot_invariants(invariants, integrations, built):
     reason, so a reader never has to open a second file to learn why a cell is
     blank.
     """
-    by_kind = {}
-    for integ in integrations:
-        # test_only integrations get no cells. Their markers are known, so the
-        # harness's doubles are not reported as unknown, and they credit
-        # nothing.
-        if integ.get("test_only"):
-            continue
-        by_kind.setdefault(integ["kind"], []).append(integ)
-
-    exemptions = {
-        (ex["invariant"], integ["id"]): ex
-        for integ in integrations
-        for ex in integ.get("exempt", [])
-    }
+    kinds = by_kind(integrations)
+    exemptions = exemptions_of(integrations)
 
     out = {"invariants": [], "invariant_gaps": [], "unknown_invariant_markers": []}
 
     for inv in invariants:
-        required = set(inv.get("requires", []))
-        entry = {
-            "id": inv["id"],
-            "family": inv["family"],
-            "applies_to": inv["applies_to"],
-            # The YAML folds long claims onto several lines; one space between
-            # words keeps the JSON diff stable when the wrapping changes.
-            "claim": " ".join(inv["claim"].split()),
-            "verified_by": inv["verified_by"],
-            "class": inv["class"],
-            "requires": sorted(required),
-            "enforced": bool(inv.get("enforced")),
-            "integrations": {},
-        }
-        if inv.get("tracked_by"):
-            entry["tracked_by"] = inv["tracked_by"]
-        if inv.get("violated_once"):
-            entry["violated_once"] = list(inv["violated_once"])
+        entry = declare(inv)
 
-        for integ in by_kind.get(inv["applies_to"], []):
+        for integ in kinds.get(inv["applies_to"], []):
             exemption = exemptions.get((inv["id"], integ["id"]))
-            reason = exemption  # None when the integration must prove it
             levels = {}
             for level in LEVELS:
                 if exemption is not None:
@@ -582,31 +552,11 @@ def snapshot_invariants(invariants, integrations, built):
                         cell[key] = members
                 levels[level] = cell
 
-                if level in required and state != "covered":
-                    out["invariant_gaps"].append({
-                        "invariant": inv["id"],
-                        "integration": integ["id"],
-                        "level": level,
-                        "status": state,
-                    })
-
-            # An enforced invariant must be proven somewhere, and the level is
-            # not the claim's business: ClickHouse and Kafka need a container,
-            # console and sqlcommand fail in-process. Demanding a named level
-            # would force a container on a sink that needs none, or accept a
-            # fake for one that does.
-            if inv.get("enforced") and reason is None:
-                if not any(c["status"] == "covered" for c in levels.values()):
-                    out["invariant_gaps"].append({
-                        "invariant": inv["id"],
-                        "integration": integ["id"],
-                        "level": "any",
-                        "status": cell_state(levels),
-                    })
-
             entry["integrations"][integ["id"]] = levels
 
         out["invariants"].append(entry)
+
+    out["invariant_gaps"] = invariant_gaps(out["invariants"])
 
     # Sorted as tuples. Sorting dicts raises TypeError past one element, which
     # is what the feature half's unknown_markers does today.
@@ -614,6 +564,92 @@ def snapshot_invariants(invariants, integrations, built):
         {"test": t, "invariant": i, "integration": g}
         for t, i, g in sorted(set(built["unknown"]))
     ]
+    return out
+
+
+def feature_gaps(entries):
+    """A required level that is not covered, for every feature entry.
+
+    Reads statuses and `requires` only, so the page can compute the same
+    gaps from the committed status files that the gate computes from the
+    test reports.
+    """
+    gaps = []
+    for entry in entries:
+        for level in LEVELS:
+            state = entry["levels"][level]["status"]
+            if level in entry["requires"] and state != "covered":
+                gaps.append({"feature": entry["id"], "level": level, "status": state})
+    return gaps
+
+
+def invariant_gaps(entries):
+    """A required level that is not covered, and an enforced invariant with
+    no covered level at all, for every non-exempt cell.
+
+    An enforced invariant must be proven somewhere, and the level is not the
+    claim's business: ClickHouse and Kafka need a container, console and
+    sqlcommand fail in-process. Demanding a named level would force a
+    container on a sink that needs none, or accept a fake for one that does.
+    """
+    gaps = []
+    for entry in entries:
+        required = set(entry["requires"])
+        for iid, levels in entry["integrations"].items():
+            if cell_state(levels) == "exempt":
+                continue
+            for level in LEVELS:
+                state = levels[level]["status"]
+                if level in required and state != "covered":
+                    gaps.append({"invariant": entry["id"], "integration": iid,
+                                 "level": level, "status": state})
+            if entry.get("enforced") and not any(
+                    c["status"] == "covered" for c in levels.values()):
+                gaps.append({"invariant": entry["id"], "integration": iid,
+                             "level": "any", "status": cell_state(levels)})
+    return gaps
+
+
+def declare(inv):
+    """The declaration half of an invariant entry, without its cells."""
+    entry = {
+        "id": inv["id"],
+        "family": inv["family"],
+        "applies_to": inv["applies_to"],
+        # The YAML folds long claims onto several lines; one space between
+        # words keeps the output stable when the wrapping changes.
+        "claim": " ".join(inv["claim"].split()),
+        "verified_by": inv["verified_by"],
+        "class": inv["class"],
+        "requires": sorted(inv.get("requires", [])),
+        "enforced": bool(inv.get("enforced")),
+        "integrations": {},
+    }
+    if inv.get("tracked_by"):
+        entry["tracked_by"] = inv["tracked_by"]
+    if inv.get("violated_once"):
+        entry["violated_once"] = list(inv["violated_once"])
+    return entry
+
+
+def exemptions_of(integrations):
+    """(invariant, integration) -> the exemption the registry declares."""
+    return {
+        (ex["invariant"], integ["id"]): ex
+        for integ in integrations
+        for ex in integ.get("exempt", [])
+    }
+
+
+def by_kind(integrations):
+    """kind -> the integrations that get cells. test_only ones get none: their
+    markers are known, so the harness's doubles are not reported as unknown,
+    and they credit nothing."""
+    out = {}
+    for integ in integrations:
+        if integ.get("test_only"):
+            continue
+        out.setdefault(integ["kind"], []).append(integ)
     return out
 
 
@@ -691,12 +727,9 @@ def snapshot(features, coverage, secondary, unmatched, unknown_markers):
                     cell[key] = members
             entry["levels"][level] = cell
 
-            if level in required and state != "covered":
-                out["gaps"].append(
-                    {"feature": fid, "level": level, "status": state})
-
         out["features"].append(entry)
 
+    out["gaps"] = feature_gaps(out["features"])
     out["unattributed"] = {lvl: sorted(names) for lvl, names in unmatched.items()}
     out["unknown_markers"] = sorted(
         {"test": t, "feature": f} for t, f in unknown_markers
