@@ -6,7 +6,7 @@
 # fix.
 #
 # `applies_to` is the interface the invariant is a property of. Every
-# integration of that kind must prove it, or be exempt in integrations.yml
+# integration of that kind must prove it, or be exempt in the registry
 # with a reason.
 #
 # `verified_by` says how evidence attaches:

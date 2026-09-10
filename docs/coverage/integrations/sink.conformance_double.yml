@@ -1,0 +1,15 @@
+# The conformance harness's own doubles run under this id.
+#
+# They must name an integration, because a marker carries one. Naming a real
+# sink would credit that sink for what a double did, and it would force
+# exemptions onto a customer-facing sink for reasons that have nothing to do
+# with its contract: the first invariant NoopSink genuinely satisfies would
+# have to be exempted anyway, hiding real coverage.
+#
+# test_only keeps it out of the matrix. Its markers are known, so they are
+# not reported as unknown, and they land on no cell.
+id: sink.conformance_double
+kind: sink
+test_only: true
+implements: [Sink]
+exempt: []

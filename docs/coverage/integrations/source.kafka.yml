@@ -1,0 +1,5 @@
+id: source.kafka
+kind: source
+implements: [Source, MarkCommitter]
+feature: source.kafka
+exempt: []

@@ -41,7 +41,7 @@ type Row map[string]any
 
 // SinkSubject is what an integration hands the harness.
 type SinkSubject struct {
-	// Integration is the integrations.yml id, e.g. "sink.clickhouse".
+	// Integration is the registry id, e.g. "sink.clickhouse".
 	Integration string
 
 	// New builds the sink under test. Called once per sequence.
@@ -50,7 +50,7 @@ type SinkSubject struct {
 	// Break makes the destination stop answering.
 	//
 	// Nil means the integration has nothing that can break, and the
-	// network-shaped invariants are skipped. integrations.yml must then
+	// network-shaped invariants are skipped. The registry must then
 	// exempt it with a reason, or the cell stays missing: the harness
 	// skipping and the registry excusing are two statements that must agree.
 	Break func(t *testing.T)
@@ -69,7 +69,7 @@ type SinkSubject struct {
 	// in data-file order, and a ClickHouse MergeTree returns them in its
 	// ORDER BY key order, so both would satisfy preserves_order while
 	// preserving nothing. The harness skips that claim rather than reading a
-	// sorted list as evidence, and integrations.yml must carry the exemption.
+	// sorted list as evidence, and the registry must carry the exemption.
 	OrderedReadBack bool
 
 	// Table returns a one-row table with an int64 "id" column that the
@@ -249,7 +249,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 
 	if s.Break == nil {
 		skip := "the subject has nothing to break; exempt " +
-			s.Integration + " in integrations.yml"
+			s.Integration + " in its docs/coverage/integrations file"
 		return []verdict{
 			{invariant: emptyIsNoop, skipped: skip},
 			{invariant: buffersOnly, skipped: skip},
@@ -332,7 +332,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	reporter, reports := sink.(core.BufferedRowReporter)
 	if !reports {
 		depth.skipped = s.Integration + " reports no buffer depth; exempt it " +
-			"in integrations.yml or implement core.BufferedRowReporter"
+			"in its integrations file or implement core.BufferedRowReporter"
 	} else if n := reporter.BufferedRows(); n != 1 {
 		depth.failure = "reports " + strconv.Itoa(n) +
 			" buffered rows after one WriteTable; want 1"
@@ -409,7 +409,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		// not.
 		honours.skipped = s.Integration + " fails a flush before its context " +
 			"expires, so no deadline was reached to honour; exempt it in " +
-			"integrations.yml or give it a fault that hangs"
+			"its integrations file or give it a fault that hangs"
 	case !errors.Is(err, context.DeadlineExceeded):
 		honours.failure = "Flush returned " + err.Error() +
 			", which does not wrap context.DeadlineExceeded; a caller cannot " +
@@ -553,7 +553,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	case !s.OrderedReadBack:
 		order.skipped = s.Integration + " reads its destination back in an " +
 			"order that is not the order rows arrived in, so this cannot be " +
-			"judged; exempt it in integrations.yml"
+			"judged; exempt it in its docs/coverage/integrations file"
 	case keeps.failure != "":
 		order.skipped = "rows were lost, so there is no order to judge"
 	default:
@@ -584,7 +584,7 @@ func startAndStop(t *testing.T, s SinkSubject) []verdict {
 
 	if p, ok := fresh.(prober); !ok {
 		probes.skipped = s.Integration + " implements no Prober, so there is " +
-			"no start-time check to fail; exempt it in integrations.yml"
+			"no start-time check to fail; exempt it in its integrations file"
 	} else {
 		// The deadline is the probe's bound, and reaching it is a legitimate
 		// way to fail: against a destination that hangs, nothing else can end
@@ -614,7 +614,7 @@ func startAndStop(t *testing.T, s SinkSubject) []verdict {
 
 	if c, ok := fresh.(io.Closer); !ok {
 		closes.skipped = s.Integration + " implements no Close, so there is " +
-			"nothing to close twice; exempt it in integrations.yml"
+			"nothing to close twice; exempt it in its integrations file"
 	} else {
 		_ = c.Close()
 		if err := c.Close(); err != nil {

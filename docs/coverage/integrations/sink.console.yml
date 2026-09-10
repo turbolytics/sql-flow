@@ -1,0 +1,18 @@
+id: sink.console
+kind: sink
+implements: [Sink]
+feature: sink.console
+exempt:
+  - invariant: sink.probe.fails_start
+    reason: implements no Prober, so there is no start-time check to fail
+    proven_by: TestSinkConsole_ImplementsNoProber
+  - invariant: sink.flush.honours_context
+    reason: >
+      writes to an io.Writer, which returns or fails immediately; no flush
+      can still be running when a deadline arrives
+    proven_by: TestSinkConsole_FlushCannotOutliveItsContext
+  - invariant: lifecycle.close.idempotent
+    reason: >
+      implements no Close; the io.Writer belongs to its caller and this
+      sink must not close it
+    proven_by: TestSinkConsole_ImplementsNoCloser

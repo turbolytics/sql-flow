@@ -478,6 +478,61 @@ INTEGRATIONS = [
 ]
 
 
+# --- One file per integration -----------------------------------------------
+#
+# integrations.yml was 602 lines, and ClickHouse's type table was 369 of them.
+# An agent adding a webhook exemption read the whole file to find the 25 lines
+# it needed, and two branches that each touched a different integration
+# conflicted on one file. Everything about one integration now lives in
+# docs/coverage/integrations/<id>.yml, beside its status file of the same name.
+
+def test_load_integrations_reads_every_file_in_the_directory(tmp_path):
+    (tmp_path / "sink.b.yml").write_text("id: sink.b\nkind: sink\n")
+    (tmp_path / "sink.a.yml").write_text("id: sink.a\nkind: sink\n")
+    (tmp_path / "README.md").write_text("not an entry\n")
+
+    entries = cm.load_integrations(str(tmp_path))
+    assert [e["id"] for e in entries] == ["sink.a", "sink.b"]
+
+
+def test_load_integrations_stamps_the_file_each_entry_came_from(tmp_path):
+    """validate_registries holds the name and the id equal, and it is handed
+    entries rather than a directory, so the entry has to carry its origin."""
+    (tmp_path / "sink.a.yml").write_text("id: sink.a\nkind: sink\n")
+    assert cm.load_integrations(str(tmp_path))[0]["source_file"] == "sink.a.yml"
+
+
+def test_validate_rejects_a_file_whose_name_and_id_disagree():
+    """The filename is the id. A file that says otherwise is a rename half
+    done, and the entry it declares would go looking for the wrong status
+    file."""
+    bad = [dict(INTEGRATIONS[0], source_file="sink.clickhosue.yml")]
+    problems = cm.validate_registries(INVARIANTS, bad, FEATURES)
+    assert any("sink.clickhosue.yml" in p and "sink.clickhouse" in p
+               for p in problems)
+
+
+def test_validate_accepts_a_file_named_for_its_id():
+    ok = [dict(INTEGRATIONS[0], source_file="sink.clickhouse.yml")]
+    assert cm.validate_registries(INVARIANTS, ok, FEATURES) == []
+
+
+def test_every_committed_integration_is_its_own_file():
+    """One file per integration, named for it. A reader of one integration
+    opens one file, and two branches touching different integrations do not
+    conflict."""
+    for integ in cm.load_integrations():
+        assert integ["source_file"] == f"{integ['id']}.yml", integ["id"]
+
+
+def test_the_integration_and_status_directories_agree():
+    """Everything about one integration is two files of the same name: what
+    it declares, and where it stands."""
+    declared = {i["id"] for i in cm.load_integrations()}
+    status = set(cm.read_status(cm.STATUS_DIR)["integrations"])
+    assert status <= declared
+
+
 def test_the_committed_registries_load_and_validate():
     """The real files, not fixtures: a typo in either fails here before it can
     fail in CI."""

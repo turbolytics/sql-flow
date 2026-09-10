@@ -1,0 +1,9 @@
+id: pipeline.stateless
+kind: pipeline
+constructed: false
+implements: [Source, Sink, Handler]
+feature: core.consume_loop
+exempt:
+  - invariant: pipeline.state.with_offsets
+    reason: keeps no durable state, so there is nothing to commit with the offsets
+    proven_by: TestPipelineStateless_KeepsNoDurableState

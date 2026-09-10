@@ -1,0 +1,364 @@
+id: sink.clickhouse
+kind: sink
+implements: [Sink, Prober]
+feature: sink.clickhouse
+exempt: []
+# Arrow key -> what the sink does with it. Keys come from lattice.yml and
+# are conformance.CanonicalKey's output.
+#
+# `columns` are the ClickHouse column types that accept the key. Every one
+# is exercised, and the cell is covered only when all of them pass. That
+# list is what the integration page publishes.
+#
+# Written by hand from reading internal/sinks/clickhouse.go, never
+# generated from it: a table derived from the sink can never report that
+# the sink is missing a type, and the types it is missing are the point.
+# A row the runner disagrees with is a finding, not a test to relax.
+types:
+  bool:
+    outcome: exact
+    # Both columns hold what was written; only the rendering differs.
+    columns:
+      - type: Bool
+        expect: "true"
+      - type: UInt8
+        expect: "1"
+  int8:
+    outcome: exact
+    columns:
+      - type: Int8
+        expect: "-128"
+  int16:
+    outcome: exact
+    columns:
+      - type: Int16
+        expect: "-32768"
+  int32:
+    outcome: exact
+    columns:
+      - type: Int32
+        expect: "-2147483648"
+  int64:
+    outcome: exact
+    columns:
+      - type: Int64
+        expect: "-9223372036854775808"
+  uint8:
+    outcome: exact
+    columns:
+      - type: UInt8
+        expect: "255"
+  uint16:
+    outcome: exact
+    columns:
+      - type: UInt16
+        expect: "65535"
+  uint32:
+    outcome: exact
+    columns:
+      - type: UInt32
+        expect: "4294967295"
+  uint64:
+    outcome: exact
+    columns:
+      - type: UInt64
+        expect: "18446744073709551615"
+  float32:
+    outcome: exact
+    columns:
+      - type: Float32
+        expect: "3.4028235e38"
+  float64:
+    outcome: exact
+    columns:
+      - type: Float64
+        expect: "1.7976931348623157e308"
+  # The universal text carrier, and the row that makes the pair the unit
+  # rather than the key. ClickHouse reparses text into a UUID, a Decimal
+  # and an Enum, and each demands different content, so a column entry may
+  # override the value the lattice sends.
+  utf8:
+    outcome: exact
+    columns:
+      - type: String
+        expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
+      - type: LowCardinality(String)
+        expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
+      # #153's shape: a timestamp the handler passed through without a
+      # CAST, so it arrives as text and lands in a temporal column. No
+      # Arrow key describes that pairing. clickhouse-go parses a zone-less
+      # string in time.Local, so the stored value moved with the host until
+      # the sink began parsing these itself; `instant` is what puts this
+      # pair under the shifted clock.
+      - type: "DateTime64(3)"
+        value: "2026-09-01 12:00:00.123"
+        expect: "2026-09-01 12:00:00.123"
+        instant: true
+      # The destinations that parse the text rather than storing it. The
+      # hand-written page has claimed all of these since it was measured
+      # by hand, and nothing had ever written one: the value belonged to
+      # the Arrow key, and utf8 already carried the hostile string
+      # type.string.fidelity needs.
+      #
+      # Decimal matters most. The type is unsupported natively, so the
+      # string form is the only route to a Decimal column at all.
+      # The enum carries a member at 0 deliberately. A null into a
+      # non-Nullable Enum stores the column type's zero value like any
+      # other column, but an Enum with no member at 0 cannot render what
+      # it then holds: reading the row fails with UNKNOWN_ELEMENT_OF_ENUM,
+      # so the row is written and unreadable. An Enum that may receive
+      # nulls needs a zero member or Nullable.
+      - type: "Enum8('' = 0, 'a' = 1, 'b' = 2)"
+        value: "a"
+        expect: "a"
+      - type: "FixedString(36)"
+        value: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+        expect: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+      - type: "UUID"
+        value: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+        expect: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+      - type: "IPv4"
+        value: "192.168.1.1"
+        expect: "192.168.1.1"
+      - type: "Decimal(10, 2)"
+        value: "1234.56"
+        expect: "1234.56"
+  binary:
+    outcome: exact
+    # Base64, because the value is bytes rather than text. 0xFF is not a
+    # character, and a UTF-8 file cannot carry it as one: writing "\xff"
+    # here declares code point U+00FF, which is two bytes, and the row
+    # would fail against a sink that stored exactly what it was given.
+    columns:
+      - type: String
+        expect: !!binary AP9/gA==
+  date32:
+    outcome: exact
+    # Date as well as Date32: the hand-written page claimed both, and a
+    # generated page that dropped one would quietly narrow what sqlflow
+    # supports. Date starts at 1970, which this value is well inside.
+    columns:
+      - type: Date
+        expect: "2026-09-08"
+      - type: Date32
+        expect: "2026-09-08"
+  "timestamp[s]":
+    outcome: exact
+    columns:
+      - type: DateTime
+        expect: "2026-09-08 12:00:00"
+  "timestamp[ms]":
+    outcome: exact
+    columns:
+      - type: "DateTime64(3)"
+        expect: "2026-09-08 12:00:00.123"
+  "timestamp[us]":
+    outcome: exact
+    columns:
+      - type: "DateTime64(6)"
+        expect: "2026-09-08 12:00:00.123456"
+  "timestamp[ns]":
+    outcome: exact
+    columns:
+      - type: "DateTime64(9)"
+        expect: "2026-09-08 12:00:00.123456789"
+
+  # #153's defect, stated as an outcome: the instant survives and the zone
+  # does not. The column's own zone governs how the server renders it.
+  "timestamp[us, tz=*]":
+    outcome: coerced
+    rule: stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering
+    columns:
+      - type: "DateTime64(6)"
+        expect: "2026-09-08 12:00:00.123456"
+
+  # #150 added Array(T), the one container the sink converts. Each row's
+  # columns mirror its element's row, because ClickHouse's Array(T) takes
+  # the element type the bare column takes.
+  "list<bool>":
+    outcome: exact
+    columns:
+      - type: "Array(Bool)"
+        expect: "[true,true,true]"
+  "list<int8>":
+    outcome: exact
+    columns:
+      - type: "Array(Int8)"
+        expect: "[-128,-128,-128]"
+  "list<int16>":
+    outcome: exact
+    columns:
+      - type: "Array(Int16)"
+        expect: "[-32768,-32768,-32768]"
+  "list<int32>":
+    outcome: exact
+    columns:
+      - type: "Array(Int32)"
+        expect: "[-2147483648,-2147483648,-2147483648]"
+  "list<int64>":
+    outcome: exact
+    columns:
+      - type: "Array(Int64)"
+        expect: "[-9223372036854775808,-9223372036854775808,-9223372036854775808]"
+  "list<uint8>":
+    outcome: exact
+    columns:
+      - type: "Array(UInt8)"
+        expect: "[255,255,255]"
+  "list<uint16>":
+    outcome: exact
+    columns:
+      - type: "Array(UInt16)"
+        expect: "[65535,65535,65535]"
+  "list<uint32>":
+    outcome: exact
+    columns:
+      - type: "Array(UInt32)"
+        expect: "[4294967295,4294967295,4294967295]"
+  "list<uint64>":
+    outcome: exact
+    columns:
+      - type: "Array(UInt64)"
+        expect: "[18446744073709551615,18446744073709551615,18446744073709551615]"
+  "list<float32>":
+    outcome: exact
+    columns:
+      - type: "Array(Float32)"
+        expect: "[3.4028235e38,3.4028235e38,3.4028235e38]"
+  "list<float64>":
+    outcome: exact
+    columns:
+      - type: "Array(Float64)"
+        expect: "[1.7976931348623157e308,1.7976931348623157e308,1.7976931348623157e308]"
+  "list<utf8>":
+    outcome: exact
+    # toString escapes a quote, a backslash and a tab inside an array
+    # element. The stored value is the canonical string, which the
+    # bare utf8 row and type.string.fidelity both check byte for byte.
+    columns:
+      - type: "Array(String)"
+        expect: '[''L\''Œil 👁 "quoted" back\\slash\ttab'',''L\''Œil 👁 "quoted" back\\slash\ttab'',''L\''Œil 👁 "quoted" back\\slash\ttab'']'
+  # Array(String), not an Array of some binary type: ClickHouse has no
+  # separate binary column, exactly as the bare binary row records.
+  "list<binary>":
+    outcome: exact
+    # Base64 for the same reason the bare binary row uses it, with one
+    # addition: ClickHouse renders an array element's NUL as the two
+    # characters \0 and leaves the other bytes raw, so the expectation
+    # mixes literal backslashes with bytes no UTF-8 file can carry.
+    columns:
+      - type: "Array(String)"
+        expect: !!binary WydcMP9/gCcsJ1ww/3+AJywnXDD/f4AnXQ==
+  "list<date32>":
+    outcome: exact
+    columns:
+      - type: "Array(Date32)"
+        expect: "['2026-09-08','2026-09-08','2026-09-08']"
+  "list<timestamp[s]>":
+    outcome: exact
+    columns:
+      - type: "Array(DateTime)"
+        expect: "['2026-09-08 12:00:00','2026-09-08 12:00:00','2026-09-08 12:00:00']"
+  "list<timestamp[ms]>":
+    outcome: exact
+    columns:
+      - type: "Array(DateTime64(3))"
+        expect: "['2026-09-08 12:00:00.123','2026-09-08 12:00:00.123','2026-09-08 12:00:00.123']"
+  "list<timestamp[us]>":
+    outcome: exact
+    columns:
+      - type: "Array(DateTime64(6))"
+        expect: "['2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456']"
+  "list<timestamp[ns]>":
+    outcome: exact
+    columns:
+      - type: "Array(DateTime64(9))"
+        expect: "['2026-09-08 12:00:00.123456789','2026-09-08 12:00:00.123456789','2026-09-08 12:00:00.123456789']"
+  "list<timestamp[us, tz=*]>":
+    outcome: coerced
+    rule: stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering
+    columns:
+      - type: "Array(DateTime64(6))"
+        expect: "['2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456','2026-09-08 12:00:00.123456']"
+
+  # goElemType recurses, so a nested list becomes [][]T rather than a
+  # slice the driver rejects.
+  "list<list<int64>>":
+    outcome: exact
+    columns:
+      - type: "Array(Array(Int64))"
+        expect: "[[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808]]"
+
+  # A list does not launder its element. arrowListValue recurses into
+  # arrowValue for each one, so an element the sink cannot convert fails
+  # the batch from inside the Array exactly as it does on its own.
+  "list<decimal(*, *)>":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  "list<time64[us]>":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  "list<struct>":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+
+  # arrowValue has no case for these, so each falls to its default at
+  # clickhouse.go:404. HUGEINT is the one a user reaches by accident:
+  # DuckDB promotes integer overflow to it, and it arrives as a decimal.
+  "decimal(*, *)":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  "time64[us]":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  "time64[ns]":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  month_day_nano_interval:
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  "fixed_size_list<int32>[3]":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  struct:
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  map:
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  sparse_union:
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  dictionary:
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+# What a null does, stated once for every type rather than per row: the
+# answer is a property of the destination column, not of the Arrow type.
+#
+# `default` is the non-Nullable case, which is what every column in the
+# table above is. ClickHouse raises nothing and stores the column type's
+# zero value, and it does not evaluate the column's DEFAULT expression,
+# because sqlflow names every produced column in the INSERT.
+nulls:
+  default:
+    outcome: coerced
+    rule: the column type's zero value; the DEFAULT expression is not evaluated because every produced column is named in the INSERT
+  # The third null position, and the one the published page does not
+  # mention. arrowListValue appends the element type's zero value at
+  # clickhouse.go:429-431, so [1, null, 3] lands as [1, 0, 3] with no
+  # error and no log line.
+  list_element:
+    outcome: coerced
+    rule: the element type's zero value, because ClickHouse's Array(T) holds no nulls unless T is Nullable

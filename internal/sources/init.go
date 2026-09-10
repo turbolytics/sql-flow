@@ -18,7 +18,7 @@ import (
 // builders constructs each source type.
 //
 // A map rather than a switch so Kinds can list it. A registry test holds that
-// list equal to integrations.yml, and a source the engine can build but
+// list equal to the registry, and a source the engine can build but
 // nothing declares has no invariant cells at all.
 var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error){
 	"kafka": func(c config.Source, l *zap.Logger, _ metric.MeterProvider) (core.Source, error) {

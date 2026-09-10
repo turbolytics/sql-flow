@@ -61,7 +61,7 @@ var Triggers = []Trigger{
 
 // PipelineSubject is one configuration of the consume loop.
 type PipelineSubject struct {
-	// Integration is the integrations.yml id, e.g. "pipeline.stateful".
+	// Integration is the registry id, e.g. "pipeline.stateful".
 	Integration string
 
 	// KeepsState says whether this configuration commits durable state and
@@ -174,7 +174,7 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 	if !s.KeepsState {
 		withOffsets.skipped = s.Integration + " keeps no durable state, so " +
 			"there is nothing to commit with the offsets; exempt it in " +
-			"integrations.yml"
+			"its docs/coverage/integrations file"
 	}
 
 	for _, trigger := range Triggers {

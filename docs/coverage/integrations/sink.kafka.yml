@@ -1,0 +1,5 @@
+id: sink.kafka
+kind: sink
+implements: [Sink, Prober]
+feature: sink.kafka
+exempt: []

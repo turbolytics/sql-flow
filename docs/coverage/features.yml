@@ -34,7 +34,7 @@
 # matches nothing is reported rather than silently inventing a feature.
 #
 # Invariants -- what every integration must hold, whatever it does -- are a
-# second axis. See invariants.yml and integrations.yml beside this file.
+# second axis. See invariants.yml and integrations/ beside this file.
 
 features:
   # --- Sources ------------------------------------------------------------

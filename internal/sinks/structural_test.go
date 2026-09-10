@@ -15,7 +15,7 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// The premises behind every sink exemption in integrations.yml.
+// The premises behind every sink exemption in the registry.
 //
 // An exemption says an invariant cannot apply. Left as prose that is an
 // excuse, and two such excuses hid live batch-loss bugs: sqlcommand and
@@ -49,7 +49,7 @@ func TestSinkNoop_ImplementsNoProber(t *testing.T) {
 	assert.That(t, !ok)
 }
 
-// integrations.yml claimed sink.iceberg implements Prober and it never has.
+// the registry claimed sink.iceberg implements Prober and it never has.
 // NewIcebergSink loads the catalog and the table, so an absent table fails the
 // start -- but through the constructor, not through the interface sinks.New
 // probes.
@@ -133,7 +133,7 @@ func TestSinkNoop_DeliversNothingAndSaysSo(t *testing.T) {
 // The claim is that Flush returns ctx.Err() when the context ends. A sink whose
 // failing write returns immediately never reaches a deadline, so there is no
 // context to honour. The conformance harness skips the claim for them, and
-// integrations.yml names these tests.
+// the registry names these tests.
 //
 // Each one breaks the destination, flushes under a generous deadline, and holds
 // that the flush failed while the context was still live.

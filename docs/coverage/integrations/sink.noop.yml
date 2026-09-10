@@ -1,0 +1,39 @@
+id: sink.noop
+kind: sink
+implements: [Sink]
+feature: sink.noop
+# noop has no destination at all, which is its whole purpose: it exists so
+# a benchmark can measure the engine without a sink. Every invariant about
+# delivering rows is vacuous for it, and one test states that contract
+# directly rather than eight reasons asserting it.
+exempt:
+  - invariant: sink.write.buffers_only
+    reason: has no destination; discarding every row is the contract
+    proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+  - invariant: sink.flush.keeps_batch
+    reason: has no destination; discarding every row is the contract
+    proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+  - invariant: sink.flush.no_hollow_success
+    reason: has no destination; discarding every row is the contract
+    proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+  - invariant: sink.flush.preserves_order
+    reason: has no destination; discarding every row is the contract
+    proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+  - invariant: sink.flush.honours_context
+    reason: has no destination; discarding every row is the contract
+    proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+  - invariant: sink.flush.empty_is_noop
+    reason: has no destination; discarding every row is the contract
+    proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+  - invariant: sink.buffer.reports_depth
+    reason: has no destination; it holds nothing, so there is no depth to report
+    proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+  - invariant: sink.error.classifies
+    reason: has no destination; discarding every row is the contract
+    proven_by: TestSinkNoop_DeliversNothingAndSaysSo
+  - invariant: sink.probe.fails_start
+    reason: implements no Prober, so there is no start-time check to fail
+    proven_by: TestSinkNoop_ImplementsNoProber
+  - invariant: lifecycle.close.idempotent
+    reason: implements no Close; it holds nothing to release
+    proven_by: TestSinkNoop_ImplementsNoCloser

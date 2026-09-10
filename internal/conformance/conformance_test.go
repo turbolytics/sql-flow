@@ -117,8 +117,8 @@ func TestToolingConformanceSinks_ASinkWithNoProbeOrCloseIsSkipped(t *testing.T) 
 	coverage.Covers(t, "tooling.conformance")
 	vs := verdicts(t, subject(newMemSink()))
 
-	assert.True(t, strings.Contains(vs[probeFailsStart].skipped, "integrations.yml"))
-	assert.True(t, strings.Contains(vs[closeIdempotent].skipped, "integrations.yml"))
+	assert.True(t, strings.Contains(vs[probeFailsStart].skipped, "integrations file"))
+	assert.True(t, strings.Contains(vs[closeIdempotent].skipped, "integrations file"))
 }
 
 // A second flush into the same fault must fail again. Returning nil tells the
@@ -148,7 +148,7 @@ func TestToolingConformanceSinks_AnUnorderedReadBackSkipsOrder(t *testing.T) {
 	s.OrderedReadBack = false
 
 	vs := verdicts(t, s)
-	assert.True(t, strings.Contains(vs[preservesOrder].skipped, "integrations.yml"))
+	assert.True(t, strings.Contains(vs[preservesOrder].skipped, "integrations file"))
 	assert.Equal(t, "", vs[preservesOrder].failure)
 }
 
@@ -219,7 +219,7 @@ func TestToolingConformanceSinks_ASubjectWithNothingToBreakIsSkipped(t *testing.
 	vs := verdicts(t, s)
 	for _, id := range []string{buffersOnly, keepsBatch, reportsDepth} {
 		assert.True(t, vs[id].skipped != "")
-		assert.True(t, strings.Contains(vs[id].skipped, "integrations.yml"))
+		assert.True(t, strings.Contains(vs[id].skipped, "integrations file"))
 		assert.Equal(t, "", vs[id].failure)
 	}
 }
@@ -341,7 +341,7 @@ func TestToolingConformanceDescribe_NamesTheRowsItFound(t *testing.T) {
 // contract: the first invariant it genuinely satisfied would have to be
 // exempted anyway, hiding real coverage.
 //
-// integrations.yml marks this id test_only, so it gets no cells and a
+// The registry marks this id test_only, so it gets no cells and a
 // double's marker lands nowhere.
 const fakeIntegration = "sink.conformance_double"
 

@@ -1,0 +1,17 @@
+id: source.webhook
+kind: source
+implements: [Source]
+feature: source.webhook
+exempt:
+  - invariant: source.commit.only_processed
+    reason: implements no MarkCommitter; at-most-once by construction
+    proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
+  - invariant: source.resume.from_committed
+    reason: implements no MarkCommitter; at-most-once by construction
+    proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
+  - invariant: source.marks.never_regress
+    reason: implements no MarkCommitter; at-most-once by construction
+    proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
+  - invariant: source.commit.on_revoke
+    reason: implements no MarkCommitter; at-most-once by construction
+    proven_by: TestSourceWebhook_ImplementsNoMarkCommitter
