@@ -18,12 +18,12 @@ sqlflow hands each batch to ClickHouse as rows built from the Arrow table DuckDB
 | `UBIGINT` | `UInt64` |  |
 | `REAL` | `Float32` |  |
 | `DOUBLE` | `Float64` |  |
-| `VARCHAR`, `UUID`, `JSON` | `String`, `LowCardinality(String)`, `DateTime64(3)`, `Enum8('' = 0, 'a' = 1, 'b' = 2)`, `FixedString(36)`, `UUID`, `IPv4`, `Decimal(10, 2)` |  |
+| `VARCHAR`, `UUID`, `JSON` | `String`, `LowCardinality(String)`, `DateTime64(3)`, `DateTime`, `Enum8('' = 0, 'a' = 1, 'b' = 2)`, `FixedString(36)`, `UUID`, `IPv4`, `Decimal(10, 2)` |  |
 | `BLOB`, `BIT`, `VARINT` | `String` |  |
 | `DATE` | `Date`, `Date32` |  |
 | `TIMESTAMP_S` | `DateTime` |  |
 | `TIMESTAMP_MS` | `DateTime64(3)` |  |
-| `TIMESTAMP` | `DateTime64(6)` |  |
+| `TIMESTAMP` | `DateTime64(6)`, `DateTime` | DateTime keeps whole seconds; DateTime64(6) keeps all six digits |
 | `TIMESTAMP_NS` | `DateTime64(9)` |  |
 | `TIMESTAMPTZ` | `DateTime64(6)` | stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering |
 | `BOOLEAN[]` | `Array(Bool)` |  |

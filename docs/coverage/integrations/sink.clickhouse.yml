@@ -94,6 +94,12 @@ types:
         value: "2026-09-01 12:00:00.123"
         expect: "2026-09-01 12:00:00.123"
         instant: true
+      # The same shape into a plain DateTime, which is what the page's note
+      # about zone-less strings describes.
+      - type: DateTime
+        value: "2026-09-01 12:00:00"
+        expect: "2026-09-01 12:00:00"
+        instant: true
       # The destinations that parse the text rather than storing it. The
       # hand-written page has claimed all of these since it was measured
       # by hand, and nothing had ever written one: the value belonged to
@@ -152,11 +158,17 @@ types:
     columns:
       - type: "DateTime64(3)"
         expect: "2026-09-08 12:00:00.123"
+  # A plain DateTime is the column most handlers write a TIMESTAMP into, and
+  # the driver keeps its whole seconds. The ClickHouse page's NYC taxi example
+  # is that pairing, and the table has to prove what the example does.
   "timestamp[us]":
-    outcome: exact
+    outcome: coerced
+    rule: DateTime keeps whole seconds; DateTime64(6) keeps all six digits
     columns:
       - type: "DateTime64(6)"
         expect: "2026-09-08 12:00:00.123456"
+      - type: DateTime
+        expect: "2026-09-08 12:00:00"
   "timestamp[ns]":
     outcome: exact
     columns:
