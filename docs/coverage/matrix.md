@@ -41,7 +41,7 @@ names every one of them.
 | `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ | 6 |
 | `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ | 2 |
 | `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ | 8 |
-| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 29 |
+| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 30 |
 | `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — | 16 |
 | `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | 1 |
 | `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ | 5 |
