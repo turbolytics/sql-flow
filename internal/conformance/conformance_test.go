@@ -898,3 +898,76 @@ func TestHarnessSinkCarriesRowCounters(t *testing.T) {
 	assert.That(t, s.counted != nil)
 	assert.That(t, s.counted != core.Sink(s))
 }
+
+// The flush interval keeps ticking while a run winds down, and a tick with
+// nothing buffered commits state on its own. How many of those land depends on
+// how long shutdown takes, so asserting the exact event list tests the speed of
+// the machine. It failed main on 1fd39a9 and cost three CI runs.
+func TestToolingConformancePipelines_AnIdleIntervalTickIsNotACommitBeforeTheFlush(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	// Exactly what CI observed.
+	events := []string{"flush", "save-offsets", "commit", "save-offsets", "commit"}
+
+	if err := judgeCommitOrder(TriggerInterval, events, true); err != nil {
+		t.Fatalf("an idle tick after the flush is legitimate: %v", err)
+	}
+}
+
+// Only the interval trigger runs a live ticker; every other trigger sets the
+// interval to an hour. A second commit cycle there is the loop committing twice
+// for one flush, which is a defect rather than a tick.
+func TestToolingConformancePipelines_ASecondCommitWithoutATickerIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	events := []string{"flush", "save-offsets", "commit", "save-offsets", "commit"}
+
+	if err := judgeCommitOrder(TriggerBatchFull, events, true); err == nil {
+		t.Fatal("a second commit cycle with no ticker running must be caught")
+	}
+}
+
+// The defect the invariant exists to catch, on the path that tolerates idle
+// ticks: the tolerance must not extend to committing before anything flushed.
+func TestToolingConformancePipelines_ACommitBeforeTheFlushIsCaughtOnTheInterval(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	events := []string{"save-offsets", "commit", "flush"}
+
+	if err := judgeCommitOrder(TriggerInterval, events, true); err == nil {
+		t.Fatal("committing before the flush must be caught on every trigger")
+	}
+}
+
+// A run that never flushed has nothing to have committed after.
+func TestToolingConformancePipelines_ARunWithNoFlushIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	if err := judgeCommitOrder(TriggerInterval, []string{"save-offsets", "commit"}, true); err == nil {
+		t.Fatal("a run with no flush must be caught")
+	}
+}
+
+// An idle tick is a whole cycle. A bare commit with no offsets saved beside it
+// breaks the atomicity pipeline.state.with_offsets depends on.
+func TestToolingConformancePipelines_AnUnpairedCommitIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	events := []string{"flush", "save-offsets", "commit", "commit"}
+
+	if err := judgeCommitOrder(TriggerInterval, events, true); err == nil {
+		t.Fatal("a commit with no save-offsets beside it must be caught")
+	}
+}
+
+// A stateless subject commits no offsets, so the flush is the whole sequence.
+func TestToolingConformancePipelines_AStatelessRunIsJustTheFlush(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	if err := judgeCommitOrder(TriggerInterval, []string{"flush"}, false); err != nil {
+		t.Fatalf("a stateless run flushes and commits nothing: %v", err)
+	}
+	if err := judgeCommitOrder(TriggerInterval, []string{"flush", "commit"}, false); err == nil {
+		t.Fatal("a stateless run that commits must be caught")
+	}
+}

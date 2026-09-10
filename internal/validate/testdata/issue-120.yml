@@ -1,0 +1,26 @@
+commands:
+  - name: load extensions
+    sql: |
+      INSTALL azure;
+      LOAD azure;
+  - name: set azure storage connection string
+    sql: |
+      SET azure_storage_connection_string = '{{ SQLFLOW_AZURE_CONNECTION_STRING }}';
+
+pipeline:
+  name: kafka-azure-duckdb-sink
+  batch_size: 50
+  source:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: sql-flow-consumer-001
+      auto_offset_reset: earliest
+      topics:
+        - "events"
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT * FROM batch
+  sink:
+    type: console

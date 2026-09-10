@@ -21,9 +21,10 @@ type StructuredBatchHandler struct {
 	// rowsRead is the row count of the last Invoke, for handler_rows_read.
 	rowsRead int64
 
-	alloc      *memory.GoAllocator
+	alloc      memory.Allocator
 	conn       adbc.Connection
 	truncStmt  adbc.Statement
+	ckptStmt   adbc.Statement
 	ingestStmt adbc.Statement
 	queryStmt  adbc.Statement
 	logger     *zap.Logger
@@ -40,6 +41,9 @@ func (h *StructuredBatchHandler) Init(ctx context.Context) error {
 
 	if _, err := h.truncStmt.ExecuteUpdate(ctx); err != nil {
 		return err
+	}
+	if _, err := h.ckptStmt.ExecuteUpdate(ctx); err != nil {
+		return fmt.Errorf("checkpoint after truncate: %w", err)
 	}
 	return nil
 }
@@ -281,8 +285,12 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 		records = append(records, rec)
 	}
 
+	// NewTableFromRecords returns the table holding one reference, and the
+	// records are retained by the table's columns, so releasing them here
+	// leaves the table as the sole owner. Retaining the table again here
+	// leaked every batch: the caller releases once, the count never reached
+	// zero, and the native Arrow buffers behind each row were never freed.
 	result := array.NewTableFromRecords(reader.Schema(), records)
-	result.Retain()
 
 	for _, rec := range records {
 		rec.Release()
@@ -318,6 +326,21 @@ func NewStructuredBatchHandler(
 		return nil, fmt.Errorf("set truncate query: %w", err)
 	}
 
+	// TRUNCATE empties the table but leaves its row groups behind, and DuckDB
+	// keeps them until a checkpoint. Without this, an in-memory database
+	// retained about 60 bytes for every row that ever passed through the
+	// table, reported by duckdb_memory() as IN_MEMORY_TABLE for a table with
+	// zero rows, for as long as the process lived. A checkpoint after each
+	// truncate reclaims all of it and leaves the table's identity, and so the
+	// prepared plan, untouched.
+	ckptStmt, err := conn.NewStatement()
+	if err != nil {
+		return nil, fmt.Errorf("new checkpoint statement: %w", err)
+	}
+	if err := ckptStmt.SetSqlQuery("CHECKPOINT;"); err != nil {
+		return nil, fmt.Errorf("set checkpoint query: %w", err)
+	}
+
 	// Pre-create ingest statement with options set once
 	ingestStmt, err := conn.NewStatement()
 	if err != nil {
@@ -349,6 +372,7 @@ func NewStructuredBatchHandler(
 		alloc:      pool,
 		conn:       conn,
 		truncStmt:  truncStmt,
+		ckptStmt:   ckptStmt,
 		ingestStmt: ingestStmt,
 		queryStmt:  queryStmt,
 		schema:     schema,

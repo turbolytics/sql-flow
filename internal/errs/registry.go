@@ -21,6 +21,12 @@ const (
 	CodeConfigParseFailed Code = "user.config.parse_failed"
 	CodeConfigInvalid     Code = "user.config.invalid"
 
+	// A template variable the config reads but nothing defines. Jinja2
+	// renders it as an empty string and reports no error, so the failure
+	// surfaces far from its cause: #120 spent days on an authentication
+	// error that was a misspelled variable name.
+	CodeConfigTemplateUndefined Code = "user.config.template_undefined"
+
 	// Data: the messages themselves, as opposed to the pipeline definition.
 	// A malformed record is the producer's problem, never ours.
 	CodeDataMalformed Code = "user.data.malformed"
@@ -29,6 +35,7 @@ const (
 	// SQL: the handler's query and the schema it binds against.
 	CodeSQLBindFailed      Code = "user.sql.bind_failed"
 	CodeSQLTypeUnsupported Code = "user.sql.type_unsupported"
+	CodeSQLParseFailed     Code = "user.sql.parse_failed"
 	CodeSQLInvalid         Code = "user.sql.invalid"
 
 	// Source and sink configuration the user got wrong.
@@ -82,6 +89,11 @@ var registry = map[Code]Definition{
 		"The config is well-formed but asks for something impossible.",
 		"Read the message for the offending key, then correct it.",
 	},
+	CodeConfigTemplateUndefined: {
+		CodeConfigTemplateUndefined,
+		"The config reads a template variable that nothing defines. It renders as an empty string.",
+		"Define the variable, or correct its name. `sqlflow validate` lists every variable the config reads and every one you supplied.",
+	},
 	CodeDataMalformed: {
 		CodeDataMalformed,
 		"A message could not be parsed.",
@@ -101,6 +113,11 @@ var registry = map[Code]Definition{
 		CodeSQLTypeUnsupported,
 		"A message field has a type the handler cannot convert.",
 		"Cast the field in SQL, or pin a structured schema for the topic.",
+	},
+	CodeSQLParseFailed: {
+		CodeSQLParseFailed,
+		"A SQL statement in the config does not parse.",
+		"Correct the statement. The position names the line it starts on.",
 	},
 	CodeSQLInvalid: {
 		CodeSQLInvalid,
