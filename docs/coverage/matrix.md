@@ -1,6 +1,6 @@
 # Feature coverage matrix
 
-Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.
+Generated from `docs/coverage/status/` by `make coverage-page`.
 Do not edit by hand.
 
 Features are declared in `docs/coverage/features.yml`. A test attaches
@@ -16,48 +16,48 @@ tests that need a real service, `release` is the image suite. A
 a pass is how `sink.iceberg` shipped for months without ever being
 written to.
 
-The Tests column counts what attributes to the feature, so a thinly
-covered one is visible at a glance. `docs/coverage/matrix.json`
-names every one of them.
+Only statuses are committed. Test names and counts are in the coverage
+report CI publishes on every run: they change whenever a test is
+added, and this page changes only when a status does.
 
-| Feature | What it does | unit | integration | release | Tests |
-| --- | --- | --- | --- | --- | --- |
-| `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | 33 |
-| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
-| `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
-| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 24 |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ | 41 |
-| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ | 26 |
-| `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ | 1 |
-| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | 23 |
-| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 17 |
-| `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — | 3 |
-| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 72 |
-| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 48 |
-| `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
-| `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 10 |
-| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 25 |
-| `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ | 22 |
-| `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ | 6 |
-| `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ | 2 |
-| `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ | 8 |
-| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | 30 |
-| `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — | 16 |
-| `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | 1 |
-| `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ | 5 |
-| `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ | 4 |
-| `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | 16 |
-| `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 54 |
-| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 101 |
-| `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — | 1 |
-| `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — | 1 |
-| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 11 |
-| `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — | 7 |
-| `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
-| `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
-| `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 96 |
-| `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 15 |
+| Feature | What it does | unit | integration | release |
+| --- | --- | --- | --- | --- |
+| `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ |
+| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — |
+| `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ |
+| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ |
+| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ |
+| `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ |
+| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — |
+| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ |
+| `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — |
+| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — |
+| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ |
+| `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — |
+| `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ |
+| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ |
+| `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ |
+| `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ |
+| `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ |
+| `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ |
+| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — |
+| `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — |
+| `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — |
+| `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ |
+| `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ |
+| `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ |
+| `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ |
+| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ |
+| `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — |
+| `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — |
+| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — |
+| `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — |
+| `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — |
+| `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ |
+| `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
+| `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
 **36 features declared. 36 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
@@ -76,91 +76,10 @@ never flushes satisfies every safety invariant on this page.
 holds if you never commit. Only a liveness claim says the pipeline
 does anything at all.
 
-## Why invariants, and not the test count
-
-`sink.retry` carries 72 attributed tests, more than anything
-else in the `sink` layer. `sink.error.classifies`, an invariant
-of that same layer, is proven on 0 of the 5
-integrations it applies to.
-
-Those two numbers are the argument. Tests accumulate around the
-code that was written; an invariant is the claim that code exists
-to uphold. A suite can exercise a retry ladder in every direction
-and never ask whether the sink underneath keeps the rows the
-ladder re-sends -- and if it does not, every one of those tests
-passes while the pipeline loses data. The feature table calls that
-covered. This one does not.
-
-## Covered only by another test's marker
-
-Every test that covers these claims something else first. That is
-legitimate for a capability an end-to-end run proves in passing, and
-a smell for one that deserves a test of its own.
-
-- `source.kafka` (release) — via `test_handler_inferred_mem_aggregates_every_message`, `test_state_durability_survives_a_restart`
-- `source.websocket` (release) — via `test_handler_inferred_mem_preserves_arrays_and_unioned_fields`
-- `sink.kafka` (release) — via `test_handler_inferred_mem_aggregates_every_message`
-- `sink.console` (release) — via `test_handler_inferred_mem_invoke_renders_rows`
-- `handler.structured` (release) — via `test_handler_inferred_mem_preserves_arrays_and_unioned_fields`
-- `state.durability` (release) — via `test_state_durability_survives_a_restart`
-- `state.offsets` (release) — via `test_state_durability_survives_a_restart`
-- `state.corruption` (release) — via `test_lifecycle_exit_codes_carry_the_error_code`
-- `config.validation` (release) — via `test_config_validation_accepts_a_shipped_example`
-- `validate.schema` (unit) — via `TestValidateNoSideEffects_Issue120TypoIsNamed`
-
-## Unattributed unit tests (43)
-
-These carry no `coverage.Covers` marker, so they cover nothing.
-Add the marker, or add the feature to `features.yml` first.
-
-- `TestCheckReferenceTablesExcludesManagedTables`
-- `TestCheckReferenceTablesLogsCount`
-- `TestCheckReferenceTablesNoHandlerSQL`
-- `TestCheckReferenceTablesSurvivesACountError`
-- `TestCheckReferenceTablesWarnsOnEmpty`
-- `TestConfigSchema_TypeEnumsComeFromTheRegistries`
-- `TestCountingCountsDeliveredRowsOnce`
-- `TestCountingDoesNotInventBufferedRows`
-- `TestCountingForwardsBufferedRows`
-- `TestCountingNilBatchIsNoop`
-- `TestCountingNilProviderRecordsNothing`
-- `TestHandlerRowsReadIsRowsNotMessages`
-- `TestNewWrapsWithRowCounters`
-- `TestReferenceTablesDeduplicates`
-- `TestReferenceTablesExcludesCTEs`
-- `TestReferenceTablesExcludesManagedTables`
-- `TestReferenceTablesFindsNestedJoin`
-- `TestReferenceTablesKeepsCatalogQualification`
-- `TestReferenceTablesUnparseableSQL`
-- `TestValidateCommand_JSONIsTheContract`
-- `TestValidateCommand_MissingFileFails`
-- `TestValidateCommand_TextSaysWhatItSkipped`
-- `TestValidateCommand_ValidConfigSucceeds`
-- `TestValidateNoSideEffects_CleanConfigIsOK`
-- `TestValidateReport_DiagnosticOrderIsStable`
-- `TestValidateReport_SurvivesJSONRoundTrip`
-- `TestValidateReport_WarningKeepsOK`
-- `TestValidateReportsEveryDiagnostic_TwoFaultsOneRun`
-- `TestValidateSchema_CommandsMustBeASequence`
-- `TestValidateSchema_MalformedYAMLIsOneDiagnostic`
-- `TestValidateSchema_ValidConfigPasses`
-- `TestValidateSkipIsExplicit_UnparseableTemplateSkipsSchema`
-- `TestValidateTemplate_AllVariablesDefinedPasses`
-- `TestValidateTemplate_CollectsFilterArguments`
-- `TestValidateTemplate_CollectsReferencesWithPositions`
-- `TestValidateTemplate_ControlStructureMarksIncomplete`
-- `TestValidateTemplate_DefaultFilterMakesAVariableOptional`
-- `TestValidateTemplate_IncompleteWalkSuppressesUnused`
-- `TestValidateTemplate_MissingVariableNamesItsNeighbour`
-- `TestValidateTemplate_ParseErrorIsReturned`
-- `TestValidateTemplate_ReportsEveryMissingVariable`
-- `TestValidateTemplate_UnsuppliedInputIsAWarning`
-- `TestWithSinkRoleSetsTheRole`
-
 
 # Invariant matrix
 
-Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.
+Generated from `docs/coverage/status/` by `make coverage-page`.
 Do not edit by hand.
 
 Invariants are declared in `docs/coverage/invariants.yml`, integrations
@@ -172,9 +91,9 @@ for every integration.
 A covered cell names the levels that proved it: `u` unit, `i`
 integration, `r` release. That is the question the matrix exists to
 answer -- proven with a fake, or against the real thing, or in the
-shipped image. **exempt** carries its reason in the JSON, and
-**missing** means no evidence. Nothing here fails the build until an
-invariant's `requires` is filled in, and none is yet.
+shipped image. **exempt** carries its reason in `integrations.yml`,
+and **missing** means no evidence. Nothing here fails the build until
+an invariant's `requires` is filled in, and none is yet.
 
 ## Safety invariants: resilience
 

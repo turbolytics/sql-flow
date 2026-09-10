@@ -1200,14 +1200,46 @@ def test_the_tally_counts_a_pipeline_cell_like_any_other():
     assert sum(tally.values()) == 1
 
 
+def committed_page_snapshot():
+    return cm.page_snapshot(cm.load_features(), cm.load_invariants(),
+                            cm.load_integrations(), cm.read_status(cm.STATUS_DIR))
+
+
 def test_no_committed_invariant_is_unwired():
     """An invariant nothing can prove is a declaration with no path to
     evidence."""
-    m = json.load(open(os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "docs", "coverage", "matrix.json")))
-    _, unwired = cm.invariant_tally(m)
+    _, unwired = cm.invariant_tally(committed_page_snapshot())
     assert unwired == 0
+
+
+def test_the_committed_page_is_current():
+    """The page is a function of committed files, so a stale one is caught
+    here, in seconds, before any suite runs. Regenerate with
+    `make coverage-page`."""
+    expected = cm.render_page(cm.load_features(), cm.load_invariants(),
+                              cm.load_integrations(), cm.read_status(cm.STATUS_DIR))
+    with open(cm.MATRIX_MD) as fh:
+        assert fh.read() == expected
+
+
+def test_every_committed_status_row_names_a_declared_id():
+    """A row for something the registries no longer declare is a stale file
+    write_status should have removed."""
+    status = cm.read_status(cm.STATUS_DIR)
+    features = {f["id"] for f in cm.load_features()}
+    invariants = {i["id"] for i in cm.load_invariants()}
+    integrations = {i["id"] for i in cm.load_integrations()}
+
+    assert set(status["features"]) <= features
+    assert set(status["integrations"]) <= integrations
+    for rows in status["integrations"].values():
+        assert set(rows) <= invariants
+
+
+def test_no_committed_status_file_carries_a_test_name():
+    for name in os.listdir(cm.STATUS_DIR):
+        with open(os.path.join(cm.STATUS_DIR, name)) as fh:
+            assert "Test" not in fh.read(), name
 
 
 def test_the_argument_pairs_a_feature_and_an_invariant_of_the_same_layer():
