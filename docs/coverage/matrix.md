@@ -22,7 +22,7 @@ names every one of them.
 
 | Feature | What it does | unit | integration | release | Tests |
 | --- | --- | --- | --- | --- | --- |
-| `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | 28 |
+| `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ | 33 |
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | 15 |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ | 6 |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ | 23 |
@@ -47,7 +47,7 @@ names every one of them.
 | `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ | 5 |
 | `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ | 4 |
 | `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | 16 |
-| `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 45 |
+| `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 54 |
 | `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 101 |
 | `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — | 1 |
 | `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — | 1 |
