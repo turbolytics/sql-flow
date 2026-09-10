@@ -177,12 +177,17 @@ types:
 
   # #153's defect, stated as an outcome: the instant survives and the zone
   # does not. The column's own zone governs how the server renders it.
+  # DuckDB's to_timestamp(double) returns this type, so it is what a handler
+  # that converts an epoch field writes. The ClickHouse page's Bluesky example
+  # sends it into a plain DateTime; the table has to prove that pairing too.
   "timestamp[us, tz=*]":
     outcome: coerced
-    rule: stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering
+    rule: stored as the same UTC instant; the zone is dropped and the column's own zone governs rendering; DateTime keeps whole seconds
     columns:
       - type: "DateTime64(6)"
         expect: "2026-09-08 12:00:00.123456"
+      - type: DateTime
+        expect: "2026-09-08 12:00:00"
 
   # #150 added Array(T), the one container the sink converts. Each row's
   # columns mirror its element's row, because ClickHouse's Array(T) takes
