@@ -743,7 +743,12 @@ type recordingSource struct {
 func newRecordingSource(rec *Recorder) *recordingSource {
 	return &recordingSource{
 		rec:    rec,
-		ch:     make(chan []core.Message, 1),
+		// Unbuffered, so the send completes only once the loop has taken the
+		// batch. A buffered channel let the send return into the buffer, and
+		// wrote then fired while the pipeline still had nothing: the drain
+		// scenario cancelled before a single row was written, which is the
+		// same vacuous drain the WaitGroup produced by a different route.
+		ch:     make(chan []core.Message),
 		wrote:  make(chan struct{}),
 		closed: make(chan struct{}),
 	}
