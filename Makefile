@@ -18,6 +18,11 @@ GO_LDFLAGS := -X $(GO_MODULE)/internal/cli.Version=$(VERSION) \
 UV ?= uv
 PY := $(UV) run --locked
 
+# The coverage generator is a package under scripts/, not an installed one, so
+# PYTHONPATH is what makes `-m` find it. One definition, because three targets
+# invoke it and a fourth spelling would be a fourth thing to keep in step.
+GENERATOR := PYTHONPATH=scripts $(PY) python -m coverage_matrix
+
 .PHONY: install-tools
 install-tools:
 	@echo "Installing tools..."
@@ -102,7 +107,7 @@ schema:
 # which CI publishes and nothing commits.
 .PHONY: coverage-write
 coverage-write:
-	$(PY) python scripts/coverage_matrix.py \
+	$(GENERATOR) \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--pytest .coverage/pytest.json --write
@@ -112,7 +117,7 @@ coverage-write:
 # the page.
 .PHONY: coverage-page
 coverage-page:
-	$(PY) python scripts/coverage_matrix.py --page
+	$(GENERATOR) --page
 
 # The merge gate, in three parts. Runs no tests either: it reads the reports
 # the suites already wrote, which is what lets CI run it last and in seconds.
@@ -135,7 +140,7 @@ coverage-page:
 # A marker naming an id the registries do not declare fails the first part.
 .PHONY: coverage-check
 coverage-check: coverage-write
-	$(PY) python scripts/coverage_matrix.py \
+	$(GENERATOR) \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--pytest .coverage/pytest.json --check

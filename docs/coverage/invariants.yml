@@ -17,7 +17,7 @@
 # Both are explicit markers: a test says what it proves. There is no way to
 # attribute an invariant by test name -- `named` was declared here once,
 # never implemented, and dropped as a third way to claim the same evidence.
-# scripts/coverage_matrix.py accepts the two above and nothing else.
+# scripts/coverage_matrix accepts the two above and nothing else.
 #
 # `requires` lists the levels evidence must exist at. Every entry is empty in
 # this revision: the matrix reports, and nothing fails. An invariant is
