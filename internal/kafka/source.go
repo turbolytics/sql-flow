@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -39,6 +40,8 @@ func WithLogger(logger *zap.Logger) Option {
 	}
 }
 
+// WithChannelBuffer sets how many fetches the source may hold ahead of the
+// pipeline. It is the read-ahead bound; see Stream.
 func WithChannelBuffer(size int) Option {
 	return func(s *Source) {
 		s.channelBuffer = size
@@ -58,7 +61,7 @@ func NewSource(client *kgo.Client, opts ...Option) (*Source, error) {
 	s := &Source{
 		client:        client,
 		readTimeout:   5 * time.Second,
-		channelBuffer: 100,
+		channelBuffer: config.DefaultKafkaFetchPrefetch,
 
 		logger: zap.NewNop(),
 	}
@@ -169,6 +172,13 @@ func (k *Source) CommitMarks(marks *core.Marks) error {
 // commitTimeout bounds a synchronous commit; the pipeline blocks on it.
 const commitTimeout = 30 * time.Second
 
+// Stream hands each fetch to the pipeline through a channel channelBuffer
+// deep. That depth is the read-ahead bound: a full channel blocks the poll
+// goroutine, and franz-go stops fetching from a broker whose last fetch is
+// unpolled, so back-pressure reaches the wire. The source holds at most
+// channelBuffer fetches here, one in hand, and one per broker inside the
+// client. Before this was a setting the depth was 100, which with 10 MiB
+// fetches held a 10M message backlog in memory in full.
 func (k *Source) Stream() <-chan []core.Message {
 	k.logger.Info("starting stream",
 		zap.Int("channel_buffer", k.channelBuffer),

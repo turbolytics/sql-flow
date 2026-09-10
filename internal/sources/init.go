@@ -22,11 +22,22 @@ import (
 // nothing declares has no invariant cells at all.
 var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error){
 	"kafka": func(c config.Source, l *zap.Logger, _ metric.MeterProvider) (core.Source, error) {
+		// Bounds the read-ahead. An absent block is the defaults, and a
+		// bound that cannot hold fails here, at startup, before the
+		// pipeline consumes anything.
+		fetch, err := c.Kafka.Fetch.Resolved()
+		if err != nil {
+			return nil, err
+		}
+
 		l.Info(
 			"initializing kafka source",
 			zap.String("topics", fmt.Sprintf("%v", c.Kafka.Topics)),
 			zap.String("group.id", c.Kafka.GroupID),
 			zap.String("auto.offset.reset", c.Kafka.AutoOffsetReset),
+			zap.Int("fetch.max_bytes", fetch.MaxBytes),
+			zap.Int("fetch.max_partition_bytes", fetch.MaxPartitionBytes),
+			zap.Int("fetch.prefetch", fetch.Prefetch),
 		)
 		brokers := []string{"localhost:9092"}
 		if len(c.Kafka.Brokers) > 0 {
@@ -50,8 +61,8 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			kgo.ConsumeResetOffset(resetOffset),
 			kgo.DisableAutoCommit(),
 			kgo.AdjustFetchOffsetsFn(seeker.Adjust),
-			kgo.FetchMaxPartitionBytes(10 << 20), // 10MB per partition
-			kgo.FetchMaxBytes(100 << 20),         // 100MB total per broker
+			kgo.FetchMaxPartitionBytes(int32(fetch.MaxPartitionBytes)),
+			kgo.FetchMaxBytes(int32(fetch.MaxBytes)),
 		}
 
 		securityOpts, err := tkafka.SecurityOptions(
@@ -69,7 +80,11 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			return nil, errs.Wrap(errs.CodeSourceInternal, err, "kafka client")
 		}
 
-		k, err := tkafka.NewSource(client, tkafka.WithLogger(l), tkafka.WithSeeker(seeker))
+		k, err := tkafka.NewSource(client,
+			tkafka.WithLogger(l),
+			tkafka.WithSeeker(seeker),
+			tkafka.WithChannelBuffer(fetch.Prefetch),
+		)
 		return k, err
 	},
 

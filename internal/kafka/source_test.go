@@ -2,10 +2,12 @@ package kafka
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -198,5 +200,81 @@ func TestIntegrationSourceKafka_SeekToEmptyIsANoop(t *testing.T) {
 		assert.Equal(t, int64(0), batch[0].Offset)
 	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for a message")
+	}
+}
+
+// produceSized writes n records of size bytes, one ProduceSync per record so
+// each is its own producer batch. A fetch then carries at most
+// FetchMaxPartitionBytes / size records, and the count coming off the
+// stream can be reasoned about in fetches.
+//
+// The values are random because the fetch bounds count bytes on the wire,
+// which are compressed bytes. A repeated byte compresses to nothing, and a
+// 64 KiB fetch of it carried 512 records of a nominal KiB each.
+func produceSized(t *testing.T, client *kgo.Client, topic string, n, size int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	for i := 0; i < n; i++ {
+		value := make([]byte, size)
+		if _, err := rand.Read(value); err != nil {
+			t.Fatalf("random value: %v", err)
+		}
+		res := client.ProduceSync(ctx, &kgo.Record{Topic: topic, Value: value})
+		assert.NoError(t, res.FirstErr())
+	}
+}
+
+// A backlog used to be held in memory in full: the poll goroutine handed
+// every fetch to a channel with 100 slots, one whole fetch per slot, so one
+// partition could hold 1 GiB of payload before the goroutine blocked. The
+// channel depth is now the bound, and the default depth is small. With
+// 64 KiB fetches, a reader that takes nothing must leave a source built
+// with the defaults holding a few fetches, not the topic.
+//
+// A fetch is the unit the bound counts. Records per fetch follow from the
+// fetch's byte size and how well the records compress, so the limit below
+// is derived rather than written down.
+func TestIntegrationSourceKafka_ReadAheadIsBoundedByPrefetch(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	broker := brokerOrFail(t)
+	topic := fmt.Sprintf("turbine-prefetch-%d", time.Now().UnixNano())
+
+	producer, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.AllowAutoTopicCreation())
+	assert.NoError(t, err)
+	defer producer.Close()
+	// 2,000 records of 1 KiB: about 32 fetches at the sizes below.
+	produceSized(t, producer, topic, 2000, 1024)
+
+	client := newTestClient(t, broker, topic, topic,
+		kgo.FetchMaxBytes(64<<10),
+		kgo.FetchMaxPartitionBytes(64<<10),
+	)
+	// No WithChannelBuffer: this is the depth every pipeline gets.
+	src, err := NewSource(client)
+	assert.NoError(t, err)
+
+	// Nobody reads. The poll goroutine fills the channel and blocks on the
+	// next send; franz-go fills one more fetch and stops.
+	stream := src.Stream()
+	time.Sleep(2 * time.Second)
+
+	// Close drops the fetch in the goroutine's hand and closes the channel.
+	// What the channel held stays readable, and that is the read-ahead.
+	assert.NoError(t, src.Close())
+	drained := 0
+	for batch := range stream {
+		drained += len(batch)
+	}
+
+	// One fetch is about 64 records. One extra fetch of slack allows a
+	// broker that packs a partial batch. At the old depth of 100 this
+	// drained all 2,000.
+	const recordsPerFetch = 64
+	limit := (config.DefaultKafkaFetchPrefetch + 1) * recordsPerFetch
+	assert.That(t, drained > 0)
+	if drained > limit {
+		t.Fatalf("read-ahead held %d records; the default depth of %d fetches allows about %d",
+			drained, config.DefaultKafkaFetchPrefetch, limit)
 	}
 }

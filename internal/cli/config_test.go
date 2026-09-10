@@ -27,10 +27,19 @@ import (
 
 func TestConfigValidation_ExampleMatchesPythonOutput(t *testing.T) {
 	coverage.Covers(t, "config.validation")
-	golden, err := os.ReadFile("testdata/config_example.golden")
+	out, err := configExample()
 	assert.NoError(t, err)
 
-	out, err := configExample()
+	// The example is the second artifact of internal/config, beside the JSON
+	// schema, so `make schema` regenerates both. Adding a config field used
+	// to leave this one stale with nothing but a hand edit to fix it.
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		assert.NoError(t, os.WriteFile("testdata/config_example.golden", []byte(out), 0o644))
+		t.Log("example updated")
+		return
+	}
+
+	golden, err := os.ReadFile("testdata/config_example.golden")
 	assert.NoError(t, err)
 	assert.Equal(t, string(golden), out)
 }
