@@ -1997,3 +1997,92 @@ def test_the_page_carries_no_test_name():
         assert name not in md, name
     assert "Unattributed" not in md
     assert "Covered only by another test's marker" not in md
+
+
+# --- The report: names and counts, published by CI, never committed ---------
+
+def test_the_report_counts_the_tests_rather_than_sampling_them():
+    """The count answers "is this feature thinly covered"; .coverage/matrix.json
+    names them all."""
+    s = snap(go_results={f"TestSinkClickhouse_{i}": cm.PASS for i in range(4)},
+             go_covers={f"TestSinkClickhouse_{i}": ["sink.clickhouse"]
+                        for i in range(4)})
+    row = next(line for line in cm.render_report(s).splitlines()
+               if line.startswith("| `sink.clickhouse`"))
+
+    assert row == "| `sink.clickhouse` | 4 | — | — | 4 |"
+    assert "TestSinkClickhouse_0" not in row
+
+
+def test_the_report_leaves_the_count_blank_when_nothing_covers_the_feature():
+    row = next(line for line in cm.render_report(snap()).splitlines()
+               if line.startswith("| `sink.console`"))
+    assert row == "| `sink.console` | — | — | — | — |"
+
+
+def test_the_report_names_a_feature_covered_only_by_a_marker():
+    s = snap(
+        py_results={"test_handler_inferred_mem_aggregates": cm.PASS},
+        py_covers={"test_handler_inferred_mem_aggregates":
+                   ["handler.inferred_mem", "source.kafka"]},
+        features=FEATURES + [{"id": "handler.inferred_mem", "description": "h",
+                              "requires": ["release"]}],
+    )
+    out = cm.render_report(s)
+    assert "Covered only by another test's marker" in out
+    assert "`source.kafka` (release)" in out
+
+
+def test_an_unattributed_test_reaches_the_report():
+    out = cm.render_report(snap(go_results={"TestNobodyDeclaredThis": cm.PASS}))
+    assert "## Unattributed unit tests (1)" in out
+    assert "- `TestNobodyDeclaredThis`" in out
+
+
+def test_the_report_names_an_unknown_marker_and_says_it_fails_the_gate():
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS},
+             go_covers={"TestSinkClickhouse_InsertsRows": ["sink.nonexistent"]})
+    s.update(inv_snap(
+        evidence={"unit": {"TestX": [("sink.flush.bogus", "sink.clickhouse")]}},
+        results={"unit": {"TestX": cm.PASS}}))
+    out = cm.render_report(s)
+    assert "`TestSinkClickhouse_InsertsRows` marks `sink.nonexistent`" in out
+    assert "`TestX` marks `sink.flush.bogus` on `sink.clickhouse`" in out
+    assert "fail" in out.split("## Markers naming an unknown feature")[1]
+
+
+def test_the_report_pairs_the_most_tested_feature_with_the_least_proven_invariant():
+    """The argument for the invariant matrix, generated so it cannot go
+    stale. A feature can carry dozens of tests while the invariant those
+    tests depend on is proven almost nowhere."""
+    s = snap(go_results={
+        "TestSinkClickhouse_A": cm.PASS,
+        "TestSinkClickhouse_B": cm.PASS,
+        "TestSinkConsole_C": cm.PASS,
+    }, go_covers={
+        "TestSinkClickhouse_A": ["sink.clickhouse"],
+        "TestSinkClickhouse_B": ["sink.clickhouse"],
+        "TestSinkConsole_C": ["sink.console"],
+    })
+    s.update(inv_snap())
+    out = cm.render_report(s)
+
+    assert "## Why invariants, and not the test count" in out
+    assert "`sink.clickhouse` carries 2 attributed tests" in out
+    assert "is proven on 0 of the" in out
+
+
+def test_the_argument_is_omitted_when_no_feature_has_a_test():
+    s = snap()
+    s.update(inv_snap())
+    assert "## Why invariants, and not the test count" not in cm.render_report(s)
+
+
+def test_the_argument_is_omitted_when_no_invariant_is_applicable():
+    s = snap(go_results={"TestSinkClickhouse_A": cm.PASS})
+    s.update(inv_snap(integrations=[dict(INTEGRATIONS[1])]))
+    assert "## Why invariants, and not the test count" not in cm.render_report(s)
+
+
+def test_the_report_works_on_a_feature_only_snapshot():
+    assert "# Coverage report" in cm.render_report(snap())
