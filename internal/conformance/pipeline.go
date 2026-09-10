@@ -526,7 +526,11 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	t.Helper()
 
 	rec := &Recorder{failOffsets: f.offsets}
-	src := &recordingSource{rec: rec}
+	src := newRecordingSource(rec)
+	// Every scenario ends by signalling the source, including the ones that
+	// never call Close themselves: the blocking sender waits on that signal,
+	// and without it the goroutine outlives the run.
+	defer src.Close()
 
 	sink := &recordingSink{rec: rec}
 	if s.NewSink != nil {
@@ -614,7 +618,7 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 
 	if trigger == TriggerDrain {
 		go func() {
-			src.wrote.Wait()
+			<-src.wrote
 			cancel()
 		}()
 	}
@@ -712,9 +716,21 @@ type recordingSource struct {
 	batch []core.Message
 	block bool
 
-	// wrote fires once every message has been handed to the pipeline, so the
+	// wrote closes once the batch has been handed to the pipeline, so the
 	// drain scenario cancels at a point where rows are buffered.
-	wrote sync.WaitGroup
+	//
+	// A channel rather than a WaitGroup. Start runs on the pipeline's
+	// goroutine and the drain watcher waits on the harness's, so an Add in one
+	// raced a Wait in the other -- and a Wait that won saw a zero counter,
+	// returned at once, and cancelled before a single message was written. The
+	// drain trigger was then not testing a drain.
+	wrote chan struct{}
+
+	// closed is what Close signals. The sending goroutine owns ch and is the
+	// only thing that closes it: closing ch from Close while that goroutine is
+	// mid-send panics the sender, and a panic in a harness goroutine takes
+	// every test in the package with it.
+	closed chan struct{}
 
 	mu      sync.Mutex
 	commits int
@@ -722,19 +738,43 @@ type recordingSource struct {
 	once    sync.Once
 }
 
-func (s *recordingSource) Start() error {
-	s.ch = make(chan []core.Message, 1)
-	s.wrote.Add(1)
+// newRecordingSource builds the channels before anything can observe them.
+// Creating ch inside Start raced Close's read of it.
+func newRecordingSource(rec *Recorder) *recordingSource {
+	return &recordingSource{
+		rec: rec,
+		// Unbuffered, so the send completes only once the loop has taken the
+		// batch. A buffered channel let the send return into the buffer, and
+		// wrote then fired while the pipeline still had nothing: the drain
+		// scenario cancelled before a single row was written, which is the
+		// same vacuous drain the WaitGroup produced by a different route.
+		ch:     make(chan []core.Message),
+		wrote:  make(chan struct{}),
+		closed: make(chan struct{}),
+	}
+}
 
+func (s *recordingSource) Start() error {
 	go func() {
-		s.ch <- s.batch
-		s.wrote.Done()
+		// Abandoned rather than blocked if the run ends before the pipeline
+		// reads: a send with nobody left to receive would hold this goroutine
+		// past the end of the test.
+		select {
+		case s.ch <- s.batch:
+		case <-s.closed:
+		}
+		close(s.wrote)
+
 		if !s.block {
 			close(s.ch)
 			return
 		}
 		// The drain scenario needs the loop still running when the cancel
-		// lands, so the stream stays open.
+		// lands, so the stream stays open until Close says otherwise. Closing
+		// here, on the goroutine that sends, is what makes a send after close
+		// impossible.
+		<-s.closed
+		close(s.ch)
 	}()
 	return nil
 }
@@ -763,12 +803,10 @@ func (s *recordingSource) Commits() int {
 	return s.commits
 }
 
+// Close signals the sending goroutine and returns. It does not touch ch: the
+// goroutine that sends owns it, so there is no close to race a send.
 func (s *recordingSource) Close() error {
-	s.once.Do(func() {
-		if s.block && s.ch != nil {
-			close(s.ch)
-		}
-	})
+	s.once.Do(func() { close(s.closed) })
 	return nil
 }
 

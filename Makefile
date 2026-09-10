@@ -70,7 +70,7 @@ test-image: sqlflow-image
 .PHONY: coverage-matrix
 coverage-matrix: sqlflow-image
 	@mkdir -p .coverage
-	-CGO_ENABLED=1 go test -short -json ./... > .coverage/go.json 2>&1
+	-CGO_ENABLED=1 go test -short -race -json ./... > .coverage/go.json 2>&1
 	-CGO_ENABLED=1 go test -json -run '^TestIntegration' ./... \
 		> .coverage/go-integration.json 2>&1
 	-SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
@@ -293,6 +293,11 @@ test-go:
 	go build ./...
 	go vet ./...
 	@test -z "$$(gofmt -l internal/ cmd/)" || { echo "gofmt needed:"; gofmt -l internal/ cmd/; exit 1; }
+	@# -race on the unit pass, matching CI. The conformance harness coordinates
+	@# goroutines and two of its races reached main, neither reproducible by
+	@# re-running; the detector found both on the first pass. The integration
+	@# pass runs without it, because there the cost is the containers.
+	go test -short -race ./...
 	go test ./...
 
 # The Python engine's image targets are gone with the engine. Published
