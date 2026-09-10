@@ -605,7 +605,9 @@
             "TestHandlerInferredMem_TopLevelColumnsStillComeFromFirstRow",
             "TestHandlerInferredMem_UnionsDeeplyNestedStructFields",
             "TestHandlerInferredMem_UnionsNestedStructFieldsAcrossMessages",
-            "TestHandlerInferredMem_UnionsStructValuedFieldAddedLater"
+            "TestHandlerInferredMem_UnionsStructValuedFieldAddedLater",
+            "TestInferredInvoke_DoesNotLeakNativeMemory",
+            "TestInferredInvoke_ReleasesIngestRecord"
           ]
         },
         "integration": {
@@ -672,7 +674,9 @@
             "TestHandlerStructured_ListElementSeesRowsIngestedAfterPrepare",
             "TestHandlerStructured_MultipleRecords",
             "TestHandlerStructured_NestedStruct",
-            "TestHandlerStructured_SingleRecord"
+            "TestHandlerStructured_SingleRecord",
+            "TestStructuredInit_ReleasesTruncatedStorage",
+            "TestStructuredInvoke_DoesNotLeakNativeMemory"
           ]
         },
         "integration": {
@@ -1162,6 +1166,34 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestConfigSchema_AcceptsEveryShippedExample",
+            "TestConfigSchema_AcceptsEveryShippedExample/attach-geoip.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/basic.agg.mem.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/basic.agg.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/benchmark.inferred.mem.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/benchmark.stateful.mem.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/benchmark.structured.mem.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/csv.filesystem.join.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/csv.mem.join.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/enrich.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/github.motherduck.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.clickhouse.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.dlq.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.ducklake.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.mem.iceberg.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.motherduck.idempotent.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.motherduck.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.postgres.join.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.postgres.sink.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.sasl-tls.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.stateful.window.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.structured.disk.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/kafka.structured.mem.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/local.parquet.sink.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/s3.parquet.sink.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/tumbling.window.yml",
+            "TestConfigSchema_AcceptsEveryShippedExample/udf.yml",
+            "TestConfigSchema_CommittedFileMatchesTheTypes",
             "TestConfigValidation_AcceptsStatePath",
             "TestConfigValidation_ExampleConfigsBuildRealComponents",
             "TestConfigValidation_ExampleConfigsBuildRealComponents/attach-geoip.yml",
@@ -1263,6 +1295,51 @@
           "by_marker": [
             "test_config_validation_accepts_a_shipped_example"
           ]
+        }
+      }
+    },
+    {
+      "id": "validate.template",
+      "description": "Reports referenced, provided, missing, and unused template variables.",
+      "requires": [
+        "unit"
+      ],
+      "levels": {
+        "unit": {
+          "status": "covered",
+          "tests": [
+            "TestValidateNoSideEffects_Issue120TypoIsNamed"
+          ]
+        },
+        "integration": {
+          "status": "not_required"
+        },
+        "release": {
+          "status": "not_required"
+        }
+      }
+    },
+    {
+      "id": "validate.schema",
+      "description": "Validates a rendered config against the config JSON Schema, naming the line.",
+      "requires": [
+        "unit"
+      ],
+      "levels": {
+        "unit": {
+          "status": "covered",
+          "tests": [
+            "TestValidateNoSideEffects_Issue120TypoIsNamed"
+          ],
+          "by_marker": [
+            "TestValidateNoSideEffects_Issue120TypoIsNamed"
+          ]
+        },
+        "integration": {
+          "status": "not_required"
+        },
+        "release": {
+          "status": "not_required"
         }
       }
     },
@@ -1436,7 +1513,13 @@
             "TestToolingConformanceLattice_EveryKeyBuildsANull",
             "TestToolingConformanceLattice_EveryValueCarriesItsOwnKey",
             "TestToolingConformanceLattice_RejectsANullElementOnANonList",
+            "TestToolingConformancePipelines_ACommitBeforeTheFlushIsCaughtOnTheInterval",
+            "TestToolingConformancePipelines_ARunWithNoFlushIsCaught",
+            "TestToolingConformancePipelines_ASecondCommitWithoutATickerIsCaught",
+            "TestToolingConformancePipelines_AStatelessRunIsJustTheFlush",
             "TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants",
+            "TestToolingConformancePipelines_AnIdleIntervalTickIsNotACommitBeforeTheFlush",
+            "TestToolingConformancePipelines_AnUnpairedCommitIsCaught",
             "TestToolingConformancePipelines_CatchesACommitBeforeTheFlush",
             "TestToolingConformancePipelines_JudgeOneLivenessClaim",
             "TestToolingConformancePipelines_JudgeOnlyDeclaredInvariants",
@@ -1569,6 +1652,7 @@
       "TestCheckReferenceTablesNoHandlerSQL",
       "TestCheckReferenceTablesSurvivesACountError",
       "TestCheckReferenceTablesWarnsOnEmpty",
+      "TestConfigSchema_TypeEnumsComeFromTheRegistries",
       "TestCountingCountsDeliveredRowsOnce",
       "TestCountingDoesNotInventBufferedRows",
       "TestCountingForwardsBufferedRows",
@@ -1582,6 +1666,29 @@
       "TestReferenceTablesFindsNestedJoin",
       "TestReferenceTablesKeepsCatalogQualification",
       "TestReferenceTablesUnparseableSQL",
+      "TestValidateCommand_JSONIsTheContract",
+      "TestValidateCommand_MissingFileFails",
+      "TestValidateCommand_TextSaysWhatItSkipped",
+      "TestValidateCommand_ValidConfigSucceeds",
+      "TestValidateNoSideEffects_CleanConfigIsOK",
+      "TestValidateReport_DiagnosticOrderIsStable",
+      "TestValidateReport_SurvivesJSONRoundTrip",
+      "TestValidateReport_WarningKeepsOK",
+      "TestValidateReportsEveryDiagnostic_TwoFaultsOneRun",
+      "TestValidateSchema_CommandsMustBeASequence",
+      "TestValidateSchema_MalformedYAMLIsOneDiagnostic",
+      "TestValidateSchema_ValidConfigPasses",
+      "TestValidateSkipIsExplicit_UnparseableTemplateSkipsSchema",
+      "TestValidateTemplate_AllVariablesDefinedPasses",
+      "TestValidateTemplate_CollectsFilterArguments",
+      "TestValidateTemplate_CollectsReferencesWithPositions",
+      "TestValidateTemplate_ControlStructureMarksIncomplete",
+      "TestValidateTemplate_DefaultFilterMakesAVariableOptional",
+      "TestValidateTemplate_IncompleteWalkSuppressesUnused",
+      "TestValidateTemplate_MissingVariableNamesItsNeighbour",
+      "TestValidateTemplate_ParseErrorIsReturned",
+      "TestValidateTemplate_ReportsEveryMissingVariable",
+      "TestValidateTemplate_UnsuppliedInputIsAWarning",
       "TestWithSinkRoleSetsTheRole"
     ],
     "integration": [],

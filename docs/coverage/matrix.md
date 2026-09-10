@@ -33,9 +33,9 @@ names every one of them.
 | `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ | 17 |
 | `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — | 3 |
 | `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | 72 |
-| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 46 |
+| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | 48 |
 | `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | 9 |
-| `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 8 |
+| `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | 10 |
 | `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ | 25 |
 | `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ | 22 |
 | `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ | 6 |
@@ -48,16 +48,18 @@ names every one of them.
 | `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ | 4 |
 | `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ | 16 |
 | `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ | 45 |
-| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 73 |
+| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ | 101 |
+| `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — | 1 |
+| `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — | 1 |
 | `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | 11 |
 | `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — | 7 |
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | 13 |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ | 9 |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ | 1 |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 90 |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | 96 |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | 15 |
 
-**34 features declared. 34 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**36 features declared. 36 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -104,8 +106,9 @@ a smell for one that deserves a test of its own.
 - `state.offsets` (release) — via `test_state_durability_survives_a_restart`
 - `state.corruption` (release) — via `test_lifecycle_exit_codes_carry_the_error_code`
 - `config.validation` (release) — via `test_config_validation_accepts_a_shipped_example`
+- `validate.schema` (unit) — via `TestValidateNoSideEffects_Issue120TypoIsNamed`
 
-## Unattributed unit tests (19)
+## Unattributed unit tests (43)
 
 These carry no `coverage.Covers` marker, so they cover nothing.
 Add the marker, or add the feature to `features.yml` first.
@@ -115,6 +118,7 @@ Add the marker, or add the feature to `features.yml` first.
 - `TestCheckReferenceTablesNoHandlerSQL`
 - `TestCheckReferenceTablesSurvivesACountError`
 - `TestCheckReferenceTablesWarnsOnEmpty`
+- `TestConfigSchema_TypeEnumsComeFromTheRegistries`
 - `TestCountingCountsDeliveredRowsOnce`
 - `TestCountingDoesNotInventBufferedRows`
 - `TestCountingForwardsBufferedRows`
@@ -128,6 +132,29 @@ Add the marker, or add the feature to `features.yml` first.
 - `TestReferenceTablesFindsNestedJoin`
 - `TestReferenceTablesKeepsCatalogQualification`
 - `TestReferenceTablesUnparseableSQL`
+- `TestValidateCommand_JSONIsTheContract`
+- `TestValidateCommand_MissingFileFails`
+- `TestValidateCommand_TextSaysWhatItSkipped`
+- `TestValidateCommand_ValidConfigSucceeds`
+- `TestValidateNoSideEffects_CleanConfigIsOK`
+- `TestValidateReport_DiagnosticOrderIsStable`
+- `TestValidateReport_SurvivesJSONRoundTrip`
+- `TestValidateReport_WarningKeepsOK`
+- `TestValidateReportsEveryDiagnostic_TwoFaultsOneRun`
+- `TestValidateSchema_CommandsMustBeASequence`
+- `TestValidateSchema_MalformedYAMLIsOneDiagnostic`
+- `TestValidateSchema_ValidConfigPasses`
+- `TestValidateSkipIsExplicit_UnparseableTemplateSkipsSchema`
+- `TestValidateTemplate_AllVariablesDefinedPasses`
+- `TestValidateTemplate_CollectsFilterArguments`
+- `TestValidateTemplate_CollectsReferencesWithPositions`
+- `TestValidateTemplate_ControlStructureMarksIncomplete`
+- `TestValidateTemplate_DefaultFilterMakesAVariableOptional`
+- `TestValidateTemplate_IncompleteWalkSuppressesUnused`
+- `TestValidateTemplate_MissingVariableNamesItsNeighbour`
+- `TestValidateTemplate_ParseErrorIsReturned`
+- `TestValidateTemplate_ReportsEveryMissingVariable`
+- `TestValidateTemplate_UnsuppliedInputIsAWarning`
 - `TestWithSinkRoleSetsTheRole`
 
 
