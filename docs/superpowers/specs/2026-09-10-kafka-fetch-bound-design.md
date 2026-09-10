@@ -123,21 +123,24 @@ One failing-first integration test in `internal/kafka`, first line
 `coverage.Covers(t, "source.kafka")`, named
 `TestIntegrationSourceKafka_ReadAheadIsBoundedByPrefetch`:
 
-1. Build a client with `FetchMaxPartitionBytes(64 KiB)` and a source with
-   `WithChannelBuffer(1)`.
+1. Build a client with `FetchMaxBytes` and `FetchMaxPartitionBytes` at 64
+   KiB, and a source with no channel option, so the test exercises the
+   default depth every pipeline gets.
 2. Produce 2,000 records of 1 KiB each with `ProduceSync`, one per call, so
    each is its own producer batch and a fetch cannot carry more than about 64
    of them.
 3. Call `Stream()` and read nothing for two seconds.
 4. Close the source. The poll goroutine returns, drops the fetch in its hand,
    and closes the channel. Whatever the channel holds stays readable.
-5. Drain the channel and count records. Assert the count is at most 128, two
-   fetches, which allows one fetch of slack for a broker that packs a partial
-   extra batch.
+5. Drain the channel and count records. Assert the count is at most
+   `(DefaultKafkaFetchPrefetch + 1) x 64`: the default depth in fetches, plus
+   one fetch of slack for a broker that packs a partial extra batch.
 
-On today's code the poll goroutine keeps polling into 100 free slots, and the
-drain returns all 2,000. That is the failing run. The test does not measure
-bytes; the bound in bytes follows from the bound in fetches.
+On today's code the default depth is 100, the poll goroutine keeps polling
+into free slots, and the drain returns all 2,000. That is the failing run.
+The limit reads the constant, so a default changed by measurement does not
+change the test. The test does not measure bytes; the bound in bytes follows
+from the bound in fetches.
 
 Config tests in `internal/config`, marked `config.templating` like their
 neighbours: the block loads with all three fields, an absent block yields the
