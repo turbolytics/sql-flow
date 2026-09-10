@@ -66,6 +66,12 @@ Resident memory runs about three times the payload for small JSON messages.
 The `core.Message` struct is 72 bytes, the fetch buffer stays alive while any
 value slices into it, and the Go heap carries its usual slack.
 
+The two byte limits count bytes on the wire, which are compressed bytes.
+Measured while writing the integration test: 2,000 records of a repeated
+byte, nominally 1 KiB each, arrived 512 to a 64 KiB fetch, because the values
+compress to nothing. A topic that compresses well decompresses to more than
+the limit in memory, and the docs say so.
+
 Validation, in `internal/config`:
 
 - Every field is optional. An absent block means all three defaults.
