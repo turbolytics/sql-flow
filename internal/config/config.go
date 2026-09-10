@@ -1,5 +1,11 @@
 package config
 
+import (
+	"math"
+
+	"github.com/turbolytics/sql-flow/internal/errs"
+)
+
 type ErrorPolicy string
 
 const (
@@ -169,6 +175,71 @@ type KafkaSource struct {
 	SecurityProtocol string     `yaml:"security_protocol,omitempty" jsonschema:"enum=SASL_SSL,enum=SSL,enum=SASL_PLAINTEXT,enum=PLAINTEXT"`
 	SSL              *KafkaSSL  `yaml:"ssl,omitempty"`
 	SASL             *KafkaSASL `yaml:"sasl,omitempty"`
+
+	// Bounds how far the consumer reads ahead of the pipeline. Omit the
+	// block to accept the defaults, which bound a backlog replay to a few
+	// fetches rather than the backlog.
+	Fetch *KafkaFetch `yaml:"fetch,omitempty"`
+}
+
+// Defaults for KafkaFetch. The two byte values are what the source set
+// before the block existed. The prefetch default is measured: the smallest
+// depth within 5% of unbounded throughput on a 3M message backlog. See
+// docs/superpowers/specs/2026-09-10-kafka-fetch-bound-design.md.
+const (
+	DefaultKafkaFetchMaxBytes          = 100 << 20
+	DefaultKafkaFetchMaxPartitionBytes = 10 << 20
+	DefaultKafkaFetchPrefetch          = 2
+)
+
+// KafkaFetch bounds the consumer's read-ahead. The source holds at most
+// prefetch fetches in the channel the pipeline reads from, plus the one it is
+// waiting to send, and franz-go holds one more per broker. In bytes of
+// payload, the worst case is (prefetch + 2) x brokers x max_bytes and the
+// typical case is (prefetch + 2) x partitions x max_partition_bytes.
+type KafkaFetch struct {
+	// Bytes one fetch may return per broker. Kafka's fetch.max.bytes.
+	MaxBytes int `yaml:"max_bytes,omitempty" jsonschema:"minimum=1"`
+	// Bytes one fetch may return per partition. Kafka's max.partition.fetch.bytes.
+	MaxPartitionBytes int `yaml:"max_partition_bytes,omitempty" jsonschema:"minimum=1"`
+	// Fetches held ahead of the pipeline.
+	Prefetch int `yaml:"prefetch,omitempty" jsonschema:"minimum=1"`
+}
+
+// Resolved fills absent fields with their defaults and checks the bounds.
+// A nil receiver is the absent block.
+func (f *KafkaFetch) Resolved() (KafkaFetch, error) {
+	out := KafkaFetch{
+		MaxBytes:          DefaultKafkaFetchMaxBytes,
+		MaxPartitionBytes: DefaultKafkaFetchMaxPartitionBytes,
+		Prefetch:          DefaultKafkaFetchPrefetch,
+	}
+	if f == nil {
+		return out, nil
+	}
+	if f.MaxBytes != 0 {
+		out.MaxBytes = f.MaxBytes
+	}
+	if f.MaxPartitionBytes != 0 {
+		out.MaxPartitionBytes = f.MaxPartitionBytes
+	}
+	if f.Prefetch != 0 {
+		out.Prefetch = f.Prefetch
+	}
+
+	if out.MaxBytes < 1 || out.MaxBytes > math.MaxInt32 {
+		return out, errs.New(errs.CodeSourceInvalid, "kafka source: fetch.max_bytes must be between 1 and %d, got %d", math.MaxInt32, out.MaxBytes)
+	}
+	if out.MaxPartitionBytes < 1 || out.MaxPartitionBytes > math.MaxInt32 {
+		return out, errs.New(errs.CodeSourceInvalid, "kafka source: fetch.max_partition_bytes must be between 1 and %d, got %d", math.MaxInt32, out.MaxPartitionBytes)
+	}
+	if out.MaxPartitionBytes > out.MaxBytes {
+		return out, errs.New(errs.CodeSourceInvalid, "kafka source: fetch.max_partition_bytes (%d) must not exceed fetch.max_bytes (%d)", out.MaxPartitionBytes, out.MaxBytes)
+	}
+	if out.Prefetch < 1 {
+		return out, errs.New(errs.CodeSourceInvalid, "kafka source: fetch.prefetch must be at least 1, got %d", out.Prefetch)
+	}
+	return out, nil
 }
 
 type WebsocketSource struct {

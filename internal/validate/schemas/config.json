@@ -101,6 +101,28 @@
                     "username",
                     "password"
                   ]
+                },
+                "fetch": {
+                  "properties": {
+                    "max_bytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Bytes one fetch may return per broker. Kafka's fetch.max.bytes."
+                    },
+                    "max_partition_bytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Bytes one fetch may return per partition. Kafka's max.partition.fetch.bytes."
+                    },
+                    "prefetch": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Fetches held ahead of the pipeline."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "description": "Bounds how far the consumer reads ahead of the pipeline. Omit the\nblock to accept the defaults, which bound a backlog replay to a few\nfetches rather than the backlog."
                 }
               },
               "additionalProperties": false,
