@@ -116,12 +116,47 @@ box as the published figures:
 - Three runs each, medians, host load stated.
 - Baseline on main `46a1bd1`: 1,075,346 msgs/sec, 1,040 MiB container peak.
 
-The PR description carries the table. The expectation is that `prefetch` 2
-holds throughput and peaks in the low hundreds of MiB, because the pipeline
-consumes one fetch while the next two wait and franz-go fills a third.
+Measured 2026-09-10, host load 5.2 to 7.7. StructuredBatch, three runs per
+value, medians:
 
-If no value within 5% exists, the default is the smallest value within 10%
-and the PR says so. Bounded memory is the requirement; the 5% is a target.
+| prefetch | throughput | vs unbounded | container peak | working set |
+| --- | --- | --- | --- | --- |
+| 100 (unbounded) | 1,090,719/s | baseline | 1,037 MiB | 950 MiB |
+| 1 | 1,134,651/s | +4.0% | 266 MiB | 178 MiB |
+| 2 | 1,177,636/s | +8.0% | 285 MiB | 202 MiB |
+| 4 | 1,168,433/s | +7.1% | 349 MiB | 262 MiB |
+| 8 | 1,144,790/s | +5.0% | 452 MiB | 368 MiB |
+
+InferredMemBatch, the case where the broker outruns the pipeline four to one,
+two runs per value:
+
+| prefetch | throughput | vs unbounded | container peak | working set |
+| --- | --- | --- | --- | --- |
+| 100 (unbounded) | 267,563/s | baseline | 1,534 MiB | 1,446 MiB |
+| 1 | 273,892/s | +2.4% | 308 MiB | 224 MiB |
+| 2 | 274,611/s | +2.6% | 339 MiB | 253 MiB |
+| 8 | 276,460/s | +3.3% | 509 MiB | 425 MiB |
+
+Three findings the 5% rule did not anticipate.
+
+Bounding costs no throughput. Every bounded value beats the unbounded
+baseline, by 2.4% to 8.0%. The rule was written to price a slowdown that does
+not exist, so it does not choose between 1, 2, 4 and 8.
+
+**The default is 2.** It is the fastest cell for StructuredBatch and within
+noise of the fastest for InferredMemBatch, and it leaves one fetch of slack
+for broker jitter that a depth of 1 does not. A depth of 1 is there for the
+tightest memory, at 266 MiB against 285.
+
+The unbounded run reproduces the published backlog figure. 1,012, 1,040 and
+1,037 MiB against the 1,040 MiB on the site, measured yesterday on the same
+cell. The published figure was right; what it measured was read-ahead.
+
+Two more things the numbers say. Each slot costs about 26 MiB, from the 186
+MiB between depth 1 and depth 8 over seven slots, which is a 10 MiB fetch
+decompressed. And at depth 100 the whole 3M backlog fits in the channel, so
+peak is the backlog rather than the depth times the fetch size. That is the
+shape the site's backlog table describes, and it is what the bound removes.
 
 ### Tests
 
