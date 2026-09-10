@@ -1103,6 +1103,9 @@ make test-image     # build the image and run tests/release against it
 which builds the environment from `uv.lock` on first use. There is no
 `pip install` step, and no dependency is resolved at install time.
 
+The matrix generator is `scripts/coverage_matrix/`, one module per concern
+with a test file each under `tests/tooling/`. Its own docstring lists them.
+
 [**Coverage and invariant matrix**](docs/coverage/matrix.md) — what is tested,
 and separately, what is proven. It is generated from the suites on every push
 and gates the merge.
