@@ -742,7 +742,7 @@ type recordingSource struct {
 // Creating ch inside Start raced Close's read of it.
 func newRecordingSource(rec *Recorder) *recordingSource {
 	return &recordingSource{
-		rec:    rec,
+		rec: rec,
 		// Unbuffered, so the send completes only once the loop has taken the
 		// batch. A buffered channel let the send return into the buffer, and
 		// wrote then fired while the pipeline still had nothing: the drain
