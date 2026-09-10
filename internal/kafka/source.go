@@ -76,6 +76,13 @@ func NewSource(client *kgo.Client, opts ...Option) (*Source, error) {
 	return s, nil
 }
 
+// ChannelBuffer reports the read-ahead bound in fetches. The startup log
+// prints it, and the source builder's test reads it to prove the configured
+// value arrived here.
+func (k *Source) ChannelBuffer() int {
+	return k.channelBuffer
+}
+
 func (k *Source) Start() error {
 	k.logger.Info("starting franz-go consumer")
 	return nil
