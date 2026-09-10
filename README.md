@@ -1107,6 +1107,13 @@ which builds the environment from `uv.lock` on first use. There is no
 and separately, what is proven. It is generated from the suites on every push
 and gates the merge.
 
+What is committed is one status per feature and per invariant, under
+`docs/coverage/status/`. Adding a test inside a feature that is already
+covered changes none of it. The page is rendered from those files and the
+registries alone, so `make coverage-page` regenerates it in a second, with no
+Docker and no test run. Test names and counts are in the coverage report CI
+publishes on every run.
+
 `make test-go` and `make test-image` are what CI runs on every push.
 Kafka-backed integration tests are deliberately excluded from `test-go`; they
 run from the dev stack. Backing services for local development:

@@ -524,11 +524,11 @@ def build_invariants(invariants, integrations, results, evidence):
 
 
 def snapshot_invariants(invariants, integrations, built):
-    """The invariant half of matrix.json.
+    """The invariant half of the snapshot.
 
     Same bare-name encoding as the feature half. An exempt cell carries its
-    reason, so a reader never has to open a second file to learn why a cell is
-    blank.
+    reason, so a reader of the snapshot never has to open the registry to
+    learn why a cell is blank.
     """
     kinds = by_kind(integrations)
     exemptions = exemptions_of(integrations)
@@ -824,13 +824,12 @@ MARK = {
 
 
 def snapshot(features, coverage, secondary, unmatched, unknown_markers):
-    """The machine-readable matrix.
+    """The machine-readable matrix, written to .coverage/matrix.json.
 
-    This is the artifact, and matrix.md is a view rendered from it. A diff
-    against the committed copy is what makes a coverage change visible in
-    review, and diffing JSON keeps that signal clean: reformatting the table
-    or rewording a description cannot masquerade as a coverage change, and
-    a coverage change cannot hide inside a reflowed table.
+    Nothing commits this. It is what the gate judges gaps from, what
+    status_from_snapshot projects, and where the report's counts point for the
+    names behind them. What review sees is the status directory this projects
+    to: a diff of statuses cannot be buried under a test that was renamed.
 
     Everything is sorted so the same tree always produces the same bytes.
 
