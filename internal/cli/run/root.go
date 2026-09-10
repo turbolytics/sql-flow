@@ -26,11 +26,17 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/errs"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // newErrorPolicies resolves pipeline.on_error, building the DLQ sink when the
 // policy calls for one.
-func newErrorPolicies(ctx context.Context, conf *config.Conf, conn adbc.Connection) (core.PipelineErrorPolicies, error) {
+func newErrorPolicies(
+	ctx context.Context,
+	conf *config.Conf,
+	conn adbc.Connection,
+	mp metric.MeterProvider,
+) (core.PipelineErrorPolicies, error) {
 	var policies core.PipelineErrorPolicies
 
 	onError := conf.Pipeline.OnError
@@ -48,7 +54,12 @@ func newErrorPolicies(ctx context.Context, conf *config.Conf, conn adbc.Connecti
 		if onError.DLQ == nil {
 			return policies, fmt.Errorf("pipeline.on_error: policy DLQ requires a dlq sink")
 		}
-		dlqSink, err := sinks.New(ctx, *onError.DLQ, conn)
+		// The DLQ carries its own role so its rows never sum into the
+		// pipeline's delivered series. Without that, a pipeline looks
+		// healthier the more records it rejects.
+		dlqSink, err := sinks.New(ctx, *onError.DLQ, conn,
+			sinks.WithMeterProvider(mp),
+			sinks.WithSinkRole("dlq"))
 		if err != nil {
 			return policies, fmt.Errorf("pipeline.on_error dlq: %w", err)
 		}
@@ -265,6 +276,17 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("failed to create metrics: %w", err)
 			}
 
+			// A dimension table that did not load is the enrichment failure
+			// nothing else makes visible. Reported before the pipeline
+			// consumes anything, and on the signal context so a SIGTERM during
+			// startup stops the count rather than waiting it out.
+			//
+			// It runs here rather than beside InitTables because it records a
+			// gauge, and the metrics do not exist until now.
+			if err := core.CheckReferenceTables(ctx, conn, conf, pipelineMetrics, l); err != nil {
+				return err
+			}
+
 			src, err := sources.New(
 				conf.Pipeline.Source,
 				logger,
@@ -291,7 +313,8 @@ func NewCommand() *cobra.Command {
 			// The signal context, so a SIGTERM arriving while the sink dials
 			// its destination stops the start instead of waiting it out.
 			sink, err := sinks.New(ctx, conf.Pipeline.Sink, conn,
-				sinks.WithMeterProvider(meterProvider))
+				sinks.WithMeterProvider(meterProvider),
+				sinks.WithSinkRole("pipeline"))
 			if err != nil {
 				return err
 			}
@@ -314,7 +337,7 @@ func NewCommand() *cobra.Command {
 				}()
 			}
 
-			errorPolicies, err := newErrorPolicies(ctx, conf, conn)
+			errorPolicies, err := newErrorPolicies(ctx, conf, conn, meterProvider)
 			if err != nil {
 				return err
 			}
@@ -339,7 +362,7 @@ func NewCommand() *cobra.Command {
 				}, turbineOpts...)...,
 			)
 
-			managedTables, err := buildManagedTables(ctx, conf, conn, lock, l)
+			managedTables, err := buildManagedTables(ctx, conf, conn, lock, l, meterProvider)
 			if err != nil {
 				return err
 			}

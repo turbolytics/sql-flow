@@ -689,27 +689,71 @@ State in a managed table is lost on a crash unless the pipeline sets
 
 ## Metrics
 
-`--metrics prometheus` serves `/metrics` on `:8000`. Twelve instruments are
-exported under the meter name `sqlflow`:
+`--metrics prometheus` serves `/metrics` on `:8000`. Nineteen instruments are
+exported, all under the meter name `sqlflow` except the two webhook ones.
 
-| Instrument | Type | Unit |
-|---|---|---|
-| `message_count` | counter | messages |
-| `error_count` | counter (attr: `phase`) | count |
-| `source_read_latency` | histogram | seconds |
-| `batch_processing_latency` | histogram | seconds |
-| `sink_flush_latency` | histogram | seconds |
-| `sink_flush_count` | counter | flushes |
-| `sink_flush_num_rows` | gauge | rows |
-| `consumer_lag` | gauge (attrs: `topic`, `partition`) | messages |
-| `state_commit_count` | counter | commits |
-| `state_commit_latency` | histogram | seconds |
-| `state_db_size_bytes` | gauge | bytes |
-| `state_table_rows` | gauge (attr: `table`) | rows |
+The instrument name and the Prometheus series name differ: the exporter appends
+the unit, then `_total` for counters, and skips the unit when the name already
+contains it. Only the series name is queryable, so both are listed. A test
+asserts this table against the running exporter.
 
-The last four appear only when the pipeline declares a state path. An absent
-series and an empty state are different facts, so a pipeline with state in
-memory reports nothing rather than zero.
+**Row accounting.** Four counts follow a row through the pipeline:
+
+| Instrument | Series | Type | Attrs |
+|---|---|---|---|
+| `message_count` | `message_count_messages_total` | counter | — |
+| `handler_rows_read` | `handler_rows_read_total` | counter | — |
+| `sink_rows_accepted` | `sink_rows_accepted_total` | counter | `sink`, `role` |
+| `sink_rows_written` | `sink_rows_written_total` | counter | `sink`, `role` |
+| `sink_flush_num_rows` | `sink_flush_num_rows` | gauge | — |
+
+**Sink health:**
+
+| Instrument | Series | Type | Attrs |
+|---|---|---|---|
+| `sink_flush_count` | `sink_flush_count_flushes_total` | counter | `result` |
+| `sink_flush_latency` | `sink_flush_latency_seconds` | histogram | — |
+| `sink_retry_count` | `sink_retry_count_total` | counter | `sink` |
+
+**Pipeline:**
+
+| Instrument | Series | Type | Attrs |
+|---|---|---|---|
+| `batch_processing_latency` | `batch_processing_latency_seconds` | histogram | — |
+| `error_count` | `error_count_total` | counter | `class`, `domain`, `code`, `phase` |
+
+**Source:**
+
+| Instrument | Series | Type | Attrs |
+|---|---|---|---|
+| `source_read_latency` | `source_read_latency_seconds` | histogram | — |
+| `consumer_lag` | `consumer_lag_messages` | gauge | `topic`, `partition` |
+
+**Reference tables**, recorded once at startup for each table the handler SQL
+joins, with or without a state path:
+
+| Instrument | Series | Type | Attrs |
+|---|---|---|---|
+| `reference_table_rows` | `reference_table_rows` | gauge | `table` |
+
+**Durable state**, present only when the pipeline declares a state path. An
+absent series and an empty state are different facts, so a pipeline with state
+in memory reports nothing rather than zero:
+
+| Instrument | Series | Type | Attrs |
+|---|---|---|---|
+| `state_commit_count` | `state_commit_count_commits_total` | counter | `result` |
+| `state_commit_latency` | `state_commit_latency_seconds` | histogram | — |
+| `state_db_size_bytes` | `state_db_size_bytes` | gauge | — |
+| `state_table_rows` | `state_table_rows` | gauge | `table` |
+
+**Webhook source**, under the meter `sqlflow.sources.http` and present only with
+a webhook source:
+
+| Instrument | Series | Type | Attrs |
+|---|---|---|---|
+| `webhook_requests_total` | `webhook_requests_total` | counter | `status_code` |
+| `webhook_request_duration_seconds` | `webhook_request_duration_seconds` | histogram | `status_code` |
 
 ```
 $ sqlflow run -c <config> --metrics=prometheus &
@@ -720,6 +764,36 @@ message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 `consumer_lag` is the one to alert on. It is the broker's high watermark minus
 the offset the pipeline has finished with, so it measures the work the
 pipeline still owes rather than what its consumer group has been told.
+
+### Reading the row counts
+
+Each adjacent ratio isolates one kind of loss:
+
+- `handler_rows_read` over `message_count` — parse and DLQ loss. A message the
+  handler rejected never reaches the SQL.
+- `sink_rows_accepted` over `handler_rows_read` — whatever the SQL does. A join
+  that drops, a `WHERE`, a `GROUP BY`. Its meaning depends on the pipeline,
+  which is why sqlflow reports the numbers and leaves the threshold to you.
+- `sink_rows_written` over `sink_rows_accepted` — delivery loss. A ratio that
+  stays below 1 is a sink that is not draining.
+
+The `role` attribute separates the pipeline sink from the DLQ and from a window
+manager's sink. Sum across roles and a rejected record counts as a delivered
+one.
+
+**Every ratio is a floor, not an equality.** sqlflow is at-least-once: a crash
+between the flush and the offset commit replays the batch, and the sink writes
+those rows again, so a ratio can exceed 1 after a normal recovery. Alert on a
+ratio that is low. Never alert on one that is not exactly 1, or a healthy
+restart pages somebody.
+
+The sink's buffer depth is `sink_rows_accepted_total - sink_rows_written_total`.
+There is no gauge for it: a counter difference gives the depth and a rate,
+and it cannot misreport itself the way a sink's own count can.
+
+An enrichment pipeline joining a dimension table that never loaded shows up
+here as `sink_rows_accepted` collapsing against `handler_rows_read` — and at
+startup, as a warning naming the empty table.
 
 ### Inspecting durable state
 

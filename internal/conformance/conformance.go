@@ -30,6 +30,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // Row is one row the destination holds, decoded by the subject through the
@@ -161,7 +163,40 @@ const (
 
 	probeFailsStart = "sink.probe.fails_start"
 	closeIdempotent = "lifecycle.close.idempotent"
+
+	rowsCounted = "sink.rows.counted_on_delivery"
 )
+
+// deliveredRows reads sink_rows_written out of a manual reader.
+//
+// The counter is the only way to see what the pipeline will report to an
+// operator. Asserting the sink's own view instead would prove nothing about
+// the number a dashboard shows.
+func deliveredRows(t *testing.T, r *sdkmetric.ManualReader, name string) int64 {
+	t.Helper()
+
+	var rm metricdata.ResourceMetrics
+	if err := r.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("conformance: collecting metrics: %v", err)
+	}
+
+	var total int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, dp := range sum.DataPoints {
+				total += dp.Value
+			}
+		}
+	}
+	return total
+}
 
 // prober mirrors sinks.Prober.
 //
@@ -225,10 +260,23 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			{invariant: preservesOrder, skipped: skip},
 			{invariant: probeFailsStart, skipped: skip},
 			{invariant: closeIdempotent, skipped: skip},
+			{invariant: rowsCounted, skipped: skip},
 		}
 	}
 
-	sink := s.New(t)
+	// The subject's sink, wrapped exactly as sinks.New wraps it in production.
+	// Judging the raw sink would leave sink_rows_written untested, which is
+	// the whole reason that invariant is declared.
+	//
+	// A manual reader rather than the noop provider, because the assertion is
+	// on the counter's value.
+	reader := sdkmetric.NewManualReader()
+	sink := core.NewCountingSink(
+		s.New(t),
+		sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)),
+		s.Integration,
+		"conformance",
+	)
 	ctx := context.Background()
 
 	// Step 0. Nothing is buffered, so nothing may reach the destination. The
@@ -344,6 +392,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			{invariant: preservesOrder, skipped: stuck},
 			{invariant: probeFailsStart, skipped: stuck},
 			{invariant: closeIdempotent, skipped: stuck},
+			{invariant: rowsCounted, skipped: stuck},
 		}
 	}
 
@@ -391,6 +440,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		}, depth, honours,
 			{invariant: noHollowSuccess, skipped: "the rows were delivered on write"},
 			{invariant: preservesOrder, skipped: "the rows were delivered on write"},
+			{invariant: rowsCounted, skipped: "the rows were delivered on write"},
 		}, startAndStop(t, s)...)
 	}
 
@@ -440,6 +490,17 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	secondBroken, cancelSecond := context.WithTimeout(ctx, deadline)
 	secondErr := sink.Flush(secondBroken)
 	cancelSecond()
+
+	// Two flushes have now failed. Only the pre-warm was ever acknowledged, so
+	// the counter must still read 1: a counter that moved here would be
+	// reporting delivery the destination never confirmed, which is #221 as a
+	// metric.
+	counted := verdict{invariant: rowsCounted}
+	if n := deliveredRows(t, reader, "sink_rows_written"); n != 1 {
+		counted.failure = "sink_rows_written is " + strconv.FormatInt(n, 10) +
+			" after two failed flushes; want 1, from the pre-warm alone, " +
+			"because a flush that failed delivered nothing"
+	}
 	if secondErr == nil && buffers.failure == "" {
 		hollow.failure = "a second Flush into the same broken destination " +
 			"returned nil; Flush may return nil only when every row since the " +
@@ -453,7 +514,8 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 				"; the retry did not deliver what the failed flush kept"
 		}
 		return append([]verdict{empty, buffers, keeps, depth, honours, hollow,
-			{invariant: preservesOrder, skipped: "the retry never delivered"}},
+			{invariant: preservesOrder, skipped: "the retry never delivered"},
+			{invariant: rowsCounted, skipped: "the retry never delivered"}},
 			startAndStop(t, s)...)
 	}
 
@@ -461,6 +523,17 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		if n := reporter.BufferedRows(); n != 0 {
 			depth.failure = "reports " + strconv.Itoa(n) +
 				" buffered rows after a Flush that succeeded; want 0"
+		}
+	}
+
+	// The retry delivered rows 2 and 3, so the counter owes exactly those two
+	// on top of the pre-warm. Counting them twice would be as wrong as not
+	// counting them: the rows were delivered once.
+	if counted.failure == "" {
+		if n := deliveredRows(t, reader, "sink_rows_written"); n != 3 {
+			counted.failure = "sink_rows_written is " + strconv.FormatInt(n, 10) +
+				" after the retry delivered two kept rows; want 3, counting " +
+				"each delivered row exactly once"
 		}
 	}
 
@@ -489,7 +562,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		}
 	}
 
-	return append([]verdict{empty, buffers, keeps, depth, honours, hollow, order},
+	return append([]verdict{empty, buffers, keeps, depth, honours, hollow, order, counted},
 		startAndStop(t, s)...)
 }
 

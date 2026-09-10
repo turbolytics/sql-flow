@@ -11,17 +11,18 @@ import (
 // descriptions and units the Python engine exports.
 type Metrics struct {
 	MessageCount           metric.Int64Counter
+	HandlerRowsRead        metric.Int64Counter
 	ErrorCount             metric.Int64Counter
 	SourceReadLatency      metric.Float64Histogram
 	SinkFlushLatency       metric.Float64Histogram
 	SinkFlushNumRows       metric.Int64Gauge
-	SinkBufferedRows       metric.Int64Gauge
 	SinkFlushCount         metric.Int64Counter
 	BatchProcessingLatency metric.Float64Histogram
 	StateCommitLatency     metric.Float64Histogram
 	StateCommitCount       metric.Int64Counter
 	StateSizeBytes         metric.Int64Gauge
 	StateTableRows         metric.Int64Gauge
+	ReferenceTableRows     metric.Int64Gauge
 	ConsumerLag            metric.Int64Gauge
 }
 
@@ -47,6 +48,21 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		return nil, fmt.Errorf("message_count: %w", err)
 	}
 
+	// The denominator of the enrichment ratio. message_count counts messages,
+	// which stops being the same number the moment a message is rejected or a
+	// batch fails to ingest.
+	if m.HandlerRowsRead, err = meter.Int64Counter(
+		"handler_rows_read",
+		metric.WithDescription("Rows the handler ingested into the batch table, which the pipeline SQL ran over"),
+		metric.WithUnit("rows"),
+	); err != nil {
+		return nil, fmt.Errorf("handler_rows_read: %w", err)
+	}
+
+	// The unit stays "count", which the exporter drops as unitless, so this
+	// exports as error_count_total. A descriptive unit would rename it to
+	// error_count_errors_total and break every dashboard built on the current
+	// name. Measured against the exporter, not inferred.
 	if m.ErrorCount, err = meter.Int64Counter(
 		"error_count",
 		metric.WithDescription("Number of errors that occurred during pipeline execution"),
@@ -79,17 +95,12 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		return nil, fmt.Errorf("sink_flush_num_rows: %w", err)
 	}
 
-	// A sink holds every row a flush could not deliver, and nothing bounds
-	// that buffer. Today a failed flush stops the pipeline, so the buffer dies
-	// with the process; the day a flush failure stops being fatal, this gauge
-	// is what tells an operator the buffer is growing rather than draining.
-	if m.SinkBufferedRows, err = meter.Int64Gauge(
-		"sink_buffered_rows",
-		metric.WithDescription("Rows the sink is holding that no flush has delivered yet"),
-		metric.WithUnit("rows"),
-	); err != nil {
-		return nil, fmt.Errorf("sink_buffered_rows: %w", err)
-	}
+	// sink_buffered_rows was here. The depth is now derived as
+	// sink_rows_accepted minus sink_rows_written, which yields a rate the
+	// gauge could not and cannot misreport itself the way a sink's own count
+	// can. The gauge was also already dead for the ClickHouse and Iceberg
+	// sinks: the retry wrapper declares only WriteTable and Flush, so it hid
+	// the BufferedRowReporter the recording depended on.
 
 	if m.SinkFlushCount, err = meter.Int64Counter(
 		"sink_flush_count",
@@ -118,7 +129,7 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 	if m.StateCommitLatency, err = meter.Float64Histogram(
 		"state_commit_latency",
 		metric.WithDescription("Latency of committing state and offsets together"),
-		metric.WithUnit("s"),
+		metric.WithUnit("seconds"),
 	); err != nil {
 		return nil, fmt.Errorf("state_commit_latency: %w", err)
 	}
@@ -145,6 +156,22 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("rows"),
 	); err != nil {
 		return nil, fmt.Errorf("state_table_rows: %w", err)
+	}
+
+	// Recorded once, at startup, so the series reports what the table held
+	// when the pipeline started. The pipeline does not re-count: rescanning a
+	// CSV or crossing the wire to Postgres on an interval is a cost the
+	// operator never asked for.
+	//
+	// It appears whenever the handler SQL joins a table, with or without a
+	// state path, so it is not one of the state instruments despite sharing
+	// their shape.
+	if m.ReferenceTableRows, err = meter.Int64Gauge(
+		"reference_table_rows",
+		metric.WithDescription("Rows a table joined by the handler SQL held when the pipeline started"),
+		metric.WithUnit("rows"),
+	); err != nil {
+		return nil, fmt.Errorf("reference_table_rows: %w", err)
 	}
 
 	return &m, nil

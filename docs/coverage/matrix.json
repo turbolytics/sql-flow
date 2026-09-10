@@ -174,6 +174,7 @@
             "TestIntegrationSinkKafka_Conformance/sink.flush.no_hollow_success",
             "TestIntegrationSinkKafka_Conformance/sink.flush.preserves_order",
             "TestIntegrationSinkKafka_Conformance/sink.probe.fails_start",
+            "TestIntegrationSinkKafka_Conformance/sink.rows.counted_on_delivery",
             "TestIntegrationSinkKafka_Conformance/sink.write.buffers_only"
           ]
         },
@@ -247,6 +248,7 @@
             "TestIntegrationSinkClickhouse_Conformance/sink.flush.no_hollow_success",
             "TestIntegrationSinkClickhouse_Conformance/sink.flush.preserves_order",
             "TestIntegrationSinkClickhouse_Conformance/sink.probe.fails_start",
+            "TestIntegrationSinkClickhouse_Conformance/sink.rows.counted_on_delivery",
             "TestIntegrationSinkClickhouse_Conformance/sink.write.buffers_only",
             "TestIntegrationSinkClickhouse_Types",
             "TestIntegrationSinkClickhouse_Types/type.nested",
@@ -291,6 +293,7 @@
             "TestSinkIceberg_Conformance/sink.flush.no_hollow_success",
             "TestSinkIceberg_Conformance/sink.flush.preserves_order",
             "TestSinkIceberg_Conformance/sink.probe.fails_start",
+            "TestSinkIceberg_Conformance/sink.rows.counted_on_delivery",
             "TestSinkIceberg_Conformance/sink.write.buffers_only",
             "TestSinkIceberg_EmptyBatchAppendsNothing",
             "TestSinkIceberg_FlushCannotOutliveItsContext",
@@ -360,6 +363,7 @@
             "TestSinkSqlcommand_Conformance/sink.flush.no_hollow_success",
             "TestSinkSqlcommand_Conformance/sink.flush.preserves_order",
             "TestSinkSqlcommand_Conformance/sink.probe.fails_start",
+            "TestSinkSqlcommand_Conformance/sink.rows.counted_on_delivery",
             "TestSinkSqlcommand_Conformance/sink.write.buffers_only",
             "TestSinkSqlcommand_EachFlushReplacesTheBatchTable",
             "TestSinkSqlcommand_EmptyBatchStillRunsTheSQL",
@@ -407,6 +411,7 @@
             "TestSinkConsole_Conformance/sink.flush.no_hollow_success",
             "TestSinkConsole_Conformance/sink.flush.preserves_order",
             "TestSinkConsole_Conformance/sink.probe.fails_start",
+            "TestSinkConsole_Conformance/sink.rows.counted_on_delivery",
             "TestSinkConsole_Conformance/sink.write.buffers_only",
             "TestSinkConsole_FlushCannotOutliveItsContext",
             "TestSinkConsole_ImplementsNoCloser",
@@ -496,6 +501,7 @@
             "TestSinkRetry_DoesNotRetryARejectedWrite",
             "TestSinkRetry_ExhaustedAttemptsReportUnreachable",
             "TestSinkRetry_ExhaustedLadderReportsTheFailure",
+            "TestSinkRetry_ExportedSeriesName",
             "TestSinkRetry_HelpsOnlyForSinksThatCrossANetwork",
             "TestSinkRetry_MetricsCountRequestsByStatusCode",
             "TestSinkRetry_MetricsCountsEveryRetry",
@@ -1348,13 +1354,17 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestDLQRowsCarryTheDLQRole",
+            "TestExportedSeriesNames",
             "TestObservabilityMetrics_StateGaugesNoProviderRecordsNothing",
             "TestObservabilityMetrics_StateGaugesReportsSizeAndRows",
             "TestObservabilityMetrics_StateGaugesSurvivesCollectionFailure",
             "TestObservabilityMetrics_StatsHandler_AbsentWithoutAProvider",
             "TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase",
             "TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure",
-            "TestObservabilityMetrics_StatsHandler_ReportsState"
+            "TestObservabilityMetrics_StatsHandler_ReportsState",
+            "TestStateCommitLatencyUnitIsNameNeutral",
+            "TestWindowManagerRowsAreCounted"
           ]
         },
         "integration": {
@@ -1488,6 +1498,7 @@
         "unit": {
           "status": "covered",
           "tests": [
+            "TestHarnessSinkCarriesRowCounters",
             "TestToolingConformanceCanonicalKey_CollapsesTheDecimalFamily",
             "TestToolingConformanceCanonicalKey_IgnoresChildNamesAndNullability",
             "TestToolingConformanceCanonicalKey_NamesEachConstructor",
@@ -1524,6 +1535,7 @@
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.no_hollow_success",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.flush.preserves_order",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.probe.fails_start",
+            "TestToolingConformanceSinks_ACorrectSinkPasses/sink.rows.counted_on_delivery",
             "TestToolingConformanceSinks_ACorrectSinkPasses/sink.write.buffers_only",
             "TestToolingConformanceSinks_ADroppingSinkStillBuffersOnly",
             "TestToolingConformanceSinks_ADuplicatingSinkPasses",
@@ -1636,7 +1648,25 @@
   "gaps": [],
   "unattributed": {
     "unit": [
+      "TestCheckReferenceTablesExcludesManagedTables",
+      "TestCheckReferenceTablesLogsCount",
+      "TestCheckReferenceTablesNoHandlerSQL",
+      "TestCheckReferenceTablesSurvivesACountError",
+      "TestCheckReferenceTablesWarnsOnEmpty",
       "TestConfigSchema_TypeEnumsComeFromTheRegistries",
+      "TestCountingCountsDeliveredRowsOnce",
+      "TestCountingDoesNotInventBufferedRows",
+      "TestCountingForwardsBufferedRows",
+      "TestCountingNilBatchIsNoop",
+      "TestCountingNilProviderRecordsNothing",
+      "TestHandlerRowsReadIsRowsNotMessages",
+      "TestNewWrapsWithRowCounters",
+      "TestReferenceTablesDeduplicates",
+      "TestReferenceTablesExcludesCTEs",
+      "TestReferenceTablesExcludesManagedTables",
+      "TestReferenceTablesFindsNestedJoin",
+      "TestReferenceTablesKeepsCatalogQualification",
+      "TestReferenceTablesUnparseableSQL",
       "TestValidateCommand_JSONIsTheContract",
       "TestValidateCommand_MissingFileFails",
       "TestValidateCommand_TextSaysWhatItSkipped",
@@ -1659,7 +1689,8 @@
       "TestValidateTemplate_MissingVariableNamesItsNeighbour",
       "TestValidateTemplate_ParseErrorIsReturned",
       "TestValidateTemplate_ReportsEveryMissingVariable",
-      "TestValidateTemplate_UnsuppliedInputIsAWarning"
+      "TestValidateTemplate_UnsuppliedInputIsAWarning",
+      "TestWithSinkRoleSetsTheRole"
     ],
     "integration": [],
     "release": []
@@ -1998,6 +2029,112 @@
       "violated_once": [
         "#221"
       ]
+    },
+    {
+      "id": "sink.rows.counted_on_delivery",
+      "family": "resilience",
+      "applies_to": "sink",
+      "claim": "sink_rows_written counts a row once, when a Flush acknowledged it. A failed flush counts nothing; the retry that delivers those rows counts them.",
+      "verified_by": "harness",
+      "class": "safety",
+      "requires": [],
+      "enforced": false,
+      "integrations": {
+        "sink.kafka": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkKafka_Conformance/sink.rows.counted_on_delivery"
+            ]
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.clickhouse": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "covered",
+            "tests": [
+              "TestIntegrationSinkClickhouse_Conformance/sink.rows.counted_on_delivery"
+            ]
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.iceberg": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestSinkIceberg_Conformance/sink.rows.counted_on_delivery"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.sqlcommand": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestSinkSqlcommand_Conformance/sink.rows.counted_on_delivery"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.console": {
+          "unit": {
+            "status": "covered",
+            "tests": [
+              "TestSinkConsole_Conformance/sink.rows.counted_on_delivery"
+            ]
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        },
+        "sink.noop": {
+          "unit": {
+            "status": "missing",
+            "tests": []
+          },
+          "integration": {
+            "status": "missing",
+            "tests": []
+          },
+          "release": {
+            "status": "missing",
+            "tests": []
+          }
+        }
+      }
     },
     {
       "id": "sink.flush.preserves_order",

@@ -29,6 +29,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Trigger is what makes the consume loop process a batch.
@@ -532,10 +533,11 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	// and without it the goroutine outlives the run.
 	defer src.Close()
 
-	sink := &recordingSink{rec: rec}
+	var inner core.Sink
 	if s.NewSink != nil {
-		sink.inner = s.NewSink(t)
+		inner = s.NewSink(t)
 	}
+	sink := newRecordingSink(rec, inner, nil)
 	// Break the destination where there is one, so the flush fails the way it
 	// would in production. Only a subject with nothing to break needs the
 	// harness to fake it.
@@ -592,7 +594,10 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 		interval = time.Hour
 	}
 
-	tb := core.NewTurbine(src, &passthroughHandler{}, sink, batchSize, interval,
+	// sink.counted, not sink: the pipeline must drive the same wrapper a real
+	// deployment gets, or sink.rows.counted_on_delivery is asserted against a
+	// sink that counts nothing.
+	tb := core.NewTurbine(src, &passthroughHandler{}, sink.counted, batchSize, interval,
 		&sync.Mutex{}, core.PipelineErrorPolicies{}, s.Options(rec)...)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -820,9 +825,25 @@ type recordingSink struct {
 	inner core.Sink
 	fail  bool
 
+	// counted is this sink wrapped in the row counters, and it is what the
+	// pipeline is given.
+	counted core.Sink
+
 	mu      sync.Mutex
 	rows    int64
 	flushes int
+}
+
+// newRecordingSink builds the sink the harness hands the pipeline.
+//
+// The row counters are applied here rather than left to sinks.New, which this
+// path never reaches: subjects construct their sinks directly. Without them,
+// sink.rows.counted_on_delivery would assert against an uninstrumented sink
+// and pass while proving nothing.
+func newRecordingSink(rec *Recorder, inner core.Sink, mp metric.MeterProvider) *recordingSink {
+	s := &recordingSink{rec: rec, inner: inner}
+	s.counted = core.NewCountingSink(s, mp, "conformance", "pipeline")
+	return s
 }
 
 func (s *recordingSink) WriteTable(ctx context.Context, batch arrow.Table) error {
@@ -877,8 +898,9 @@ func (s *recordingSink) Flushes() int {
 // smallest handler that produces something a sink can be given. What the
 // handler does is not what these invariants are about.
 type passthroughHandler struct {
-	mu   sync.Mutex
-	rows int
+	mu       sync.Mutex
+	rows     int
+	rowsRead int64
 }
 
 func (h *passthroughHandler) Init(context.Context) error { return nil }
@@ -890,10 +912,17 @@ func (h *passthroughHandler) Write([]byte) error {
 	return nil
 }
 
+func (h *passthroughHandler) RowsRead() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.rowsRead
+}
+
 func (h *passthroughHandler) Invoke(context.Context) (arrow.Table, error) {
 	h.mu.Lock()
 	n := h.rows
 	h.rows = 0
+	h.rowsRead = int64(n)
 	h.mu.Unlock()
 
 	if n == 0 {

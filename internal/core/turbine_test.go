@@ -71,12 +71,19 @@ func kafkaMessages(topic string, partition int32, from, n int) []Message {
 // can be checked against the number of messages the source produced.
 type fakeHandler struct {
 	buffered int
+	rowsRead int64
 }
 
 func (h *fakeHandler) Init(ctx context.Context) error { h.buffered = 0; return nil }
 func (h *fakeHandler) Write(msg []byte) error         { h.buffered++; return nil }
+func (h *fakeHandler) RowsRead() int64                { return h.rowsRead }
 
 func (h *fakeHandler) Invoke(ctx context.Context) (arrow.Table, error) {
+	// Zeroed first, so a batch that yields no table reports no rows read. The
+	// real handlers do the same: an Invoke that fails produced nothing for the
+	// SQL to run over.
+	h.rowsRead = 0
+
 	// The real handlers return a nil table for an empty batch rather than an
 	// error or an empty one; the fake has to agree or it hides that path.
 	if h.buffered == 0 {
@@ -95,8 +102,33 @@ func (h *fakeHandler) Invoke(ctx context.Context) (arrow.Table, error) {
 	rec := b.NewRecord()
 	defer rec.Release()
 
+	h.rowsRead = int64(h.buffered)
 	h.buffered = 0
 	return array.NewTableFromRecords(schema, []arrow.Record{rec}), nil
+}
+
+// TestHandlerRowsReadIsRowsNotMessages pins the distinction the metric name
+// makes. A handler whose Invoke yields no table produced nothing for the SQL
+// to run over, however many messages were written to it.
+func TestHandlerRowsReadIsRowsNotMessages(t *testing.T) {
+	h := &fakeHandler{}
+	assert.Equal(t, int64(0), h.RowsRead())
+
+	assert.NoError(t, h.Write([]byte(`{"a":1}`)))
+	assert.NoError(t, h.Write([]byte(`{"a":2}`)))
+
+	// Buffered but not yet invoked: the SQL has not run over anything.
+	assert.Equal(t, int64(0), h.RowsRead())
+
+	tbl, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int64(2), h.RowsRead())
+	tbl.Release()
+
+	// An empty batch yields no table, and no rows read.
+	_, err = h.Invoke(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), h.RowsRead())
 }
 
 type fakeSink struct {

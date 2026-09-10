@@ -18,6 +18,9 @@ import (
 type StructuredBatchHandler struct {
 	rawBatch [][]byte
 
+	// rowsRead is the row count of the last Invoke, for handler_rows_read.
+	rowsRead int64
+
 	alloc      memory.Allocator
 	conn       adbc.Connection
 	truncStmt  adbc.Statement
@@ -180,7 +183,14 @@ func appendValue(builder array.Builder, fieldType arrow.DataType, val []byte, da
 	return nil
 }
 
+// RowsRead reports the rows the last Invoke ingested into the batch table.
+func (h *StructuredBatchHandler) RowsRead() int64 { return h.rowsRead }
+
 func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error) {
+	// Zeroed first, so every failure path below reports no rows read rather
+	// than the count from the previous batch.
+	h.rowsRead = 0
+
 	raw := h.rawBatch
 	h.rawBatch = h.rawBatch[:0]
 
@@ -235,6 +245,10 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 		return nil, fmt.Errorf("execute update error: %w", err)
 	}
 	combined.Release()
+
+	// Set only after the ingest succeeded: until these rows are in the batch
+	// table there is nothing for the pipeline SQL to have run over.
+	h.rowsRead = int64(len(raw))
 
 	t2 := time.Now()
 

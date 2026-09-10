@@ -22,6 +22,10 @@ func retryCounter(mp metric.MeterProvider, sinkType string) func(attempt int, er
 		mp = noop.NewMeterProvider()
 	}
 
+	// The unit stays "count", which the exporter drops as unitless, so this
+	// exports as sink_retry_count_total. A descriptive unit would rename it to
+	// sink_retry_count_retries_total and break every dashboard built on the
+	// current name. Measured against the exporter, not inferred.
 	counter, err := mp.Meter("sqlflow").Int64Counter(
 		"sink_retry_count",
 		metric.WithDescription("Number of sink writes retried after a failure"),

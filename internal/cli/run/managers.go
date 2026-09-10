@@ -10,6 +10,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
 
@@ -21,6 +22,7 @@ func buildManagedTables(
 	conn adbc.Connection,
 	lock *sync.Mutex,
 	l *zap.Logger,
+	mp metric.MeterProvider,
 ) ([]*managers.Tumbling, error) {
 	if conf.Tables == nil {
 		return nil, nil
@@ -34,7 +36,11 @@ func buildManagedTables(
 		if table.Manager.TumblingWindow == nil {
 			return nil, fmt.Errorf("table %q: only tumbling_window managers are supported", table.Name)
 		}
-		sink, err := sinks.New(ctx, table.Manager.Sink, conn)
+		// A windowed pipeline's entire output comes through here. Without the
+		// counters on this sink, sink_rows_written would report zero for it.
+		sink, err := sinks.New(ctx, table.Manager.Sink, conn,
+			sinks.WithMeterProvider(mp),
+			sinks.WithSinkRole("manager"))
 		if err != nil {
 			return nil, fmt.Errorf("table %q manager sink: %w", table.Name, err)
 		}

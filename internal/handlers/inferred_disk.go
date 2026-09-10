@@ -42,6 +42,9 @@ type InferredDiskBatchHandler struct {
 	logger   *zap.Logger
 	sql      string
 	numWrote int
+
+	// rowsRead is the row count of the last Invoke, for handler_rows_read.
+	rowsRead int64
 }
 
 func NewInferredDiskBatchHandler(
@@ -124,7 +127,14 @@ func (h *InferredDiskBatchHandler) Write(r []byte) error {
 	return nil
 }
 
+// RowsRead reports the rows the last Invoke loaded into the batch table.
+func (h *InferredDiskBatchHandler) RowsRead() int64 { return h.rowsRead }
+
 func (h *InferredDiskBatchHandler) Invoke(ctx context.Context) (arrow.Table, error) {
+	// Zeroed first, so a batch that fails to load reports no rows read rather
+	// than the count from the previous batch.
+	h.rowsRead = 0
+
 	if err := h.closeBatchFile(); err != nil {
 		return nil, err
 	}
@@ -149,6 +159,10 @@ func (h *InferredDiskBatchHandler) Invoke(ctx context.Context) (arrow.Table, err
 	)); err != nil {
 		return nil, fmt.Errorf("load batch file: %w", err)
 	}
+
+	// Set only after the load succeeded: until these rows are in the batch
+	// table there is nothing for the pipeline SQL to have run over.
+	h.rowsRead = int64(h.numWrote)
 
 	if err := h.exec(ctx, fmt.Sprintf("COPY (%s) TO '%s'", h.sql, h.outFile)); err != nil {
 		return nil, fmt.Errorf("copy query results: %w", err)

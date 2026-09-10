@@ -4,9 +4,11 @@ import (
 	"context"
 	"testing"
 
+	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
+	"go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -94,6 +96,38 @@ func TestSinkRetry_MetricsExhaustedLadderCountsItsRetries(t *testing.T) {
 	assert.Error(t, r.Flush(context.Background()))
 
 	assert.Equal(t, int64(3), retryAttempts(t, reader))
+}
+
+// TestSinkRetry_ExportedSeriesName pins the one series the run package's
+// name sweep cannot reach.
+//
+// sink_retry_count is registered only for a sink that gets a retry ladder, and
+// those are the sinks that dial, so a unit test elsewhere cannot construct one.
+// Without this the README would document a series no test knows about.
+//
+// The unit stays "count", which the exporter drops as unitless. A descriptive
+// unit would rename this to sink_retry_count_retries_total and break every
+// dashboard built on the current name.
+func TestSinkRetry_ExportedSeriesName(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+
+	reg := prom.NewRegistry()
+	exp, err := prometheus.New(prometheus.WithRegisterer(reg))
+	assert.NoError(t, err)
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exp))
+
+	retryCounter(mp, "clickhouse")(1, errs.New(errs.CodeSinkUnreachable, "refused"))
+
+	families, err := reg.Gather()
+	assert.NoError(t, err)
+
+	found := false
+	for _, f := range families {
+		if f.GetName() == "sink_retry_count_total" {
+			found = true
+		}
+	}
+	assert.That(t, found)
 }
 
 // A nil provider must not panic. A pipeline started without --metrics still

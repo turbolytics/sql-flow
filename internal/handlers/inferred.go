@@ -41,6 +41,9 @@ type InferredMemBatchHandler struct {
 	ingestStmt adbc.Statement
 	logger     *zap.Logger
 	sql        string
+
+	// rowsRead is the row count of the last Invoke, for handler_rows_read.
+	rowsRead int64
 }
 
 func NewInferredMemBatchHandler(
@@ -135,7 +138,14 @@ func truncate(b []byte, n int) string {
 	return string(b[:n]) + "..."
 }
 
+// RowsRead reports the rows the last Invoke ingested into the batch table.
+func (h *InferredMemBatchHandler) RowsRead() int64 { return h.rowsRead }
+
 func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, error) {
+	// Zeroed first, so a batch whose schema inference fails reports no rows
+	// read rather than the count from the previous batch.
+	h.rowsRead = 0
+
 	raw := h.rawBatch
 	h.rawBatch = h.rawBatch[:0]
 	meta := h.metadata
@@ -170,6 +180,10 @@ func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, erro
 		return nil, fmt.Errorf("ingest batch: %w", err)
 	}
 	record.Release()
+
+	// Set only after the ingest succeeded: until these rows are in the batch
+	// table there is nothing for the pipeline SQL to have run over.
+	h.rowsRead = int64(len(raw))
 
 	// The statement is created per invoke: ADBC prepares the SQL when it is
 	// set, which requires the batch table to already exist.
