@@ -204,6 +204,20 @@ type Turbine struct {
 	offsets offsetSaver
 	stateTx stateTx
 
+	// progress is the liveness record, see progress.go. Optional: a Turbine
+	// built without it records nothing and Progress() reports zeros.
+	progress progressSaver
+	// snapshot is the in-memory copy of what progress last recorded, read by
+	// /stats and /healthz without touching the database. Guarded by lock.
+	snapshot Progress
+	// batchSinceCommit is set by processBatch and cleared by commitState, so
+	// commitState knows whether this commit follows an arrival or an idle
+	// tick. Guarded by lock.
+	batchSinceCommit bool
+	// commits counts successful state commits, for tests that wait on ticks.
+	// Guarded by lock.
+	commits int64
+
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
 	// so a scrape cannot stall the pipeline. Nil when there is no state
@@ -255,6 +269,50 @@ func WithStateStore(offsets offsetSaver, tx stateTx) TurbineOption {
 	return func(t *Turbine) {
 		t.offsets = offsets
 		t.stateTx = tx
+	}
+}
+
+// WithProgressStore records liveness into a store and into an in-memory
+// snapshot on every commit and every idle tick.
+func WithProgressStore(s progressSaver) TurbineOption {
+	return func(t *Turbine) { t.progress = s }
+}
+
+// Progress reports the last recorded liveness facts. Zero values mean
+// nothing has been recorded yet.
+func (t *Turbine) Progress() Progress {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	return t.snapshot
+}
+
+// commitCount is how many state commits have succeeded; tests wait on it.
+func (t *Turbine) commitCount() int64 {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	return t.commits
+}
+
+// recordProgress runs at the top of every commit, before the state guard, so
+// a pipeline with no state database records too. A batch since the last
+// commit moves the arrival clock; an idle tick moves the commit clock only.
+func (t *Turbine) recordProgress(ctx context.Context) {
+	if t.progress == nil {
+		return
+	}
+	now := time.Now().UTC()
+	t.lock.Lock()
+	p := Progress{LastCommit: now, Messages: t.stats.MessagesConsumed()}
+	if t.batchSinceCommit {
+		p.LastArrival = now
+		t.snapshot.LastArrival = now
+	}
+	t.snapshot.LastCommit = now
+	t.snapshot.Messages = p.Messages
+	t.batchSinceCommit = false
+	t.lock.Unlock()
+	if err := t.progress.Record(ctx, p); err != nil {
+		t.logger.Warn("recording progress", zap.Error(err))
 	}
 }
 
@@ -733,6 +791,8 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 //
 // A pipeline with no state database does nothing here.
 func (t *Turbine) commitState(ctx context.Context) error {
+	t.recordProgress(ctx)
+
 	if t.offsets == nil || t.stateTx == nil {
 		return nil
 	}
@@ -759,6 +819,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing state")
 	}
 
+	t.commits++
 	t.metrics.StateCommitLatency.Record(ctx, time.Since(c0).Seconds())
 	t.metrics.StateCommitCount.Add(ctx, 1, t.resultAttrs(resultOK)...)
 	return nil
@@ -791,6 +852,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 
 	t.lock.Lock()
 	batch, err := t.handler.Invoke(ctx)
+	// Messages reached the handler whatever Invoke returns: this batch is an
+	// arrival, and the commit that follows it moves the arrival clock.
+	t.batchSinceCommit = true
 	t.lock.Unlock()
 
 	b1 := time.Now()
