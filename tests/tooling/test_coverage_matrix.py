@@ -435,6 +435,24 @@ def test_the_check_exits_non_zero_on_a_gap(tmp_path):
     assert "coverage gap" in proc.stderr
 
 
+def test_the_check_exits_non_zero_on_an_unknown_marker(tmp_path):
+    """Once the unknown-marker list left the reviewed page, failing is the
+    only way it stays visible."""
+    go = write(tmp_path, "go.json", "\n".join([
+        json.dumps({"Action": "output", "Test": "TestA",
+                    "Output": "    x.go:1: COVERS sink.nonexistent\n"}),
+        json.dumps({"Action": "pass", "Test": "TestA"}),
+    ]))
+    proc = subprocess.run(
+        [sys.executable, os.path.join(cm.REPO, "scripts", "coverage_matrix.py"),
+         "--go", go, "--check"],
+        capture_output=True, text=True)
+
+    assert proc.returncode == 1, proc.stdout
+    assert "TestA marks sink.nonexistent" in proc.stderr
+    assert "# Coverage report" in proc.stdout
+
+
 # --- Registries ------------------------------------------------------------
 
 INVARIANTS = [

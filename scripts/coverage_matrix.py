@@ -22,8 +22,12 @@ Usage:
         --pytest pytest.json --write
     coverage_matrix.py --go go.json --go-integration it.json \
         --pytest pytest.json --check
+    coverage_matrix.py --page
 
-`--check` exits non-zero when a feature is missing a level it requires.
+`--write` writes the status directory, the page, and the report. `--check`
+exits non-zero when a feature or invariant is missing a level it requires, or
+a marker names an id the registries do not declare. `--page` renders the page
+from the committed status files and reads no test report.
 """
 
 import argparse
@@ -1337,6 +1341,20 @@ def render_invariants(snap):
     return "\n".join(lines) + "\n"
 
 
+def write_page(features, invariants, integrations, status, lattice):
+    """matrix.md and the types page, from committed files alone."""
+    with open(MATRIX_MD, "w") as fh:
+        fh.write(render_page(features, invariants, integrations, status))
+    # The published page is generated from the registries alone, not from any
+    # test report: it says what the declaration claims, and the type runner is
+    # what holds the declaration to the sink.
+    clickhouse = next(
+        (i for i in integrations if i["id"] == "sink.clickhouse"), None)
+    if clickhouse:
+        with open(TYPES_PAGE, "w") as fh:
+            fh.write(render_types_page(lattice, clickhouse))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--go", help="go test -short -json output")
@@ -1344,22 +1362,34 @@ def main():
                     help="go test -json output from the integration pass")
     ap.add_argument("--pytest", help="pytest result json from the conftest hook")
     ap.add_argument("--write", action="store_true",
-                    help="write matrix.json and matrix.md")
-    ap.add_argument("--check", action="store_true", help="exit non-zero on gaps")
+                    help="write the status directory, the page, and the report")
+    ap.add_argument("--check", action="store_true",
+                    help="exit non-zero on a gap or an unknown marker")
+    ap.add_argument("--page", action="store_true",
+                    help="render the page from the committed status files; "
+                         "reads no test report")
     args = ap.parse_args()
 
     features = load_features()
     invariants = load_invariants()
     integrations = load_integrations()
+    lattice = load_lattice()
 
     # Before any test result is read: a registry typo would otherwise reach
     # the matrix as a missing cell.
     problems = validate_registries(invariants, integrations, features)
-    problems += validate_types(load_lattice(), integrations)
+    problems += validate_types(lattice, integrations)
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
         return 2
+
+    if args.page:
+        write_page(features, invariants, integrations, read_status(STATUS_DIR),
+                   lattice)
+        print(f"wrote {os.path.relpath(MATRIX_MD, REPO)} "
+              f"and {os.path.relpath(TYPES_PAGE, REPO)}")
+        return 0
 
     go_results, go_covers, go_invariants = (
         parse_go(args.go) if args.go and os.path.exists(args.go) else ({}, {}, {}))
@@ -1383,41 +1413,50 @@ def main():
          "release": py_invariants})
     snap.update(snapshot_invariants(invariants, integrations, built))
 
-    rendered = render(snap) + "\n" + render_invariants(snap)
-
-    # The published page is generated from the registries alone, not from any
-    # test report: it says what the declaration claims, and the type runner is
-    # what holds the declaration to the sink.
-    lattice = load_lattice()
-    clickhouse = next(
-        (i for i in integrations if i["id"] == "sink.clickhouse"), None)
-    types_page = render_types_page(lattice, clickhouse) if clickhouse else ""
+    status = status_from_snapshot(snap)
+    report = render_report(snap)
 
     if args.write:
-        os.makedirs(os.path.dirname(MATRIX_JSON), exist_ok=True)
+        written = write_status(status, STATUS_DIR)
+        write_page(features, invariants, integrations, status, lattice)
+        os.makedirs(COVERAGE_DIR, exist_ok=True)
         with open(MATRIX_JSON, "w") as fh:
             json.dump(snap, fh, indent=2, sort_keys=False)
             fh.write("\n")
-        with open(MATRIX_MD, "w") as fh:
-            fh.write(rendered)
-        if types_page:
-            with open(TYPES_PAGE, "w") as fh:
-                fh.write(types_page)
-        print(f"wrote {os.path.relpath(MATRIX_JSON, REPO)}, "
-              f"{os.path.relpath(MATRIX_MD, REPO)} "
-              f"and {os.path.relpath(TYPES_PAGE, REPO)}")
+        with open(REPORT_MD, "w") as fh:
+            fh.write(report)
+        print(f"wrote {len(written)} files under "
+              f"{os.path.relpath(STATUS_DIR, REPO)}/, "
+              f"{os.path.relpath(MATRIX_MD, REPO)}, "
+              f"{os.path.relpath(TYPES_PAGE, REPO)}, "
+              f"{os.path.relpath(MATRIX_JSON, REPO)} "
+              f"and {os.path.relpath(REPORT_MD, REPO)}")
     else:
-        print(rendered)
+        print(report)
 
     gaps = snap["gaps"] + snap["invariant_gaps"]
-    if args.check and gaps:
-        print(f"\n{len(gaps)} coverage gap(s):", file=sys.stderr)
-        for gap in snap["gaps"]:
-            print(f"  {gap['feature']}: {gap['level']} is {gap['status']}",
+    unknown_markers = snap["unknown_markers"] + snap["unknown_invariant_markers"]
+    if args.check and (gaps or unknown_markers):
+        if gaps:
+            print(f"\n{len(gaps)} coverage gap(s):", file=sys.stderr)
+            for gap in snap["gaps"]:
+                print(f"  {gap['feature']}: {gap['level']} is {gap['status']}",
+                      file=sys.stderr)
+            for gap in snap["invariant_gaps"]:
+                print(f"  {gap['invariant']} on {gap['integration']}: "
+                      f"{gap['level']} is {gap['status']}", file=sys.stderr)
+        if unknown_markers:
+            # A marker naming nothing the registries declare is a typo, and
+            # the list of them no longer sits on a page anyone diffs.
+            print(f"\n{len(unknown_markers)} marker(s) naming an unknown id:",
                   file=sys.stderr)
-        for gap in snap["invariant_gaps"]:
-            print(f"  {gap['invariant']} on {gap['integration']}: "
-                  f"{gap['level']} is {gap['status']}", file=sys.stderr)
+            for entry in snap["unknown_markers"]:
+                print(f"  {entry['test']} marks {entry['feature']}, "
+                      "which features.yml does not declare", file=sys.stderr)
+            for entry in snap["unknown_invariant_markers"]:
+                print(f"  {entry['test']} marks {entry['invariant']} on "
+                      f"{entry['integration']}, which the registries do not "
+                      "declare together", file=sys.stderr)
         return 1
     return 0
 
