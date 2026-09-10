@@ -24,16 +24,18 @@ install-tools:
 	@echo "creating resultscache directory... '/tmp/sqlflow/resultscache'"
 	$(shell mkdir -p /tmp/sqlflow/resultscache)
 
-# The merge driver .gitattributes names for the generated coverage matrix.
+# The merge driver .gitattributes names for the generated page.
 #
 # Git resolves a driver by name from local config, which is not something a
 # repository can ship, so this has to be configured per clone. `true` succeeds
-# and leaves the current branch's copy in place; coverage-check regenerates it
-# and fails if that copy is wrong, so the resolution is safe to automate and
-# the manual step buys nothing.
+# and leaves the current branch's copy in place; `make coverage-page` then
+# regenerates it from the merged status files and registries, with no test
+# report and no Docker. The status files themselves carry no driver: one row
+# per line, so git merges them, and "keep ours" would discard a status flip
+# from main that only CI could restore.
 .PHONY: git-merge-drivers
 git-merge-drivers:
-	git config merge.coverage-generated.name "keep ours; coverage-check regenerates"
+	git config merge.coverage-generated.name "keep ours; make coverage-page regenerates"
 	git config merge.coverage-generated.driver true
 
 .PHONY: setup-dev
@@ -93,13 +95,24 @@ schema:
 	@echo "regenerated internal/validate/schemas/config.json"
 	@echo "regenerated internal/cli/testdata/config_example.golden"
 
-# Renders the matrix from reports that already exist. Runs no tests.
+# Renders everything from reports that already exist. Runs no tests.
+#
+# Under docs/coverage: the status directory and the page, which are committed.
+# Under .coverage: the full snapshot with every test name, and the report,
+# which CI publishes and nothing commits.
 .PHONY: coverage-write
 coverage-write:
 	$(PY) python scripts/coverage_matrix.py \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--pytest .coverage/pytest.json --write
+
+# Renders the page from the committed status files and registries. Reads no
+# report, so it runs anywhere, and it is what resolves a merge conflict on
+# the page.
+.PHONY: coverage-page
+coverage-page:
+	$(PY) python scripts/coverage_matrix.py --page
 
 # The merge gate, in three parts. Runs no tests either: it reads the reports
 # the suites already wrote, which is what lets CI run it last and in seconds.
@@ -108,15 +121,18 @@ coverage-write:
 # baseline and no escape hatch -- a gap is closed by a test, or by the registry
 # honestly no longer requiring that level.
 #
-# Stale: the checked-in matrix must match what the suites just reported, the
-# way a golden file does. That is what makes a coverage change show up in
-# review rather than nowhere.
+# Stale: the checked-in status files and page must match what the suites just
+# reported, the way a golden file does. That is what makes a status change
+# show up in review rather than nowhere. A test added inside a covered feature
+# changes no status, so it changes nothing here.
 #
 # Failures: a suite failure reaches the gap check as a failing feature, so gaps
 # are checked first and the order carries information -- "sink.kafka: release
 # is failing" is the truth, where a stale-matrix error would send the reader to
 # regenerate a file that was never the problem. A failing test matching no
 # declared feature reaches neither check, and the last part is its backstop.
+#
+# A marker naming an id the registries do not declare fails the first part.
 .PHONY: coverage-check
 coverage-check: coverage-write
 	$(PY) python scripts/coverage_matrix.py \
@@ -136,17 +152,21 @@ coverage-check: coverage-write
 		echo "A release test failed; see .coverage/pytest.json" >&2; \
 		exit 1; \
 	}
-	@# Last, because it is the least specific. A failing test changes the
-	@# matrix too, so checking staleness first reports "regenerate the file"
+	@# Last, because it is the least specific. A failing test changes a
+	@# status too, so checking staleness first reports "regenerate the file"
 	@# for a problem no regeneration fixes.
 	@# clickhouse-types.mdx is here too. It is what the ClickHouse integration
 	@# page publishes, and a generated file nothing diffs drifts back into a
 	@# hand-written one, which is the problem it was added to solve.
-	@git diff --exit-code docs/coverage/matrix.json docs/coverage/matrix.md \
-		docs/coverage/clickhouse-types.mdx || { \
+	@# ls-files --others catches a status file for a new integration, which
+	@# git diff cannot see.
+	@git diff --exit-code docs/coverage/status docs/coverage/matrix.md \
+		docs/coverage/clickhouse-types.mdx \
+		&& [ -z "$$(git ls-files --others --exclude-standard docs/coverage/status)" ] || { \
 		echo ""; \
-		echo "The coverage matrix is out of date."; \
-		echo "Run 'make coverage-matrix' and commit the result."; \
+		echo "The coverage status files or the page are out of date."; \
+		git status --short docs/coverage; \
+		echo "Apply the diff above, or run 'make coverage-matrix', and commit the result."; \
 		exit 1; \
 	}
 

@@ -161,8 +161,8 @@ def test_a_skipped_integration_test_is_a_gap():
 
 def test_render_carries_a_column_per_level():
     s = snap(integration_results={"TestSourceKafka_Commits": cm.PASS})
-    assert "| Feature | What it does | unit | integration | release | Tests |" \
-        in cm.render(s)
+    assert "| Feature | What it does | unit | integration | release |" in cm.render(s)
+    assert "| Tests |" not in cm.render(s)
 
 
 # --- Markers ---------------------------------------------------------------
@@ -395,48 +395,6 @@ def test_render_agrees_with_the_snapshot():
     assert "1 gap(s)" in out or "gap(s)" in out
 
 
-def test_render_counts_the_tests_rather_than_sampling_them():
-    """The table is the cheap view. Three arbitrary names out of seventy-three
-    answer nobody's question and cost every reader the width; the count answers
-    "is this feature thinly covered" and matrix.json names them all."""
-    s = snap(go_results={f"TestSinkClickhouse_{i}": cm.PASS for i in range(4)},
-             go_covers={f"TestSinkClickhouse_{i}": ["sink.clickhouse"]
-                        for i in range(4)})
-    row = next(line for line in cm.render(s).splitlines()
-               if line.startswith("| `sink.clickhouse`"))
-
-    assert row.rstrip().endswith("| 4 |")
-    assert "TestSinkClickhouse_0" not in row
-
-
-def test_render_leaves_the_count_blank_when_nothing_covers_the_feature():
-    s = snap()
-    row = next(line for line in cm.render(s).splitlines()
-               if line.startswith("| `sink.console`"))
-    assert row.rstrip().endswith("| — |")
-
-
-def test_render_points_at_the_json_for_the_test_names():
-    """Dropping the names without saying where they went sends the reader to
-    grep the repo, or to open the 49KB artifact to find out it was that."""
-    assert "names every one of them" in cm.render(snap())
-
-
-def test_render_reports_a_feature_covered_only_by_a_marker():
-    """source.kafka is claimed second by a test that is about something else,
-    and by nothing that names it first."""
-    s = snap(
-        py_results={"test_handler_inferred_mem_aggregates": cm.PASS},
-        py_covers={"test_handler_inferred_mem_aggregates":
-                   ["handler.inferred_mem", "source.kafka"]},
-        features=FEATURES + [{"id": "handler.inferred_mem", "description": "h",
-                              "requires": ["release"]}],
-    )
-    out = cm.render(s)
-    assert "Covered only by another test's marker" in out
-    assert "`source.kafka` (release)" in out
-
-
 # --- The registry itself ---------------------------------------------------
 
 def test_every_declared_feature_is_well_formed():
@@ -477,6 +435,24 @@ def test_the_check_exits_non_zero_on_a_gap(tmp_path):
     assert "coverage gap" in proc.stderr
 
 
+def test_the_check_exits_non_zero_on_an_unknown_marker(tmp_path):
+    """Once the unknown-marker list left the reviewed page, failing is the
+    only way it stays visible."""
+    go = write(tmp_path, "go.json", "\n".join([
+        json.dumps({"Action": "output", "Test": "TestA",
+                    "Output": "    x.go:1: COVERS sink.nonexistent\n"}),
+        json.dumps({"Action": "pass", "Test": "TestA"}),
+    ]))
+    proc = subprocess.run(
+        [sys.executable, os.path.join(cm.REPO, "scripts", "coverage_matrix.py"),
+         "--go", go, "--check"],
+        capture_output=True, text=True)
+
+    assert proc.returncode == 1, proc.stdout
+    assert "TestA marks sink.nonexistent" in proc.stderr
+    assert "# Coverage report" in proc.stdout
+
+
 # --- Registries ------------------------------------------------------------
 
 INVARIANTS = [
@@ -513,6 +489,47 @@ def test_the_committed_registries_load_and_validate():
     assert len(invariants) >= 20
     assert {i["kind"] for i in integrations} == {
         "sink", "source", "handler", "pipeline"}
+
+
+# --- Gaps are a function of statuses -----------------------------------------
+#
+# The page will build entries from status files rather than from test
+# reports, and it must reach the same gaps. So a gap is computed from an
+# entry's statuses and its requires, by one function both paths call.
+
+def test_feature_gaps_reads_only_status_and_requires():
+    entries = [{
+        "id": "sink.clickhouse", "requires": ["unit", "release"],
+        "levels": {"unit": {"status": "covered"},
+                   "integration": {"status": "not_required"},
+                   "release": {"status": "skipped"}},
+    }]
+    assert cm.feature_gaps(entries) == [
+        {"feature": "sink.clickhouse", "level": "release", "status": "skipped"}]
+
+
+def test_invariant_gaps_skips_an_exempt_cell():
+    entries = [{
+        "id": "sink.flush.keeps_batch", "requires": ["unit"], "enforced": True,
+        "integrations": {
+            "sink.console": {lvl: {"status": "exempt"} for lvl in cm.LEVELS},
+            "sink.clickhouse": {lvl: {"status": "missing"} for lvl in cm.LEVELS},
+        },
+    }]
+    gaps = cm.invariant_gaps(entries)
+    assert {"invariant": "sink.flush.keeps_batch", "integration": "sink.clickhouse",
+            "level": "unit", "status": "missing"} in gaps
+    assert {"invariant": "sink.flush.keeps_batch", "integration": "sink.clickhouse",
+            "level": "any", "status": "missing"} in gaps
+    assert not any(g["integration"] == "sink.console" for g in gaps)
+
+
+def test_declare_carries_the_declaration_and_nothing_else():
+    entry = cm.declare(dict(INVARIANTS[0], claim="a claim\nwrapped", tracked_by="#1"))
+    assert entry["claim"] == "a claim wrapped"
+    assert entry["tracked_by"] == "#1"
+    assert entry["integrations"] == {}
+    assert "violated_once" not in entry
 
 
 def test_every_committed_invariant_is_unenforced_in_this_revision():
@@ -1183,36 +1200,46 @@ def test_the_tally_counts_a_pipeline_cell_like_any_other():
     assert sum(tally.values()) == 1
 
 
+def committed_page_snapshot():
+    return cm.page_snapshot(cm.load_features(), cm.load_invariants(),
+                            cm.load_integrations(), cm.read_status(cm.STATUS_DIR))
+
+
 def test_no_committed_invariant_is_unwired():
     """An invariant nothing can prove is a declaration with no path to
     evidence."""
-    m = json.load(open(os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "docs", "coverage", "matrix.json")))
-    _, unwired = cm.invariant_tally(m)
+    _, unwired = cm.invariant_tally(committed_page_snapshot())
     assert unwired == 0
 
 
-def test_the_page_pairs_the_most_tested_feature_with_the_least_proven_invariant():
-    """The argument for the file, generated so it cannot go stale. A feature
-    can carry dozens of tests while the invariant those tests depend on is
-    proven almost nowhere -- which is how a retry ladder passes every test
-    while the sink under it loses the batch."""
-    s = snap(go_results={
-        "TestSinkClickhouse_A": cm.PASS,
-        "TestSinkClickhouse_B": cm.PASS,
-        "TestSinkConsole_C": cm.PASS,
-    }, go_covers={
-        "TestSinkClickhouse_A": ["sink.clickhouse"],
-        "TestSinkClickhouse_B": ["sink.clickhouse"],
-        "TestSinkConsole_C": ["sink.console"],
-    })
-    s.update(inv_snap())
-    md = cm.render(s)
+def test_the_committed_page_is_current():
+    """The page is a function of committed files, so a stale one is caught
+    here, in seconds, before any suite runs. Regenerate with
+    `make coverage-page`."""
+    expected = cm.render_page(cm.load_features(), cm.load_invariants(),
+                              cm.load_integrations(), cm.read_status(cm.STATUS_DIR))
+    with open(cm.MATRIX_MD) as fh:
+        assert fh.read() == expected
 
-    assert "## Why invariants, and not the test count" in md
-    assert "`sink.clickhouse` carries 2 attributed tests" in md
-    assert "is proven on 0 of the" in md
+
+def test_every_committed_status_row_names_a_declared_id():
+    """A row for something the registries no longer declare is a stale file
+    write_status should have removed."""
+    status = cm.read_status(cm.STATUS_DIR)
+    features = {f["id"] for f in cm.load_features()}
+    invariants = {i["id"] for i in cm.load_invariants()}
+    integrations = {i["id"] for i in cm.load_integrations()}
+
+    assert set(status["features"]) <= features
+    assert set(status["integrations"]) <= integrations
+    for rows in status["integrations"].values():
+        assert set(rows) <= invariants
+
+
+def test_no_committed_status_file_carries_a_test_name():
+    for name in os.listdir(cm.STATUS_DIR):
+        with open(os.path.join(cm.STATUS_DIR, name)) as fh:
+            assert "Test" not in fh.read(), name
 
 
 def test_the_argument_pairs_a_feature_and_an_invariant_of_the_same_layer():
@@ -1253,12 +1280,6 @@ def test_domain_names_the_subsystem():
     assert cm.domain("sink.retry") == "sink"
     assert cm.domain("sink.flush.keeps_batch") == "sink"
     assert cm.domain("config.validation") == "config"
-
-
-def test_the_argument_is_omitted_when_no_feature_has_a_test():
-    s = snap()
-    s.update(inv_snap())
-    assert "## Why invariants, and not the test count" not in cm.render(s)
 
 
 def test_the_most_tested_feature_counts_across_every_level():
@@ -1302,12 +1323,6 @@ def test_the_least_proven_invariant_is_none_when_nothing_is_applicable():
     integrations = [dict(INTEGRATIONS[1])]  # console only, and it is exempt
     s = inv_snap(integrations=integrations)
     assert cm.least_proven_invariant(s) is None
-
-
-def test_the_argument_is_omitted_when_no_invariant_is_applicable():
-    s = snap(go_results={"TestSinkClickhouse_A": cm.PASS})
-    s.update(inv_snap(integrations=[dict(INTEGRATIONS[1])]))
-    assert "## Why invariants, and not the test count" not in cm.render(s)
 
 
 def test_cell_state_reports_the_worst_thing_that_happened():
@@ -1818,3 +1833,306 @@ def test_the_page_says_it_is_generated():
     })[0])
     assert "Do not edit" in md
     assert "TestIntegrationSinkClickhouse_Types" in md
+
+
+# --- The committed artifact: statuses only ----------------------------------
+#
+# The committed matrix listed every test name, so any PR that added a test
+# changed it and two PRs that each added a test conflicted on it. Of 60 CI
+# runs, 19 failed only on that file being stale. What is committed now is the
+# set of statuses the gate judges, one line each, one file per integration.
+# Names and counts go to a report CI publishes; see render_report.
+
+def status_of(**kwargs):
+    s = snap(**kwargs)
+    s.update(inv_snap())
+    return cm.status_from_snapshot(s)
+
+
+def test_the_status_projection_keeps_one_status_per_level():
+    st = status_of(go_results={"TestSinkClickhouse_A": cm.PASS},
+                   go_covers={"TestSinkClickhouse_A": ["sink.clickhouse"]})
+    assert st["features"]["sink.clickhouse"] == {
+        "unit": "covered", "integration": "not_required", "release": "missing"}
+
+
+def test_the_status_projection_files_invariants_under_their_integration():
+    st = status_of()
+    assert st["integrations"]["sink.clickhouse"]["sink.flush.keeps_batch"] == {
+        lvl: "missing" for lvl in cm.LEVELS}
+    assert "sink.flush.keeps_batch" not in st["integrations"].get("source.kafka", {})
+
+
+def test_an_exempt_row_matches_the_registry():
+    """The row repeats what integrations.yml declares, so a reader of one
+    file sees the whole picture. The generator writes it from the registry,
+    so the two cannot disagree."""
+    st = status_of()
+    assert st["integrations"]["sink.console"]["sink.flush.keeps_batch"] == {
+        lvl: "exempt" for lvl in cm.LEVELS}
+
+
+def test_a_status_file_is_one_row_per_line_sorted_by_id():
+    text = cm.render_status_file(
+        {"sink.console": {"unit": "covered", "integration": "not_required",
+                          "release": "missing"},
+         "cli.version": {"unit": "missing", "integration": "not_required",
+                         "release": "covered"}},
+        about="feature in ../features.yml")
+    assert text.splitlines() == [
+        "# Generated by `make coverage-matrix`. Do not edit by hand.",
+        "# One line per feature in ../features.yml, sorted by id: the status of each level.",
+        "cli.version: {unit: missing, integration: not_required, release: covered}",
+        "sink.console: {unit: covered, integration: not_required, release: missing}",
+    ]
+
+
+def test_write_status_then_read_status_round_trips(tmp_path):
+    st = status_of(go_results={"TestSinkClickhouse_A": cm.PASS},
+                   go_covers={"TestSinkClickhouse_A": ["sink.clickhouse"]})
+    written = cm.write_status(st, str(tmp_path))
+
+    assert written == ["features.yml", "sink.clickhouse.yml", "sink.console.yml",
+                       "source.kafka.yml"]
+    assert cm.read_status(str(tmp_path)) == st
+
+
+def test_write_status_removes_a_file_for_an_integration_that_is_gone(tmp_path):
+    (tmp_path / "sink.retired.yml").write_text("x: {unit: covered}\n")
+    cm.write_status(status_of(), str(tmp_path))
+    assert not (tmp_path / "sink.retired.yml").exists()
+
+
+def test_write_status_removes_only_yml_files(tmp_path):
+    """Only .yml files are the generator's to remove."""
+    (tmp_path / "README.md").write_text("keep\n")
+    cm.write_status(status_of(), str(tmp_path))
+    assert (tmp_path / "README.md").read_text() == "keep\n"
+
+
+def test_read_status_of_an_absent_directory_is_empty(tmp_path):
+    assert cm.read_status(str(tmp_path / "nope")) == {"features": {}, "integrations": {}}
+
+
+def test_adding_a_test_to_a_covered_feature_changes_no_status_file(tmp_path):
+    """The point of the change: a PR that adds tests inside covered features
+    must produce no diff under docs/coverage."""
+    before = tmp_path / "before"
+    after = tmp_path / "after"
+    cm.write_status(status_of(
+        go_results={"TestSinkClickhouse_A": cm.PASS},
+        go_covers={"TestSinkClickhouse_A": ["sink.clickhouse"]}), str(before))
+    cm.write_status(status_of(
+        go_results={"TestSinkClickhouse_A": cm.PASS, "TestSinkClickhouse_B": cm.PASS},
+        go_covers={"TestSinkClickhouse_A": ["sink.clickhouse"],
+                   "TestSinkClickhouse_B": ["sink.clickhouse"]}), str(after))
+
+    for name in sorted(os.listdir(before)):
+        assert (before / name).read_bytes() == (after / name).read_bytes(), name
+
+
+def test_a_status_flip_changes_one_line_in_one_file(tmp_path):
+    before = tmp_path / "before"
+    after = tmp_path / "after"
+    cm.write_status(status_of(), str(before))
+    cm.write_status(status_of(
+        go_results={"TestSinkClickhouse_A": cm.PASS},
+        go_covers={"TestSinkClickhouse_A": ["sink.clickhouse"]}), str(after))
+
+    changed = {}
+    for name in sorted(os.listdir(before)):
+        a = (before / name).read_text().splitlines()
+        b = (after / name).read_text().splitlines()
+        diff = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+        if diff or len(a) != len(b):
+            changed[name] = diff
+    assert list(changed) == ["features.yml"]
+    assert len(changed["features.yml"]) == 1
+
+
+def test_an_unattributed_test_reaches_no_status_file(tmp_path):
+    cm.write_status(status_of(go_results={"TestNobodyDeclaredThis": cm.PASS}),
+                    str(tmp_path))
+    for name in os.listdir(tmp_path):
+        assert "TestNobodyDeclaredThis" not in (tmp_path / name).read_text()
+
+
+# --- The page is a function of committed files ------------------------------
+#
+# Rendered from the status files and the registries, and from nothing else.
+# That is what lets anyone regenerate it without Docker, lets a conflict on it
+# be resolved by rerunning the renderer, and lets the Tooling job check it in
+# seconds before any suite runs.
+
+def page_of(status=None, features=None, invariants=None, integrations=None):
+    return cm.page_snapshot(features or FEATURES, invariants or INVARIANTS,
+                            integrations or INTEGRATIONS,
+                            status or {"features": {}, "integrations": {}})
+
+
+def test_the_page_snapshot_reads_a_feature_status_from_the_files():
+    ps = page_of(status={"features": {"sink.clickhouse": {
+        "unit": "covered", "integration": "not_required", "release": "skipped"}},
+        "integrations": {}})
+    assert level(ps, "sink.clickhouse", "release")["status"] == "skipped"
+    assert {"feature": "sink.clickhouse", "level": "release",
+            "status": "skipped"} in ps["gaps"]
+
+
+def test_a_feature_absent_from_the_status_is_missing_where_required():
+    """A feature added to the registry before the next generation renders
+    honestly rather than crashing the page."""
+    ps = page_of()
+    assert level(ps, "sink.clickhouse", "unit")["status"] == "missing"
+    assert level(ps, "sink.clickhouse", "integration")["status"] == "not_required"
+
+
+def test_the_page_snapshot_reads_an_invariant_cell_from_the_files():
+    ps = page_of(status={"features": {}, "integrations": {
+        "sink.clickhouse": {"sink.flush.keeps_batch": {
+            "unit": "covered", "integration": "missing", "release": "missing"}}}})
+    assert cell(ps, "sink.flush.keeps_batch", "sink.clickhouse", "unit")["status"] == "covered"
+
+
+def test_the_page_snapshot_takes_exempt_from_the_registry():
+    """The registry is the declaration. A status file that disagrees is
+    stale, and the gate says so; the page does not repeat the disagreement."""
+    ps = page_of(status={"features": {}, "integrations": {
+        "sink.console": {"sink.flush.keeps_batch": {
+            "unit": "covered", "integration": "covered", "release": "covered"}}}})
+    assert cm.cell_state(
+        ps["invariants"][0]["integrations"]["sink.console"]) == "exempt"
+
+
+def test_the_page_snapshot_reaches_the_same_gaps_as_the_full_snapshot():
+    required = [dict(INVARIANTS[0], requires=["unit"], enforced=True)]
+    full = snap()
+    full.update(inv_snap(invariants=required))
+    ps = page_of(status=cm.status_from_snapshot(full), invariants=required)
+
+    assert ps["gaps"] == full["gaps"]
+    assert ps["invariant_gaps"] == full["invariant_gaps"]
+
+
+def test_the_page_renders_from_status_and_registries_with_no_test_report():
+    md = cm.render_page(FEATURES, INVARIANTS, INTEGRATIONS, {
+        "features": {"sink.clickhouse": {
+            "unit": "covered", "integration": "not_required", "release": "covered"}},
+        "integrations": {"sink.clickhouse": {"sink.flush.keeps_batch": {
+            "unit": "covered", "integration": "missing", "release": "missing"}}},
+    })
+    row = next(l for l in md.splitlines() if l.startswith("| `sink.clickhouse`"))
+    assert row == "| `sink.clickhouse` | ch | ✅ | — | ✅ |"
+    line = next(l for l in md.splitlines() if "`sink.flush.keeps_batch`" in l)
+    assert "✅ u" in line
+
+
+def test_the_page_says_where_the_names_went():
+    """Dropping the names without saying where they went sends the reader
+    to grep the repo."""
+    md = cm.render(snap())
+    assert "report" in md
+    assert "names every one of them" not in md
+
+
+def test_the_page_carries_no_test_name():
+    s = snap(go_results={"TestSinkClickhouse_A": cm.PASS,
+                         "TestNobodyDeclaredThis": cm.PASS},
+             go_covers={"TestSinkClickhouse_A": ["sink.clickhouse", "sink.console"]})
+    s.update(inv_snap(
+        evidence={"unit": {"TestHarness_X": [("sink.flush.keeps_batch", "sink.clickhouse")]}},
+        results={"unit": {"TestHarness_X": cm.PASS}}))
+    md = cm.render(s) + cm.render_invariants(s)
+    for name in ("TestSinkClickhouse_A", "TestNobodyDeclaredThis", "TestHarness_X"):
+        assert name not in md, name
+    assert "Unattributed" not in md
+    assert "Covered only by another test's marker" not in md
+
+
+# --- The report: names and counts, published by CI, never committed ---------
+
+def test_the_report_counts_the_tests_rather_than_sampling_them():
+    """The count answers "is this feature thinly covered"; .coverage/matrix.json
+    names them all."""
+    s = snap(go_results={f"TestSinkClickhouse_{i}": cm.PASS for i in range(4)},
+             go_covers={f"TestSinkClickhouse_{i}": ["sink.clickhouse"]
+                        for i in range(4)})
+    row = next(line for line in cm.render_report(s).splitlines()
+               if line.startswith("| `sink.clickhouse`"))
+
+    assert row == "| `sink.clickhouse` | 4 | — | — | 4 |"
+    assert "TestSinkClickhouse_0" not in row
+
+
+def test_the_report_leaves_the_count_blank_when_nothing_covers_the_feature():
+    row = next(line for line in cm.render_report(snap()).splitlines()
+               if line.startswith("| `sink.console`"))
+    assert row == "| `sink.console` | — | — | — | — |"
+
+
+def test_the_report_names_a_feature_covered_only_by_a_marker():
+    s = snap(
+        py_results={"test_handler_inferred_mem_aggregates": cm.PASS},
+        py_covers={"test_handler_inferred_mem_aggregates":
+                   ["handler.inferred_mem", "source.kafka"]},
+        features=FEATURES + [{"id": "handler.inferred_mem", "description": "h",
+                              "requires": ["release"]}],
+    )
+    out = cm.render_report(s)
+    assert "Covered only by another test's marker" in out
+    assert "`source.kafka` (release)" in out
+
+
+def test_an_unattributed_test_reaches_the_report():
+    out = cm.render_report(snap(go_results={"TestNobodyDeclaredThis": cm.PASS}))
+    assert "## Unattributed unit tests (1)" in out
+    assert "- `TestNobodyDeclaredThis`" in out
+
+
+def test_the_report_names_an_unknown_marker_and_says_it_fails_the_gate():
+    s = snap(go_results={"TestSinkClickhouse_InsertsRows": cm.PASS},
+             go_covers={"TestSinkClickhouse_InsertsRows": ["sink.nonexistent"]})
+    s.update(inv_snap(
+        evidence={"unit": {"TestX": [("sink.flush.bogus", "sink.clickhouse")]}},
+        results={"unit": {"TestX": cm.PASS}}))
+    out = cm.render_report(s)
+    assert "`TestSinkClickhouse_InsertsRows` marks `sink.nonexistent`" in out
+    assert "`TestX` marks `sink.flush.bogus` on `sink.clickhouse`" in out
+    assert "fail" in out.split("## Markers naming an unknown feature")[1]
+
+
+def test_the_report_pairs_the_most_tested_feature_with_the_least_proven_invariant():
+    """The argument for the invariant matrix, generated so it cannot go
+    stale. A feature can carry dozens of tests while the invariant those
+    tests depend on is proven almost nowhere."""
+    s = snap(go_results={
+        "TestSinkClickhouse_A": cm.PASS,
+        "TestSinkClickhouse_B": cm.PASS,
+        "TestSinkConsole_C": cm.PASS,
+    }, go_covers={
+        "TestSinkClickhouse_A": ["sink.clickhouse"],
+        "TestSinkClickhouse_B": ["sink.clickhouse"],
+        "TestSinkConsole_C": ["sink.console"],
+    })
+    s.update(inv_snap())
+    out = cm.render_report(s)
+
+    assert "## Why invariants, and not the test count" in out
+    assert "`sink.clickhouse` carries 2 attributed tests" in out
+    assert "is proven on 0 of the" in out
+
+
+def test_the_argument_is_omitted_when_no_feature_has_a_test():
+    s = snap()
+    s.update(inv_snap())
+    assert "## Why invariants, and not the test count" not in cm.render_report(s)
+
+
+def test_the_argument_is_omitted_when_no_invariant_is_applicable():
+    s = snap(go_results={"TestSinkClickhouse_A": cm.PASS})
+    s.update(inv_snap(integrations=[dict(INTEGRATIONS[1])]))
+    assert "## Why invariants, and not the test count" not in cm.render_report(s)
+
+
+def test_the_report_works_on_a_feature_only_snapshot():
+    assert "# Coverage report" in cm.render_report(snap())

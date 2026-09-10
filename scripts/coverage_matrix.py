@@ -22,8 +22,12 @@ Usage:
         --pytest pytest.json --write
     coverage_matrix.py --go go.json --go-integration it.json \
         --pytest pytest.json --check
+    coverage_matrix.py --page
 
-`--check` exits non-zero when a feature is missing a level it requires.
+`--write` writes the status directory, the page, and the report. `--check`
+exits non-zero when a feature or invariant is missing a level it requires, or
+a marker names an id the registries do not declare. `--page` renders the page
+from the committed status files and reads no test report.
 """
 
 import argparse
@@ -39,9 +43,19 @@ REGISTRY = os.path.join(REPO, "docs", "coverage", "features.yml")
 INVARIANTS = os.path.join(REPO, "docs", "coverage", "invariants.yml")
 INTEGRATIONS = os.path.join(REPO, "docs", "coverage", "integrations.yml")
 LATTICE = os.path.join(REPO, "docs", "coverage", "lattice.yml")
-# The JSON is the artifact CI diffs; the markdown is a view rendered from it.
-MATRIX_JSON = os.path.join(REPO, "docs", "coverage", "matrix.json")
+# What is committed: one status per (feature, level) and per (invariant,
+# integration, level), one file per integration. Nothing with a test name in
+# it. A test added inside a covered feature changes no committed file, so it
+# cannot go stale and cannot conflict.
+STATUS_DIR = os.path.join(REPO, "docs", "coverage", "status")
+# The page is rendered from the status files and the registries alone, so
+# anyone regenerates it without a test report.
 MATRIX_MD = os.path.join(REPO, "docs", "coverage", "matrix.md")
+# The full snapshot and the report carry test names and counts. They are
+# written here, which is gitignored, and CI publishes them on every run.
+COVERAGE_DIR = os.path.join(REPO, ".coverage")
+MATRIX_JSON = os.path.join(COVERAGE_DIR, "matrix.json")
+REPORT_MD = os.path.join(COVERAGE_DIR, "report.md")
 # The fragment the ClickHouse integration page publishes. Generated here so it
 # cannot drift from the declaration the type runner judges.
 TYPES_PAGE = os.path.join(REPO, "docs", "coverage", "clickhouse-types.mdx")
@@ -510,52 +524,22 @@ def build_invariants(invariants, integrations, results, evidence):
 
 
 def snapshot_invariants(invariants, integrations, built):
-    """The invariant half of matrix.json.
+    """The invariant half of the snapshot.
 
     Same bare-name encoding as the feature half. An exempt cell carries its
-    reason, so a reader never has to open a second file to learn why a cell is
-    blank.
+    reason, so a reader of the snapshot never has to open the registry to
+    learn why a cell is blank.
     """
-    by_kind = {}
-    for integ in integrations:
-        # test_only integrations get no cells. Their markers are known, so the
-        # harness's doubles are not reported as unknown, and they credit
-        # nothing.
-        if integ.get("test_only"):
-            continue
-        by_kind.setdefault(integ["kind"], []).append(integ)
-
-    exemptions = {
-        (ex["invariant"], integ["id"]): ex
-        for integ in integrations
-        for ex in integ.get("exempt", [])
-    }
+    kinds = by_kind(integrations)
+    exemptions = exemptions_of(integrations)
 
     out = {"invariants": [], "invariant_gaps": [], "unknown_invariant_markers": []}
 
     for inv in invariants:
-        required = set(inv.get("requires", []))
-        entry = {
-            "id": inv["id"],
-            "family": inv["family"],
-            "applies_to": inv["applies_to"],
-            # The YAML folds long claims onto several lines; one space between
-            # words keeps the JSON diff stable when the wrapping changes.
-            "claim": " ".join(inv["claim"].split()),
-            "verified_by": inv["verified_by"],
-            "class": inv["class"],
-            "requires": sorted(required),
-            "enforced": bool(inv.get("enforced")),
-            "integrations": {},
-        }
-        if inv.get("tracked_by"):
-            entry["tracked_by"] = inv["tracked_by"]
-        if inv.get("violated_once"):
-            entry["violated_once"] = list(inv["violated_once"])
+        entry = declare(inv)
 
-        for integ in by_kind.get(inv["applies_to"], []):
+        for integ in kinds.get(inv["applies_to"], []):
             exemption = exemptions.get((inv["id"], integ["id"]))
-            reason = exemption  # None when the integration must prove it
             levels = {}
             for level in LEVELS:
                 if exemption is not None:
@@ -582,31 +566,11 @@ def snapshot_invariants(invariants, integrations, built):
                         cell[key] = members
                 levels[level] = cell
 
-                if level in required and state != "covered":
-                    out["invariant_gaps"].append({
-                        "invariant": inv["id"],
-                        "integration": integ["id"],
-                        "level": level,
-                        "status": state,
-                    })
-
-            # An enforced invariant must be proven somewhere, and the level is
-            # not the claim's business: ClickHouse and Kafka need a container,
-            # console and sqlcommand fail in-process. Demanding a named level
-            # would force a container on a sink that needs none, or accept a
-            # fake for one that does.
-            if inv.get("enforced") and reason is None:
-                if not any(c["status"] == "covered" for c in levels.values()):
-                    out["invariant_gaps"].append({
-                        "invariant": inv["id"],
-                        "integration": integ["id"],
-                        "level": "any",
-                        "status": cell_state(levels),
-                    })
-
             entry["integrations"][integ["id"]] = levels
 
         out["invariants"].append(entry)
+
+    out["invariant_gaps"] = invariant_gaps(out["invariants"])
 
     # Sorted as tuples. Sorting dicts raises TypeError past one element, which
     # is what the feature half's unknown_markers does today.
@@ -615,6 +579,228 @@ def snapshot_invariants(invariants, integrations, built):
         for t, i, g in sorted(set(built["unknown"]))
     ]
     return out
+
+
+def feature_gaps(entries):
+    """A required level that is not covered, for every feature entry.
+
+    Reads statuses and `requires` only, so the page can compute the same
+    gaps from the committed status files that the gate computes from the
+    test reports.
+    """
+    gaps = []
+    for entry in entries:
+        for level in LEVELS:
+            state = entry["levels"][level]["status"]
+            if level in entry["requires"] and state != "covered":
+                gaps.append({"feature": entry["id"], "level": level, "status": state})
+    return gaps
+
+
+def invariant_gaps(entries):
+    """A required level that is not covered, and an enforced invariant with
+    no covered level at all, for every non-exempt cell.
+
+    An enforced invariant must be proven somewhere, and the level is not the
+    claim's business: ClickHouse and Kafka need a container, console and
+    sqlcommand fail in-process. Demanding a named level would force a
+    container on a sink that needs none, or accept a fake for one that does.
+    """
+    gaps = []
+    for entry in entries:
+        required = set(entry["requires"])
+        for iid, levels in entry["integrations"].items():
+            if cell_state(levels) == "exempt":
+                continue
+            for level in LEVELS:
+                state = levels[level]["status"]
+                if level in required and state != "covered":
+                    gaps.append({"invariant": entry["id"], "integration": iid,
+                                 "level": level, "status": state})
+            if entry.get("enforced") and not any(
+                    c["status"] == "covered" for c in levels.values()):
+                gaps.append({"invariant": entry["id"], "integration": iid,
+                             "level": "any", "status": cell_state(levels)})
+    return gaps
+
+
+def declare(inv):
+    """The declaration half of an invariant entry, without its cells."""
+    entry = {
+        "id": inv["id"],
+        "family": inv["family"],
+        "applies_to": inv["applies_to"],
+        # The YAML folds long claims onto several lines; one space between
+        # words keeps the output stable when the wrapping changes.
+        "claim": " ".join(inv["claim"].split()),
+        "verified_by": inv["verified_by"],
+        "class": inv["class"],
+        "requires": sorted(inv.get("requires", [])),
+        "enforced": bool(inv.get("enforced")),
+        "integrations": {},
+    }
+    if inv.get("tracked_by"):
+        entry["tracked_by"] = inv["tracked_by"]
+    if inv.get("violated_once"):
+        entry["violated_once"] = list(inv["violated_once"])
+    return entry
+
+
+def exemptions_of(integrations):
+    """(invariant, integration) -> the exemption the registry declares."""
+    return {
+        (ex["invariant"], integ["id"]): ex
+        for integ in integrations
+        for ex in integ.get("exempt", [])
+    }
+
+
+def by_kind(integrations):
+    """kind -> the integrations that get cells. test_only ones get none: their
+    markers are known, so the harness's doubles are not reported as unknown,
+    and they credit nothing."""
+    out = {}
+    for integ in integrations:
+        if integ.get("test_only"):
+            continue
+        out.setdefault(integ["kind"], []).append(integ)
+    return out
+
+
+STATUS_HEADER = "# Generated by `make coverage-matrix`. Do not edit by hand."
+
+
+def status_from_snapshot(snap):
+    """The statuses the gate judges, and nothing else.
+
+    features:     {feature: {level: status}}
+    integrations: {integration: {invariant: {level: status}}}
+
+    An integration with no applicable invariant does not appear, so it gets
+    no file. An exempt cell appears as exempt at every level: the row repeats
+    what the registry declares, so a reader of one file sees the whole
+    picture for that integration.
+    """
+    features = {
+        f["id"]: {lvl: f["levels"][lvl]["status"] for lvl in LEVELS}
+        for f in snap["features"]
+    }
+    integrations = {}
+    for inv in snap.get("invariants", []):
+        for iid, levels in inv["integrations"].items():
+            integrations.setdefault(iid, {})[inv["id"]] = {
+                lvl: levels[lvl]["status"] for lvl in LEVELS}
+    return {"features": features, "integrations": integrations}
+
+
+def render_status_file(rows, about):
+    """One row per line, sorted by id, levels in a flow mapping.
+
+    Written by hand rather than by yaml.dump: git merges lines, so one fact
+    per line is what lets two branches that flip different rows merge
+    cleanly, and yaml.dump spreads a row over four.
+    """
+    lines = [
+        STATUS_HEADER,
+        f"# One line per {about}, sorted by id: the status of each level.",
+    ]
+    for rid in sorted(rows):
+        levels = ", ".join(f"{lvl}: {rows[rid][lvl]}" for lvl in LEVELS)
+        lines.append(f"{rid}: {{{levels}}}")
+    return "\n".join(lines) + "\n"
+
+
+def write_status(status, directory):
+    """Write the status directory and remove any .yml it no longer owns.
+
+    A file for an integration the registry dropped would otherwise survive
+    as a stale row nothing regenerates. Only .yml files are removed; anything
+    else in the directory is not the generator's.
+    """
+    os.makedirs(directory, exist_ok=True)
+    files = {"features.yml": render_status_file(
+        status["features"], "feature in ../features.yml")}
+    for iid, rows in status["integrations"].items():
+        files[f"{iid}.yml"] = render_status_file(
+            rows, f"invariant that applies to {iid}")
+
+    for name in os.listdir(directory):
+        if name.endswith(".yml") and name not in files:
+            os.remove(os.path.join(directory, name))
+    for name, text in files.items():
+        with open(os.path.join(directory, name), "w") as fh:
+            fh.write(text)
+    return sorted(files)
+
+
+def read_status(directory):
+    """The inverse of write_status. An absent directory reads as empty, so
+    the page renders (as all missing) before the first generation."""
+    status = {"features": {}, "integrations": {}}
+    if not os.path.isdir(directory):
+        return status
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".yml"):
+            continue
+        with open(os.path.join(directory, name)) as fh:
+            rows = yaml.safe_load(fh) or {}
+        if name == "features.yml":
+            status["features"] = rows
+        else:
+            status["integrations"][name[:-len(".yml")]] = rows
+    return status
+
+
+def page_snapshot(features, invariants, integrations, status):
+    """The page's input: the same entries the full snapshot carries, built
+    from the status files and the registries instead of from test reports.
+
+    A row the status directory lacks reads as missing where the registry
+    requires it: a feature added before the next generation renders honestly
+    rather than crashing the page, and the gate's staleness check is what
+    catches the directory being behind.
+    """
+    out = {"features": [], "gaps": [], "invariants": [], "invariant_gaps": []}
+
+    for feature in features:
+        required = set(feature.get("requires", []))
+        rows = status["features"].get(feature["id"], {})
+        levels = {}
+        for lvl in LEVELS:
+            fallback = "missing" if lvl in required else "not_required"
+            levels[lvl] = {"status": rows.get(lvl, fallback)}
+        out["features"].append({
+            "id": feature["id"],
+            "description": feature["description"],
+            "requires": sorted(required),
+            "levels": levels,
+        })
+    out["gaps"] = feature_gaps(out["features"])
+
+    kinds = by_kind(integrations)
+    exemptions = exemptions_of(integrations)
+    for inv in invariants:
+        entry = declare(inv)
+        for integ in kinds.get(inv["applies_to"], []):
+            # The registry is the declaration. A status row that disagrees
+            # with an exemption is stale, and the gate reports that; the
+            # page does not repeat the disagreement.
+            if (inv["id"], integ["id"]) in exemptions:
+                levels = {lvl: {"status": "exempt"} for lvl in LEVELS}
+            else:
+                rows = status["integrations"].get(integ["id"], {}).get(inv["id"], {})
+                levels = {lvl: {"status": rows.get(lvl, "missing")} for lvl in LEVELS}
+            entry["integrations"][integ["id"]] = levels
+        out["invariants"].append(entry)
+    out["invariant_gaps"] = invariant_gaps(out["invariants"])
+
+    return out
+
+
+def render_page(features, invariants, integrations, status):
+    """matrix.md, from committed files alone."""
+    ps = page_snapshot(features, invariants, integrations, status)
+    return render(ps) + "\n" + render_invariants(ps)
 
 
 def status(entries):
@@ -638,13 +824,12 @@ MARK = {
 
 
 def snapshot(features, coverage, secondary, unmatched, unknown_markers):
-    """The machine-readable matrix.
+    """The machine-readable matrix, written to .coverage/matrix.json.
 
-    This is the artifact, and matrix.md is a view rendered from it. A diff
-    against the committed copy is what makes a coverage change visible in
-    review, and diffing JSON keeps that signal clean: reformatting the table
-    or rewording a description cannot masquerade as a coverage change, and
-    a coverage change cannot hide inside a reflowed table.
+    Nothing commits this. It is what the gate judges gaps from, what
+    status_from_snapshot projects, and where the report's counts point for the
+    names behind them. What review sees is the status directory this projects
+    to: a diff of statuses cannot be buried under a test that was renamed.
 
     Everything is sorted so the same tree always produces the same bytes.
 
@@ -691,12 +876,9 @@ def snapshot(features, coverage, secondary, unmatched, unknown_markers):
                     cell[key] = members
             entry["levels"][level] = cell
 
-            if level in required and state != "covered":
-                out["gaps"].append(
-                    {"feature": fid, "level": level, "status": state})
-
         out["features"].append(entry)
 
+    out["gaps"] = feature_gaps(out["features"])
     out["unattributed"] = {lvl: sorted(names) for lvl, names in unmatched.items()}
     out["unknown_markers"] = sorted(
         {"test": t, "feature": f} for t, f in unknown_markers
@@ -710,7 +892,7 @@ def render(snap):
     lines = [
         "# Feature coverage matrix",
         "",
-        "Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.",
+        "Generated from `docs/coverage/status/` by `make coverage-page`.",
         "Do not edit by hand.",
         "",
         "Features are declared in `docs/coverage/features.yml`. A test attaches",
@@ -726,23 +908,19 @@ def render(snap):
         "a pass is how `sink.iceberg` shipped for months without ever being",
         "written to.",
         "",
-        "The Tests column counts what attributes to the feature, so a thinly",
-        "covered one is visible at a glance. `docs/coverage/matrix.json`",
-        "names every one of them.",
+        "Only statuses are committed. Test names and counts are in the coverage",
+        "report CI publishes on every run: they change whenever a test is",
+        "added, and this page changes only when a status does.",
         "",
-        "| Feature | What it does | " + " | ".join(LEVELS) + " | Tests |",
-        "| --- | --- | " + " | ".join("---" for _ in LEVELS) + " | --- |",
+        "| Feature | What it does | " + " | ".join(LEVELS) + " |",
+        "| --- | --- | " + " | ".join("---" for _ in LEVELS) + " |",
     ]
 
     for feature in snap["features"]:
         cells = " | ".join(MARK[feature["levels"][lvl]["status"]]
                            for lvl in LEVELS)
-        count = sum(len(feature["levels"][lvl].get("tests", []))
-                    for lvl in LEVELS)
         lines.append(
-            f"| `{feature['id']}` | {feature['description']} | "
-            f"{cells} | {count or '—'} |"
-        )
+            f"| `{feature['id']}` | {feature['description']} | {cells} |")
 
     covered = sum(
         1 for f in snap["features"]
@@ -792,6 +970,46 @@ def render(snap):
                 "",
             ]
 
+    if snap["gaps"]:
+        lines += ["## Gaps", "",
+                  "These fail `make coverage-matrix`. There is no baseline: a gap",
+                  "is closed by a test, or by the registry honestly no longer",
+                  "requiring that level.", ""]
+        for gap in snap["gaps"]:
+            lines.append(
+                f"- `{gap['feature']}` requires **{gap['level']}** coverage "
+                f"and is *{gap['status']}*.")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def render_report(snap):
+    """Everything the page dropped: counts, names, secondary attribution,
+    unattributed tests, unknown markers.
+
+    Not committed. Every line here changes when a test is added, which is
+    exactly why it left the page. CI appends it to the job summary and uploads
+    it on every run, and `make coverage-check` prints it.
+    """
+    lines = [
+        "# Coverage report",
+        "",
+        "Generated by `make coverage-check` from the suite reports, and published",
+        "by CI on every run. Not committed: every line here changes when a test",
+        "is added, and `docs/coverage/matrix.md` changes only when a status does.",
+        "`.coverage/matrix.json` names every test behind every count.",
+        "",
+        "| Feature | " + " | ".join(LEVELS) + " | Tests |",
+        "| --- | " + " | ".join("---" for _ in LEVELS) + " | --- |",
+    ]
+    for feature in snap["features"]:
+        counts = [len(feature["levels"][lvl].get("tests", [])) for lvl in LEVELS]
+        cells = " | ".join(str(c) if c else "—" for c in counts)
+        lines.append(f"| `{feature['id']}` | {cells} | {sum(counts) or '—'} |")
+    lines.append("")
+
+    if snap.get("invariants"):
         argument = strongest_argument(snap)
         if argument:
             feature, tests, invariant, proven, applicable = argument
@@ -812,17 +1030,6 @@ def render(snap):
                 "covered. This one does not.",
                 "",
             ]
-
-    if snap["gaps"]:
-        lines += ["## Gaps", "",
-                  "These fail `make coverage-matrix`. There is no baseline: a gap",
-                  "is closed by a test, or by the registry honestly no longer",
-                  "requiring that level.", ""]
-        for gap in snap["gaps"]:
-            lines.append(
-                f"- `{gap['feature']}` requires **{gap['level']}** coverage "
-                f"and is *{gap['status']}*.")
-        lines.append("")
 
     # Secondary attribution is visible on purpose. One test per feature is the
     # goal; a feature every test claims second is one no test is about, and
@@ -848,7 +1055,7 @@ def render(snap):
         lines.append("")
 
     for level in LEVELS:
-        names = snap["unattributed"].get(level, [])
+        names = snap.get("unattributed", {}).get(level, [])
         if names:
             lines += [
                 f"## Unattributed {level} tests ({len(names)})",
@@ -860,10 +1067,21 @@ def render(snap):
             lines += [f"- `{n}`" for n in names]
             lines.append("")
 
-    if snap["unknown_markers"]:
-        lines += ["## Markers naming an unknown feature", ""]
-        for entry in snap["unknown_markers"]:
+    unknown = snap.get("unknown_markers", [])
+    unknown_invariants = snap.get("unknown_invariant_markers", [])
+    if unknown or unknown_invariants:
+        lines += [
+            "## Markers naming an unknown feature, invariant, or integration",
+            "",
+            "These fail `make coverage-check`. A marker that names nothing the",
+            "registries declare is a typo, and crediting it would invent a cell.",
+            "",
+        ]
+        for entry in unknown:
             lines.append(f"- `{entry['test']}` marks `{entry['feature']}`")
+        for entry in unknown_invariants:
+            lines.append(f"- `{entry['test']}` marks `{entry['invariant']}` "
+                         f"on `{entry['integration']}`")
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -1023,7 +1241,7 @@ def render_invariants(snap):
     lines = [
         "# Invariant matrix",
         "",
-        "Generated from `docs/coverage/matrix.json` by `make coverage-matrix`.",
+        "Generated from `docs/coverage/status/` by `make coverage-page`.",
         "Do not edit by hand.",
         "",
         "Invariants are declared in `docs/coverage/invariants.yml`, integrations",
@@ -1035,9 +1253,9 @@ def render_invariants(snap):
         "A covered cell names the levels that proved it: `u` unit, `i`",
         "integration, `r` release. That is the question the matrix exists to",
         "answer -- proven with a fake, or against the real thing, or in the",
-        "shipped image. **exempt** carries its reason in the JSON, and",
-        "**missing** means no evidence. Nothing here fails the build until an",
-        "invariant's `requires` is filled in, and none is yet.",
+        "shipped image. **exempt** carries its reason in `integrations.yml`,",
+        "and **missing** means no evidence. Nothing here fails the build until",
+        "an invariant's `requires` is filled in, and none is yet.",
         "",
     ]
 
@@ -1119,14 +1337,21 @@ def render_invariants(snap):
                 f"**{gap['level']}** and is *{gap['status']}*.")
         lines.append("")
 
-    if snap["unknown_invariant_markers"]:
-        lines += ["## Markers naming an unknown invariant or integration", ""]
-        for entry in snap["unknown_invariant_markers"]:
-            lines.append(f"- `{entry['test']}` marks `{entry['invariant']}` "
-                         f"on `{entry['integration']}`")
-        lines.append("")
-
     return "\n".join(lines) + "\n"
+
+
+def write_page(features, invariants, integrations, status, lattice):
+    """matrix.md and the types page, from committed files alone."""
+    with open(MATRIX_MD, "w") as fh:
+        fh.write(render_page(features, invariants, integrations, status))
+    # The published page is generated from the registries alone, not from any
+    # test report: it says what the declaration claims, and the type runner is
+    # what holds the declaration to the sink.
+    clickhouse = next(
+        (i for i in integrations if i["id"] == "sink.clickhouse"), None)
+    if clickhouse:
+        with open(TYPES_PAGE, "w") as fh:
+            fh.write(render_types_page(lattice, clickhouse))
 
 
 def main():
@@ -1136,22 +1361,34 @@ def main():
                     help="go test -json output from the integration pass")
     ap.add_argument("--pytest", help="pytest result json from the conftest hook")
     ap.add_argument("--write", action="store_true",
-                    help="write matrix.json and matrix.md")
-    ap.add_argument("--check", action="store_true", help="exit non-zero on gaps")
+                    help="write the status directory, the page, and the report")
+    ap.add_argument("--check", action="store_true",
+                    help="exit non-zero on a gap or an unknown marker")
+    ap.add_argument("--page", action="store_true",
+                    help="render the page from the committed status files; "
+                         "reads no test report")
     args = ap.parse_args()
 
     features = load_features()
     invariants = load_invariants()
     integrations = load_integrations()
+    lattice = load_lattice()
 
     # Before any test result is read: a registry typo would otherwise reach
     # the matrix as a missing cell.
     problems = validate_registries(invariants, integrations, features)
-    problems += validate_types(load_lattice(), integrations)
+    problems += validate_types(lattice, integrations)
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
         return 2
+
+    if args.page:
+        write_page(features, invariants, integrations, read_status(STATUS_DIR),
+                   lattice)
+        print(f"wrote {os.path.relpath(MATRIX_MD, REPO)} "
+              f"and {os.path.relpath(TYPES_PAGE, REPO)}")
+        return 0
 
     go_results, go_covers, go_invariants = (
         parse_go(args.go) if args.go and os.path.exists(args.go) else ({}, {}, {}))
@@ -1175,41 +1412,50 @@ def main():
          "release": py_invariants})
     snap.update(snapshot_invariants(invariants, integrations, built))
 
-    rendered = render(snap) + "\n" + render_invariants(snap)
-
-    # The published page is generated from the registries alone, not from any
-    # test report: it says what the declaration claims, and the type runner is
-    # what holds the declaration to the sink.
-    lattice = load_lattice()
-    clickhouse = next(
-        (i for i in integrations if i["id"] == "sink.clickhouse"), None)
-    types_page = render_types_page(lattice, clickhouse) if clickhouse else ""
+    status = status_from_snapshot(snap)
+    report = render_report(snap)
 
     if args.write:
-        os.makedirs(os.path.dirname(MATRIX_JSON), exist_ok=True)
+        written = write_status(status, STATUS_DIR)
+        write_page(features, invariants, integrations, status, lattice)
+        os.makedirs(COVERAGE_DIR, exist_ok=True)
         with open(MATRIX_JSON, "w") as fh:
             json.dump(snap, fh, indent=2, sort_keys=False)
             fh.write("\n")
-        with open(MATRIX_MD, "w") as fh:
-            fh.write(rendered)
-        if types_page:
-            with open(TYPES_PAGE, "w") as fh:
-                fh.write(types_page)
-        print(f"wrote {os.path.relpath(MATRIX_JSON, REPO)}, "
-              f"{os.path.relpath(MATRIX_MD, REPO)} "
-              f"and {os.path.relpath(TYPES_PAGE, REPO)}")
+        with open(REPORT_MD, "w") as fh:
+            fh.write(report)
+        print(f"wrote {len(written)} files under "
+              f"{os.path.relpath(STATUS_DIR, REPO)}/, "
+              f"{os.path.relpath(MATRIX_MD, REPO)}, "
+              f"{os.path.relpath(TYPES_PAGE, REPO)}, "
+              f"{os.path.relpath(MATRIX_JSON, REPO)} "
+              f"and {os.path.relpath(REPORT_MD, REPO)}")
     else:
-        print(rendered)
+        print(report)
 
     gaps = snap["gaps"] + snap["invariant_gaps"]
-    if args.check and gaps:
-        print(f"\n{len(gaps)} coverage gap(s):", file=sys.stderr)
-        for gap in snap["gaps"]:
-            print(f"  {gap['feature']}: {gap['level']} is {gap['status']}",
+    unknown_markers = snap["unknown_markers"] + snap["unknown_invariant_markers"]
+    if args.check and (gaps or unknown_markers):
+        if gaps:
+            print(f"\n{len(gaps)} coverage gap(s):", file=sys.stderr)
+            for gap in snap["gaps"]:
+                print(f"  {gap['feature']}: {gap['level']} is {gap['status']}",
+                      file=sys.stderr)
+            for gap in snap["invariant_gaps"]:
+                print(f"  {gap['invariant']} on {gap['integration']}: "
+                      f"{gap['level']} is {gap['status']}", file=sys.stderr)
+        if unknown_markers:
+            # A marker naming nothing the registries declare is a typo, and
+            # the list of them no longer sits on a page anyone diffs.
+            print(f"\n{len(unknown_markers)} marker(s) naming an unknown id:",
                   file=sys.stderr)
-        for gap in snap["invariant_gaps"]:
-            print(f"  {gap['invariant']} on {gap['integration']}: "
-                  f"{gap['level']} is {gap['status']}", file=sys.stderr)
+            for entry in snap["unknown_markers"]:
+                print(f"  {entry['test']} marks {entry['feature']}, "
+                      "which features.yml does not declare", file=sys.stderr)
+            for entry in snap["unknown_invariant_markers"]:
+                print(f"  {entry['test']} marks {entry['invariant']} on "
+                      f"{entry['integration']}, which the registries do not "
+                      "declare together", file=sys.stderr)
         return 1
     return 0
 
