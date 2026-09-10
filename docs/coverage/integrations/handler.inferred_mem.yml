@@ -1,0 +1,5 @@
+id: handler.inferred_mem
+kind: handler
+implements: [Handler, MetadataWriter]
+feature: handler.inferred_mem
+exempt: []

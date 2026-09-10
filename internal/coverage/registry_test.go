@@ -1,6 +1,7 @@
 package coverage
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/zeebo/assert"
@@ -30,6 +31,62 @@ func TestToolingCoverageRegistry_ListsHandlers(t *testing.T) {
 	got, err := Integrations("handler")
 	assert.NoError(t, err)
 	assert.DeepEqual(t, []string{"inferred_disk", "inferred_mem", "structured"}, got)
+}
+
+// --- One file per integration ----------------------------------------------
+//
+// The registry was one file of 602 lines, seven functions each parsed it into
+// a partial struct of their own, and a field reached one caller and not
+// another. It is now one file per integration, read once into one type.
+
+func TestToolingCoverageRegistry_ReadsEveryFileInTheDirectory(t *testing.T) {
+	Covers(t, "tooling.coverage")
+	all, err := loadIntegrations()
+	assert.NoError(t, err)
+
+	// Every kind is present, including the two no constructor builds. A
+	// loader that silently skipped a file would leave an integration with no
+	// cells, which is the sink.iceberg failure.
+	kinds := map[string]int{}
+	for _, entry := range all {
+		assert.That(t, entry.ID != "")
+		assert.That(t, entry.Kind != "")
+		kinds[entry.Kind]++
+	}
+	assert.Equal(t, 4, len(kinds))
+	assert.That(t, kinds["sink"] >= 6)
+	assert.That(t, kinds["pipeline"] >= 2)
+}
+
+func TestToolingCoverageRegistry_ReadsInIDOrder(t *testing.T) {
+	Covers(t, "tooling.coverage")
+	all, err := loadIntegrations()
+	assert.NoError(t, err)
+
+	for i := 1; i < len(all); i++ {
+		assert.That(t, all[i-1].ID < all[i].ID)
+	}
+}
+
+// One entry carries every field, so a question about an integration is one
+// read. Each of these came from a different partial struct before.
+func TestToolingCoverageRegistry_OneEntryCarriesEveryField(t *testing.T) {
+	Covers(t, "tooling.coverage")
+	entry, err := integration("sink.clickhouse")
+	assert.NoError(t, err)
+
+	assert.Equal(t, "sink", entry.Kind)
+	assert.Equal(t, "sink.clickhouse", entry.Feature)
+	assert.That(t, !entry.TestOnly)
+	assert.That(t, len(entry.Types) > 0)
+	assert.That(t, len(entry.Nulls) > 0)
+}
+
+func TestToolingCoverageRegistry_NamesTheIDItCannotFind(t *testing.T) {
+	Covers(t, "tooling.coverage")
+	_, err := integration("sink.nothing")
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "sink.nothing"))
 }
 
 // pipeline is a kind an invariant can apply to, but no constructor builds

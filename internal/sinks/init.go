@@ -123,7 +123,7 @@ func retriesHelp(sinkType string) bool {
 // builders constructs each sink type.
 //
 // A map rather than a switch so Kinds can list it. A registry test holds that
-// list equal to integrations.yml, and a sink the engine can build but nothing
+// list equal to the registry, and a sink the engine can build but nothing
 // declares has no invariant cells at all.
 var builders = map[string]func(ctx context.Context, sink config.Sink, conn adbc.Connection) (core.Sink, error){
 	"noop": func(context.Context, config.Sink, adbc.Connection) (core.Sink, error) {

@@ -12,9 +12,92 @@ import (
 )
 
 // constructedKinds are the kinds something builds. An invariant may also
-// apply to a pipeline, which no constructor produces, so integrations.yml
-// never carries that kind and asking for it is a mistake.
+// apply to a pipeline, which no constructor produces, so no integration of
+// that kind is constructed and asking for it is a mistake.
 var constructedKinds = map[string]bool{"sink": true, "source": true, "handler": true}
+
+// Integration is one entry of docs/coverage/integrations, whole.
+//
+// One type rather than a partial struct per accessor. Seven functions each
+// declared their own, so a field reached one caller and not another, and the
+// registry could only be read one question at a time.
+type Integration struct {
+	ID   string `yaml:"id"`
+	Kind string `yaml:"kind"`
+
+	// Feature is the features.yml id this attributes to. An integration id is
+	// not a feature id: sink.noop attributes to sink.console, and a test_only
+	// integration attributes to nothing.
+	Feature string `yaml:"feature"`
+
+	// TestOnly marks an id that ships to nobody. The conformance harness's
+	// doubles must name an integration, because a marker carries one, and
+	// naming a real sink would credit that sink for what a double did.
+	TestOnly bool `yaml:"test_only"`
+
+	// Constructed is false for an entry no constructor switch builds. Pipeline
+	// configurations are the only ones, and Integrations() must not report
+	// them: the Kinds() agreement tests are held equal to that list.
+	Constructed *bool `yaml:"constructed"`
+
+	Exempt []struct {
+		Invariant string `yaml:"invariant"`
+	} `yaml:"exempt"`
+
+	Nulls map[string]NullRule `yaml:"nulls"`
+	Types map[string]TypeDecl `yaml:"types"`
+}
+
+// loadIntegrations reads every file in docs/coverage/integrations, in filename
+// order.
+//
+// Filename order is id order, because the filename is the id. The generator
+// holds the two equal, so a file that disagrees fails `make coverage-check`
+// rather than being silently reachable under the wrong name.
+func loadIntegrations() ([]Integration, error) {
+	dir, err := registryPath("integrations")
+	if err != nil {
+		return nil, err
+	}
+
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("coverage: read %s: %w", dir, err)
+	}
+
+	var out []Integration
+	for _, entry := range names {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yml") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("coverage: read %s: %w", path, err)
+		}
+		var integration Integration
+		if err := yaml.Unmarshal(raw, &integration); err != nil {
+			return nil, fmt.Errorf("coverage: parse %s: %w", path, err)
+		}
+		out = append(out, integration)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// integration returns one entry by id.
+func integration(id string) (Integration, error) {
+	all, err := loadIntegrations()
+	if err != nil {
+		return Integration{}, err
+	}
+	for _, entry := range all {
+		if entry.ID == id {
+			return entry, nil
+		}
+	}
+	return Integration{}, fmt.Errorf("coverage: integrations/ declares no %q", id)
+}
 
 // Invariants returns every id invariants.yml declares, as a set.
 //
@@ -44,35 +127,19 @@ func Invariants() (map[string]bool, error) {
 	return out, nil
 }
 
-// IsTestOnly reports whether integrations.yml marks an integration as
-// existing only for tests.
+// IsTestOnly reports whether the registry marks an integration as existing
+// only for tests.
 //
 // The conformance harness's doubles must name an integration, because a
 // marker carries one. Naming a real sink would credit that sink for what a
 // double did. A test-only id gets no cells, so a double's marker lands
 // nowhere.
-func IsTestOnly(integration string) (bool, error) {
-	raw, err := readRegistry("integrations.yml")
+func IsTestOnly(id string) (bool, error) {
+	entry, err := integration(id)
 	if err != nil {
 		return false, err
 	}
-
-	var doc struct {
-		Integrations []struct {
-			ID       string `yaml:"id"`
-			TestOnly bool   `yaml:"test_only"`
-		} `yaml:"integrations"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return false, fmt.Errorf("coverage: parse integrations.yml: %w", err)
-	}
-
-	for _, entry := range doc.Integrations {
-		if entry.ID == integration {
-			return entry.TestOnly, nil
-		}
-	}
-	return false, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+	return entry.TestOnly, nil
 }
 
 // FeatureFor returns the features.yml id an integration attributes to, and
@@ -82,73 +149,46 @@ func IsTestOnly(integration string) (bool, error) {
 // sink.console, and a test_only integration attributes to nothing at all.
 // Emitting the integration id as a feature marker put
 // "marks sink.conformance_double" into the feature matrix's unknown list.
-func FeatureFor(integration string) (string, bool, error) {
-	raw, err := readRegistry("integrations.yml")
+func FeatureFor(id string) (string, bool, error) {
+	entry, err := integration(id)
 	if err != nil {
 		return "", false, err
 	}
-
-	var doc struct {
-		Integrations []struct {
-			ID      string `yaml:"id"`
-			Feature string `yaml:"feature"`
-		} `yaml:"integrations"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return "", false, fmt.Errorf("coverage: parse integrations.yml: %w", err)
-	}
-
-	for _, entry := range doc.Integrations {
-		if entry.ID == integration {
-			return entry.Feature, entry.Feature != "", nil
-		}
-	}
-	return "", false, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+	return entry.Feature, entry.Feature != "", nil
 }
 
-// Exemptions returns the invariants integrations.yml excuses one integration
+// Exemptions returns the invariants the registry excuses one integration
 // from, as a set.
-func Exemptions(integration string) (map[string]bool, error) {
-	raw, err := readRegistry("integrations.yml")
+func Exemptions(id string) (map[string]bool, error) {
+	entry, err := integration(id)
 	if err != nil {
 		return nil, err
 	}
+	out := make(map[string]bool, len(entry.Exempt))
+	for _, ex := range entry.Exempt {
+		out[ex.Invariant] = true
+	}
+	return out, nil
+}
 
-	var doc struct {
-		Integrations []struct {
-			ID     string `yaml:"id"`
-			Exempt []struct {
-				Invariant string `yaml:"invariant"`
-			} `yaml:"exempt"`
-		} `yaml:"integrations"`
+// registryPath locates one entry of docs/coverage, file or directory.
+//
+// Relative to this source file, not the working directory: `go test ./...`
+// runs each package from its own directory.
+func registryPath(name string) (string, error) {
+	_, self, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("coverage: cannot locate %s", name)
 	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("coverage: parse integrations.yml: %w", err)
-	}
-
-	for _, entry := range doc.Integrations {
-		if entry.ID != integration {
-			continue
-		}
-		out := make(map[string]bool, len(entry.Exempt))
-		for _, ex := range entry.Exempt {
-			out[ex.Invariant] = true
-		}
-		return out, nil
-	}
-	return nil, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+	return filepath.Join(filepath.Dir(self), "..", "..", "docs", "coverage", name), nil
 }
 
 // readRegistry reads one file from docs/coverage.
-//
-// Located relative to this source file, not the working directory: `go test
-// ./...` runs each package from its own directory.
 func readRegistry(name string) ([]byte, error) {
-	_, self, _, ok := runtime.Caller(0)
-	if !ok {
-		return nil, fmt.Errorf("coverage: cannot locate %s", name)
+	path, err := registryPath(name)
+	if err != nil {
+		return nil, err
 	}
-	path := filepath.Join(filepath.Dir(self), "..", "..", "docs", "coverage", name)
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -157,7 +197,7 @@ func readRegistry(name string) ([]byte, error) {
 	return raw, nil
 }
 
-// Integrations returns the bare type names integrations.yml declares for one
+// Integrations returns the bare type names the registry declares for one
 // kind, sorted.
 //
 // "sink.clickhouse" is reported as "clickhouse", which is the form the
@@ -170,36 +210,24 @@ func Integrations(kind string) ([]string, error) {
 		return nil, fmt.Errorf("coverage: nothing constructs a %q", kind)
 	}
 
-	raw, err := readRegistry("integrations.yml")
+	all, err := loadIntegrations()
 	if err != nil {
 		return nil, err
 	}
 
-	var doc struct {
-		Integrations []struct {
-			ID          string `yaml:"id"`
-			Kind        string `yaml:"kind"`
-			TestOnly    bool   `yaml:"test_only"`
-			Constructed *bool  `yaml:"constructed"`
-		} `yaml:"integrations"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("coverage: parse integrations.yml: %w", err)
-	}
-
 	out := []string{}
-	for _, integration := range doc.Integrations {
+	for _, entry := range all {
 		// Neither a test-only integration nor an unconstructed one has a case
 		// in a constructor switch, so neither may appear in the list Kinds()
 		// is held equal to.
-		if integration.TestOnly {
+		if entry.TestOnly {
 			continue
 		}
-		if integration.Constructed != nil && !*integration.Constructed {
+		if entry.Constructed != nil && !*entry.Constructed {
 			continue
 		}
-		if integration.Kind == kind {
-			out = append(out, strings.TrimPrefix(integration.ID, kind+"."))
+		if entry.Kind == kind {
+			out = append(out, strings.TrimPrefix(entry.ID, kind+"."))
 		}
 	}
 	sort.Strings(out)
@@ -305,29 +333,12 @@ type NullRule struct {
 }
 
 // NullsFor returns an integration's default null rule.
-func NullsFor(integration string) (NullRule, error) {
-	raw, err := readRegistry("integrations.yml")
+func NullsFor(id string) (NullRule, error) {
+	entry, err := integration(id)
 	if err != nil {
 		return NullRule{}, err
 	}
-
-	var doc struct {
-		Integrations []struct {
-			ID    string              `yaml:"id"`
-			Nulls map[string]NullRule `yaml:"nulls"`
-		} `yaml:"integrations"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return NullRule{}, fmt.Errorf("coverage: parse integrations.yml: %w", err)
-	}
-
-	for _, entry := range doc.Integrations {
-		if entry.ID != integration {
-			continue
-		}
-		return entry.Nulls["default"], nil
-	}
-	return NullRule{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+	return entry.Nulls["default"], nil
 }
 
 // NullElementsFor returns an integration's rule for a null held inside a
@@ -336,29 +347,12 @@ func NullsFor(integration string) (NullRule, error) {
 // Separate from NullsFor because the answers differ: a ClickHouse column can
 // be Nullable and its Array(T) elements cannot, so the column-level rule says
 // nothing about what a list holds.
-func NullElementsFor(integration string) (NullRule, error) {
-	raw, err := readRegistry("integrations.yml")
+func NullElementsFor(id string) (NullRule, error) {
+	entry, err := integration(id)
 	if err != nil {
 		return NullRule{}, err
 	}
-
-	var doc struct {
-		Integrations []struct {
-			ID    string              `yaml:"id"`
-			Nulls map[string]NullRule `yaml:"nulls"`
-		} `yaml:"integrations"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return NullRule{}, fmt.Errorf("coverage: parse integrations.yml: %w", err)
-	}
-
-	for _, entry := range doc.Integrations {
-		if entry.ID != integration {
-			continue
-		}
-		return entry.Nulls["list_element"], nil
-	}
-	return NullRule{}, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+	return entry.Nulls["list_element"], nil
 }
 
 // TypesFor returns one integration's type table, sorted by key.
@@ -366,33 +360,16 @@ func NullElementsFor(integration string) (NullRule, error) {
 // Sorted rather than in file order: a YAML mapping carries no order, so file
 // order is whatever the parser chose, and a runner iterating it would report
 // its rows in a different sequence run to run.
-func TypesFor(integration string) ([]TypeDecl, error) {
-	raw, err := readRegistry("integrations.yml")
+func TypesFor(id string) ([]TypeDecl, error) {
+	entry, err := integration(id)
 	if err != nil {
 		return nil, err
 	}
-
-	var doc struct {
-		Integrations []struct {
-			ID    string              `yaml:"id"`
-			Types map[string]TypeDecl `yaml:"types"`
-		} `yaml:"integrations"`
+	out := make([]TypeDecl, 0, len(entry.Types))
+	for key, decl := range entry.Types {
+		decl.Key = key
+		out = append(out, decl)
 	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("coverage: parse integrations.yml: %w", err)
-	}
-
-	for _, entry := range doc.Integrations {
-		if entry.ID != integration {
-			continue
-		}
-		out := make([]TypeDecl, 0, len(entry.Types))
-		for key, decl := range entry.Types {
-			decl.Key = key
-			out = append(out, decl)
-		}
-		sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-		return out, nil
-	}
-	return nil, fmt.Errorf("coverage: integrations.yml declares no %q", integration)
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
 }

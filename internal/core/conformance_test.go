@@ -38,7 +38,7 @@ func TestPipelineStateless_Conformance(t *testing.T) {
 }
 
 // The premise behind the stateless configuration's exemption in
-// integrations.yml. It commits no durable state, so there is nothing to
+// the registry. It commits no durable state, so there is nothing to
 // commit alongside the offsets, and pipeline.state.with_offsets is vacuous
 // rather than unproven.
 func TestPipelineStateless_KeepsNoDurableState(t *testing.T) {

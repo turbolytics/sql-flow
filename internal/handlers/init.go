@@ -15,7 +15,7 @@ import (
 // configTypes maps the config's Python-era handler names to the registry's.
 //
 // The config keeps the long form because every shipped example carries it.
-// integrations.yml uses the short one, which is what an id like
+// the registry uses the short one, which is what an id like
 // handler.inferred_mem reads as.
 var configTypes = map[string]string{
 	"handlers.StructuredBatch":   "structured",
@@ -26,7 +26,7 @@ var configTypes = map[string]string{
 // builders constructs each handler type.
 //
 // A map rather than a switch so Kinds can list it. A registry test holds that
-// list equal to integrations.yml, and a handler the engine can build but
+// list equal to the registry, and a handler the engine can build but
 // nothing declares has no invariant cells at all.
 var builders = map[string]func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error){
 	"structured": func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {

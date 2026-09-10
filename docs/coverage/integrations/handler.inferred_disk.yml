@@ -1,0 +1,5 @@
+id: handler.inferred_disk
+kind: handler
+implements: [Handler]
+feature: handler.inferred_disk
+exempt: []

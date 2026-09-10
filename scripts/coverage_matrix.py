@@ -41,7 +41,11 @@ import yaml
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REGISTRY = os.path.join(REPO, "docs", "coverage", "features.yml")
 INVARIANTS = os.path.join(REPO, "docs", "coverage", "invariants.yml")
-INTEGRATIONS = os.path.join(REPO, "docs", "coverage", "integrations.yml")
+# One file per integration, named for its id, beside its status file of the
+# same name. The single file was 602 lines and ClickHouse's type table was 369
+# of them, so an agent adding a webhook exemption read all of it to find the
+# 25 lines it needed.
+INTEGRATIONS_DIR = os.path.join(REPO, "docs", "coverage", "integrations")
 LATTICE = os.path.join(REPO, "docs", "coverage", "lattice.yml")
 # What is committed: one status per (feature, level) and per (invariant,
 # integration, level), one file per integration. Nothing with a test name in
@@ -115,9 +119,26 @@ def load_invariants():
         return yaml.safe_load(fh)["invariants"]
 
 
-def load_integrations():
-    with open(INTEGRATIONS) as fh:
-        return yaml.safe_load(fh)["integrations"]
+def load_integrations(directory=None):
+    """Every integration the directory declares, in filename order.
+
+    Filename order is id order, because the filename is the id. That is what
+    orders the columns on the page, and it is stable without anything having
+    to declare it.
+
+    Each entry carries the file it came from. validate_registries holds the
+    name and the id equal, and it is handed entries rather than a directory,
+    so the entry has to carry its origin.
+    """
+    out = []
+    for name in sorted(os.listdir(directory or INTEGRATIONS_DIR)):
+        if not name.endswith(".yml"):
+            continue
+        with open(os.path.join(directory or INTEGRATIONS_DIR, name)) as fh:
+            entry = yaml.safe_load(fh)
+        entry["source_file"] = name
+        out.append(entry)
+    return out
 
 
 def load_lattice():
@@ -167,30 +188,39 @@ def validate_registries(invariants, integrations, features):
     for integ in integrations:
         iid = integ.get("id")
         if iid in seen:
-            problems.append(f"integrations.yml: duplicate id {iid}")
+            problems.append(f"integrations/: duplicate id {iid}")
         seen.add(iid)
+
+        # The filename is the id, so a file that says otherwise is a rename
+        # half done: the entry would go looking for a status file of the
+        # other name. Skipped for entries built in a test, which have no file.
+        source = integ.get("source_file")
+        if source and source != f"{iid}.yml":
+            problems.append(
+                f"integrations/{source}: declares id {iid}, so it belongs in "
+                f"{iid}.yml")
 
         if integ.get("kind") not in INTEGRATION_KINDS:
             problems.append(
-                f"integrations.yml: {iid} kind {integ.get('kind')!r} is not one of {INTEGRATION_KINDS}")
+                f"integrations/{iid}.yml: kind {integ.get('kind')!r} is not one of {INTEGRATION_KINDS}")
         # A test-only integration ships to nobody, so it has no feature and no
         # cells. It exists so the conformance harness's doubles have an id
         # that is not a real sink's.
         if not integ.get("test_only") and integ.get("feature") not in feature_ids:
             problems.append(
-                f"integrations.yml: {iid} names feature {integ.get('feature')!r}, "
+                f"integrations/{iid}.yml: names feature {integ.get('feature')!r}, "
                 "which features.yml does not declare")
 
         for ex in integ.get("exempt", []):
             inv = by_id.get(ex.get("invariant"))
             if inv is None:
                 problems.append(
-                    f"integrations.yml: {iid} is exempt from {ex.get('invariant')!r}, "
+                    f"integrations/{iid}.yml: is exempt from {ex.get('invariant')!r}, "
                     "which invariants.yml does not declare")
                 continue
             if not ex.get("reason"):
                 problems.append(
-                    f"integrations.yml: {iid} exemption from {inv['id']} has no reason")
+                    f"integrations/{iid}.yml: exemption from {inv['id']} has no reason")
             # An exemption left as prose is an excuse. Two of them hid live
             # batch-loss bugs: sink.sqlcommand and sink.console were both
             # excused because nothing crosses a network, which is the argument
@@ -198,11 +228,11 @@ def validate_registries(invariants, integrations, features):
             # on. A test must prove the premise.
             if not ex.get("proven_by"):
                 problems.append(
-                    f"integrations.yml: {iid} exemption from {inv['id']} has no "
+                    f"integrations/{iid}.yml: exemption from {inv['id']} has no "
                     "proven_by naming a test that proves the premise")
             if inv.get("applies_to") != integ.get("kind"):
                 problems.append(
-                    f"integrations.yml: {iid} is a {integ.get('kind')} but "
+                    f"integrations/{iid}.yml: is a {integ.get('kind')} but "
                     f"{inv['id']} applies_to {inv.get('applies_to')}")
 
     return problems
@@ -303,48 +333,48 @@ def validate_types(lattice, integrations):
         for key, decl in sorted(types.items()):
             if key not in keys:
                 problems.append(
-                    f"integrations.yml: {iid} declares type {key!r}, "
+                    f"integrations/{iid}.yml: declares type {key!r}, "
                     "which lattice.yml does not list")
                 continue
 
             outcome = decl.get("outcome")
             if outcome not in OUTCOMES:
                 problems.append(
-                    f"integrations.yml: {iid} type {key!r} outcome "
+                    f"integrations/{iid}.yml: type {key!r} outcome "
                     f"{outcome!r} is not one of {OUTCOMES}")
             # A coercion stated as an outcome and no rule is an excuse. The
             # rule is what the integration page publishes, and what a reader
             # needs to predict what their column will hold.
             if outcome == "coerced" and not decl.get("rule"):
                 problems.append(
-                    f"integrations.yml: {iid} type {key!r} is coerced with no rule")
+                    f"integrations/{iid}.yml: type {key!r} is coerced with no rule")
             if outcome == "unsupported" and not decl.get("code"):
                 problems.append(
-                    f"integrations.yml: {iid} type {key!r} is unsupported with no code")
+                    f"integrations/{iid}.yml: type {key!r} is unsupported with no code")
             if outcome in ("exact", "coerced") and not decl.get("columns"):
                 problems.append(
-                    f"integrations.yml: {iid} type {key!r} is {outcome} but names "
+                    f"integrations/{iid}.yml: type {key!r} is {outcome} but names "
                     "no destination column type to write it to")
             for col in decl.get("columns", []):
                 if not col.get("type"):
                     problems.append(
-                        f"integrations.yml: {iid} type {key!r} has a column entry "
+                        f"integrations/{iid}.yml: type {key!r} has a column entry "
                         "with no type")
                 if not col.get("expect"):
                     problems.append(
-                        f"integrations.yml: {iid} type {key!r} into "
+                        f"integrations/{iid}.yml: type {key!r} into "
                         f"{col.get('type')!r} names no expect, so nothing checks "
                         "what the destination holds")
                 # Text is the only thing a destination reparses, so a value on
                 # any other key would be built and then ignored.
                 if col.get("value") and key != "utf8":
                     problems.append(
-                        f"integrations.yml: {iid} type {key!r} into "
+                        f"integrations/{iid}.yml: type {key!r} into "
                         f"{col.get('type')!r} declares a value, and only utf8 may")
 
         for key in sorted(keys - set(types)):
             problems.append(
-                f"integrations.yml: {iid} has a type table and declares no "
+                f"integrations/{iid}.yml: has a type table and declares no "
                 f"outcome for {key!r}, which lattice.yml lists")
 
     return problems
@@ -1245,17 +1275,17 @@ def render_invariants(snap):
         "Do not edit by hand.",
         "",
         "Invariants are declared in `docs/coverage/invariants.yml`, integrations",
-        "in `docs/coverage/integrations.yml`. A cell is proven by the conformance",
-        "harness in `internal/conformance`, which emits a marker naming both",
-        "ids -- a harness test's name says nothing, because the same code runs",
-        "for every integration.",
+        "one per file in `docs/coverage/integrations/`. A cell is proven by the",
+        "conformance harness in `internal/conformance`, which emits a marker",
+        "naming both ids -- a harness test's name says nothing, because the same",
+        "code runs for every integration.",
         "",
         "A covered cell names the levels that proved it: `u` unit, `i`",
         "integration, `r` release. That is the question the matrix exists to",
         "answer -- proven with a fake, or against the real thing, or in the",
-        "shipped image. **exempt** carries its reason in `integrations.yml`,",
-        "and **missing** means no evidence. Nothing here fails the build until",
-        "an invariant's `requires` is filled in, and none is yet.",
+        "shipped image. **exempt** carries its reason in the integration's own",
+        "file, and **missing** means no evidence. Nothing here fails the build",
+        "until an invariant's `requires` is filled in, and none is yet.",
         "",
     ]
 

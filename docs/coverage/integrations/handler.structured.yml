@@ -1,0 +1,5 @@
+id: handler.structured
+kind: handler
+implements: [Handler]
+feature: handler.structured
+exempt: []

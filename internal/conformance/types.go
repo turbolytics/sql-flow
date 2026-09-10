@@ -64,7 +64,7 @@ type TypeDestination struct {
 
 // TypeSubject is what an integration hands the type runner.
 type TypeSubject struct {
-	// Integration is the integrations.yml id, e.g. "sink.clickhouse".
+	// Integration is the registry id, e.g. "sink.clickhouse".
 	Integration string
 
 	// Declared is the integration's type table. Passed in rather than read
