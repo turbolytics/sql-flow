@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/core"
-	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -25,7 +24,7 @@ func Collect(ctx context.Context, s Static, r *sdkmetric.ManualReader,
 	if err := r.Collect(ctx, &rm); err != nil {
 		return Bundle{}, fmt.Errorf("turbostats: collecting instruments: %w", err)
 	}
-	totals := sumByName(rm)
+	flat := scalars(rm)
 
 	rss, err := ResidentAnonBytes()
 	if err != nil {
@@ -49,15 +48,22 @@ func Collect(ctx context.Context, s Static, r *sdkmetric.ManualReader,
 			Goroutines: runtime.NumGoroutine(),
 		},
 		Pipeline: Pipeline{
-			MessageCount:     totals["message_count"],
-			HandlerRowsRead:  totals["handler_rows_read"],
-			ErrorCount:       totals["error_count"],
-			SinkFlushCount:   totals["sink_flush_count"],
-			SinkRowsAccepted: totals["sink_rows_accepted"],
-			SinkRowsWritten:  totals["sink_rows_written"],
-			StateCommitCount: totals["state_commit_count"],
-			ConsumerLag:      totals["consumer_lag"],
+			MessageCount:     flat["message_count"],
+			HandlerRowsRead:  flat["handler_rows_read"],
+			ErrorCount:       flat["pipeline_errors"],
+			SinkFlushCount:   flat["pipeline_flushes"],
+			SinkRowsAccepted: flat["pipeline_rows_accepted"],
+			SinkRowsWritten:  flat["pipeline_rows_written"],
+			StateCommitCount: flat["pipeline_commits"],
 		},
+	}
+
+	// Zero means no messages yet, which is not a time. The control plane
+	// derives staleness as sent_at minus this, both from the instance's own
+	// clock, so the difference carries no skew.
+	if ts := flat["pipeline_last_message_timestamp"]; ts > 0 {
+		at := time.Unix(ts, 0).UTC()
+		b.LastMessageAt = &at
 	}
 
 	if stats != nil {
@@ -73,38 +79,36 @@ func Collect(ctx context.Context, s Static, r *sdkmetric.ManualReader,
 	return b, nil
 }
 
-// roleKey is the attribute the sink counters carry to keep the DLQ's rows out
-// of the pipeline's delivered series. The bundle keeps them out too.
-var roleKey = attribute.Key("role")
-
-// sumByName folds every int64 counter and gauge into one total per name,
-// summed across attribute sets, except that a point with a role other than
-// "pipeline" is skipped. Histograms and float instruments are ignored: the
-// bundle carries none.
-func sumByName(rm metricdata.ResourceMetrics) map[string]int64 {
+// scalars reads the dimensionless point of every int64 instrument, by name.
+//
+// It sums nothing and filters nothing. Every number the bundle reports has a
+// dimensionless series recorded for it, so this is a lookup, and which
+// measurements count was decided where they were recorded.
+//
+// That is the whole point. Adding a counter's attribute sets together is
+// arithmetic that silently encodes a policy: sink_flush_count carries
+// result=ok and result=error, and summing them reports a number of flushes
+// that is true of nothing. A point carrying any attribute is not the flat
+// series and is skipped.
+func scalars(rm metricdata.ResourceMetrics) map[string]int64 {
 	out := map[string]int64{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			switch data := m.Data.(type) {
 			case metricdata.Sum[int64]:
 				for _, dp := range data.DataPoints {
-					if pipelineRole(dp.Attributes) {
-						out[m.Name] += dp.Value
+					if dp.Attributes.Len() == 0 {
+						out[m.Name] = dp.Value
 					}
 				}
 			case metricdata.Gauge[int64]:
 				for _, dp := range data.DataPoints {
-					if pipelineRole(dp.Attributes) {
-						out[m.Name] += dp.Value
+					if dp.Attributes.Len() == 0 {
+						out[m.Name] = dp.Value
 					}
 				}
 			}
 		}
 	}
 	return out
-}
-
-func pipelineRole(set attribute.Set) bool {
-	v, ok := set.Value(roleKey)
-	return !ok || v.AsString() == "pipeline"
 }

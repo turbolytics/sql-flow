@@ -29,6 +29,10 @@ type Bundle struct {
 	Instance Instance  `json:"instance"`
 	Process  Process   `json:"process"`
 	Pipeline Pipeline  `json:"pipeline"`
+	// LastMessageAt is when the pipeline last received messages. Absent until
+	// it receives any. Staleness is sent_at minus this, and because both come
+	// from the instance's own clock the difference carries no skew.
+	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
 	// Exit is present only in the last bundle a clean shutdown sends. A
 	// bundle without it is an instance still running, or one that died
 	// without saying so.
@@ -54,10 +58,13 @@ type Process struct {
 	Goroutines int       `json:"goroutines"`
 }
 
-// Pipeline carries one field per counter or dimensionless gauge the engine
-// declares. Counters are totals since Process.StartedAt; gauges are the value
-// now. Histograms are deliberately absent: they are most of a scrape by bytes
-// and nothing on the first page reads them.
+// Pipeline carries the engine's top-line totals since Process.StartedAt.
+//
+// Every one is read from a dimensionless series, so building this is a
+// lookup. Flushes and commits count successes only, and the row counts
+// exclude the DLQ's, because those choices are made where the measurements
+// are recorded rather than here. Histograms are deliberately absent: they are
+// most of a scrape by bytes and nothing on the first page reads them.
 type Pipeline struct {
 	MessageCount     int64 `json:"message_count"`
 	HandlerRowsRead  int64 `json:"handler_rows_read"`
@@ -66,7 +73,6 @@ type Pipeline struct {
 	SinkRowsAccepted int64 `json:"sink_rows_accepted"`
 	SinkRowsWritten  int64 `json:"sink_rows_written"`
 	StateCommitCount int64 `json:"state_commit_count"`
-	ConsumerLag      int64 `json:"consumer_lag"`
 	// A pointer so a pipeline with no state path omits the field: absent
 	// state and empty state are different facts.
 	StateDBSizeBytes *int64 `json:"state_db_size_bytes,omitempty"`

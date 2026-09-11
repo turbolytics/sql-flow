@@ -133,6 +133,14 @@ func exportedNames(t *testing.T) []string {
 	m.StateSizeBytes.Record(ctx, 1)
 	m.StateTableRows.Record(ctx, 1)
 	m.ReferenceTableRows.Record(ctx, 1)
+	// The flat twins the TurboStats bundle reads. They export too, which is
+	// the cost of one instrument feeding both readers.
+	m.PipelineErrors.Add(ctx, 1)
+	m.PipelineFlushes.Add(ctx, 1)
+	m.PipelineCommits.Add(ctx, 1)
+	m.PipelineRowsAccepted.Add(ctx, 1)
+	m.PipelineRowsWritten.Add(ctx, 1)
+	m.PipelineLastMessage.Record(ctx, 1)
 
 	wm, err := webhook.NewMetrics(mp)
 	assert.NoError(t, err)
@@ -187,6 +195,12 @@ func TestExportedSeriesNames(t *testing.T) {
 		"error_count_total",
 		"handler_rows_read_total",
 		"message_count_messages_total",
+		"pipeline_commits_total",
+		"pipeline_errors_total",
+		"pipeline_flushes_total",
+		"pipeline_last_message_timestamp_seconds",
+		"pipeline_rows_accepted_total",
+		"pipeline_rows_written_total",
 		"reference_table_rows",
 		"sink_flush_count_flushes_total",
 		"sink_flush_latency_seconds",

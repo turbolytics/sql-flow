@@ -54,6 +54,8 @@ Made in the design conversation. Each one closes a fork.
 | Restarts | Derived by the receiver from `started_at` changing. | Reported by the instance: the process that died cannot say so, and its replacement should not guess. |
 | Restart causes | A final bundle on a clean drain carries `exit`. A crash sends nothing. `config_hash` differing across a gap is a config change. | Supervisor integration. |
 | Histograms | Excluded from v1. | Included: buckets are most of a scrape by bytes, and the demo reads none of them. |
+| Attributes | Every number the bundle reports has a dimensionless series recorded for it, so `Collect` is a lookup. | `Collect` summing an instrument's attribute sets: arithmetic that silently encodes a policy. Adding `sink_flush_count`'s `result=ok` to `result=error` reports a number of flushes true of nothing. |
+| Staleness | `last_message_at`, one timestamp. | `consumer_lag`: per-partition, so it cannot be one number without summing, and a websocket or webhook source has no offsets at all. It stays a Prometheus series where PromQL can aggregate it. |
 | Per-table gauges | Excluded from v1. `state_db_size_bytes` alone. | `state_table_rows` and `reference_table_rows`: a table dimension makes the size unbounded. |
 | Identity | `instance.id` is an explicit config field, required when reporting is on. | Derived from machine-id plus pipeline name: silently collides when a device is imaged from another. |
 | Buffering while unreachable | None. A missed interval is a gap, and the gap is the signal. | A queue on the instance: state, memory, and replayed samples that hide the outage the page exists to show. |
@@ -92,9 +94,10 @@ Made in the design conversation. Each one closes a fork.
     "sink_rows_accepted": 184203311,
     "sink_rows_written": 184203311,
     "state_commit_count": 1842033,
-    "consumer_lag": 0,
     "state_db_size_bytes": 4194304
   },
+
+  "last_message_at": "2026-09-10T21:14:01Z",
 
   "exit": {
     "reason": "SIGTERM",
@@ -116,9 +119,12 @@ Made in the design conversation. Each one closes a fork.
   reporting without it fails validation.
 - `pipeline`: `pipeline.name` from the config. Required when reporting is
   enabled, for the same reason.
-- `version`, `commit`: the values the Makefile stamps into `internal/cli`.
-  The package cannot import `internal/cli` without a cycle, so the run command
-  hands them to the package once at startup.
+- `version`, `commit`: the values the build stamps into `internal/buildinfo`.
+  They live in a leaf package because `internal/cli/run` reports them and
+  cannot import `internal/cli` without a cycle. Stamped at link time rather
+  than read from the environment: the version is a fact about the artifact,
+  and an operator who upgrades a binary and forgets an environment variable
+  would report the old one forever.
 - `arch`: `runtime.GOOS + "/" + runtime.GOARCH`.
 - `config_hash`: `sha256:` plus the hex digest of the rendered config text,
   after templating and before parsing. Two instances running the same file
@@ -136,17 +142,42 @@ Made in the design conversation. Each one closes a fork.
   test then imports.
 - `goroutines`: `runtime.NumGoroutine()`.
 
-`pipeline` holds one field per instrument in `internal/core/metrics.go` and
-`internal/core/counting.go` that is a counter or a dimensionless gauge, named
-for the instrument. Counters are the total since `started_at`. Gauges are the
-value now. An instrument that carries attributes is summed across them, so
-`consumer_lag` is the sum over partitions, with one exception: a data point
-whose `role` attribute is not `pipeline` is skipped. The DLQ sink records
-`sink_rows_accepted` and `sink_rows_written` with `role=dlq` so its rows
-never sum into the pipeline's delivered series, and the bundle keeps them
-out the same way. `state_db_size_bytes` comes from
-the same stats function `/stats` uses, and is omitted, not zero, when the
-pipeline has no state path: absent state and empty state are different facts.
+`pipeline` holds the engine's top-line totals since `started_at`. Every one is
+read from a **dimensionless** series, so building it is a lookup: `Collect`
+sums nothing and filters nothing, and a point carrying any attribute is a
+different series and not the bundle's.
+
+That is the rule the design turns on. Several instruments carry an attribute
+whose values mean different things, and folding them together produces a
+number that is true of nothing: `sink_flush_count` carries `result=ok` and
+`result=error`, `state_commit_count` the same, and the sink row counters carry
+`role=dlq` for the DLQ so its rows never reach the pipeline's delivered
+series. So the engine records a flat twin beside each, and the choice of which
+measurements count is made where they are recorded:
+
+| Bundle field | Series read | Recorded |
+|---|---|---|
+| `message_count` | `message_count` | already dimensionless |
+| `handler_rows_read` | `handler_rows_read` | already dimensionless |
+| `error_count` | `pipeline_errors` | every error |
+| `sink_flush_count` | `pipeline_flushes` | successes only |
+| `state_commit_count` | `pipeline_commits` | successes only |
+| `sink_rows_accepted` | `pipeline_rows_accepted` | pipeline role only |
+| `sink_rows_written` | `pipeline_rows_written` | pipeline role only |
+| `last_message_at` | `pipeline_last_message_timestamp` | once per received batch |
+
+The flat twins export through Prometheus too, which is the cost of one
+instrument feeding both readers, and a global total is useful there anyway.
+
+`state_db_size_bytes` comes from the same stats function `/stats` uses, and is
+omitted, not zero, when the pipeline has no state path: absent state and empty
+state are different facts.
+
+`last_message_at` is absent until the pipeline receives anything, because zero
+is not a time. Staleness is `sent_at` minus it, and since both come from the
+instance's own clock the difference carries no skew. It answers "is it still
+doing anything", which offset lag cannot: `consumer_lag` is per partition, and
+a websocket or webhook source has no offsets at all.
 
 `exit` is present only in the last bundle a clean shutdown sends, after the
 drain completes. `reason` is the signal name or `max-msgs` when the run ended

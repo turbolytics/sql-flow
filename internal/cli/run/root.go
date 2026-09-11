@@ -331,7 +331,7 @@ func NewCommand() *cobra.Command {
 			// its destination stops the start instead of waiting it out.
 			sink, err := sinks.New(ctx, conf.Pipeline.Sink, conn,
 				sinks.WithMeterProvider(meterProvider),
-				sinks.WithSinkRole("pipeline"))
+				sinks.WithSinkRole(core.SinkRolePipeline))
 			if err != nil {
 				return err
 			}

@@ -998,3 +998,9 @@ def test_turbostats_endpoint_serves_the_bundle(image, stack):
     assert bundle["pipeline"]["state_db_size_bytes"] > 0
     # Histograms never reach the bundle.
     assert "latency" not in json.dumps(bundle)
+
+    # Nothing has been produced to the topic, so the pipeline has received no
+    # messages and has no last message. Zero is not a time, so the field is
+    # absent rather than 1970.
+    assert "last_message_at" not in bundle
+    assert bundle["pipeline"]["message_count"] == 0
