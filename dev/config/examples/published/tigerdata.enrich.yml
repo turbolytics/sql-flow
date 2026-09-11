@@ -43,6 +43,9 @@ pipeline:
       LEFT JOIN tiger.{{ SQLFLOW_TIGERDATA_SCHEMA|default('public') }}.devices AS devices
         ON batch.device_id = devices.device_id
 
+  # Delivery is at-least-once: a crash between this insert and the offset
+  # commit replays the batch on restart. The unique index on (time,
+  # device_id) plus ON CONFLICT DO NOTHING makes the replay a no-op.
   sink:
     type: sqlcommand
     sqlcommand:
@@ -50,3 +53,4 @@ pipeline:
         INSERT INTO tiger.{{ SQLFLOW_TIGERDATA_SCHEMA|default('public') }}.readings
           (time, device_id, site, model, value)
         SELECT time, device_id, site, model, value FROM sqlflow_sink_batch
+        ON CONFLICT DO NOTHING
