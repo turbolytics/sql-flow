@@ -293,9 +293,22 @@ func (t *Turbine) commitCount() int64 {
 	return t.commits
 }
 
-// recordProgress runs at the top of every commit, before the state guard, so
-// a pipeline with no state database records too. A batch since the last
-// commit moves the arrival clock; an idle tick moves the commit clock only.
+// recordProgress runs at the top of every commit, before the state guard.
+//
+// Two audiences, and they are not the same requirement. The snapshot is what
+// /stats and /healthz read, so every pipeline needs it whether or not it has
+// a state database, and it costs an assignment. The table is what SQL reads,
+// today only the tumbling window predicate, and it costs a statement on the
+// commit path.
+//
+// The table is written on every pipeline even where nothing reads it. That is
+// deliberate: a table that exists but silently stops being maintained is a
+// worse trap than one that costs a little, and a window can be managed
+// without a state path, so "has state" is not the test for whether anyone
+// reads it.
+//
+// A batch since the last commit moves the arrival clock; an idle tick moves
+// the commit clock only.
 func (t *Turbine) recordProgress(ctx context.Context) {
 	if t.progress == nil {
 		return
