@@ -253,3 +253,19 @@ pipeline:
 `)
 	assert.That(t, conf.Pipeline.State == nil)
 }
+
+// The rendered text is what the TurboStats bundle hashes, so a config that
+// renders differently under two environments hashes differently. Load used
+// to discard it.
+func TestLoadRendered_ReturnsTheTextTheConfWasParsedFrom(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	path := filepath.Join(t.TempDir(), "p.yml")
+	src := "pipeline:\n  name: {{ SQLFLOW_NAME|default('demo') }}\n  source:\n    type: kafka\n  handler:\n    type: handlers.InferredMemBatch\n    sql: SELECT 1\n  sink:\n    type: noop\n"
+	assert.NoError(t, os.WriteFile(path, []byte(src), 0o644))
+
+	conf, rendered, err := LoadRendered(path, map[string]string{"SQLFLOW_NAME": "x"})
+	assert.NoError(t, err)
+	assert.Equal(t, "x", conf.Pipeline.Name)
+	assert.That(t, strings.Contains(string(rendered), "name: x"))
+	assert.That(t, !strings.Contains(string(rendered), "{{"))
+}
