@@ -25,7 +25,7 @@ func TestObservabilityMetrics_HealthzTellsIdleFromStuck(t *testing.T) {
 		LastCommit:  clock.Add(-20 * time.Second),
 		Messages:    42,
 	}
-	mux := newHTTPMux(nil, nil, func() core.Progress { return p }, 30*time.Second, now)
+	mux := newHTTPMux(nil, nil, nil, func() core.Progress { return p }, 30*time.Second, now)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -77,7 +77,7 @@ func TestObservabilityMetrics_HealthzTellsIdleFromStuck(t *testing.T) {
 // must not exist rather than answer "ok" for a pipeline it cannot see.
 func TestObservabilityMetrics_HealthzAbsentWithoutProgress(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, nil, nil, 30*time.Second, time.Now)
+	mux := newHTTPMux(nil, nil, nil, nil, 30*time.Second, time.Now)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

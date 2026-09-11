@@ -110,13 +110,17 @@ func TemplateVars(overrides map[string]string) map[string]string {
 	return out
 }
 
-func Load(path string, overrides map[string]string) (*Conf, error) {
+// LoadRendered renders the file and parses it, returning both. The rendered
+// text is what the TurboStats bundle hashes: two instances running the same
+// file under different environments are running different configs, and the
+// hash should say so.
+func LoadRendered(path string, overrides map[string]string) (*Conf, []byte, error) {
 	rendered, err := RenderTemplate(path, overrides)
 	if err != nil {
 		// Returned as-is. The inner error already names the file and the
 		// stage that failed, so another "rendering config failed" prefix adds
 		// a word and no information.
-		return nil, err
+		return nil, nil, err
 	}
 
 	var conf Conf
@@ -126,7 +130,13 @@ func Load(path string, overrides map[string]string) (*Conf, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(rendered))
 	dec.KnownFields(true)
 	if err := dec.Decode(&conf); err != nil {
-		return nil, errs.Wrap(errs.CodeConfigParseFailed, err, "parsing YAML failed")
+		return nil, nil, errs.Wrap(errs.CodeConfigParseFailed, err, "parsing YAML failed")
 	}
-	return &conf, nil
+	return &conf, rendered, nil
+}
+
+// Load is LoadRendered for callers that do not need the text.
+func Load(path string, overrides map[string]string) (*Conf, error) {
+	conf, _, err := LoadRendered(path, overrides)
+	return conf, err
 }

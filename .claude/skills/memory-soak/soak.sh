@@ -13,6 +13,10 @@
 #                  set to "" to pass nothing)
 #   SOAK_PPROF     host port for pprof                   (default 6060)
 #   SOAK_METRICS   host port for prometheus              (default 8000)
+#   SOAK_FLAGS     extra run flags, e.g. "--turbostats"  (default none)
+#   SOAK_POLL      path polled once a second for the whole run, e.g.
+#                  "/turbostats/v1". A read path that allocates is a leak
+#                  the sampler's own once-a-minute scrape would never find.
 set -euo pipefail
 
 image=${1:?image}; config=${2:?config.yml}; minutes=${3:?minutes}; label=${4:?label}
@@ -33,8 +37,26 @@ docker run -d --name "$name" --network "$net" \
   -p "$pprof_port:6060" -p "$metrics_port:8000" \
   ${env_args[@]+"${env_args[@]}"} \
   -v "$(cd "$(dirname "$config")" && pwd)":/conf \
-  "$image" run "/conf/$(basename "$config")" --pprof --metrics=prometheus --with-http-debug >/dev/null
+  "$image" run "/conf/$(basename "$config")" --pprof --metrics=prometheus --with-http-debug \
+  ${SOAK_FLAGS:-} >/dev/null
 echo "started $name from $image; sampling for $minutes minutes into $out/"
+
+# Poll a read path for the whole run, if one was named. A handler that
+# allocates per request leaks in proportion to requests, and a sampler that
+# scrapes once a minute would take hours to show it.
+poll_pid=""
+if [ -n "${SOAK_POLL:-}" ]; then
+  (
+    while true; do
+      curl -s --max-time 5 -o /dev/null \
+        "http://localhost:$metrics_port$SOAK_POLL" 2>/dev/null || true
+      sleep 1
+    done
+  ) &
+  poll_pid=$!
+  trap 'kill $poll_pid 2>/dev/null || true' EXIT
+  echo "polling $SOAK_POLL once a second"
+fi
 
 # The debug endpoint binds container-localhost, so query it from a sidecar
 # that shares the network namespace.
@@ -62,4 +84,5 @@ for m in $(seq 0 "$minutes"); do
   echo "$m,${ra:-NA},${rf:-NA},${sys:-NA},${rel:-NA},$ret,$nat,${ha:-NA},${ddb:-NA},${gor:-NA},${msgs:-0}" >> "$out/decomp.csv"
   [ "$m" -lt "$minutes" ] && sleep 60
 done
+[ -n "$poll_pid" ] && kill "$poll_pid" 2>/dev/null || true
 echo "done: $out/decomp.csv"

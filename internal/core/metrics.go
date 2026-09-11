@@ -24,6 +24,27 @@ type Metrics struct {
 	StateTableRows         metric.Int64Gauge
 	ReferenceTableRows     metric.Int64Gauge
 	ConsumerLag            metric.Int64Gauge
+
+	// Flat twins of the instruments above that carry attributes.
+	//
+	// The TurboStats bundle reads one series by name and cannot filter or
+	// sum, so the choice of which measurements count is made at the recording
+	// site rather than re-derived by whoever reads it. That matters most for
+	// the two whose attribute is an outcome: adding result=ok to result=error
+	// reports a number of commits that is true of nothing.
+	//
+	// They are dimensionless on purpose. A reader looks for the point with no
+	// attributes, so an attribute added here would hide the series from it.
+	PipelineErrors       metric.Int64Counter
+	PipelineFlushes      metric.Int64Counter
+	PipelineCommits      metric.Int64Counter
+	PipelineRowsAccepted metric.Int64Counter
+	PipelineRowsWritten  metric.Int64Counter
+	// PipelineLastMessage is when the pipeline last received messages, as
+	// unix seconds. It answers "is it still doing anything", which offset lag
+	// cannot: a websocket or webhook source has no offsets at all, and a
+	// per-partition lag is not one number.
+	PipelineLastMessage metric.Int64Gauge
 }
 
 // NewMetrics builds the instruments from a meter provider. Passing a noop
@@ -172,6 +193,46 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("rows"),
 	); err != nil {
 		return nil, fmt.Errorf("reference_table_rows: %w", err)
+	}
+
+	// The flat twins.
+	//
+	// Each unit repeats the plural already in the name, because the exporter
+	// appends the unit unless the name contains it. "count" here would export
+	// pipeline_errors_count_total; "errors" exports pipeline_errors_total.
+	// Measured against the exporter in TestExportedSeriesNames, not inferred.
+	for _, f := range []struct {
+		into *metric.Int64Counter
+		name string
+		unit string
+		desc string
+	}{
+		{&m.PipelineErrors, "pipeline_errors", "errors",
+			"Errors, every class and phase together"},
+		{&m.PipelineFlushes, "pipeline_flushes", "flushes",
+			"Flushes that succeeded; a failed flush delivered nothing"},
+		{&m.PipelineCommits, "pipeline_commits", "commits",
+			"State transactions that committed; a failed commit is not a commit"},
+		{&m.PipelineRowsAccepted, "pipeline_rows_accepted", "rows",
+			"Rows the pipeline sink buffered, excluding the DLQ's"},
+		{&m.PipelineRowsWritten, "pipeline_rows_written", "rows",
+			"Rows the pipeline sink delivered, excluding the DLQ's"},
+	} {
+		if *f.into, err = meter.Int64Counter(
+			f.name,
+			metric.WithDescription(f.desc),
+			metric.WithUnit(f.unit),
+		); err != nil {
+			return nil, fmt.Errorf("%s: %w", f.name, err)
+		}
+	}
+
+	if m.PipelineLastMessage, err = meter.Int64Gauge(
+		"pipeline_last_message_timestamp",
+		metric.WithDescription("When the pipeline last received messages, as unix seconds"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("pipeline_last_message_timestamp: %w", err)
 	}
 
 	return &m, nil

@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -35,32 +37,21 @@ type progressFunc func() core.Progress
 const stuckIntervals = 3
 
 // newHTTPMux builds the server the pipeline exposes: Prometheus scraping, a
-// JSON view of durable state and progress, and a health check.
+// JSON view of durable state, and the TurboStats bundle.
 //
-// The first two are on one mux deliberately. DuckDB takes an exclusive lock
-// on the state file, so no other process can read it while the pipeline runs
-// -- not even read-only. A running pipeline is the only thing that can report
-// its own state, which makes this endpoint the live half of observability
-// rather than a convenience.
+// All on one mux deliberately. DuckDB takes an exclusive lock on the state
+// file, so no other process can read it while the pipeline runs -- not even
+// read-only. A running pipeline is the only thing that can report its own
+// state, which makes these the live half of observability rather than a
+// convenience.
 //
-// /healthz answers the one question a supervisor has, and it is not "are
-// messages arriving": a pipeline on a low-traffic topic may go hours between
-// them and be perfectly well. It is "is this pipeline still doing its work",
-// which is the commit clock, because the idle tick commits whether or not
-// anything arrived. Idle is healthy. Stuck is stuckIntervals without a
-// commit, and the body carries the age so an operator need not guess.
-//
-// now is injectable for the test. started covers the window before the first
-// commit: a pipeline that has just launched has no commit clock yet, and
-// must not be called stuck for not having one, but must be called stuck if
-// it never gets one.
-func newHTTPMux(registry *prom.Registry, stats statsFunc, progress progressFunc, interval time.Duration, now func() time.Time) *http.ServeMux {
+// Each route is registered only when its provider is non-nil, so a route that
+// would answer with nothing is absent rather than half-working.
+func newHTTPMux(registry *prom.Registry, stats statsFunc,
+	collect func(context.Context) (turbostats.Bundle, error),
+	progress progressFunc, interval time.Duration, now func() time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
 	started := now()
-
-	if registry != nil {
-		mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	}
 
 	// ages reports the snapshot with its two ages in seconds. An age of -1
 	// means the clock has never moved, which for arrivals is an ordinary
@@ -76,6 +67,10 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc, progress progressFunc,
 			commit = now().Sub(p.LastCommit).Seconds()
 		}
 		return p, arrival, commit
+	}
+
+	if registry != nil {
+		mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	}
 
 	if stats != nil || progress != nil {
@@ -137,37 +132,77 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc, progress progressFunc,
 		})
 	}
 
+	if collect != nil {
+		mux.Handle("/turbostats/v1", turbostats.Handler(collect))
+	}
+
 	return mux
 }
 
-// newMeterProvider starts the exporter named by --metrics. An empty name
-// disables metrics entirely.
-func newMeterProvider(name string, l *zap.Logger, stats statsFunc, progress progressFunc, interval time.Duration) (metric.MeterProvider, error) {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "":
-		return nil, nil
+// newMeterProvider builds the provider every instrument records into, and
+// starts the HTTP server when anything needs it.
+//
+// The manual reader is attached always: it is what /turbostats/v1 reads, and
+// the outbound reporter after it. The Prometheus exporter is a second reader,
+// attached only for --metrics=prometheus. Both read the same instruments,
+// which is the property the design exists for. Before this, the provider
+// existed only for Prometheus, and without it every counter recorded into
+// nothing -- so there was nothing for a bundle to read.
+func newMeterProvider(exporter string, serveTurbostats bool,
+	static turbostats.Static, l *zap.Logger, stats statsFunc,
+	progress progressFunc, interval time.Duration) (metric.MeterProvider, error) {
 
+	reader := sdkmetric.NewManualReader()
+	opts := []sdkmetric.Option{sdkmetric.WithReader(reader)}
+
+	var registry *prom.Registry
+	switch strings.ToLower(strings.TrimSpace(exporter)) {
+	case "":
 	case "prometheus":
-		registry := prom.NewRegistry()
-		exporter, err := prometheus.New(prometheus.WithRegisterer(registry))
+		registry = prom.NewRegistry()
+		exp, err := prometheus.New(prometheus.WithRegisterer(registry))
 		if err != nil {
 			return nil, fmt.Errorf("prometheus exporter: %w", err)
 		}
-
-		mux := newHTTPMux(registry, stats, progress, interval, time.Now)
-
-		go func() {
-			l.Info("serving prometheus metrics", zap.String("addr", metricsPort+"/metrics"))
-			if err := http.ListenAndServe(metricsPort, mux); err != nil {
-				l.Error("metrics server stopped", zap.Error(err))
-			}
-		}()
-
-		return sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter)), nil
-
+		opts = append(opts, sdkmetric.WithReader(exp))
 	default:
-		return nil, fmt.Errorf("unsupported --metrics exporter: %q (supported: prometheus)", name)
+		return nil, fmt.Errorf("unsupported --metrics exporter: %q (supported: prometheus)", exporter)
 	}
+
+	mp := sdkmetric.NewMeterProvider(opts...)
+
+	// Nothing to serve: the provider still exists, so the instruments record
+	// and a later reporter can read them without an HTTP server.
+	if registry == nil && !serveTurbostats && progress == nil {
+		return mp, nil
+	}
+
+	var collect func(context.Context) (turbostats.Bundle, error)
+	if serveTurbostats {
+		collect = func(ctx context.Context) (turbostats.Bundle, error) {
+			return turbostats.Collect(ctx, static, reader, stats)
+		}
+	}
+	mux := newHTTPMux(registry, stats, collect, progress, interval, time.Now)
+
+	go func() {
+		routes := []string{}
+		if registry != nil {
+			routes = append(routes, "/metrics")
+		}
+		if serveTurbostats {
+			routes = append(routes, "/turbostats/v1")
+		}
+		if progress != nil {
+			routes = append(routes, "/healthz")
+		}
+		l.Info("serving http", zap.String("addr", metricsPort), zap.Strings("routes", routes))
+		if err := http.ListenAndServe(metricsPort, mux); err != nil {
+			l.Error("http server stopped", zap.Error(err))
+		}
+	}()
+
+	return mp, nil
 }
 
 // flushIntervalFor is the one place the flush interval is decided. Absent,

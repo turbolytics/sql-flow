@@ -1117,6 +1117,10 @@ registries alone, so `make coverage-page` regenerates it in a second, with no
 Docker and no test run. Test names and counts are in the coverage report CI
 publishes on every run.
 
+[**Contributing**](CONTRIBUTING.md) — the verification a pull request carries,
+including the ten-minute memory soak (`make soak`) required of any change that
+allocates per message or per request.
+
 `make test-go` and `make test-image` are what CI runs on every push.
 Kafka-backed integration tests are deliberately excluded from `test-go`; they
 run from the dev stack. Backing services for local development:
