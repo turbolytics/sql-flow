@@ -217,9 +217,10 @@ type Turbine struct {
 	// commits counts successful state commits, for tests that wait on ticks.
 	// Guarded by lock.
 	commits int64
-	// progressWrittenAt is when the progress table was last written, which
-	// bounds how often the statement runs. Guarded by lock.
+	// progressWrittenAt is when the progress table was last written, and
+	// progressEvery is how often it may be. Guarded by lock.
 	progressWrittenAt time.Time
+	progressEvery     time.Duration
 
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
@@ -281,6 +282,14 @@ func WithProgressStore(s progressSaver) TurbineOption {
 	return func(t *Turbine) { t.progress = s }
 }
 
+// WithProgressWriteInterval bounds how often the progress table is written.
+// Zero writes on every commit, which is what a test wants when it is
+// checking what gets recorded rather than how often. Production leaves it at
+// progressWriteInterval; see recordProgress for why it is not free.
+func WithProgressWriteInterval(d time.Duration) TurbineOption {
+	return func(t *Turbine) { t.progressEvery = d }
+}
+
 // Progress reports the last recorded liveness facts. Zero values mean
 // nothing has been recorded yet.
 func (t *Turbine) Progress() Progress {
@@ -332,7 +341,7 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	t.snapshot.LastCommit = now
 	t.snapshot.Messages = p.Messages
 	t.batchSinceCommit = false
-	due := now.Sub(t.progressWrittenAt) >= progressWriteInterval
+	due := now.Sub(t.progressWrittenAt) >= t.progressEvery
 	if due {
 		t.progressWrittenAt = now
 	}
@@ -393,6 +402,7 @@ func NewTurbine(
 		handler:       handler,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
+		progressEvery: progressWriteInterval,
 		lock:          lock,
 		running:       true,
 		stats: &Stats{

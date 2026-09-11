@@ -45,8 +45,12 @@ func TestCoreConsumeLoop_ProgressRecordsArrivalOnBatchAndCommitOnIdle(t *testing
 	coverage.Covers(t, "core.consume_loop")
 	rec := &progressRecorder{}
 	src := newBlockingSource(messages(3))
+	// Zero interval: this test is about what a commit records, not about how
+	// often the table is written, and the production throttle would pace it
+	// at one record a second against a five second deadline.
 	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 30*time.Millisecond,
-		&sync.Mutex{}, PipelineErrorPolicies{}, WithProgressStore(rec))
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(0))
 	done := make(chan struct{})
 	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
 
