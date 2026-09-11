@@ -17,10 +17,12 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/sinks"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"github.com/turbolytics/sql-flow/internal/webhook"
 	"github.com/zeebo/assert"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.uber.org/zap"
 )
 
 // DuckDB takes an exclusive lock on the state file, so a second process
@@ -35,7 +37,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 		Offsets:   []core.OffsetStat{{Topic: "events", Partition: 0, Offset: 999, LeaderEpoch: 7}},
 	}
 
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return want, nil })
+	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return want, nil }, nil)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -62,7 +64,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 // endpoint stays useful for the counters even when nothing is durable.
 func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return nil, nil })
+	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return nil, nil }, nil)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -80,7 +82,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T
 	coverage.Covers(t, "observability.metrics")
 	mux := newHTTPMux(nil, func() (*core.StateStats, error) {
 		return nil, errors.New("state database unreadable")
-	})
+	}, nil)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -91,7 +93,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T
 // endpoint must not be registered as a half-working route.
 func TestObservabilityMetrics_StatsHandler_AbsentWithoutAProvider(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, nil)
+	mux := newHTTPMux(nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -216,4 +218,75 @@ func TestStateCommitLatencyUnitIsNameNeutral(t *testing.T) {
 		}
 	}
 	assert.That(t, found)
+}
+
+// --- TurboStats ------------------------------------------------------------
+
+// /turbostats/v1 is present only when asked for, like /stats: a route that
+// answers with nothing is worse than none.
+func TestObservabilityTurbostats_RouteAbsentWithoutACollector(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	mux := newHTTPMux(nil, nil, nil)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/turbostats/v1", nil))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestObservabilityTurbostats_RouteServesTheBundle(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	mux := newHTTPMux(nil, nil, func(context.Context) (turbostats.Bundle, error) {
+		return turbostats.Bundle{V: turbostats.Version}, nil
+	})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/turbostats/v1", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, turbostats.MediaType, rec.Header().Get("Content-Type"))
+}
+
+// Attaching the manual reader must not change what Prometheus exports. The
+// series list is what the README documents and dashboards depend on.
+func TestObservabilityTurbostats_ManualReaderLeavesExportedNamesAlone(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	coverage.Covers(t, "observability.metrics")
+	reg := prom.NewRegistry()
+	exp, err := prometheus.New(prometheus.WithRegisterer(reg))
+	assert.NoError(t, err)
+	manual := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(manual), sdkmetric.WithReader(exp))
+
+	m, err := core.NewMetrics(mp)
+	assert.NoError(t, err)
+	m.MessageCount.Add(context.Background(), 1)
+
+	families, err := reg.Gather()
+	assert.NoError(t, err)
+	found := false
+	for _, f := range families {
+		if f.GetName() == "message_count_messages_total" {
+			found = true
+		}
+	}
+	assert.That(t, found)
+}
+
+// The provider exists even with no exporter, so the instruments record and a
+// reporter can read them. It used to be nil, and every counter recorded into
+// nothing unless Prometheus was on.
+func TestObservabilityTurbostats_ProviderExistsWithoutAnExporter(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	mp, err := newMeterProvider("", false, turbostats.Static{}, zap.NewNop(), nil)
+	assert.NoError(t, err)
+	assert.That(t, mp != nil)
+
+	m, err := core.NewMetrics(mp)
+	assert.NoError(t, err)
+	m.MessageCount.Add(context.Background(), 1)
+}
+
+func TestObservabilityTurbostats_RejectsAnUnknownExporter(t *testing.T) {
+	coverage.Covers(t, "observability.metrics")
+	_, err := newMeterProvider("statsd", false, turbostats.Static{}, zap.NewNop(), nil)
+	assert.Error(t, err)
 }
