@@ -2,10 +2,14 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
@@ -127,4 +131,73 @@ func TestStateDurability_ProgressStoreKeepsOneRow(t *testing.T) {
 	assert.Equal(t, int64(1), rec.Column(0).(*array.Int64).Value(0))
 	assert.Equal(t, int64(1), rec.Column(1).(*array.Int64).Value(0))
 	assert.Equal(t, int64(60), rec.Column(2).(*array.Int64).Value(0))
+}
+
+// Twenty idle ticks against a real state file. The commit clock moves on
+// every tick, the arrival clock never does, and the file does not grow. An
+// empty commit that costs bytes would make a quiet pipeline expensive to
+// leave running, which is exactly what a slow stream does.
+func TestStateDurability_IdleTicksDoNotGrowTheStateFile(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := duckdb.OpenPath(ctx, path)
+	assert.NoError(t, err)
+	defer db.Close()
+	conn, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	defer conn.Close()
+
+	offsets := NewOffsetStore(conn)
+	assert.NoError(t, offsets.Init(ctx))
+	progress := NewProgressStore(conn)
+	assert.NoError(t, progress.Init(ctx))
+
+	// Every batch is one transaction from here on, exactly as root.go does
+	// it: the tables are created under autocommit, then it goes off and the
+	// connection's own Commit is the boundary.
+	po, ok := conn.(adbc.PostInitOptions)
+	assert.That(t, ok)
+	assert.NoError(t, po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled))
+
+	// The same connection the offsets ride, so the progress row commits with
+	// them. This is what root.go builds for a pipeline with a state file.
+	stateConn, ok := conn.(interface {
+		Commit(context.Context) error
+		Rollback(context.Context) error
+	})
+	assert.That(t, ok)
+
+	src := newIdleSource()
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 20*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(offsets, stateConn), WithProgressStore(progress))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+
+	sizeAfter := func(ticks int64) int64 {
+		waitFor(t, fmt.Sprintf("%d idle commits", ticks), 10*time.Second, func() bool {
+			return tb.commitCount() >= ticks
+		})
+		fi, err := os.Stat(path)
+		assert.NoError(t, err)
+		return fi.Size()
+	}
+	s1 := sizeAfter(1)
+	s20 := sizeAfter(20)
+
+	// Nothing ever arrived, so the arrival clock is still unset while the
+	// commit clock has moved twenty times.
+	snap := tb.Progress()
+	assert.That(t, snap.LastArrival.IsZero())
+	assert.That(t, !snap.LastCommit.IsZero())
+	assert.Equal(t, int64(0), snap.Messages)
+
+	// One checkpoint of slack: DuckDB may write a WAL frame on the first
+	// commit. Nineteen more empty commits must not add another.
+	if s20 > s1+256*1024 {
+		t.Fatalf("state file grew across idle commits: %d bytes after one, %d after twenty", s1, s20)
+	}
+	close(src.release)
+	<-done
 }
