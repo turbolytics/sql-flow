@@ -42,12 +42,13 @@ Copy the directory first. A checkout under a running soak has bitten before.
     ./sample.sh sqlflow-slow soak 160 | tee soak/live.log
     python3 verdict.py soak/samples.csv 30
 
-`short` in place of `full` runs a ten minute profile for a dry run; give
-`sample.sh` 13 minutes for it. Do the dry run first: it takes ten minutes
-and it is how both harness defects so far were found, one in the sampler's
-cadence and one in a verdict rule that called a draining backlog a failure. The full profile is about two and a half
-hours: five minutes of surge, an hour of silence, an hour of trickle with
-gaps, then half an hour of silence.
+The full profile is about two and a half hours: five minutes of surge, an
+hour of silence, an hour of trickle with gaps, then half an hour of silence.
+
+`short` in place of `full` runs a ten minute profile; give `sample.sh` 13
+minutes for it. Do the dry run first. It is how both harness defects so far
+were found, one in the sampler's cadence and one in a verdict rule that
+called a draining backlog a failure.
 
 Do not map port 8000 or 6060 to the host unless you know they are free. The
 sampler reaches both through a sidecar on the container's network namespace,
