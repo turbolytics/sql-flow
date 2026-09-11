@@ -191,6 +191,20 @@ test-release: sqlflow-image
 	TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
 	$(PY) pytest tests/release
 
+# The memory gate a pull request has to pass. See CONTRIBUTING.md.
+#
+# Ten minutes against a saturated topic, polling /turbostats/v1 once a second,
+# judged on bytes retained per message rather than megabytes per minute: a leak
+# is linear in messages, so per-message growth compares across machines and
+# rates and MiB/min does not.
+#
+# Needs the dev stack and the image: `make start-backing-services` and
+# `make sqlflow-image` first. SOAK_MINUTES shortens it for a smoke test, but
+# the gate is ten.
+.PHONY: soak
+soak:
+	./scripts/soak.sh $(or $(SOAK_MINUTES),10) $(or $(SOAK_LABEL),pr)
+
 .PHONY: start-backing-services
 start-backing-services:
 	docker-compose -f dev/kafka-single.yml up -d

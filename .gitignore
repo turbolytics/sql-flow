@@ -20,3 +20,6 @@ dist/
 !.claude/
 .claude/*
 !.claude/skills/
+
+# Memory soak output. The verdict goes in the PR body; the samples are local.
+soak-*/

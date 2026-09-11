@@ -1,0 +1,35 @@
+# The full pipeline with a real stateful sink: source -> InferredMemBatch ->
+# ClickHouse. The paired control is inferred.noop.yml, the same source and
+# handler writing to nothing. What grows here and not there is the sink's.
+#
+# Rows pass through rather than aggregate, so every message reaches the sink.
+# An aggregate would send five rows a batch and measure the sink barely at all.
+#
+# Values are matched to columns by name, so these three must match
+# soak.readings: sensor_id Int64, ts DateTime, value Float64.
+pipeline:
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(500) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('kafka1:19092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('soak-clickhouse') }}
+      auto_offset_reset: earliest
+      topics:
+        - "{{ SQLFLOW_TOPIC|default('soak-input') }}"
+
+  handler:
+    type: "handlers.InferredMemBatch"
+    sql: |
+      SELECT
+        sensor_id,
+        CAST(ts AS TIMESTAMP) as ts,
+        value
+      FROM batch;
+
+  sink:
+    type: clickhouse
+    clickhouse:
+      dsn: {{ SQLFLOW_CLICKHOUSE_DSN|default('clickhouse://clickhouse:8123/soak') }}
+      table: readings
