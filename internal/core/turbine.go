@@ -226,6 +226,13 @@ type Turbine struct {
 	// passing options one by one reallocates the slice on every call.
 	lagAttrCache map[lagKey][]metric.RecordOption
 
+	// lagPending holds the newest lag seen per topic and partition since the
+	// last recordLag. A gauge is a last value, so recording it on every
+	// message spends a real instrument call to say what the final message of
+	// the fetch says anyway: 18% of throughput on the 10M benchmark once the
+	// default provider stopped being a noop. Same goroutine rule as the cache.
+	lagPending map[lagKey]int64
+
 	// Built once at startup for the same reason as lagAttrCache. Typed as
 	// AddOption because only counters carry result; the histograms keep
 	// measuring every attempt regardless of outcome.
@@ -528,6 +535,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				numBatchMessages = 0
 			}
 		}
+		t.recordLag(ctx)
 	}
 
 	// Whatever is buffered when the loop ends — because --max-msgs was
@@ -669,8 +677,21 @@ func (t *Turbine) mark(m Message) {
 	// -1 because a mark names the last *processed* offset: having processed
 	// offset 9 with a watermark of 10 is lag zero.
 	if m.HighWatermark > 0 {
-		t.metrics.ConsumerLag.Record(context.Background(), m.HighWatermark-m.Offset-1,
-			t.lagAttrs(m.Topic, m.Partition)...)
+		if t.lagPending == nil {
+			t.lagPending = make(map[lagKey]int64)
+		}
+		t.lagPending[lagKey{topic: m.Topic, partition: m.Partition}] = m.HighWatermark - m.Offset - 1
+	}
+}
+
+// recordLag publishes the lag of every partition marked since the last call,
+// once each. The consume loop calls it after each fetch, so the gauge is as
+// fresh as the newest message and costs one record per partition per fetch
+// rather than one per message.
+func (t *Turbine) recordLag(ctx context.Context) {
+	for key, lag := range t.lagPending {
+		t.metrics.ConsumerLag.Record(ctx, lag, t.lagAttrs(key.topic, key.partition)...)
+		delete(t.lagPending, key)
 	}
 }
 
