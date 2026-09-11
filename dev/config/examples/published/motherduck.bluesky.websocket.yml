@@ -1,0 +1,47 @@
+commands:
+  - name: attach motherduck
+    sql: |
+      ATTACH 'md:{{ SQLFLOW_MD_DATABASE|default('my_db') }}'
+
+  - name: create the target table
+    sql: |
+      CREATE TABLE IF NOT EXISTS {{ SQLFLOW_MD_DATABASE|default('my_db') }}.{{ SQLFLOW_MD_TABLE|default('bluesky_posts') }} (
+        did VARCHAR,
+        event_time TIMESTAMP,
+        operation VARCHAR,
+        collection VARCHAR,
+        post_text VARCHAR,
+        lang VARCHAR
+      );
+
+pipeline:
+  name: bluesky-motherduck
+  description: "Streams the Bluesky firehose into MotherDuck"
+
+  # Rows per INSERT. Larger batches mean fewer round trips to MotherDuck and a
+  # longer wait before the first row lands.
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(500) }}
+
+  source:
+    type: websocket
+    websocket:
+      uri: '{{ SQLFLOW_WEBSOCKET_URI|default("wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post") }}'
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      INSERT INTO {{ SQLFLOW_MD_DATABASE|default('my_db') }}.{{ SQLFLOW_MD_TABLE|default('bluesky_posts') }}
+      SELECT
+        did,
+        to_timestamp(time_us / 1000000)              AS event_time,
+        commit ->> 'operation'                       AS operation,
+        commit ->> 'collection'                      AS collection,
+        CAST(commit AS JSON) ->> '$.record.text'     AS post_text,
+        CAST(commit AS JSON) ->> '$.record.langs[0]' AS lang
+      FROM batch
+      WHERE kind = 'commit'
+
+  # The handler already wrote to MotherDuck through the attached database, so
+  # there is nothing left for a sink to do.
+  sink:
+    type: noop

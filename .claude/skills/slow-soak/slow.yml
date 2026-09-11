@@ -1,0 +1,81 @@
+commands:
+  - name: publication log
+    sql: |
+      CREATE TABLE IF NOT EXISTS published (
+        bucket        TIMESTAMPTZ,
+        count         BIGINT,
+        max_latency_s DOUBLE,
+        published_at  TIMESTAMPTZ
+      );
+
+tables:
+  sql:
+    # One table carries both things the soak judges: how many messages landed
+    # in each minute, and the worst time any of them took to get from the
+    # producer to the handler. Keeping them together means a window that
+    # publishes carries its own latency evidence with it.
+    - name: agg_slow
+      sql: |
+        CREATE TABLE IF NOT EXISTS agg_slow (
+          bucket        TIMESTAMPTZ,
+          count         BIGINT,
+          max_latency_s DOUBLE
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS agg_slow_idx ON agg_slow (bucket);
+      manager:
+        tumbling_window:
+          poll_interval_seconds: 10
+          # Both branches, as the shipped examples carry them. The second one
+          # is what this soak exists to exercise: an hour of silence must
+          # still close the surge's last window.
+          collect_closed_windows_sql: |
+            SELECT bucket, count, max_latency_s
+            FROM agg_slow
+            WHERE bucket < (SELECT max(bucket) FROM agg_slow) - INTERVAL '60' SECOND
+               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '60' SECOND
+          delete_closed_windows_sql: |
+            DELETE FROM agg_slow
+            WHERE bucket < (SELECT max(bucket) FROM agg_slow) - INTERVAL '60' SECOND
+               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '60' SECOND
+        sink:
+          type: sqlcommand
+          sqlcommand:
+            sql: |
+              INSERT INTO published
+              SELECT bucket, count, max_latency_s, now()
+              FROM sqlflow_sink_batch
+
+pipeline:
+  name: slow-soak
+  description: "Liveness under trickle, surge and silence"
+  # Large enough that a trickle never fills it: every batch leaves on the
+  # interval, which is the property under test.
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default('5000') }}
+  flush_interval_seconds: {{ SQLFLOW_FLUSH_INTERVAL|default('30') }}
+  state:
+    path: {{ SQLFLOW_STATE_PATH|default('/conf/state/slow.db') }}
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('kafka1:19092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('slow-soak') }}
+      auto_offset_reset: earliest
+      topics:
+        - "{{ SQLFLOW_TOPIC|default('slow-soak') }}"
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      INSERT INTO agg_slow
+      BY NAME
+      SELECT
+        date_trunc('minute', CAST(sent_at AS TIMESTAMPTZ)) AS bucket,
+        count(*) AS count,
+        max(epoch(now() - CAST(sent_at AS TIMESTAMPTZ))) AS max_latency_s
+      FROM batch
+      GROUP BY bucket
+      ON CONFLICT (bucket)
+      DO UPDATE SET
+        count = count + EXCLUDED.count,
+        max_latency_s = greatest(max_latency_s, EXCLUDED.max_latency_s)
+  sink:
+    type: noop

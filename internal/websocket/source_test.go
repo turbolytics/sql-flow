@@ -152,3 +152,50 @@ func TestSourceWebsocket_ReadsLargeMessages(t *testing.T) {
 
 	assert.Equal(t, len(large), len(recv(t, s.Stream())))
 }
+
+// A server that accepts and then says nothing for ten seconds is a quiet
+// stream, not a dead one. The source must still be listening when the frame
+// finally comes, and must deliver it on the same connection rather than
+// having torn it down and reconnected in the meantime.
+func TestSourceWebsocket_SurvivesAQuietServer(t *testing.T) {
+	coverage.Covers(t, "source.websocket")
+	var conns atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conns.Add(1)
+		c, err := ws.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+
+		// The quiet: longer than any read deadline the source might carry.
+		time.Sleep(10 * time.Second)
+
+		if err := c.Write(r.Context(), ws.MessageText, []byte("late")); err != nil {
+			return
+		}
+		for {
+			if _, _, err := c.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	s, err := NewSource(wsURL(srv))
+	assert.NoError(t, err)
+	assert.NoError(t, s.Start())
+	defer s.Close()
+
+	stream := s.Stream()
+	select {
+	case batch, ok := <-stream:
+		assert.That(t, ok)
+		assert.Equal(t, "late", string(batch[0].Value))
+	case <-time.After(30 * time.Second):
+		t.Fatal("the late frame never arrived")
+	}
+
+	// One connection: the silence did not look like a failure.
+	assert.Equal(t, int64(1), conns.Load())
+}

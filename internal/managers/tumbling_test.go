@@ -3,6 +3,7 @@ package managers
 import (
 	"context"
 	"errors"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"os"
@@ -625,4 +626,124 @@ func TestManagerTumblingWindow__ClockAdvancesOnlyAcrossACommit(t *testing.T) {
 	assert.Equal(t, int64(1), rows)
 	assert.NoError(t, tx.Commit(context.Background()))
 	assert.Equal(t, int64(0), countRows(t, conn, "agg_cities_count"))
+}
+
+// The predicate the shipped examples use, with a two second grace so the
+// test runs in seconds. Branch one is the stream clock (#234): a window
+// closes once the data has moved past it. Branch two is the idleness bound:
+// after a grace of silence every open window closes, because a stream that
+// has stopped will never move its own clock again.
+const (
+	idleCollectSQL = `SELECT bucket, city, count FROM agg_cities_count
+		WHERE bucket < (SELECT max(bucket) FROM agg_cities_count) - INTERVAL '2' SECOND
+		   OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '2' SECOND
+		ORDER BY city`
+	idleDeleteSQL = `DELETE FROM agg_cities_count
+		WHERE bucket < (SELECT max(bucket) FROM agg_cities_count) - INTERVAL '2' SECOND
+		   OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '2' SECOND`
+
+	// What shipped before the idleness branch, for the control.
+	streamClockOnlyCollectSQL = `SELECT bucket, city, count FROM agg_cities_count
+		WHERE bucket < (SELECT max(bucket) FROM agg_cities_count) - INTERVAL '2' SECOND
+		ORDER BY city`
+	streamClockOnlyDeleteSQL = `DELETE FROM agg_cities_count
+		WHERE bucket < (SELECT max(bucket) FROM agg_cities_count) - INTERVAL '2' SECOND`
+)
+
+// setupIdleWindows builds the aggregate table and the engine's progress row,
+// and returns a function that moves the arrival clock the way a batch does.
+func setupIdleWindows(tb testing.TB, conn adbc.Connection) func(ago time.Duration) {
+	tb.Helper()
+	exec(tb, conn, `CREATE TABLE agg_cities_count (bucket TIMESTAMP, city VARCHAR, count BIGINT)`)
+	store := core.NewProgressStore(conn)
+	if err := store.Init(context.Background()); err != nil {
+		tb.Fatal(err)
+	}
+	return func(ago time.Duration) {
+		now := time.Now().UTC()
+		if err := store.Record(context.Background(), core.Progress{
+			LastArrival: now.Add(-ago),
+			LastCommit:  now,
+			Messages:    3,
+		}); err != nil {
+			tb.Fatal(err)
+		}
+	}
+}
+
+func newTestTumblingSQL(conn adbc.Connection, sink *recordingSink, collect, del string) *Tumbling {
+	return NewTumbling(conn, collect, del, time.Millisecond, sink, &sync.Mutex{})
+}
+
+// Rows land in one bucket and the stream goes quiet. Nothing newer ever
+// arrives, so the stream clock alone holds the window open forever: that is
+// the control below. The idleness branch publishes it once, a grace after
+// the last row, and then has nothing left to publish.
+func TestManagerTumblingWindow__QuietStreamClosesItsLastWindow(t *testing.T) {
+	coverage.Covers(t, "manager.tumbling_window")
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	arrived := setupIdleWindows(t, conn)
+	exec(t, conn, `INSERT INTO agg_cities_count VALUES (now()::timestamp, 'NYC', 3)`)
+
+	// The control: the predicate that shipped, and a stream that just
+	// arrived. One bucket, nothing newer, so it stays open.
+	arrived(0)
+	control := &recordingSink{}
+	cm := newTestTumblingSQL(conn, control, streamClockOnlyCollectSQL, streamClockOnlyDeleteSQL)
+	assert.NoError(t, cm.Poll(context.Background()))
+	rows, _ := control.counts()
+	assert.Equal(t, int64(0), rows)
+
+	// Still quiet three seconds later. The stream clock has not moved, so
+	// the old predicate still publishes nothing: the window is stranded.
+	arrived(3 * time.Second)
+	assert.NoError(t, cm.Poll(context.Background()))
+	rows, _ = control.counts()
+	assert.Equal(t, int64(0), rows)
+	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
+
+	// The idleness branch, same table, same silence: the window closes.
+	sink := &recordingSink{}
+	m := newTestTumblingSQL(conn, sink, idleCollectSQL, idleDeleteSQL)
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, flushes := sink.counts()
+	assert.Equal(t, int64(1), rows)
+	assert.That(t, flushes > 0)
+	assert.Equal(t, int64(0), countRows(t, conn, "agg_cities_count"))
+
+	// Published once, not once per poll: the delete ran with it.
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ = sink.counts()
+	assert.Equal(t, int64(1), rows)
+}
+
+// The #234 property, kept. Three buckets arrive in one burst with the stream
+// still live, so the idleness branch never fires and the stream clock closes
+// the two older buckets once each, leaving the newest open.
+func TestManagerTumblingWindow__ReplayStillClosesEachWindowOnce(t *testing.T) {
+	coverage.Covers(t, "manager.tumbling_window")
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	arrived := setupIdleWindows(t, conn)
+	exec(t, conn, `INSERT INTO agg_cities_count VALUES
+		(now()::timestamp - INTERVAL '20' SECOND, 'NYC', 1),
+		(now()::timestamp - INTERVAL '10' SECOND, 'SF', 1),
+		(now()::timestamp, 'LA', 1)`)
+	arrived(0)
+
+	sink := &recordingSink{}
+	m := newTestTumblingSQL(conn, sink, idleCollectSQL, idleDeleteSQL)
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(2), rows)
+	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
+
+	// A second poll while the stream is still live publishes nothing more:
+	// the newest bucket is still open, exactly as before the change.
+	arrived(0)
+	assert.NoError(t, m.Poll(context.Background()))
+	rows, _ = sink.counts()
+	assert.Equal(t, int64(2), rows)
+	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
 }

@@ -188,7 +188,7 @@ drains. An invariant holds only if it holds on all four.
 | Invariant | Claim | `pipeline.stateful` | `pipeline.stateless` |
 | --- | --- | --- | --- |
 | `pipeline.flush.eventually` | A batch that never reaches batchSize still reaches the sink, within the flush interval. | ✅ u | ✅ u |
-| `pipeline.progress.no_silent_stall` | A configuration that cannot make progress fails at startup rather than running quietly. flush_interval_seconds of 0 removes the ticker entirely, so a batch a low-traffic topic never fills waits forever. Unenforced and untracked: the engine permits the configuration today. | ❌ missing | ❌ missing |
+| `pipeline.progress.no_silent_stall` | A configuration cannot remove the flush ticker. flush_interval_seconds absent, zero or negative all run with the thirty second default, so a batch a low-traffic topic never fills still leaves on time. This entry previously claimed the opposite, that zero removed the ticker and stalled such a topic forever; the run command has always defaulted it. Pinned by TestCliInvocation_FlushIntervalNeverZero, not by the harness, and unenforced for that reason: the harness drives a pipeline that is already constructed, and this is a property of resolving the config before construction. There is nothing per-subject to observe, so demanding a cell from every subject would buy a fake rather than a proof. The liveness the harness can see is pipeline.flush.eventually, which it proves. | ❌ missing | ❌ missing |
 | `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ missing | ❌ missing |
 | `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing | ❌ missing |
 

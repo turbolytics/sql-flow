@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -198,10 +199,34 @@ func NewCommand() *cobra.Command {
 			// the table managers and the debug API.
 			lock := &sync.Mutex{}
 
+			// Liveness, for every pipeline whether or not it has a state path.
+			// Created before the state branch turns autocommit off, so the
+			// CREATE TABLE commits on its own the way the offsets table's
+			// does. With a state path its updates then ride each batch's
+			// transaction; without one they autocommit.
+			progressStore := core.NewProgressStore(conn)
+			if err := progressStore.Init(context.Background()); err != nil {
+				return err
+			}
+
+			// The metrics mux is built before the turbine exists, so the
+			// health endpoint reads through a pointer the turbine fills in
+			// below. Until then a zero snapshot means "no commit yet", which
+			// /healthz measures from when the server started.
+			var liveTurbine atomic.Pointer[core.Turbine]
+			progressFn := func() core.Progress {
+				if tb := liveTurbine.Load(); tb != nil {
+					return tb.Progress()
+				}
+				return core.Progress{}
+			}
+
+			flushInterval := flushIntervalFor(conf.Pipeline.FlushIntervalSeconds)
+
 			// State wiring. Everything below is skipped for a pipeline with no
 			// state path, which then behaves exactly as it did before.
 			var (
-				turbineOpts []core.TurbineOption
+				turbineOpts = []core.TurbineOption{core.WithProgressStore(progressStore)}
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)
@@ -284,7 +309,8 @@ func NewCommand() *cobra.Command {
 				StartedAt:  startedAt,
 			}
 
-			meterProvider, err := newMeterProvider(metricsExporter, serveTurbostats, static, l, statsFn)
+			meterProvider, err := newMeterProvider(metricsExporter, serveTurbostats, static, l,
+				statsFn, progressFn, flushInterval)
 			if err != nil {
 				return err
 			}
@@ -359,12 +385,6 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 
-			// Matches the Python engine's default when the key is absent.
-			flushInterval := 30 * time.Second
-			if conf.Pipeline.FlushIntervalSeconds > 0 {
-				flushInterval = time.Duration(conf.Pipeline.FlushIntervalSeconds) * time.Second
-			}
-
 			turbine := core.NewTurbine(
 				src,
 				handler,
@@ -378,6 +398,7 @@ func NewCommand() *cobra.Command {
 					core.WithMetrics(pipelineMetrics),
 				}, turbineOpts...)...,
 			)
+			liveTurbine.Store(turbine)
 
 			managedTables, err := buildManagedTables(ctx, conf, conn, lock, l, meterProvider)
 			if err != nil {

@@ -204,6 +204,29 @@ type Turbine struct {
 	offsets offsetSaver
 	stateTx stateTx
 
+	// progress is the liveness record, see progress.go. Optional: a Turbine
+	// built without it records nothing and Progress() reports zeros.
+	progress progressSaver
+	// snapshot is the in-memory copy of what progress last recorded, read by
+	// /stats and /healthz without touching the database. Guarded by lock.
+	snapshot Progress
+	// arrivedAt is when the newest batch reached the handler, set by
+	// processBatch. It is the arrival time itself rather than a flag,
+	// because a throttled write can happen long after the arrival and
+	// stamping it with the commit clock would place the arrival wherever the
+	// write landed. Guarded by lock.
+	arrivedAt time.Time
+	// writtenArrival is the arrival the table already holds, so a skipped
+	// write is retried on the next one rather than lost. Guarded by lock.
+	writtenArrival time.Time
+	// commits counts successful state commits, for tests that wait on ticks.
+	// Guarded by lock.
+	commits int64
+	// progressWrittenAt is when the progress table was last written, and
+	// progressEvery is how often it may be. Guarded by lock.
+	progressWrittenAt time.Time
+	progressEvery     time.Duration
+
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
 	// so a scrape cannot stall the pipeline. Nil when there is no state
@@ -265,6 +288,109 @@ func WithStateStore(offsets offsetSaver, tx stateTx) TurbineOption {
 	}
 }
 
+// WithProgressStore records liveness into a store and into an in-memory
+// snapshot on every commit and every idle tick.
+func WithProgressStore(s progressSaver) TurbineOption {
+	return func(t *Turbine) { t.progress = s }
+}
+
+// WithProgressWriteInterval bounds how often the progress table is written.
+// Zero writes on every commit, which is what a test wants when it is
+// checking what gets recorded rather than how often. Production leaves it at
+// progressWriteInterval; see recordProgress for why it is not free.
+func WithProgressWriteInterval(d time.Duration) TurbineOption {
+	return func(t *Turbine) { t.progressEvery = d }
+}
+
+// Progress reports the last recorded liveness facts. Zero values mean
+// nothing has been recorded yet.
+func (t *Turbine) Progress() Progress {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	return t.snapshot
+}
+
+// commitCount is how many state commits have succeeded; tests wait on it.
+func (t *Turbine) commitCount() int64 {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	return t.commits
+}
+
+// progressWriteInterval bounds how often sqlflow_progress is written. The
+// snapshot behind /stats and /healthz is updated on every commit regardless;
+// this is only the SQL-visible copy, whose one reader compares it against a
+// grace measured in tens of seconds.
+const progressWriteInterval = time.Second
+
+// recordProgress runs at the top of every commit, before the state guard.
+//
+// Two audiences, and they are not the same requirement. The snapshot is what
+// /stats and /healthz read, so every pipeline needs it whether or not it has
+// a state database, and it costs an assignment. The table is what SQL reads,
+// today only the tumbling window predicate, and it costs a statement on the
+// commit path.
+//
+// The table is written on every pipeline even where nothing reads it. That is
+// deliberate: a table that exists but silently stops being maintained is a
+// worse trap than one that costs a little, and a window can be managed
+// without a state path, so "has state" is not the test for whether anyone
+// reads it.
+//
+// A batch since the last commit moves the arrival clock; an idle tick moves
+// the commit clock only.
+func (t *Turbine) recordProgress(ctx context.Context) {
+	if t.progress == nil {
+		return
+	}
+	now := time.Now().UTC()
+	t.lock.Lock()
+	p := Progress{LastCommit: now, Messages: t.stats.MessagesConsumed()}
+	if !t.arrivedAt.IsZero() {
+		p.LastArrival = t.arrivedAt
+		t.snapshot.LastArrival = t.arrivedAt
+	}
+	t.snapshot.LastCommit = now
+	t.snapshot.Messages = p.Messages
+
+	// Due on the clock, or owing an arrival the table has not got yet.
+	// The second half is the liveness guarantee: the newest arrival always
+	// reaches the table, at the latest on the next commit after the
+	// interval, so a stream that stops cannot strand the arrival that
+	// decides when its last window closes.
+	//
+	// The elapsed test is written to survive a clock that moves backwards.
+	// Comparing now.Sub(written) >= interval is false forever after a jump
+	// back, which would stop the table being written at all.
+	elapsed := now.Sub(t.progressWrittenAt)
+	owed := !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
+	due := owed || elapsed >= t.progressEvery || elapsed < 0
+	if due {
+		t.progressWrittenAt = now
+		t.writtenArrival = t.arrivedAt
+	}
+	t.lock.Unlock()
+
+	// The snapshot above is exact and free. The table is not: one UPDATE
+	// through ADBC measures about 112 microseconds, and a batch of 5000 at a
+	// million messages a second commits two hundred times a second, so
+	// writing it on every commit costs a few percent of throughput.
+	// BenchmarkCommitState is where that number comes from.
+	//
+	// So idle ticks that change nothing but the commit clock are skipped
+	// until the interval has passed. An arrival is never skipped: owed
+	// above forces the write, because the table's last_arrival is what
+	// decides when a window closes, and a value older than the truth closes
+	// it early. Early is the dangerous direction, since that is the
+	// window-splitting behaviour the stream clock exists to prevent.
+	if !due {
+		return
+	}
+	if err := t.progress.Record(ctx, p); err != nil {
+		t.logger.Warn("recording progress", zap.Error(err))
+	}
+}
+
 // WithStateStats supplies the snapshot function backing the state gauges. It
 // must read a connection dedicated to reading; passing the pipeline's writer
 // would let a scrape contend with batch processing.
@@ -302,6 +428,7 @@ func NewTurbine(
 		handler:       handler,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
+		progressEvery: progressWriteInterval,
 		lock:          lock,
 		running:       true,
 		stats: &Stats{
@@ -759,6 +886,8 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 //
 // A pipeline with no state database does nothing here.
 func (t *Turbine) commitState(ctx context.Context) error {
+	t.recordProgress(ctx)
+
 	if t.offsets == nil || t.stateTx == nil {
 		return nil
 	}
@@ -785,6 +914,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing state")
 	}
 
+	t.commits++
 	t.metrics.StateCommitLatency.Record(ctx, time.Since(c0).Seconds())
 	t.metrics.StateCommitCount.Add(ctx, 1, t.resultAttrs(resultOK)...)
 	// Success only. The error path below records the dimensioned series and
@@ -820,6 +950,11 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 
 	t.lock.Lock()
 	batch, err := t.handler.Invoke(ctx)
+	// Messages reached the handler whatever Invoke returns, so this is an
+	// arrival. Stamped now rather than at commit time: a throttled write can
+	// land much later, and the window predicate needs when the data came,
+	// not when the row was updated.
+	t.arrivedAt = time.Now().UTC()
 	t.lock.Unlock()
 
 	b1 := time.Now()

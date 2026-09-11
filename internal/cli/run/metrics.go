@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -25,6 +26,16 @@ const metricsPort = ":8000"
 // nil snapshot, and no error, for a pipeline that has no state database.
 type statsFunc func() (*core.StateStats, error)
 
+// progressFunc reports the pipeline's liveness snapshot: when the newest
+// batch arrived, when state last committed, and how many messages have been
+// consumed.
+type progressFunc func() core.Progress
+
+// stuckIntervals is how many flush intervals may pass with no commit before
+// /healthz calls the pipeline stuck. Three, so one slow sink flush cannot
+// flap it.
+const stuckIntervals = 3
+
 // newHTTPMux builds the server the pipeline exposes: Prometheus scraping, a
 // JSON view of durable state, and the TurboStats bundle.
 //
@@ -37,31 +48,87 @@ type statsFunc func() (*core.StateStats, error)
 // Each route is registered only when its provider is non-nil, so a route that
 // would answer with nothing is absent rather than half-working.
 func newHTTPMux(registry *prom.Registry, stats statsFunc,
-	collect func(context.Context) (turbostats.Bundle, error)) *http.ServeMux {
+	collect func(context.Context) (turbostats.Bundle, error),
+	progress progressFunc, interval time.Duration, now func() time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
+	started := now()
+
+	// ages reports the snapshot with its two ages in seconds. An age of -1
+	// means the clock has never moved, which for arrivals is an ordinary
+	// fact about a stream that has not delivered yet.
+	ages := func() (core.Progress, float64, float64) {
+		p := progress()
+		arrival := -1.0
+		if !p.LastArrival.IsZero() {
+			arrival = now().Sub(p.LastArrival).Seconds()
+		}
+		commit := now().Sub(started).Seconds()
+		if !p.LastCommit.IsZero() {
+			commit = now().Sub(p.LastCommit).Seconds()
+		}
+		return p, arrival, commit
+	}
 
 	if registry != nil {
 		mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	}
 
-	if stats != nil {
+	if stats != nil || progress != nil {
 		mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
-			state, err := stats()
-			if err != nil {
-				// A monitoring system must see the failure, not a
-				// healthy-looking blank.
-				http.Error(w, fmt.Sprintf("collecting state stats: %v", err),
-					http.StatusInternalServerError)
-				return
+			out := map[string]any{"state": nil}
+
+			if stats != nil {
+				state, err := stats()
+				if err != nil {
+					// A monitoring system must see the failure, not a
+					// healthy-looking blank.
+					http.Error(w, fmt.Sprintf("collecting state stats: %v", err),
+						http.StatusInternalServerError)
+					return
+				}
+				// state is nil for a pipeline with no state database, which
+				// encodes as null: absent state and empty state are different
+				// facts and a dashboard should be able to tell them apart.
+				out["state"] = state
+			}
+
+			if progress != nil {
+				p, arrival, commit := ages()
+				out["progress"] = map[string]any{
+					"last_arrival":        p.LastArrival,
+					"last_commit":         p.LastCommit,
+					"messages":            p.Messages,
+					"arrival_age_seconds": arrival,
+					"commit_age_seconds":  commit,
+				}
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			// state is nil for a pipeline with no state database, which
-			// encodes as null: absent state and empty state are different
-			// facts and a dashboard should be able to tell them apart.
-			if err := json.NewEncoder(w).Encode(map[string]any{"state": state}); err != nil {
+			if err := json.NewEncoder(w).Encode(out); err != nil {
 				return
 			}
+		})
+	}
+
+	if progress != nil {
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			_, _, commit := ages()
+			w.Header().Set("Content-Type", "application/json")
+
+			if commit > float64(stuckIntervals)*interval.Seconds() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":             "stuck",
+					"commit_age_seconds": commit,
+					"interval_seconds":   interval.Seconds(),
+				})
+				return
+			}
+
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":             "ok",
+				"commit_age_seconds": commit,
+			})
 		})
 	}
 
@@ -82,7 +149,8 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 // existed only for Prometheus, and without it every counter recorded into
 // nothing -- so there was nothing for a bundle to read.
 func newMeterProvider(exporter string, serveTurbostats bool,
-	static turbostats.Static, l *zap.Logger, stats statsFunc) (metric.MeterProvider, error) {
+	static turbostats.Static, l *zap.Logger, stats statsFunc,
+	progress progressFunc, interval time.Duration) (metric.MeterProvider, error) {
 
 	reader := sdkmetric.NewManualReader()
 	opts := []sdkmetric.Option{sdkmetric.WithReader(reader)}
@@ -105,7 +173,7 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 
 	// Nothing to serve: the provider still exists, so the instruments record
 	// and a later reporter can read them without an HTTP server.
-	if registry == nil && !serveTurbostats {
+	if registry == nil && !serveTurbostats && progress == nil {
 		return mp, nil
 	}
 
@@ -115,7 +183,7 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 			return turbostats.Collect(ctx, static, reader, stats)
 		}
 	}
-	mux := newHTTPMux(registry, stats, collect)
+	mux := newHTTPMux(registry, stats, collect, progress, interval, time.Now)
 
 	go func() {
 		routes := []string{}
@@ -125,6 +193,9 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 		if serveTurbostats {
 			routes = append(routes, "/turbostats/v1")
 		}
+		if progress != nil {
+			routes = append(routes, "/healthz")
+		}
 		l.Info("serving http", zap.String("addr", metricsPort), zap.Strings("routes", routes))
 		if err := http.ListenAndServe(metricsPort, mux); err != nil {
 			l.Error("http server stopped", zap.Error(err))
@@ -132,4 +203,16 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 	}()
 
 	return mp, nil
+}
+
+// flushIntervalFor is the one place the flush interval is decided. Absent,
+// zero and negative all mean the default: a ticker the pipeline cannot lose,
+// because a batch that a low-traffic topic never fills would otherwise wait
+// forever. The config schema's own floor is thirty seconds, so this only
+// ever fires for a config that omits the key.
+func flushIntervalFor(seconds int) time.Duration {
+	if seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return 30 * time.Second
 }

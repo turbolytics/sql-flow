@@ -278,3 +278,47 @@ func TestIntegrationSourceKafka_ReadAheadIsBoundedByPrefetch(t *testing.T) {
 			drained, config.DefaultKafkaFetchPrefetch, limit)
 	}
 }
+
+// A trickle can leave a consumer silent for longer than its session timeout.
+// franz-go heartbeats in the background, so the group membership survives
+// and the next message is delivered without a rejoin. Six second session,
+// eight seconds of silence: a stream that delivers once a minute crosses
+// this boundary sixty times an hour, and nothing measured it.
+func TestIntegrationSourceKafka_SurvivesIdleLongerThanTheSessionTimeout(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	broker := brokerOrFail(t)
+	topic := fmt.Sprintf("turbine-idle-%d", time.Now().UnixNano())
+
+	producer, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.AllowAutoTopicCreation())
+	assert.NoError(t, err)
+	defer producer.Close()
+	produce(t, producer, topic, 1)
+
+	client := newTestClient(t, broker, topic, topic,
+		kgo.SessionTimeout(6*time.Second),
+		kgo.HeartbeatInterval(2*time.Second),
+	)
+	src, err := NewSource(client)
+	assert.NoError(t, err)
+	defer src.Close()
+	stream := src.Stream()
+
+	select {
+	case batch := <-stream:
+		assert.Equal(t, int64(0), batch[0].Offset)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first message never arrived")
+	}
+
+	// Longer than the session, so a consumer that stopped heartbeating would
+	// have been evicted and would rejoin, or stall, on the next produce.
+	time.Sleep(8 * time.Second)
+	produce(t, producer, topic, 1)
+
+	select {
+	case batch := <-stream:
+		assert.Equal(t, int64(1), batch[0].Offset)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the message after the idle gap never arrived")
+	}
+}
