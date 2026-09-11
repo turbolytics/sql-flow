@@ -5,25 +5,27 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
+	"github.com/turbolytics/sql-flow/internal/buildinfo"
 )
 
-// Version and Commit are stamped at link time by the Makefile and the container
-// build:
-//
-//	go build -ldflags "-X github.com/turbolytics/sql-flow/internal/cli.Version=v1.0.0"
-//
-// A plain `go build ./cmd/sqlflow/` leaves the defaults below, which is how an
-// unreleased local binary identifies itself.
+// Version and Commit live in internal/buildinfo, so the run command can
+// report them in the TurboStats bundle without importing this package, which
+// would be a cycle. These names stay here because root.go sets cmd.Version
+// from one of them.
 var (
-	Version = "dev"
-	Commit  = "unknown"
+	Version = buildinfo.Version
+	Commit  = buildinfo.Commit
 )
 
 // versionString is what both `sqlflow version` and `sqlflow --version` print.
+//
+// It reads buildinfo rather than the copies above. -X sets buildinfo.Version
+// at link time and the copies are initialized from it, so the two agree; one
+// source is still one fewer thing to reason about.
 func versionString() string {
 	return fmt.Sprintf(
 		"sqlflow %s\ncommit: %s\ngo:     %s\n",
-		Version, Commit, runtime.Version(),
+		buildinfo.Version, buildinfo.Commit, runtime.Version(),
 	)
 }
 

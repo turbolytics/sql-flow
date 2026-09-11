@@ -8,8 +8,8 @@ SQLFLOW_IMAGE ?= turbolytics/sql-flow:$(VERSION)
 DIST_DIR ?= dist
 
 GO_MODULE := github.com/turbolytics/sql-flow
-GO_LDFLAGS := -X $(GO_MODULE)/internal/cli.Version=$(VERSION) \
-	-X $(GO_MODULE)/internal/cli.Commit=$(GIT_COMMIT)
+GO_LDFLAGS := -X $(GO_MODULE)/internal/buildinfo.Version=$(VERSION) \
+	-X $(GO_MODULE)/internal/buildinfo.Commit=$(GIT_COMMIT)
 
 # Every Python entry point goes through uv, so the release suite and the
 # coverage generator run against the versions in uv.lock rather than whatever

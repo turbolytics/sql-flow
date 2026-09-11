@@ -45,7 +45,7 @@ GO_IMAGE="${GO_IMAGE:-golang:1.25-bookworm}"
 GO_MODULE="github.com/turbolytics/sql-flow"
 VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
-LDFLAGS="-X ${GO_MODULE}/internal/cli.Version=${VERSION} -X ${GO_MODULE}/internal/cli.Commit=${COMMIT}"
+LDFLAGS="-X ${GO_MODULE}/internal/buildinfo.Version=${VERSION} -X ${GO_MODULE}/internal/buildinfo.Commit=${COMMIT}"
 
 mkdir -p "$DEST_DIR"
 
