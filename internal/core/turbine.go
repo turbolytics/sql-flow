@@ -210,10 +210,15 @@ type Turbine struct {
 	// snapshot is the in-memory copy of what progress last recorded, read by
 	// /stats and /healthz without touching the database. Guarded by lock.
 	snapshot Progress
-	// batchSinceCommit is set by processBatch and cleared by commitState, so
-	// commitState knows whether this commit follows an arrival or an idle
-	// tick. Guarded by lock.
-	batchSinceCommit bool
+	// arrivedAt is when the newest batch reached the handler, set by
+	// processBatch. It is the arrival time itself rather than a flag,
+	// because a throttled write can happen long after the arrival and
+	// stamping it with the commit clock would place the arrival wherever the
+	// write landed. Guarded by lock.
+	arrivedAt time.Time
+	// writtenArrival is the arrival the table already holds, so a skipped
+	// write is retried on the next one rather than lost. Guarded by lock.
+	writtenArrival time.Time
 	// commits counts successful state commits, for tests that wait on ticks.
 	// Guarded by lock.
 	commits int64
@@ -334,16 +339,28 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	now := time.Now().UTC()
 	t.lock.Lock()
 	p := Progress{LastCommit: now, Messages: t.stats.MessagesConsumed()}
-	if t.batchSinceCommit {
-		p.LastArrival = now
-		t.snapshot.LastArrival = now
+	if !t.arrivedAt.IsZero() {
+		p.LastArrival = t.arrivedAt
+		t.snapshot.LastArrival = t.arrivedAt
 	}
 	t.snapshot.LastCommit = now
 	t.snapshot.Messages = p.Messages
-	t.batchSinceCommit = false
-	due := now.Sub(t.progressWrittenAt) >= t.progressEvery
+
+	// Due on the clock, or owing an arrival the table has not got yet.
+	// The second half is the liveness guarantee: the newest arrival always
+	// reaches the table, at the latest on the next commit after the
+	// interval, so a stream that stops cannot strand the arrival that
+	// decides when its last window closes.
+	//
+	// The elapsed test is written to survive a clock that moves backwards.
+	// Comparing now.Sub(written) >= interval is false forever after a jump
+	// back, which would stop the table being written at all.
+	elapsed := now.Sub(t.progressWrittenAt)
+	owed := !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
+	due := owed || elapsed >= t.progressEvery || elapsed < 0
 	if due {
 		t.progressWrittenAt = now
+		t.writtenArrival = t.arrivedAt
 	}
 	t.lock.Unlock()
 
@@ -353,10 +370,12 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	// writing it on every commit costs a few percent of throughput.
 	// BenchmarkCommitState is where that number comes from.
 	//
-	// Nothing needs it on every commit. The only reader is a window
-	// predicate comparing last_arrival against a grace measured in tens of
-	// seconds, so a value up to progressWriteInterval stale makes a window
-	// close that much late and never early, which is the safe direction.
+	// So idle ticks that change nothing but the commit clock are skipped
+	// until the interval has passed. An arrival is never skipped: owed
+	// above forces the write, because the table's last_arrival is what
+	// decides when a window closes, and a value older than the truth closes
+	// it early. Early is the dangerous direction, since that is the
+	// window-splitting behaviour the stream clock exists to prevent.
 	if !due {
 		return
 	}
@@ -902,9 +921,11 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 
 	t.lock.Lock()
 	batch, err := t.handler.Invoke(ctx)
-	// Messages reached the handler whatever Invoke returns: this batch is an
-	// arrival, and the commit that follows it moves the arrival clock.
-	t.batchSinceCommit = true
+	// Messages reached the handler whatever Invoke returns, so this is an
+	// arrival. Stamped now rather than at commit time: a throttled write can
+	// land much later, and the window predicate needs when the data came,
+	// not when the row was updated.
+	t.arrivedAt = time.Now().UTC()
 	t.lock.Unlock()
 
 	b1 := time.Now()

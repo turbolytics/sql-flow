@@ -73,13 +73,14 @@ func TestCoreConsumeLoop_ProgressRecordsArrivalOnBatchAndCommitOnIdle(t *testing
 	assert.That(t, !afterBatch.LastCommit.Before(afterBatch.LastArrival))
 
 	// Now the source is silent. Idle ticks keep recording, and each one
-	// carries a zero arrival, which is how Record says "leave the arrival
-	// clock where it was". The commit clock moves on every one of them.
+	// carries the same arrival the batch had, unchanged: the record is
+	// always the truth about both clocks rather than a delta, which is what
+	// lets a throttled write be retried without losing the arrival.
 	deadline = time.After(5 * time.Second)
 	for {
 		p, n := rec.last()
 		if n >= 4 {
-			assert.That(t, p.LastArrival.IsZero())
+			assert.Equal(t, afterBatch.LastArrival, p.LastArrival)
 			assert.That(t, p.LastCommit.After(afterBatch.LastCommit))
 			assert.Equal(t, int64(3), p.Messages)
 			break
@@ -201,6 +202,75 @@ func TestStateDurability_IdleTicksDoNotGrowTheStateFile(t *testing.T) {
 	// commit. Nineteen more empty commits must not add another.
 	if s20 > s1+256*1024 {
 		t.Fatalf("state file grew across idle commits: %d bytes after one, %d after twenty", s1, s20)
+	}
+	close(src.release)
+	<-done
+}
+
+// The invariant the throttle broke, and the reason this file exists.
+//
+// The window predicate closes a bucket when now() - last_arrival exceeds the
+// grace. If the table's last_arrival is older than the newest arrival the
+// pipeline actually took, that difference is too large and the window closes
+// EARLY, while rows for it may still be coming. Early closing is the
+// window-splitting defect the stream clock was introduced to remove, so a
+// throttle that drops an arrival walks straight back into it.
+//
+// The dangerous shape is a batch followed by silence: the batch is the last
+// thing that will ever arrive, and if its write is skipped for being inside
+// the throttle interval, nothing afterwards carries it.
+func TestStateDurability_ProgressNeverReportsAnArrivalOlderThanTheNewest(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+
+	// The ordering is the whole test. An idle tick has to write first, so
+	// that the batch's own commit falls inside the throttle interval and a
+	// clock-only rule would skip it. A source that delivers immediately
+	// makes the batch the first write of all, which is always due, and the
+	// bug hides: this test passed against the broken version until the
+	// source was paced.
+	src := newPacedSource(1, 150*time.Millisecond)
+
+	// An interval far longer than the test, so nothing after the first
+	// write is ever due on the clock alone.
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 20*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(time.Hour))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+
+	// Wait for the batch, then for several idle ticks after it. The commit
+	// counter only moves on a state commit and this pipeline has no state
+	// database, so the snapshot's own commit clock is the signal.
+	waitFor(t, "the batch to be consumed", 5*time.Second, func() bool {
+		return tb.Progress().Messages == 1
+	})
+	afterBatch := tb.Progress().LastCommit
+	waitFor(t, "idle ticks after the batch", 5*time.Second, func() bool {
+		return tb.Progress().LastCommit.Sub(afterBatch) > 60*time.Millisecond
+	})
+
+	// The snapshot is the truth about the newest arrival.
+	newest := tb.Progress().LastArrival
+	assert.That(t, !newest.IsZero())
+
+	// Every record the table ever received must agree with it or predate
+	// it, and the most recent one must equal it. A record carrying an
+	// arrival older than the newest is what closes a window early.
+	last, n := rec.last()
+	assert.That(t, n > 0)
+	if !last.LastArrival.Equal(newest) {
+		t.Fatalf("the table holds arrival %v while the newest is %v: a window "+
+			"reading this closes %v early", last.LastArrival, newest,
+			newest.Sub(last.LastArrival))
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for i, r := range rec.recs {
+		if r.LastArrival.After(newest) {
+			t.Fatalf("record %d reports an arrival from the future: %v > %v", i, r.LastArrival, newest)
+		}
 	}
 	close(src.release)
 	<-done

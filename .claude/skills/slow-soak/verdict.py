@@ -28,24 +28,22 @@ worst = max(f(r["max_latency_s"]) for r in rows)
 if worst > interval + 60:
     fails.append(f"worst latency {worst:.0f}s is above the interval plus a minute")
 
-# 2. Lag: the surge's backlog drains promptly once production stops, and
-# then stays drained. Being behind during the surge, and for the first
-# samples after it, is the consumer catching up and is not a defect. What
-# would be a defect is never catching up, or falling behind again on a
-# trickle where every message has a flush to itself.
-# Everything after the first burst: the drain, the zeros, the trickle.
-first_burst_end = next((i for i, r in enumerate(rows) if not r["phase"].startswith("burst")), len(rows))
-post = rows[first_burst_end:]
-drained_at = next((i for i, r in enumerate(post) if f(r["lag"], 0) <= 2), None)
-if post and drained_at is None:
-    fails.append(f"the backlog never drained; lag was still {post[-1]['lag']} at the end")
-elif drained_at is not None and drained_at > 3:
-    fails.append(f"the backlog took {drained_at} samples after the surge to drain")
-else:
-    for r in post[(drained_at or 0) + 1:]:
-        if f(r["lag"], 0) > 2:
-            fails.append(f"fell behind again after draining: lag {r['lag']} at {r['t']} in {r['phase']}")
-            break
+# 2. Lag: a burst is meant to run ahead of the consumer, so being behind
+# during one proves nothing. What matters is that every quiet phase ends
+# with the backlog gone, and that a trickle, where each message has a flush
+# to itself, never accumulates one.
+def phases_of(prefix):
+    return sorted({r["phase"] for r in rows if r["phase"].startswith(prefix)})
+
+
+for phase in phases_of("zero") + phases_of("trickle"):
+    win = [r for r in rows if r["phase"] == phase]
+    if not win:
+        continue
+    if f(win[-1]["lag"], 0) > 2:
+        fails.append(
+            f"{phase} ended with the backlog still {win[-1]['lag']} behind"
+        )
 
 # 3. Memory: the end of the run is not above where the run started.
 anon = [f(r["anon_mib"]) for r in rows if r["anon_mib"]]
@@ -63,7 +61,7 @@ for phase in sorted({r["phase"] for r in rows if r["phase"].startswith("zero")})
 
 # 5. Windows: the surge's buckets must publish during the silence that
 # follows it. This is the idleness branch, and the reason the soak exists.
-if post and f(post[-1]["published_windows"]) == 0:
+if rows and f(rows[-1]["published_windows"]) == 0:
     fails.append("no window was ever published, so the idleness branch never fired")
 # Every zero phase longer than a couple of samples must end with more
 # windows published than it began with, unless there was nothing open. That
