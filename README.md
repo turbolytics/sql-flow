@@ -721,6 +721,30 @@ asserts this table against the running exporter.
 |---|---|---|---|
 | `batch_processing_latency` | `batch_processing_latency_seconds` | histogram | — |
 | `error_count` | `error_count_total` | counter | `class`, `domain`, `code`, `phase` |
+| `phase_duration` | `phase_duration_seconds` | histogram | `phase` |
+
+`phase_duration` decomposes batch time. It carries the same six phases
+`error_count` does — `handler.write`, `handler.invoke`, `sink.write`,
+`sink.flush`, `state.commit`, `handler.init` — so one query says where the time
+went:
+
+```promql
+sum(rate(phase_duration_seconds_sum[5m])) by (phase)
+```
+
+Read it with `error_count` to tell slow from broken. `phase_duration` records
+whether or not the phase succeeded, which no other latency here does:
+`sink_flush_latency` and `state_commit_latency` record after their error
+returns, so a sink that takes thirty seconds to fail leaves them flat.
+
+`handler.write` is measured around the whole message loop rather than each
+write, so it also carries the loop's own bookkeeping. Timing each write cost
+4.1x on that path; see `BenchmarkConsumeLoopWritePath`.
+
+Every latency histogram shares one set of bucket boundaries, from 100
+microseconds to 60 seconds. The OTel SDK's defaults are millisecond-shaped and
+these instruments record seconds, so before this every `histogram_quantile`
+over them returned a number under five seconds and meant nothing.
 
 **Source:**
 

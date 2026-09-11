@@ -178,6 +178,23 @@ const (
 	phaseStateCommit   = "state.commit"
 )
 
+// phases is every phase above, in the order a batch runs them, so the
+// attribute cache is built once at startup rather than grown on the batch
+// path.
+//
+// A phase named in the block above and missing here records a point with no
+// phase label, which merges into a series that is true of nothing rather than
+// failing. TestObservabilityMetrics_EveryPhaseHasCachedAttributes is what
+// catches that.
+var phases = []string{
+	phaseHandlerWrite,
+	phaseHandlerInvoke,
+	phaseSinkWrite,
+	phaseSinkFlush,
+	phaseStateCommit,
+	phaseHandlerInit,
+}
+
 // offsetSaver writes positions into the pipeline's state database. It is an
 // interface so the ordering tests need no DuckDB; OffsetStore implements it.
 type offsetSaver interface {
@@ -261,6 +278,10 @@ type Turbine struct {
 	// measuring every attempt regardless of outcome.
 	resultOKAttrs    []metric.AddOption
 	resultErrorAttrs []metric.AddOption
+
+	// One cached option slice per phase, for the same reason. Every phase is
+	// known at startup, so this is a fixed six entries and never grows.
+	phaseAttrs map[string][]metric.RecordOption
 
 	logger  *zap.Logger
 	metrics *Metrics
@@ -448,6 +469,13 @@ func NewTurbine(
 		metric.WithAttributes(attribute.String("result", resultError)),
 	}
 
+	t.phaseAttrs = make(map[string][]metric.RecordOption, len(phases))
+	for _, phase := range phases {
+		t.phaseAttrs[phase] = []metric.RecordOption{
+			metric.WithAttributes(attribute.String("phase", phase)),
+		}
+	}
+
 	// Instruments that record nothing until a provider is supplied, so the
 	// pipeline never has to nil-check them.
 	t.metrics, _ = NewMetrics(nil)
@@ -612,6 +640,24 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// anything" cannot tell the two apart.
 		t.metrics.PipelineLastMessage.Record(ctx, time.Now().Unix())
 
+		// handler.write is timed by bracketing the whole loop and subtracting
+		// the batches that ran inside it, rather than by timing each
+		// writeMessage call.
+		//
+		// Two clock reads per message took this loop from 22 ns/op to 91,
+		// benchmarked in BenchmarkConsumeLoopWritePath -- 4.1x, the same shape
+		// as the regression that put a cached attribute set in front of
+		// consumer_lag. Nothing on the per-message path survives that price.
+		//
+		// The cost of measuring it out here is that mark, the consumed
+		// counters and the pending-lag map write are charged to handler.write
+		// along with the write itself. That is around 22 ns a message against
+		// a real handler that parses JSON and appends to an Arrow builder in
+		// microseconds, so the attribution error is under a percent of the
+		// phase it lands in.
+		loopStart := time.Now()
+		var batchTook time.Duration
+
 		for _, raw := range msgBatch {
 			if err := t.writeMessage(raw); err != nil {
 				t.recordError(ctx, err, phaseHandlerWrite, "error writing message")
@@ -656,12 +702,24 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				default:
 				}
 
+				p0 := time.Now()
 				if err := t.processBatch(ctx, numBatchMessages); err != nil {
 					return nil, err
 				}
+				batchTook += time.Since(p0)
 				numBatchMessages = 0
 			}
 		}
+		// One observation per source batch. Guarded because an empty batch
+		// wrote nothing, and recording a zero would drag the histogram toward
+		// the floor with time no message spent.
+		//
+		// Before recordLag, so the per-partition gauge records that fetch owes
+		// are not charged to handler.write.
+		if len(msgBatch) > 0 {
+			t.recordPhase(ctx, phaseHandlerWrite, time.Since(loopStart)-batchTook)
+		}
+
 		t.recordLag(ctx)
 	}
 
@@ -705,6 +763,17 @@ func (t *Turbine) resultAttrs(result string) []metric.AddOption {
 		return t.resultOKAttrs
 	}
 	return t.resultErrorAttrs
+}
+
+// recordPhase times one stage of a batch.
+//
+// Called on the success and the failure path both, which is the difference
+// between this and sink_flush_latency or state_commit_latency: those record
+// after every error return, so a phase that takes thirty seconds to fail
+// leaves them flat. Time spent failing is still time the batch spent, and a
+// decomposition that drops it points the operator at the wrong phase.
+func (t *Turbine) recordPhase(ctx context.Context, phase string, took time.Duration) {
+	t.metrics.PhaseDuration.Record(ctx, took.Seconds(), t.phaseAttrs[phase]...)
 }
 
 // recordError counts and logs one failure.
@@ -958,6 +1027,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	t.lock.Unlock()
 
 	b1 := time.Now()
+	t.recordPhase(ctx, phaseHandlerInvoke, b1.Sub(b0))
 
 	// Recorded before the error branch below. A failed Invoke reports zero,
 	// which is the honest number, and skipping the record entirely would
@@ -991,7 +1061,13 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	}
 
 	if batch != nil {
-		if err := t.sink.WriteTable(ctx, batch); err != nil {
+		w0 := time.Now()
+		err = t.sink.WriteTable(ctx, batch)
+		// Before the branch, so a write that fails slowly is still counted as
+		// time the batch spent.
+		t.recordPhase(ctx, phaseSinkWrite, time.Since(w0))
+
+		if err != nil {
 			t.recordError(ctx, err, phaseSinkWrite, "error writing batch to sink")
 			t.metrics.SinkFlushCount.Add(ctx, 1, t.resultAttrs(resultError)...)
 			// Same reasoning as the flush path below: this batch's handler
@@ -1003,7 +1079,11 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 		}
 	}
 
-	if err := t.flush(ctx, batch); err != nil {
+	f0 := time.Now()
+	err = t.flush(ctx, batch)
+	t.recordPhase(ctx, phaseSinkFlush, time.Since(f0))
+
+	if err != nil {
 		t.recordError(ctx, err, phaseSinkFlush, "error flushing sink")
 		t.metrics.SinkFlushCount.Add(ctx, 1, t.resultAttrs(resultError)...)
 		// A failed flush keeps its rows buffered, and sink_rows_written does
@@ -1037,7 +1117,16 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	// duplicate -- recoverable -- while state and offsets stay consistent.
 	// Committing first would move the offsets past rows the sink never
 	// received, which loses them silently.
-	if err := t.commitState(ctx); err != nil {
+	c0 := time.Now()
+	err = t.commitState(ctx)
+	// Timed at the call site rather than inside commitState, so the phase is
+	// reported by a pipeline with no state database too. state_commit_latency
+	// is deliberately absent there -- an absent series and an empty state are
+	// different facts -- but the commit phase still runs, still writes
+	// progress, and still belongs in the batch-time decomposition.
+	t.recordPhase(ctx, phaseStateCommit, time.Since(c0))
+
+	if err != nil {
 		t.recordError(ctx, err, phaseStateCommit, "error committing state")
 		t.metrics.StateCommitCount.Add(ctx, 1, t.resultAttrs(resultError)...)
 		if batch != nil {
@@ -1074,7 +1163,11 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 		batch.Release()
 	}
 
-	if err := t.handler.Init(ctx); err != nil {
+	i0 := time.Now()
+	err = t.handler.Init(ctx)
+	t.recordPhase(ctx, phaseHandlerInit, time.Since(i0))
+
+	if err != nil {
 		t.recordError(ctx, err, phaseHandlerInit, "error reinitializing handler")
 		return err
 	}
