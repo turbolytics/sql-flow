@@ -128,6 +128,7 @@ func exportedNames(t *testing.T) []string {
 	m.SinkFlushNumRows.Record(ctx, 1)
 	m.SinkFlushCount.Add(ctx, 1)
 	m.BatchProcessingLatency.Record(ctx, 1)
+	m.PhaseDuration.Record(ctx, 1)
 	m.ConsumerLag.Record(ctx, 1)
 	m.StateCommitLatency.Record(ctx, 1)
 	m.StateCommitCount.Add(ctx, 1)
@@ -196,6 +197,7 @@ func TestExportedSeriesNames(t *testing.T) {
 		"error_count_total",
 		"handler_rows_read_total",
 		"message_count_messages_total",
+		"phase_duration_seconds",
 		"pipeline_commits_total",
 		"pipeline_errors_total",
 		"pipeline_flushes_total",
@@ -217,6 +219,83 @@ func TestExportedSeriesNames(t *testing.T) {
 		"webhook_requests_total",
 	}
 	assert.DeepEqual(t, want, exportedNames(t))
+}
+
+// wantLatencyBuckets is the boundary set every latency histogram declares, in
+// seconds.
+//
+// Written out here rather than imported from core on purpose: a test that read
+// the production constant would agree with whatever that constant became, and
+// the defect this guards against is a silent change of boundaries.
+var wantLatencyBuckets = []float64{
+	0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+	1, 2.5, 5, 10, 30, 60,
+}
+
+// exportedBuckets returns the bucket upper bounds each histogram exports.
+func exportedBuckets(t *testing.T) map[string][]float64 {
+	t.Helper()
+
+	reg := prom.NewRegistry()
+	exp, err := prometheus.New(prometheus.WithRegisterer(reg))
+	assert.NoError(t, err)
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exp))
+
+	m, err := core.NewMetrics(mp)
+	assert.NoError(t, err)
+
+	ctx := context.Background()
+	m.SourceReadLatency.Record(ctx, 1)
+	m.SinkFlushLatency.Record(ctx, 1)
+	m.BatchProcessingLatency.Record(ctx, 1)
+	m.StateCommitLatency.Record(ctx, 1)
+	m.PhaseDuration.Record(ctx, 1)
+
+	families, err := reg.Gather()
+	assert.NoError(t, err)
+
+	got := map[string][]float64{}
+	for _, f := range families {
+		for _, mm := range f.GetMetric() {
+			h := mm.GetHistogram()
+			if h == nil {
+				continue
+			}
+			var bounds []float64
+			for _, b := range h.GetBucket() {
+				bounds = append(bounds, b.GetUpperBound())
+			}
+			got[f.GetName()] = bounds
+		}
+	}
+	return got
+}
+
+// TestLatencyHistogramBucketsAreSecondsShaped pins the boundaries of every
+// latency histogram.
+//
+// The OTel SDK's default explicit boundaries are millisecond-shaped -- 0, 5,
+// 10, 25 ... 10000 -- and every histogram here records seconds. Under the
+// defaults a 200 microsecond flush and a 4 second flush land in the same
+// bucket, so histogram_quantile over any of these returned a number between 0
+// and 5 and meant nothing. Only _sum and _count worked.
+//
+// What breaks if this is wrong: an operator reads a p99 that is not a p99.
+func TestLatencyHistogramBucketsAreSecondsShaped(t *testing.T) {
+	coverage.Covers(t, "observability.metrics")
+	got := exportedBuckets(t)
+
+	for _, name := range []string{
+		"batch_processing_latency_seconds",
+		"phase_duration_seconds",
+		"sink_flush_latency_seconds",
+		"source_read_latency_seconds",
+		"state_commit_latency_seconds",
+	} {
+		bounds, ok := got[name]
+		assert.That(t, ok)
+		assert.DeepEqual(t, wantLatencyBuckets, bounds)
+	}
 }
 
 // TestStateCommitLatencyUnitIsNameNeutral guards the unit alignment.

@@ -19,11 +19,15 @@ type Metrics struct {
 	SinkFlushCount         metric.Int64Counter
 	BatchProcessingLatency metric.Float64Histogram
 	StateCommitLatency     metric.Float64Histogram
-	StateCommitCount       metric.Int64Counter
-	StateSizeBytes         metric.Int64Gauge
-	StateTableRows         metric.Int64Gauge
-	ReferenceTableRows     metric.Int64Gauge
-	ConsumerLag            metric.Int64Gauge
+	// PhaseDuration is how long each stage of a batch took, labelled with the
+	// same phase the error taxonomy uses. It is the only instrument that
+	// decomposes batch time, and the only latency that counts failures.
+	PhaseDuration      metric.Float64Histogram
+	StateCommitCount   metric.Int64Counter
+	StateSizeBytes     metric.Int64Gauge
+	StateTableRows     metric.Int64Gauge
+	ReferenceTableRows metric.Int64Gauge
+	ConsumerLag        metric.Int64Gauge
 
 	// Flat twins of the instruments above that carry attributes.
 	//
@@ -45,6 +49,29 @@ type Metrics struct {
 	// cannot: a websocket or webhook source has no offsets at all, and a
 	// per-partition lag is not one number.
 	PipelineLastMessage metric.Int64Gauge
+}
+
+// latencyBuckets is the boundary set every latency histogram declares.
+//
+// The OTel SDK's default explicit boundaries are millisecond-shaped -- 0, 5,
+// 10, 25 ... 10000 -- and every histogram here records seconds. Under the
+// defaults a 200 microsecond flush and a 4 second flush shared the le=5
+// bucket, so histogram_quantile over any latency series returned a number
+// between 0 and 5 that described nothing. Only _sum and _count carried
+// information.
+//
+// Declared as an instrument option rather than an SDK view, so every provider
+// inherits it -- including the ones tests build, which a view configured at
+// the exporter would miss.
+//
+// The floor is 100 microseconds because an in-memory sink flush and a
+// stateless commit really are that fast, and a soak run would otherwise pile
+// into the first bucket -- the same defect one decimal place further down. The
+// ceiling is 60 seconds because past a minute the question is no longer how
+// slow a phase is but whether it is stuck, which error_count answers.
+var latencyBuckets = []float64{
+	0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+	1, 2.5, 5, 10, 30, 60,
 }
 
 // NewMetrics builds the instruments from a meter provider. Passing a noop
@@ -96,6 +123,7 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		"source_read_latency",
 		metric.WithDescription("Latency of reading a message from the source"),
 		metric.WithUnit("seconds"),
+		metric.WithExplicitBucketBoundaries(latencyBuckets...),
 	); err != nil {
 		return nil, fmt.Errorf("source_read_latency: %w", err)
 	}
@@ -104,6 +132,7 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		"sink_flush_latency",
 		metric.WithDescription("Latency of flushing data to the sink"),
 		metric.WithUnit("seconds"),
+		metric.WithExplicitBucketBoundaries(latencyBuckets...),
 	); err != nil {
 		return nil, fmt.Errorf("sink_flush_latency: %w", err)
 	}
@@ -135,8 +164,31 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		"batch_processing_latency",
 		metric.WithDescription("Latency of processing a batch of data, from first message to flush"),
 		metric.WithUnit("seconds"),
+		metric.WithExplicitBucketBoundaries(latencyBuckets...),
 	); err != nil {
 		return nil, fmt.Errorf("batch_processing_latency: %w", err)
+	}
+
+	// The duration twin of error_count, carrying the same phase label.
+	//
+	// Three existing latencies overlap it and none answers the question. Two
+	// of them -- sink_flush_latency and state_commit_latency -- record after
+	// every error return, so a phase that fails contributes nothing however
+	// long it took. sink_flush_latency also spans WriteTable and Flush as one
+	// blob, which is a sink write and a sink flush added together. And
+	// handler.invoke, the SQL, had no metric at all: it appeared only in a
+	// debug log line nobody scrapes.
+	//
+	// Named phase_duration with unit "seconds" so the exporter yields
+	// phase_duration_seconds, the same way sink_flush_latency yields
+	// sink_flush_latency_seconds. Measured in TestExportedSeriesNames.
+	if m.PhaseDuration, err = meter.Float64Histogram(
+		"phase_duration",
+		metric.WithDescription("How long each stage of a batch took, whether or not it succeeded"),
+		metric.WithUnit("seconds"),
+		metric.WithExplicitBucketBoundaries(latencyBuckets...),
+	); err != nil {
+		return nil, fmt.Errorf("phase_duration: %w", err)
 	}
 
 	if m.ConsumerLag, err = meter.Int64Gauge(
@@ -151,6 +203,7 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		"state_commit_latency",
 		metric.WithDescription("Latency of committing state and offsets together"),
 		metric.WithUnit("seconds"),
+		metric.WithExplicitBucketBoundaries(latencyBuckets...),
 	); err != nil {
 		return nil, fmt.Errorf("state_commit_latency: %w", err)
 	}
