@@ -68,8 +68,15 @@ echo
 # A saturated producer, restarted for the length of the run. --throughput -1
 # means as fast as the broker will take it, so the pipeline is never waiting
 # for input and the message count is the largest the hardware allows.
+# retention.bytes caps the topic on disk. Ten minutes at this rate is tens of
+# gigabytes of messages, and a gate that fills the disk is worse than no gate.
+# A small segment makes the broker actually roll and delete; without it
+# everything stays in one active segment that retention never touches.
 docker exec "$kafka" kafka-topics --bootstrap-server "$broker" \
-  --create --topic "$topic" --partitions 1 --replication-factor 1 >/dev/null 2>&1 || true
+  --create --topic "$topic" --partitions 1 --replication-factor 1 \
+  --config retention.bytes=2147483648 \
+  --config retention.ms=60000 \
+  --config segment.bytes=134217728 >/dev/null 2>&1 || true
 
 # A payload file, not --record-size: the perf producer's own records are
 # random bytes, and the pipeline rejects them as malformed JSON, which is
@@ -82,14 +89,25 @@ docker exec "$kafka" sh -c "
              int(rand()*5)+1, rand()*50-10
   }' > /tmp/soak-payload.json"
 
+# Driven by a deadline, not a record count. A fixed count finishes early and
+# leaves the pipeline idle for the rest of the run, and an idle process holds
+# memory beautifully flat while proving nothing -- which is what the verdict's
+# volume check exists to catch, and did.
+#
+# Throttled just under what the engine consumes, so the consumer stays caught
+# up and retention only ever deletes messages it has already read. Unthrottled,
+# the producer outruns it and retention deletes unread data, which resets the
+# consumer to earliest and makes the message count meaningless.
+rate=${SOAK_RATE:-250000}
+deadline=$(( $(date +%s) + (minutes + 2) * 60 ))
 docker exec -d "$kafka" sh -c "
-  for i in \$(seq 1 $((minutes + 2))); do
+  while [ \$(date +%s) -lt $deadline ]; do
     kafka-producer-perf-test --topic $topic \
-      --num-records 4000000 --throughput -1 \
+      --num-records 20000000 --throughput $rate \
       --payload-file /tmp/soak-payload.json --payload-delimiter '\n' \
       --producer-props bootstrap.servers=$broker acks=1 >/dev/null 2>&1
   done"
-echo "producing to $topic at line rate"
+echo "producing to $topic at $rate msg/s until the run ends"
 
 config="$here/dev/config/soak/inferred.noop.yml"
 if [ ! -f "$config" ]; then
@@ -110,6 +128,24 @@ SOAK_FLAGS="--turbostats" \
 SOAK_POLL="/turbostats/v1" \
   bash "$skill/soak.sh" "$image" "$config" "$minutes" "$label"
 
+# The sampler leaves the container up so a failure can be inspected. A gate
+# should not: left alone it consumes at line rate until someone notices, and
+# the topic keeps its segments. Both go, unless the verdict fails, in which
+# case the container stays for the heap profiles beside it.
 echo
+set +e
 "$here/scripts/soak-verdict.py" "soak-$label/decomp.csv" \
   --max-bytes-per-msg "${SOAK_BYTES_PER_MSG:-1.0}"
+verdict=$?
+set -e
+
+if [ "$verdict" -eq 0 ]; then
+  docker rm -f "sqlflow-soak-$label" >/dev/null 2>&1 || true
+else
+  echo
+  echo "sqlflow-soak-$label left running; heap profiles are in soak-$label/"
+fi
+docker exec "$kafka" kafka-topics --bootstrap-server "$broker" \
+  --delete --topic "$topic" >/dev/null 2>&1 || true
+
+exit "$verdict"
