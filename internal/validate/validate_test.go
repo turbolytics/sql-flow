@@ -2,6 +2,7 @@ package validate
 
 import (
 	"context"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"os"
 	"testing"
 
@@ -93,4 +94,85 @@ func TestValidateNoSideEffects_CleanConfigIsOK(t *testing.T) {
 	rep, err := Validate(context.Background(), Request{Config: validSchemaConfig})
 	assert.NoError(t, err)
 	assert.That(t, rep.OK)
+}
+
+// A variable with no default is a declared required input, so an empty
+// substitution is not the config being wrong. checkTemplate already says so
+// and warns; the schema check used to fail on the consequence, and only the
+// error reached the reader because the CLI prints errors alone.
+//
+// The effect was that `config validate` could not run on a clean shell,
+// which is what #142 asked for, and a connection string had to carry a fake
+// default to pass. Nobody should put a bunk DSN in a production pipeline to
+// satisfy a linter.
+func TestValidateSchema_UnsuppliedVariableIsAWarningNotAnError(t *testing.T) {
+	coverage.Covers(t, "validate.schema", "validate.template")
+	rep, err := Validate(context.Background(), Request{
+		Path: "dsn.yml",
+		Config: `
+pipeline:
+  batch_size: 10
+  source:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: [t]
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: SELECT 1
+  sink:
+    type: clickhouse
+    clickhouse:
+      dsn: {{ SQLFLOW_CLICKHOUSE_DSN }}
+      table: events
+`,
+	})
+	assert.NoError(t, err)
+	assert.That(t, rep.OK)
+
+	var warnedAboutTheVariable, anyError bool
+	for _, d := range rep.Diagnostics {
+		if d.Severity == SeverityError {
+			anyError = true
+		}
+		if d.Code == string(errs.CodeConfigTemplateUndefined) {
+			warnedAboutTheVariable = true
+		}
+	}
+	// The reader still learns which variable to set: the warning survives,
+	// and the demoted schema diagnostic now carries the action.
+	assert.That(t, warnedAboutTheVariable)
+	assert.That(t, !anyError)
+}
+
+// The demotion is attributed by line, so a null the author wrote themselves,
+// on a line with no template reference, still fails.
+func TestValidateSchema_ANullTheAuthorWroteStillFails(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, err := Validate(context.Background(), Request{
+		Path: "blank.yml",
+		Config: `
+pipeline:
+  batch_size: 10
+  source:
+    type: kafka
+    kafka:
+      brokers: [localhost:9092]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: [t]
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: SELECT 1
+  sink:
+    type: clickhouse
+    clickhouse:
+      dsn:
+      table: events
+`,
+	})
+	assert.NoError(t, err)
+	assert.That(t, !rep.OK)
 }
