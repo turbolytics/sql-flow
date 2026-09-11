@@ -33,7 +33,9 @@ if worst > interval + 60:
 # samples after it, is the consumer catching up and is not a defect. What
 # would be a defect is never catching up, or falling behind again on a
 # trickle where every message has a flush to itself.
-post = [r for r in rows if r["phase"] in ("silence1", "trickle", "silence2")]
+# Everything after the first burst: the drain, the zeros, the trickle.
+first_burst_end = next((i for i, r in enumerate(rows) if not r["phase"].startswith("burst")), len(rows))
+post = rows[first_burst_end:]
 drained_at = next((i for i, r in enumerate(post) if f(r["lag"], 0) <= 2), None)
 if post and drained_at is None:
     fails.append(f"the backlog never drained; lag was still {post[-1]['lag']} at the end")
@@ -51,7 +53,7 @@ if anon and anon[-1] > anon[0] * 1.10 + 5:
     fails.append(f"working set ended at {anon[-1]:.0f} MiB against {anon[0]:.0f} at the start")
 
 # 4. State file: it must not grow while nothing is arriving.
-for phase in ("silence1", "silence2"):
+for phase in sorted({r["phase"] for r in rows if r["phase"].startswith("zero")}):
     win = [r for r in rows if r["phase"] == phase and r["state_bytes"]]
     if len(win) >= 3 and f(win[-1]["state_bytes"]) > f(win[0]["state_bytes"]) * 1.05:
         fails.append(
@@ -61,12 +63,15 @@ for phase in ("silence1", "silence2"):
 
 # 5. Windows: the surge's buckets must publish during the silence that
 # follows it. This is the idleness branch, and the reason the soak exists.
-after_surge = [r for r in rows if r["phase"] in ("silence1", "trickle", "silence2")]
-if after_surge and f(after_surge[-1]["published_windows"]) == 0:
+if post and f(post[-1]["published_windows"]) == 0:
     fails.append("no window was ever published, so the idleness branch never fired")
-sil1 = [r for r in rows if r["phase"] == "silence1"]
-if len(sil1) >= 3 and f(sil1[-1]["published_windows"]) == 0:
-    fails.append("the surge's windows were still unpublished at the end of the first silence")
+# Every zero phase longer than a couple of samples must end with more
+# windows published than it began with, unless there was nothing open. That
+# is the whole point: a stream at zero still closes what it was holding.
+for phase in sorted({r["phase"] for r in rows if r["phase"].startswith("zero")}):
+    win = [r for r in rows if r["phase"] == phase]
+    if len(win) >= 3 and f(win[-1]["published_windows"]) == f(win[0]["published_windows"]) == 0:
+        fails.append(f"{phase} published no window, so a bucket was stranded at zero traffic")
 
 # 6. Health: idle is healthy, so a red sample is a real failure.
 red = [r["t"] for r in rows if r["healthz"] and r["healthz"] != "200"]

@@ -38,17 +38,22 @@ Copy the directory first. A checkout under a running soak has bitten before.
       turbolytics/sql-flow:<tag> \
       run /conf/slow.yml --metrics=prometheus --with-http-debug
 
-    ./profile.sh kafka1 $TOPIC full > soak/profile.log 2>&1 &
-    ./sample.sh sqlflow-slow soak 160 | tee soak/live.log
+    ./profile.sh kafka1 $TOPIC medium > soak/profile.log 2>&1 &
+    ./sample.sh sqlflow-slow soak 22 | tee soak/live.log
     python3 verdict.py soak/samples.csv 30
 
-The full profile is about two and a half hours: five minutes of surge, an
-hour of silence, an hour of trickle with gaps, then half an hour of silence.
+`medium` is twenty minutes and is the one to run: two bursts, each followed
+by five minutes at zero, then a trickle and four more minutes at zero. What
+it proves is the shape that breaks things, traffic going to zero for longer
+than the window grace and then coming back.
 
-`short` in place of `full` runs a ten minute profile; give `sample.sh` 13
-minutes for it. Do the dry run first. It is how both harness defects so far
-were found, one in the sampler's cadence and one in a verdict rule that
-called a draining backlog a failure.
+`short` is ten minutes, for checking the harness itself; give `sample.sh`
+13 minutes. `full` is two and a half hours and exists only for something
+suspected of drifting slowly.
+
+Do a short run first when you change anything here. It is how both harness
+defects so far were found, one in the sampler's cadence and one in a
+verdict rule that called a draining backlog a failure.
 
 Do not map port 8000 or 6060 to the host unless you know they are free. The
 sampler reaches both through a sidecar on the container's network namespace,
