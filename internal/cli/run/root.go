@@ -23,9 +23,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/buildinfo"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/errs"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -76,6 +78,7 @@ func NewCommand() *cobra.Command {
 	var statsJSONPath string
 	var metricsExporter string
 	var withHTTPDebug bool
+	var serveTurbostats bool
 
 	var maxMsgsToProcess int
 
@@ -92,6 +95,10 @@ func NewCommand() *cobra.Command {
 			if levelErr != nil {
 				return levelErr
 			}
+
+			// Taken here, once. It is the TurboStats bundle's started_at, and
+			// a restart is the control plane seeing that value change.
+			startedAt := time.Now().UTC()
 
 			configPath, err := resolveConfigPath(configPath, args)
 			if err != nil {
@@ -126,7 +133,7 @@ func NewCommand() *cobra.Command {
 				context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stopSignals()
 
-			conf, err := config.Load(configPath, map[string]string{})
+			conf, rendered, err := config.LoadRendered(configPath, map[string]string{})
 			if err != nil {
 				// Returned as-is: the error already names the file, the stage and the
 				// code, so another prefix adds a word and no information.
@@ -267,7 +274,17 @@ func NewCommand() *cobra.Command {
 				startDebugServer(conn, lock, l)
 			}
 
-			meterProvider, err := newMeterProvider(metricsExporter, l, statsFn)
+			// What the bundle says this process is. ID stays empty until the
+			// pipeline.turbostats config block lands with the reporter.
+			static := turbostats.Static{
+				Pipeline:   conf.Pipeline.Name,
+				Version:    buildinfo.Version,
+				Commit:     buildinfo.Commit,
+				ConfigHash: turbostats.HashConfig(rendered),
+				StartedAt:  startedAt,
+			}
+
+			meterProvider, err := newMeterProvider(metricsExporter, serveTurbostats, static, l, statsFn)
 			if err != nil {
 				return err
 			}
@@ -314,7 +331,7 @@ func NewCommand() *cobra.Command {
 			// its destination stops the start instead of waiting it out.
 			sink, err := sinks.New(ctx, conf.Pipeline.Sink, conn,
 				sinks.WithMeterProvider(meterProvider),
-				sinks.WithSinkRole("pipeline"))
+				sinks.WithSinkRole(core.SinkRolePipeline))
 			if err != nil {
 				return err
 			}
@@ -454,6 +471,8 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&statsJSONPath, "stats-json", "", "Write final run stats as JSON to this path")
 	cmd.Flags().StringVar(&metricsExporter, "metrics", "", "Metrics exporter to enable (prometheus); serves /metrics on :8000")
 	cmd.Flags().BoolVar(&withHTTPDebug, "with-http-debug", false, "Serve GET /debug?sql=... against the live DuckDB connection on "+debugAddr)
+	cmd.Flags().BoolVar(&serveTurbostats, "turbostats", false,
+		"Serve GET /turbostats/v1 on "+metricsPort+": the process's own state as one document")
 
 	return cmd
 }

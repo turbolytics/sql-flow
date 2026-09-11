@@ -82,7 +82,7 @@ func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Op
 
 	role := o.role
 	if role == "" {
-		role = "pipeline"
+		role = core.SinkRolePipeline
 	}
 
 	policy := RetryPolicyFrom(sink.Retry)

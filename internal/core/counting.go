@@ -27,6 +27,12 @@ type counting struct {
 	written  metric.Int64Counter
 	attrs    metric.AddOption
 
+	// Flat twins, recorded only for the pipeline role. The DLQ's rows must
+	// not reach them: a pipeline would look healthier the more records it
+	// rejected. Nil for any other role, which is the switch.
+	flatAccepted metric.Int64Counter
+	flatWritten  metric.Int64Counter
+
 	mu      sync.Mutex
 	pending int64
 }
@@ -44,6 +50,14 @@ type countingBuffered struct {
 }
 
 func (c *countingBuffered) BufferedRows() int { return c.reporter.BufferedRows() }
+
+// SinkRolePipeline is the role of the sink a pipeline delivers through, as
+// opposed to its DLQ or a table manager's.
+//
+// Exported and shared with internal/sinks, which sets it, because the flat
+// row counters are recorded for this role alone. A second spelling of the
+// string would silently stop them recording.
+const SinkRolePipeline = "pipeline"
 
 // NewCountingSink wraps a sink so its rows are counted.
 //
@@ -87,6 +101,27 @@ func NewCountingSink(inner Sink, mp metric.MeterProvider, sinkType, role string)
 		),
 	}
 
+	// The flat twins exist for the pipeline role alone. The DLQ's rows must
+	// not reach them, or a pipeline looks healthier the more records it
+	// rejects. An error leaves them nil, which the record path already
+	// tolerates, for the same reason the two above return unwrapped.
+	if role == SinkRolePipeline {
+		if flat, err := meter.Int64Counter(
+			"pipeline_rows_accepted",
+			metric.WithDescription("Rows the pipeline sink buffered, excluding the DLQ's"),
+			metric.WithUnit("rows"),
+		); err == nil {
+			c.flatAccepted = flat
+		}
+		if flat, err := meter.Int64Counter(
+			"pipeline_rows_written",
+			metric.WithDescription("Rows the pipeline sink delivered, excluding the DLQ's"),
+			metric.WithUnit("rows"),
+		); err == nil {
+			c.flatWritten = flat
+		}
+	}
+
 	if reporter, ok := inner.(BufferedRowReporter); ok {
 		return &countingBuffered{counting: c, reporter: reporter}
 	}
@@ -107,6 +142,9 @@ func (c *counting) WriteTable(ctx context.Context, batch arrow.Table) error {
 	c.mu.Unlock()
 
 	c.accepted.Add(ctx, n, c.attrs)
+	if c.flatAccepted != nil {
+		c.flatAccepted.Add(ctx, n)
+	}
 	return nil
 }
 
@@ -129,6 +167,9 @@ func (c *counting) Flush(ctx context.Context) error {
 
 	if n > 0 {
 		c.written.Add(ctx, n, c.attrs)
+		if c.flatWritten != nil {
+			c.flatWritten.Add(ctx, n)
+		}
 	}
 	return nil
 }

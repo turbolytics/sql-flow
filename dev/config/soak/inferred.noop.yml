@@ -1,0 +1,29 @@
+# Control 1 from the memory-soak skill: source -> InferredMemBatch -> noop.
+# No ATTACH, no join, no sink that can hold anything. What grows here grows in
+# the handler or the consume loop, and nowhere else.
+#
+# The SQL matches the payload producer.sh emits: sensor_id, ts, value.
+pipeline:
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(500) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('kafka1:19092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('soak-inferred') }}
+      auto_offset_reset: earliest
+      topics:
+        - "{{ SQLFLOW_TOPIC|default('soak-input') }}"
+
+  handler:
+    type: "handlers.InferredMemBatch"
+    sql: |
+      SELECT
+        sensor_id,
+        COUNT(*) as readings,
+        AVG(value) as mean_value
+      FROM batch
+      GROUP BY sensor_id;
+
+  sink:
+    type: noop

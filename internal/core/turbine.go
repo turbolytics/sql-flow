@@ -473,6 +473,10 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		}
 		t.metrics.SourceReadLatency.Record(ctx, readLatency.Seconds())
 		t.metrics.MessageCount.Add(ctx, int64(len(msgBatch)))
+		// Once per batch, not per message: the cost is one gauge record
+		// against a whole batch, and a reader asking "is it still doing
+		// anything" cannot tell the two apart.
+		t.metrics.PipelineLastMessage.Record(ctx, time.Now().Unix())
 
 		for _, raw := range msgBatch {
 			if err := t.writeMessage(raw); err != nil {
@@ -590,6 +594,7 @@ func (t *Turbine) recordError(ctx context.Context, err error, phase, message str
 		attribute.String("code", string(code)),
 		attribute.String("phase", phase),
 	))
+	t.metrics.PipelineErrors.Add(ctx, 1)
 
 	t.logger.Error(message,
 		zap.Error(err),
@@ -761,6 +766,9 @@ func (t *Turbine) commitState(ctx context.Context) error {
 
 	t.metrics.StateCommitLatency.Record(ctx, time.Since(c0).Seconds())
 	t.metrics.StateCommitCount.Add(ctx, 1, t.resultAttrs(resultOK)...)
+	// Success only. The error path below records the dimensioned series and
+	// not this one, because a failed commit is not a commit.
+	t.metrics.PipelineCommits.Add(ctx, 1)
 	return nil
 }
 
@@ -860,6 +868,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 
 	t.metrics.SinkFlushLatency.Record(ctx, b2.Sub(b1).Seconds())
 	t.metrics.SinkFlushCount.Add(ctx, 1, t.resultAttrs(resultOK)...)
+	// Success only, for the same reason as PipelineCommits: the two error
+	// paths above record the dimensioned series and not this one.
+	t.metrics.PipelineFlushes.Add(ctx, 1)
 	if batch != nil {
 		t.metrics.SinkFlushNumRows.Record(ctx, batch.NumRows())
 	}
