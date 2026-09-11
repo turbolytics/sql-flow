@@ -944,3 +944,57 @@ def test_error_dlq_diverts_a_batch_the_handler_cannot_query(image, stack):
     assert 'Binder Error: Referenced column "broken" not found' in record["error"]
     assert record["message"] == "Handler invocation failed"
     assert record["phase"] == "handler.invoke"
+
+
+@pytest.mark.covers("observability.turbostats")
+def test_turbostats_endpoint_serves_the_bundle(image, stack):
+    """The shipped image answers /turbostats/v1 with a bundle whose version
+    is the one stamped into the image.
+
+    Driven against the real binary rather than the handler, because what
+    ships is the flag, the mux and the link-time stamp together, and a unit
+    test proves none of those. The stamp in particular: it moved packages,
+    and a build script that missed the move reports "dev" here.
+    """
+    topic = f"turbostats-{int(time.time())}"
+
+    with container_writable_dir() as state_dir:
+        container = DockerContainer(image) \
+            .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+            .with_volume_mapping(state_dir, "/state", "rw") \
+            .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
+            .with_env("SQLFLOW_STATE_PATH", "/state/state.db") \
+            .with_env("SQLFLOW_TOPIC", topic) \
+            .with_env("SQLFLOW_GROUP_ID", topic) \
+            .with_exposed_ports(8000) \
+            .with_network(stack.network) \
+            .with_command(
+                "run /tmp/conf/config/examples/kafka.stateful.window.yml --turbostats")
+        container.start()
+        try:
+            wait_for_logs(container, "consumer loop starting", timeout=90)
+            port = container.get_exposed_port(8000)
+            resp = requests.get(
+                f"http://localhost:{port}/turbostats/v1", timeout=10)
+        finally:
+            container.stop()
+
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"] == \
+        "application/vnd.turbolytics.turbostats.v1+json"
+
+    bundle = resp.json()
+    assert bundle["v"] == 1
+
+    stdout, _ = run_docker_container(image, "version")
+    stamped = stdout.splitlines()[0].split()[1]
+    assert bundle["instance"]["version"] == stamped, (
+        f"bundle says {bundle['instance']['version']}, image says {stamped}")
+
+    assert bundle["process"]["rss_bytes"] > 0
+    assert bundle["process"]["goroutines"] > 0
+    assert bundle["instance"]["config_hash"].startswith("sha256:")
+    # This config declares a state path, so the field is present.
+    assert bundle["pipeline"]["state_db_size_bytes"] > 0
+    # Histograms never reach the bundle.
+    assert "latency" not in json.dumps(bundle)

@@ -169,6 +169,10 @@ features:
     description: Exports pipeline counters and histograms over Prometheus.
     requires: [unit]
 
+  - id: observability.turbostats
+    description: Reports the process's own state as one versioned document, served at /turbostats/v1.
+    requires: [unit, release]
+
   - id: observability.debug_api
     description: Serves ad-hoc SQL against the live DuckDB connection.
     requires: [unit]
