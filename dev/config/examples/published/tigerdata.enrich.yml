@@ -1,0 +1,52 @@
+# Published in the TigerData docs: integrate/data-ingestion-streaming/sqlflow.
+# A stream of device readings from Kafka, enriched per batch by joining a
+# reference table that lives in the service, landed in a hypertable.
+commands:
+  - name: load the postgres extension
+    sql: |
+      INSTALL postgres;
+      LOAD postgres;
+
+  # One attach serves both directions: the join reads devices from it and
+  # the sink inserts readings into it. The DSN is a required input with no
+  # default on purpose; a production pipeline should not carry a bunk one.
+  - name: attach the service
+    sql: |
+      ATTACH '{{ SQLFLOW_TIGERDATA_DSN }}' AS tiger (TYPE POSTGRES);
+
+pipeline:
+  name: tigerdata-enrich
+  description: "Enrich a stream of readings with device metadata from the service, and land them in a hypertable"
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default('500') }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('tigerdata-enrich') }}
+      auto_offset_reset: earliest
+      topics:
+        - "{{ SQLFLOW_TOPIC|default('readings') }}"
+
+  # LEFT JOIN, so a reading from a device the reference table does not know
+  # still lands, with site and model NULL, rather than being dropped.
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT
+        CAST(batch.ts AS TIMESTAMPTZ) AS time,
+        batch.device_id,
+        devices.site,
+        devices.model,
+        batch.value
+      FROM batch
+      LEFT JOIN tiger.{{ SQLFLOW_TIGERDATA_SCHEMA|default('public') }}.devices AS devices
+        ON batch.device_id = devices.device_id
+
+  sink:
+    type: sqlcommand
+    sqlcommand:
+      sql: |
+        INSERT INTO tiger.{{ SQLFLOW_TIGERDATA_SCHEMA|default('public') }}.readings
+          (time, device_id, site, model, value)
+        SELECT time, device_id, site, model, value FROM sqlflow_sink_batch

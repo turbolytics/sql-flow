@@ -14,6 +14,7 @@ generated JSON schema.
 | `clickhouse.taxi.yml` | ClickHouse docs, the NYC taxi walkthrough |
 | `clickhouse.bluesky.yml` | ClickHouse docs, the WebSocket example |
 | `motherduck.bluesky.websocket.yml` | MotherDuck cookbook, `sqlflow-streaming-websocket` |
+| `tigerdata.enrich.yml` | TigerData docs, `integrate/data-ingestion-streaming/sqlflow` |
 
 When a page changes, change the file here first and copy it out. When the
 engine changes, CI tells you which published page needs an edit before a
