@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -35,7 +36,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 		Offsets:   []core.OffsetStat{{Topic: "events", Partition: 0, Offset: 999, LeaderEpoch: 7}},
 	}
 
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return want, nil })
+	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return want, nil }, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -62,7 +63,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 // endpoint stays useful for the counters even when nothing is durable.
 func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return nil, nil })
+	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return nil, nil }, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -80,7 +81,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T
 	coverage.Covers(t, "observability.metrics")
 	mux := newHTTPMux(nil, func() (*core.StateStats, error) {
 		return nil, errors.New("state database unreadable")
-	})
+	}, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -91,7 +92,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T
 // endpoint must not be registered as a half-working route.
 func TestObservabilityMetrics_StatsHandler_AbsentWithoutAProvider(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, nil)
+	mux := newHTTPMux(nil, nil, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))

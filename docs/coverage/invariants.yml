@@ -310,12 +310,16 @@ invariants:
     class: liveness
     applies_to: pipeline
     claim: >
-      A configuration that cannot make progress fails at startup rather than
-      running quietly. flush_interval_seconds of 0 removes the ticker
-      entirely, so a batch a low-traffic topic never fills waits forever.
-      Unenforced and untracked: the engine permits the configuration today.
+      A configuration cannot remove the flush ticker. flush_interval_seconds
+      absent, zero or negative all run with the thirty second default, so a
+      batch a low-traffic topic never fills still leaves on time. This entry
+      previously claimed the opposite, that zero removed the ticker and
+      stalled such a topic forever; the run command has always defaulted it,
+      and TestCliInvocation_FlushIntervalNeverZero now pins every value a
+      config can produce.
     verified_by: harness
     requires: []
+    enforced: true
 
   - id: lifecycle.drain.bounded
     family: lifecycle
