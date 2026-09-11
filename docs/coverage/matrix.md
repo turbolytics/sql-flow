@@ -52,6 +52,7 @@ added, and this page changes only when a status does.
 | `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — |
 | `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — |
 | `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — |
+| `observability.turbostats` | Reports the process's own state as one versioned document, served at /turbostats/v1. | ✅ | — | ✅ |
 | `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — |
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ |
@@ -59,7 +60,7 @@ added, and this page changes only when a status does.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**36 features declared. 36 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**37 features declared. 37 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
