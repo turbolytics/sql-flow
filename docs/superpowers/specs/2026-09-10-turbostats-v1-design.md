@@ -140,7 +140,11 @@ Made in the design conversation. Each one closes a fork.
 `internal/core/counting.go` that is a counter or a dimensionless gauge, named
 for the instrument. Counters are the total since `started_at`. Gauges are the
 value now. An instrument that carries attributes is summed across them, so
-`consumer_lag` is the sum over partitions. `state_db_size_bytes` comes from
+`consumer_lag` is the sum over partitions, with one exception: a data point
+whose `role` attribute is not `pipeline` is skipped. The DLQ sink records
+`sink_rows_accepted` and `sink_rows_written` with `role=dlq` so its rows
+never sum into the pipeline's delivered series, and the bundle keeps them
+out the same way. `state_db_size_bytes` comes from
 the same stats function `/stats` uses, and is omitted, not zero, when the
 pipeline has no state path: absent state and empty state are different facts.
 
@@ -162,6 +166,7 @@ and the bound is the reason histograms and per-table gauges are out.
 // Static is what the run command knows once and the package cannot learn.
 type Static struct {
     ID, Pipeline, Version, Commit, ConfigHash string
+    StartedAt                                 time.Time
 }
 
 // Collect builds one bundle. It is the only function that does.
