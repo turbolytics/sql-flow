@@ -50,15 +50,26 @@ tables:
           #
           # The trade: the newest window waits for a later one, so a stream
           # that stops leaves its final window unpublished.
+          #
+          # The second branch is the idleness bound. A stream that goes quiet
+          # never moves its own clock, so the first branch alone would hold
+          # the newest window open until data a full grace newer arrived: a
+          # surge that stops leaves its last bucket unpublished forever.
+          # sqlflow_progress is the engine's one-row liveness table and
+          # last_arrival is when the newest batch was written, so after a
+          # grace of silence every open window closes. It is TIMESTAMPTZ, so
+          # the comparison holds whatever timezone the host runs in.
         tumbling_window:
           poll_interval_seconds: 10
           collect_closed_windows_sql: |
             SELECT bucket, lang, posts
             FROM posts_per_minute_by_lang
             WHERE bucket + INTERVAL '1 minute' < (SELECT max(bucket) FROM posts_per_minute_by_lang) - INTERVAL '60 seconds'
+               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '1 minute'
           delete_closed_windows_sql: |
             DELETE FROM posts_per_minute_by_lang
             WHERE bucket + INTERVAL '1 minute' < (SELECT max(bucket) FROM posts_per_minute_by_lang) - INTERVAL '60 seconds'
+               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '1 minute'
 
         sink:
           type: sqlcommand

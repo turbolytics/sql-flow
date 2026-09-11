@@ -42,8 +42,8 @@ func NewProgressStore(conn adbc.Connection) *ProgressStore {
 func (s *ProgressStore) Init(ctx context.Context) error {
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS ` + progressTable + ` (
-		    last_arrival TIMESTAMP,
-		    last_commit  TIMESTAMP,
+		    last_arrival TIMESTAMPTZ,
+		    last_commit  TIMESTAMPTZ,
 		    messages     BIGINT NOT NULL
 		)`,
 		`INSERT INTO ` + progressTable + ` (last_arrival, last_commit, messages)
@@ -56,14 +56,23 @@ func (s *ProgressStore) Init(ctx context.Context) error {
 	return nil
 }
 
+// utcLiteral renders an instant with its offset, so the value carries a zone
+// rather than borrowing the session's. The columns are TIMESTAMPTZ for the
+// same reason: a predicate writes `now() - last_arrival` and gets the right
+// answer whatever timezone the server runs in. Written as TIMESTAMP against a
+// UTC instant, a server in New York read the difference as four hours in the
+// future and never closed a window.
+func utcLiteral(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05.999999-07:00")
+}
+
 // Record rewrites the row. A zero LastArrival is left as it was, which is how
 // an idle tick moves the commit clock without touching the arrival clock.
 func (s *ProgressStore) Record(ctx context.Context, p Progress) error {
-	q := fmt.Sprintf(`UPDATE %s SET last_commit = TIMESTAMP '%s', messages = %d`,
-		progressTable, p.LastCommit.UTC().Format("2006-01-02 15:04:05.999999"), p.Messages)
+	q := fmt.Sprintf(`UPDATE %s SET last_commit = TIMESTAMPTZ '%s', messages = %d`,
+		progressTable, utcLiteral(p.LastCommit), p.Messages)
 	if !p.LastArrival.IsZero() {
-		q += fmt.Sprintf(`, last_arrival = TIMESTAMP '%s'`,
-			p.LastArrival.UTC().Format("2006-01-02 15:04:05.999999"))
+		q += fmt.Sprintf(`, last_arrival = TIMESTAMPTZ '%s'`, utcLiteral(p.LastArrival))
 	}
 	if err := s.exec(ctx, q); err != nil {
 		return fmt.Errorf("recording progress: %w", err)
