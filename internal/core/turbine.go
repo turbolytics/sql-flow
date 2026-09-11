@@ -217,6 +217,9 @@ type Turbine struct {
 	// commits counts successful state commits, for tests that wait on ticks.
 	// Guarded by lock.
 	commits int64
+	// progressWrittenAt is when the progress table was last written, which
+	// bounds how often the statement runs. Guarded by lock.
+	progressWrittenAt time.Time
 
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
@@ -293,6 +296,12 @@ func (t *Turbine) commitCount() int64 {
 	return t.commits
 }
 
+// progressWriteInterval bounds how often sqlflow_progress is written. The
+// snapshot behind /stats and /healthz is updated on every commit regardless;
+// this is only the SQL-visible copy, whose one reader compares it against a
+// grace measured in tens of seconds.
+const progressWriteInterval = time.Second
+
 // recordProgress runs at the top of every commit, before the state guard.
 //
 // Two audiences, and they are not the same requirement. The snapshot is what
@@ -323,7 +332,25 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	t.snapshot.LastCommit = now
 	t.snapshot.Messages = p.Messages
 	t.batchSinceCommit = false
+	due := now.Sub(t.progressWrittenAt) >= progressWriteInterval
+	if due {
+		t.progressWrittenAt = now
+	}
 	t.lock.Unlock()
+
+	// The snapshot above is exact and free. The table is not: one UPDATE
+	// through ADBC measures about 112 microseconds, and a batch of 5000 at a
+	// million messages a second commits two hundred times a second, so
+	// writing it on every commit costs a few percent of throughput.
+	// BenchmarkCommitState is where that number comes from.
+	//
+	// Nothing needs it on every commit. The only reader is a window
+	// predicate comparing last_arrival against a grace measured in tens of
+	// seconds, so a value up to progressWriteInterval stale makes a window
+	// close that much late and never early, which is the safe direction.
+	if !due {
+		return
+	}
 	if err := t.progress.Record(ctx, p); err != nil {
 		t.logger.Warn("recording progress", zap.Error(err))
 	}
