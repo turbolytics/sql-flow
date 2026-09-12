@@ -1,4 +1,4 @@
-# Published in the TigerData docs: integrate/data-ingestion-streaming/sqlflow.
+# Published at turbolytics.io/docs/sqlflow/tutorials/tigerdata-enrich.
 # A stream of device readings from Kafka, enriched per batch by joining a
 # reference table that lives in the service, landed in a hypertable.
 commands:
@@ -44,7 +44,7 @@ pipeline:
         ON batch.device_id = devices.device_id
 
   # Delivery is at-least-once: a crash between this insert and the offset
-  # commit replays the batch on restart. The unique index on (time,
+  # commit replays the batch on restart. The primary key on (time,
   # device_id) plus ON CONFLICT DO NOTHING makes the replay a no-op.
   sink:
     type: sqlcommand
