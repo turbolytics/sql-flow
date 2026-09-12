@@ -408,6 +408,16 @@ func NewCommand() *cobra.Command {
 			// Managers run for the lifetime of the pipeline. Cancelling their
 			// context makes each publish one final time before returning, so
 			// windows that close during shutdown are not stranded.
+			//
+			// A manager that stops is a pipeline that has stopped publishing,
+			// whatever the consume loop is still doing: a windowed pipeline's
+			// entire output goes through its manager. So a manager failure
+			// cancels the run, the loop drains as it would on SIGTERM, and the
+			// manager's error is what the process exits with. Before #267 the
+			// failure was logged and the loop kept consuming into a table
+			// nothing would ever publish.
+			runCtx, failRun := context.WithCancelCause(ctx)
+			defer failRun(nil)
 			managerCtx, stopManagers := context.WithCancel(context.Background())
 			var managerWG sync.WaitGroup
 			for _, m := range managedTables {
@@ -416,6 +426,7 @@ func NewCommand() *cobra.Command {
 					defer managerWG.Done()
 					if err := m.Start(managerCtx); err != nil {
 						l.Error("table manager stopped", zap.Error(err))
+						failRun(err)
 					}
 				}(m)
 			}
@@ -456,12 +467,20 @@ func NewCommand() *cobra.Command {
 				statusWG.Wait()
 			}()
 
-			stats, err := turbine.ConsumeLoop(ctx, maxMsgs)
+			stats, err := turbine.ConsumeLoop(runCtx, maxMsgs)
 			// Restore default signal handling for the rest of the shutdown.
 			// The deferred drain below still has to run. Leaving the handler
 			// installed would swallow a second SIGTERM, so an operator could
 			// not interrupt a drain that hangs.
 			stopSignals()
+			// A cause other than plain cancellation is a manager's error. It
+			// outranks whatever the loop returned: the loop was stopped on
+			// purpose, and the manager's error carries the code a supervisor
+			// reads.
+			if cause := context.Cause(runCtx); cause != nil && cause != context.Canceled {
+				l.Error("table manager failed, pipeline stopped", zap.Error(cause))
+				return cause
+			}
 			if err != nil {
 				l.Error("failed to consume loop", zap.Error(err))
 				return err

@@ -307,6 +307,44 @@ func TestManagerTumblingWindow__RetriesAfterAFailedPoll(t *testing.T) {
 	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
 }
 
+// A poll the sink refuses stops the loop. Start returns the error after one
+// attempt, with the windows still in the table for a restart to publish.
+//
+// Before #267 Start logged the error and polled again, so a window the
+// destination rejected was collected, written and refused every tick for as
+// long as the process lived, and the container reported healthy throughout.
+// The sink runs its own retry ladder before an error reaches the manager, so
+// a second attempt here repeats a retry the ladder already exhausted.
+func TestManagerTumblingWindow__StartReturnsTheFirstFailedPoll(t *testing.T) {
+	coverage.Covers(t, "manager.tumbling_window")
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &failingSink{}
+	sink.failFlush.Store(true)
+	m := newTestTumbling(conn, &sink.recordingSink)
+	m.sink = sink
+
+	// Never cancelled: the claim is that the loop stops on its own.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- m.Start(ctx) }()
+
+	select {
+	case err := <-done:
+		assert.Error(t, err)
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("the sink rejected every flush and Start kept polling")
+	}
+
+	// Two closed and one open: nothing was deleted.
+	assert.Equal(t, int64(3), countRows(t, conn, "agg_cities_count"))
+}
+
 // A broken delete statement must surface as an error rather than silently
 // republishing the same window on every poll.
 func TestManagerTumblingWindow__DeleteFailureIsReported(t *testing.T) {
@@ -434,49 +472,6 @@ func TestManagerTumblingWindow__FinalPollOnShutdownPublishesAClosedWindow(t *tes
 	rows, _ = sink.counts()
 	assert.Equal(t, int64(2), rows)
 	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
-}
-
-// A failing poll must not kill the manager: the rows stay and the next tick
-// retries them.
-func TestManagerTumblingWindow__StartSurvivesAFailedPoll(t *testing.T) {
-	coverage.Covers(t, "manager.tumbling_window")
-	conn, cleanup := newTestConn(t)
-	defer cleanup()
-	seedWindows(t, conn)
-
-	sink := &failingSink{}
-	sink.failFlush.Store(true)
-	m := NewTumbling(conn, collectSQL, deleteSQL, 5*time.Millisecond,
-		&sink.recordingSink, &sync.Mutex{})
-	m.sink = sink
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- m.Start(ctx) }()
-
-	time.Sleep(60 * time.Millisecond)
-	sink.failFlush.Store(false)
-
-	deadline := time.After(5 * time.Second)
-	for {
-		if rows, _ := sink.recordingSink.counts(); rows >= 2 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("manager stopped polling after a failure")
-		default:
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		assert.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Start did not return after cancellation")
-	}
 }
 
 // --- Interaction with the pipeline's state transaction ---------------------
