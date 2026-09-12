@@ -72,6 +72,15 @@ func WithLogger(l *zap.Logger) TumblingOption {
 
 // Start polls until the context is cancelled, then polls once more so windows
 // that closed during the final interval are not stranded in the table.
+//
+// A failed poll returns. The rows are still in the table, because Poll
+// deletes only after the sink accepted them, so a restart republishes the
+// same window. What Start does not do is retry in place: the sink already ran
+// its retry ladder before the error reached here, so what arrives is either a
+// destination that rejected the rows or one that stayed unreachable past the
+// deadline. Before #267 the loop logged the error and polled again, and a
+// rejected window was collected, written and refused every tick for as long
+// as the process lived, with the container reporting healthy throughout.
 func (m *Tumbling) Start(ctx context.Context) error {
 	m.logger.Info("starting tumbling window manager",
 		zap.Duration("poll_interval", m.pollInterval))
@@ -83,13 +92,13 @@ func (m *Tumbling) Start(ctx context.Context) error {
 		select {
 		case <-ticker.C:
 			if err := m.Poll(ctx); err != nil {
-				// A failed poll must not kill the manager: the next tick
-				// retries, and the rows are still in the table.
-				m.logger.Error("poll failed", zap.Error(err))
+				m.logger.Error("poll failed, stopping the manager", zap.Error(err))
+				return fmt.Errorf("tumbling window manager: %w", err)
 			}
 		case <-ctx.Done():
 			if err := m.Poll(context.Background()); err != nil {
 				m.logger.Error("final poll failed", zap.Error(err))
+				return fmt.Errorf("tumbling window manager: final poll: %w", err)
 			}
 			return nil
 		}

@@ -1,7 +1,7 @@
 # The invariants every integration must hold, and the evidence each requires.
 #
 # This file is declared, not derived, for the reason features.yml gives: the
-# failure it catches is an integration with no evidence at all. Seven of these
+# failure it catches is an integration with no evidence at all. Eight of these
 # have been violated and fixed since v1.0.4, and each of those rows names the
 # fix.
 #
@@ -377,3 +377,58 @@ invariants:
     verified_by: harness
     requires: []
     tracked_by: "#166"
+
+  # --- Managers: a second loop that reaches a sink ------------------------
+  # A table manager collects the windows that have closed, flushes them, and
+  # deletes them from the state table. The delete is its commit, so these are
+  # the consume loop's checkpoint claims restated for it, plus the liveness a
+  # poll loop owes on its own. The manager is not a sink and not a handler:
+  # it has a commit step and a liveness obligation, and a handler has
+  # neither. internal/conformance drives it the way it drives the loop.
+  - id: manager.delete.after_flush
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      Closed windows leave the state table only after the sink acknowledged
+      them. The table still holds every one of them when Flush runs.
+    verified_by: harness
+    requires: []
+    enforced: true
+
+  - id: manager.delete.nothing_on_failure
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      A failed flush deletes nothing. Every closed window stays in the state
+      table for the next attempt.
+    verified_by: harness
+    requires: []
+    enforced: true
+
+  - id: manager.publish.eventually
+    family: lifecycle
+    class: liveness
+    applies_to: manager
+    claim: >
+      A closed window reaches the sink without anything else happening. The
+      loop polls on its own, and a window that closes is published.
+    verified_by: harness
+    requires: []
+    enforced: true
+
+  - id: manager.failure.exits
+    family: lifecycle
+    class: liveness
+    applies_to: manager
+    claim: >
+      A poll the sink refuses stops the manager with the sink's error, after
+      one attempt, and the process exits with its code. The sink ran its
+      retry ladder before the error arrived, so the manager does not retry in
+      place, and a window the destination will not take is never collected,
+      written and refused every tick while the process reports healthy.
+    verified_by: harness
+    requires: []
+    enforced: true
+    violated_once: ["#267"]

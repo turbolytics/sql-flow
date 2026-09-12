@@ -1,0 +1,14 @@
+# The tumbling window manager. A second loop that reaches a sink: collect
+# the closed windows, flush them, delete them from the state table. The
+# delete is its commit, so its invariants are the consume loop's restated
+# for that commit, plus the liveness a poll loop owes on its own.
+#
+# `constructed: false` because no constructor switch lists managers:
+# buildManagedTables builds the one kind there is. Kinds() must not be held
+# equal to this entry.
+id: manager.tumbling_window
+kind: manager
+constructed: false
+implements: [Manager]
+feature: manager.tumbling_window
+exempt: []
