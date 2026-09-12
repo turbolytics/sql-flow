@@ -288,3 +288,72 @@ func TestSinkRetry_PolicyFromOverridesOnlyWhatIsSet(t *testing.T) {
 	assert.Equal(t, DefaultRetryInitialBackoff, p.InitialBackoff)
 	assert.Equal(t, DefaultRetryMaxBackoff, p.MaxBackoff)
 }
+
+// A column type the sink cannot convert fails identically every attempt.
+// Before the class rule, this code was not on retryable's list, so the ladder
+// re-encoded the same batch four times and reported the destination as
+// unreachable (#233).
+func TestSinkRetry_DoesNotRetryAnUnsupportedType(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkTypeUnsupported, "time64 is not supported")}
+	r, slept := newTestRetry(inner, testPolicy())
+
+	err := r.Flush(context.Background())
+
+	assert.Error(t, err)
+	assert.Equal(t, 1, inner.attempts)
+	assert.Equal(t, 0, len(*slept))
+	assert.Equal(t, errs.CodeSinkTypeUnsupported, errs.CodeOf(err))
+}
+
+// A value the driver refused while building the batch never reached the
+// destination, and sending it again changes nothing.
+func TestSinkRetry_DoesNotRetryAnEncodeFailure(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	inner := &flakySink{failures: 99, err: errs.New(errs.CodeSinkEncodeFailed, "dt_plain parsing time")}
+	r, slept := newTestRetry(inner, testPolicy())
+
+	err := r.Flush(context.Background())
+
+	assert.Error(t, err)
+	assert.Equal(t, 1, inner.attempts)
+	assert.Equal(t, 0, len(*slept))
+	assert.Equal(t, errs.CodeSinkEncodeFailed, errs.CodeOf(err))
+}
+
+// The rule is the class, not a list. Every user code the registry holds
+// makes exactly one attempt, including ones added after this test.
+func TestSinkRetry_NoUserCodeIsRetried(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	for _, d := range errs.All() {
+		if !d.Code.IsUser() {
+			continue
+		}
+		inner := &flakySink{failures: 99, err: errs.New(d.Code, "x")}
+		r, _ := newTestRetry(inner, testPolicy())
+
+		err := r.Flush(context.Background())
+
+		assert.Error(t, err)
+		if inner.attempts != 1 {
+			t.Errorf("%s: made %d attempts on a user error", d.Code, inner.attempts)
+		}
+		assert.Equal(t, d.Code, errs.CodeOf(err))
+	}
+}
+
+// An uncoded error that never clears runs the whole ladder and ends as
+// unreachable. Pinned so a tidy-up of the class rule cannot turn a driver
+// timeout nobody classified into a terminal failure.
+func TestSinkRetry_UncodedErrorRunsTheWholeLadder(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	inner := &flakySink{failures: 99, err: errors.New("i/o timeout")}
+	p := testPolicy()
+	r, _ := newTestRetry(inner, p)
+
+	err := r.Flush(context.Background())
+
+	assert.Error(t, err)
+	assert.Equal(t, p.MaxAttempts, inner.attempts)
+	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
+}

@@ -108,7 +108,7 @@ until an invariant's `requires` is filled in, and none is yet.
 | `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt |
 | `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
 | `sink.buffer.reports_depth` | A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
-| `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt | ❌ missing |
+| `sink.error.classifies` | The sink's errors classify as unreachable, rejected, or a user fault, so the retry ladder retries only the first. A value the sink's client cannot encode is a user fault: it never reaches the network and fails the same way every attempt. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt | ❌ missing |
 | `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt |
 
 ## Safety invariants: checkpoint

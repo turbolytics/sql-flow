@@ -2,12 +2,15 @@ package sinks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/column"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -526,4 +529,62 @@ func TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone(t *testing.T) {
 	assert.Equal(t, "2026-09-01 12:00:00", ts)
 	assert.Equal(t, "2026-09-01 12:00:00.123", ts64)
 	assert.Equal(t, "2026-09-01", d)
+}
+
+// stubBatch is a driver.Batch that refuses every Append. The driver's real
+// batch does the same thing in memory and touches no connection until Send,
+// so a fake is a faithful stand-in for the failure this tests.
+type stubBatch struct {
+	appendErr error
+	aborted   bool
+}
+
+func (b *stubBatch) Abort() error                  { b.aborted = true; return nil }
+func (b *stubBatch) Append(v ...any) error         { return b.appendErr }
+func (b *stubBatch) AppendStruct(v any) error      { return b.appendErr }
+func (b *stubBatch) Column(int) driver.BatchColumn { return nil }
+func (b *stubBatch) Flush() error                  { return nil }
+func (b *stubBatch) Send() error                   { return nil }
+func (b *stubBatch) IsSent() bool                  { return false }
+func (b *stubBatch) Rows() int                     { return 0 }
+func (b *stubBatch) Columns() []column.Interface   { return nil }
+func (b *stubBatch) Close() error                  { return nil }
+
+// A value the driver refuses while building the batch is a user fault that
+// fails the same way every attempt. Returned uncoded, the retry ladder
+// re-encoded it four times and reported the destination unreachable (#233).
+func TestSinkClickhouse_ADriverRefusedValueCarriesEncodeFailed(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+
+	driverErr := errors.New(`clickhouse [AppendRow]: dt_plain parsing time "2026-09-01T12:00:00Z" as "2006-01-02 15:04:05": cannot parse "T12:00:00Z" as " "`)
+	batch := &stubBatch{appendErr: driverErr}
+
+	schema := arrow.NewSchema([]arrow.Field{{Name: "dt_plain", Type: arrow.BinaryTypes.String}}, nil)
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	defer b.Release()
+	b.Field(0).(*array.StringBuilder).Append("2026-09-01T12:00:00Z")
+	rec := b.NewRecord()
+	defer rec.Release()
+	table := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer table.Release()
+
+	err := appendTables(batch, []column.Type{"DateTime"}, []arrow.Table{table})
+
+	assert.Error(t, err)
+	if !errs.HasCode(err, errs.CodeSinkEncodeFailed) {
+		t.Fatalf("code = %s, want %s", errs.CodeOf(err), errs.CodeSinkEncodeFailed)
+	}
+	// The driver names the column and quotes the value. That text is the
+	// operator's only pointer to the bad row and has to survive the wrap.
+	assert.True(t, errors.Is(err, driverErr))
+}
+
+// The value from #233 misses every layout the sink accepts, so it reaches the
+// driver unchanged. This documents the precondition for the encode path; it
+// is not a claim the value should fail. Accepting RFC 3339 is a separate
+// type-matrix change.
+func TestSinkClickhouse_ISO8601WithTAndZReachesTheDriver(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+	_, ok := temporalFromString(column.Type("DateTime"), "2026-09-01T12:00:00Z")
+	assert.False(t, ok)
 }

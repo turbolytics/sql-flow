@@ -120,8 +120,10 @@ invariants:
     class: safety
     applies_to: sink
     claim: >
-      The sink's errors classify as unreachable or rejected, so the retry
-      ladder retries the right ones.
+      The sink's errors classify as unreachable, rejected, or a user fault,
+      so the retry ladder retries only the first. A value the sink's client
+      cannot encode is a user fault: it never reaches the network and fails
+      the same way every attempt.
     verified_by: harness
     requires: []
 

@@ -160,16 +160,24 @@ func grow(d, max time.Duration) time.Duration {
 
 // retryable reports whether another attempt could plausibly succeed.
 //
-// A rejected write and a bad configuration fail identically every time, so
-// retrying them only delays the report past the deadline. Everything else is
-// retried, including errors carrying no code: a driver's timeout or reset
-// arrives unclassified, and those are exactly the failures this exists for.
-// The deadline bounds the cost of guessing wrong.
+// The rule is by class, not by a list of codes. A list retries whatever it
+// did not anticipate: user.sink.type_unsupported was never on it, so a column
+// the sink could not convert ran the whole ladder and was reported as
+// unreachable (#233).
+//
+//	Class user               never retried   the config, SQL or data is wrong,
+//	                                         and fails identically every time
+//	system.sink.write_failed never retried   the destination answered and refused
+//	system.sink.unreachable  retried         the destination may come back
+//	uncoded                  retried         a driver's timeout or reset arrives
+//	                                         unclassified; the deadline bounds
+//	                                         the cost of guessing wrong
+//	any other system code    retried
+//
+// README "Sink retries" states the same table for operators. Change both.
 func retryable(err error) bool {
-	switch errs.CodeOf(err) {
-	case errs.CodeSinkWriteFailed, errs.CodeSinkInvalid, errs.CodeConfigInvalid:
+	if errs.ClassOf(err) == errs.ClassUser {
 		return false
-	default:
-		return true
 	}
+	return !errs.HasCode(err, errs.CodeSinkWriteFailed)
 }
