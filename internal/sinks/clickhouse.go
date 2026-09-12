@@ -276,7 +276,11 @@ func appendTables(batch driver.Batch, types []column.Type, tables []arrow.Table)
 				}
 				if err := batch.Append(row...); err != nil {
 					reader.Release()
-					return fmt.Errorf("clickhouse sink: append row: %w", err)
+					// Append validates and buffers in memory; the driver sends
+					// nothing until Send. A value it refuses here fails the
+					// same way on every attempt, so this is coded permanent
+					// rather than left for the ladder to guess at (#233).
+					return errs.Wrap(errs.CodeSinkEncodeFailed, err, "clickhouse sink: encode row")
 				}
 			}
 		}
