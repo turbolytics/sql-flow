@@ -44,6 +44,11 @@ const (
 	CodeSinkInvalid           Code = "user.sink.invalid"
 	CodeSinkTypeUnsupported   Code = "user.sink.type_unsupported"
 
+	// A value the sink's client could not encode for the destination column.
+	// The value fails identically on every attempt, so the retry ladder does
+	// not retry it (#233).
+	CodeSinkEncodeFailed Code = "user.sink.encode_failed"
+
 	// Source and sink failures that are not the user's doing.
 	CodeSourceUnreachable Code = "system.source.unreachable"
 	CodeSourceInternal    Code = "system.source.internal"
@@ -143,6 +148,11 @@ var registry = map[Code]Definition{
 		CodeSinkTypeUnsupported,
 		"A result column has an Arrow type the sink cannot convert.",
 		"Cast the column in the handler SQL to a type the sink's type table declares.",
+	},
+	CodeSinkEncodeFailed: {
+		CodeSinkEncodeFailed,
+		"The sink's client could not encode a result value for the destination column. It fails the same way on every attempt and is not retried.",
+		"Cast or format the column in the handler SQL to match the destination column's type. The message names the column and the value.",
 	},
 	CodeSourceUnreachable: {
 		CodeSourceUnreachable,
