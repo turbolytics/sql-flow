@@ -1,7 +1,7 @@
 # The invariants every integration must hold, and the evidence each requires.
 #
 # This file is declared, not derived, for the reason features.yml gives: the
-# failure it catches is an integration with no evidence at all. Seven of these
+# failure it catches is an integration with no evidence at all. Eight of these
 # have been violated and fixed since v1.0.4, and each of those rows names the
 # fix.
 #
