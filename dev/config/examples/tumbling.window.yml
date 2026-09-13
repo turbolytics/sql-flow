@@ -1,13 +1,16 @@
 tables:
   sql:
     - name: agg_cities_count
+      # No UNIQUE INDEX, on purpose. DuckDB never frees rows deleted from an
+      # indexed table, and the manager deletes every closed window, so an index
+      # grows memory without bound. Each batch appends its own counts and the
+      # collect query sums them. See #268.
       sql: |
         CREATE TABLE agg_cities_count (
           bucket TIMESTAMPTZ,
           city VARCHAR,
-          count INT 
+          count INT
         );
-        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (bucket, city);
 
       manager:
           # A window closes against the stream's own clock, not wall clock.
@@ -32,14 +35,17 @@ tables:
           # grace of silence every open window closes. It is TIMESTAMPTZ, so
           # the comparison holds whatever timezone the host runs in.
         tumbling_window:
+          # GROUP BY ALL groups by the output columns. GROUP BY bucket would
+          # group by the table's bucket column, which the output renames.
           collect_closed_windows_sql: |
-            SELECT 
+            SELECT
               strftime(date_trunc('hour', bucket), '%Y-%m-%dT%H:%M:%S') AS bucket,
               city,
-              count
+              sum(count)::INT AS count
             FROM agg_cities_count
             WHERE bucket < (SELECT max(bucket) FROM agg_cities_count) - INTERVAL '60' SECOND
                OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '60' SECOND
+            GROUP BY ALL
             ORDER BY city
 
           delete_closed_windows_sql: |
@@ -75,10 +81,8 @@ pipeline:
         properties.city as city,
         count(*) as count
       FROM batch
-      GROUP BY 
+      GROUP BY
         bucket, city
-      ON CONFLICT (bucket, city) 
-      DO UPDATE SET count = count + EXCLUDED.count
 
   sink:
     type: noop

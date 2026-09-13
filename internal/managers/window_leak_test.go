@@ -29,8 +29,8 @@ import (
 // against DuckDB reproduced it in seconds: once a checkpoint has written them,
 // rows deleted from a table that carries a UNIQUE INDEX are never freed, in
 // memory or on disk, and the CHECKPOINT StructuredBatch runs after every
-// truncate (#247) doubles the rate. Every shipped tumbling example uses that
-// pattern. See #268.
+// truncate (#247) doubles the rate. Every shipped tumbling example used that
+// pattern until they moved to the no-index one this loop proves flat. See #268.
 //
 // A leak that is linear in window operations needs operations, not wall
 // clock. This loop builds the real handler and the real manager once, over one
@@ -283,10 +283,10 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 	return before, after
 }
 
-// The shipped pattern: UNIQUE INDEX, ON CONFLICT upsert, in memory. This is
-// tumbling.window.yml, both Bluesky windowed examples, and the README. It
-// leaks, and this test says so on purpose: if it starts passing the flat
-// check, DuckDB changed and the docs in #268 are out of date.
+// The pattern the examples and the README shipped with: UNIQUE INDEX, ON
+// CONFLICT upsert, in memory. It leaks, and this test says so on purpose: if
+// it starts passing the flat check, DuckDB changed and the warning in the
+// README and #268 is out of date.
 func TestManagerTumblingWindow__IndexedTableInMemoryRetainsDeletedRows(t *testing.T) {
 	coverage.Covers(t, "manager.tumbling_window")
 	before, after := leakLoop(t, leakScenario{name: "indexed, upsert, in memory", index: true, upsert: true}, leakBatches(t))

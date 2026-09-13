@@ -684,7 +684,8 @@ supervisor escalates to `SIGKILL`.
 
 A table declared under `tables.sql` can carry a `manager`, which polls the table
 on an interval, publishes the closed windows to its own sink, and then deletes
-them. The handler SQL keeps the window table up to date with an upsert:
+them. The handler SQL appends each batch's counts to the window table, and the
+collect query sums them per window:
 
 ```yaml
 tables:
@@ -694,13 +695,14 @@ tables:
         CREATE TABLE agg_cities_count (
           bucket TIMESTAMPTZ, city VARCHAR, count INT
         );
-        CREATE UNIQUE INDEX daily_cities_count_idx ON agg_cities_count (bucket, city);
       manager:
         tumbling_window:
           poll_interval_seconds: 10      # optional, default 10
           collect_closed_windows_sql: |
-            SELECT ... FROM agg_cities_count
+            SELECT bucket, city, sum(count)::INT AS count
+            FROM agg_cities_count
             WHERE bucket < (now()::timestamptz - INTERVAL '60' SECOND)
+            GROUP BY ALL
           delete_closed_windows_sql: |
             DELETE FROM agg_cities_count
             WHERE bucket < (now()::timestamptz - INTERVAL '60' SECOND)
@@ -709,7 +711,36 @@ tables:
           kafka:
             brokers: [localhost:9092]
             topic: output-tumbling-window-1
+
+pipeline:
+  handler:
+    type: handlers.InferredMemBatch
+    sql: |
+      INSERT INTO agg_cities_count BY NAME
+      SELECT
+        date_trunc('hour', CAST(timestamp AS TIMESTAMPTZ)) AS bucket,
+        properties.city AS city,
+        count(*) AS count
+      FROM batch
+      GROUP BY bucket, city
 ```
+
+**Do not put a `UNIQUE INDEX` or `PRIMARY KEY` on a window table.** DuckDB
+never frees rows deleted from an indexed table. The manager deletes every
+window it publishes, so an index grows memory without bound, with or without a
+state path. A Bluesky pipeline built on an indexed window table and an
+`ON CONFLICT` upsert grew from 100 MB to 450 MB in a day. See
+[#268](https://github.com/turbolytics/sql-flow/issues/268).
+
+Three details keep the append-and-sum pattern correct:
+
+- Cast the sum back to the column's type. DuckDB's `sum` widens integers to
+  `HUGEINT`, which changes the type the sink receives.
+- Use `GROUP BY ALL`. It groups by the output columns. `GROUP BY bucket` groups
+  by the table's column instead, and splits a window whose output column
+  reformats `bucket`.
+- A keyed table the manager never deletes from, such as a running total, can
+  keep its index. The leak needs the delete.
 
 Collect, write and flush happen before the delete, so a sink failure retries
 rather than dropping a window. A retry re-sends rows the sink already received,

@@ -14,6 +14,11 @@ tables:
     # in each minute, and the worst time any of them took to get from the
     # producer to the handler. Keeping them together means a window that
     # publishes carries its own latency evidence with it.
+    #
+    # No UNIQUE INDEX, as the shipped examples now carry it: DuckDB never frees
+    # rows deleted from an indexed table, which would put a leak under a gate
+    # that runs for hours. Each batch appends a row, and the collect query
+    # sums the counts and takes the worst latency. See #268.
     - name: agg_slow
       sql: |
         CREATE TABLE IF NOT EXISTS agg_slow (
@@ -21,7 +26,6 @@ tables:
           count         BIGINT,
           max_latency_s DOUBLE
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS agg_slow_idx ON agg_slow (bucket);
       manager:
         tumbling_window:
           poll_interval_seconds: 10
@@ -29,10 +33,11 @@ tables:
           # is what this soak exists to exercise: an hour of silence must
           # still close the surge's last window.
           collect_closed_windows_sql: |
-            SELECT bucket, count, max_latency_s
+            SELECT bucket, sum(count)::BIGINT AS count, max(max_latency_s) AS max_latency_s
             FROM agg_slow
             WHERE bucket < (SELECT max(bucket) FROM agg_slow) - INTERVAL '60' SECOND
                OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '60' SECOND
+            GROUP BY ALL
           delete_closed_windows_sql: |
             DELETE FROM agg_slow
             WHERE bucket < (SELECT max(bucket) FROM agg_slow) - INTERVAL '60' SECOND
@@ -73,9 +78,5 @@ pipeline:
         max(epoch(now() - CAST(sent_at AS TIMESTAMPTZ))) AS max_latency_s
       FROM batch
       GROUP BY bucket
-      ON CONFLICT (bucket)
-      DO UPDATE SET
-        count = count + EXCLUDED.count,
-        max_latency_s = greatest(max_latency_s, EXCLUDED.max_latency_s)
   sink:
     type: noop
