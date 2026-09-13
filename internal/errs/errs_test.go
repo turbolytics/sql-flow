@@ -262,3 +262,22 @@ func TestErrorTaxonomy_EncodeFailedIsAUserErrorThatExitsTerminal(t *testing.T) {
 	assert.True(t, ok)
 	assert.True(t, strings.Contains(def.Action, "handler SQL"))
 }
+
+// A serve config that sets a reserved policy or breaks a dataset rule fails
+// the same way on every start. The exit code has to say terminal, or a
+// supervisor restarts it forever.
+func TestErrorTaxonomy_ServeCodesAreTerminalUserErrors(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy", "cli.serve")
+
+	for _, code := range []Code{CodeConfigServeReserved, CodeConfigServeDataset} {
+		err := New(code, "dataset posts_by_lang")
+
+		assert.Equal(t, ClassUser, ClassOf(err))
+		assert.Equal(t, "config", code.Domain())
+		assert.Equal(t, ExitUserError, ExitCode(err))
+		assert.False(t, Retryable(ExitCode(err)))
+
+		_, ok := Lookup(code)
+		assert.True(t, ok)
+	}
+}
