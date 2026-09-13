@@ -1,0 +1,139 @@
+package validate
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/zeebo/assert"
+)
+
+const windowedConfig = `tables:
+  sql:
+    - name: agg
+      sql: |
+        CREATE TABLE agg (%s, city VARCHAR, count INT)
+      window:
+        time_column: bucket
+        size_seconds: 60
+        %s
+        sink:
+          type: console
+pipeline:
+  batch_size: 1
+  source:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: ["t"]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1
+  sink:
+    type: noop
+`
+
+func windowDiagnostics(rep Report) []Diagnostic {
+	var out []Diagnostic
+	for _, d := range rep.Diagnostics {
+		if strings.Contains(d.Message, "window") {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func validateWindowed(t *testing.T, column, extra string) Report {
+	t.Helper()
+	rep, err := Validate(context.Background(), Request{
+		Path: "w.yml", Config: strings.Replace(strings.Replace(windowedConfig, "%s", column, 1), "%s", extra, 1)})
+	assert.NoError(t, err)
+	return rep
+}
+
+// A well-formed declaration passes with no window diagnostic.
+func TestValidateSchema_WindowDeclarationPasses(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep := validateWindowed(t, "bucket TIMESTAMPTZ", "emit_sql: SELECT city, sum(count) FROM closed GROUP BY ALL")
+	assert.That(t, rep.OK)
+	assert.Equal(t, StatusPass, checkStatus(t, rep, "tables.window"))
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
+}
+
+// TIMESTAMP WITH TIME ZONE is the same type spelled out.
+func TestValidateSchema_WindowAcceptsTheLongTypeName(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep := validateWindowed(t, "bucket TIMESTAMP WITH TIME ZONE", "")
+	assert.That(t, rep.OK)
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
+}
+
+// A TIMESTAMP bucket is read in the session's zone, and the watermark
+// compares instants.
+func TestValidateSchema_WindowTimeColumnMustBeTimestamptz(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep := validateWindowed(t, "bucket TIMESTAMP", "")
+	assert.That(t, !rep.OK)
+	assert.Equal(t, StatusFail, checkStatus(t, rep, "tables.window"))
+	diags := windowDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.That(t, strings.Contains(diags[0].Message, `time_column "bucket" is not declared as TIMESTAMPTZ`))
+	assert.That(t, diags[0].Position != nil)
+}
+
+// An emit_sql that never reads closed reads nothing the close supplies.
+func TestValidateSchema_WindowEmitSQLMustReadClosed(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep := validateWindowed(t, "bucket TIMESTAMPTZ", "emit_sql: SELECT * FROM agg")
+	assert.That(t, !rep.OK)
+	diags := windowDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.That(t, strings.Contains(diags[0].Message, "emit_sql does not read closed"))
+}
+
+// The old block is refused with its replacement named, on the line it sits
+// on, rather than as an unknown key.
+func TestValidateSchema_ManagerBlockIsRefusedWithTheReplacement(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, err := Validate(context.Background(), Request{Path: "m.yml", Config: `tables:
+  sql:
+    - name: agg
+      sql: CREATE TABLE agg (bucket TIMESTAMPTZ, count INT)
+      manager:
+        tumbling_window:
+          collect_closed_windows_sql: SELECT * FROM agg
+          delete_closed_windows_sql: DELETE FROM agg
+        sink:
+          type: console
+pipeline:
+  batch_size: 1
+  source:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: ["t"]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1
+  sink:
+    type: noop
+`})
+	assert.NoError(t, err)
+	assert.That(t, !rep.OK)
+
+	var found bool
+	for _, d := range rep.Diagnostics {
+		if strings.Contains(d.Message, "manager is gone") {
+			found = true
+			assert.That(t, strings.Contains(d.Message, "time_column"))
+			assert.That(t, strings.Contains(d.Message, "late_rows"))
+			assert.Equal(t, 5, d.Position.Line)
+		}
+	}
+	assert.That(t, found)
+}

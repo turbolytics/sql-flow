@@ -48,6 +48,7 @@ func Validate(ctx context.Context, req Request) (Report, error) {
 		checkServeRules(rendered, &rep)
 	} else {
 		checkDrainDeadline(rendered, &rep)
+		checkWindows(rendered, &rep)
 	}
 
 	demoteUnsuppliedVariableErrors(&rep)
