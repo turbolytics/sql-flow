@@ -1,4 +1,4 @@
-# Windows owned by the engine: a watermark, a late-row policy, and no manager
+# Windows owned by the engine: a watermark manager and a late-row policy
 
 Issue #203. Written against `main` at 5e16dec on 2026-09-13.
 
@@ -22,8 +22,9 @@ racing the manager's collect on the connection they share. The in-memory and
 stateful configurations behave differently for the same YAML, because only
 one of them freezes `now()`.
 
-The manager is not a manager. It is a loop that runs the user's two
-statements on the pipeline's connection, inside the pipeline's transaction.
+What the config calls a manager is not one. It is a loop that runs the
+user's two statements on the pipeline's connection, inside the pipeline's
+transaction.
 That placement has a consequence nobody asked for: the collect reads rows the
 current batch has written and not yet committed. A batch that then fails
 rolls those rows back, but the sink already has a window that counted them,
@@ -38,7 +39,9 @@ A sink that merges absorbs that. An append-only sink cannot.
 ## The change
 
 The engine owns the window. The user declares it and writes the aggregate.
-Nothing else is theirs.
+Nothing else is theirs. For each declared window the engine runs a
+watermark manager: it owns the watermark, decides the close, publishes, and
+deletes. The manager is an engine component with no user-facing surface.
 
 ```yaml
 tables:
@@ -172,22 +175,22 @@ upsert. Both are explicit, and the metric says how often the choice matters:
 a `drop` count that keeps rising means the grace is too short for the
 stream.
 
-### The loop
+### The watermark manager
 
-`internal/managers` becomes `internal/windows`. The type is `Window`, it is
-built from the declaration, and it generates its own SQL. It keeps the shape
-#270 gave the manager: one poll per interval, a final poll on the drain
-budget after a cancel, and a refused publish stops the process. The harness
-subject stays, renamed. `manager.*` invariants become `window.*` and gain
-three:
+`internal/managers` keeps its name. `Tumbling` becomes `Watermark`, built
+from the declaration, and it generates its own SQL. It keeps the shape #270
+gave the manager: one poll per interval, a final poll on the drain budget
+after a cancel, and a refused publish stops the process. The harness subject
+and the `manager.*` invariants stay, and gain three:
 
 | Invariant | Class | Claim |
 | --- | --- | --- |
-| `window.watermark.never_regresses` | safety | Across polls and restarts, the persisted watermark never moves backwards. |
-| `window.close.committed_rows_only` | safety | A close never publishes a row the pipeline has not committed. |
-| `window.late.policy_holds` | safety | Under `drop`, a bucket below the watermark is never published again. Under `reemit`, a late row is published once. |
+| `manager.watermark.never_regresses` | safety | Across polls and restarts, the persisted watermark never moves backwards. |
+| `manager.close.committed_rows_only` | safety | A close never publishes a row the pipeline has not committed. |
+| `manager.late.policy_holds` | safety | Under `drop`, a bucket below the watermark is never published again. Under `reemit`, a late row is published once. |
 
-The sink role label becomes `window`. It was `manager`.
+The sink role label stays `manager`, because the rows still leave through
+one.
 
 ### Metrics
 
@@ -237,5 +240,5 @@ The sink role label becomes `window`. It was `manager`.
   not publish a bucket it published before the restart.
 - Every example and tutorial that had a `manager` block has a `window`
   block, and `sqlflow validate` rejects the old one with the message above.
-- `internal/windows` proves the three new invariants and the four it
+- The watermark manager proves the three new invariants and the four it
   inherits, and the matrix enforces all seven.
