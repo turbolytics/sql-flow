@@ -2,7 +2,7 @@
 # One line per invariant that applies to pipeline.stateless, sorted by id: the status of each level.
 error.bad_record.threshold: {unit: missing, integration: missing, release: missing}
 error.dlq.carries_provenance: {unit: missing, integration: missing, release: missing}
-lifecycle.drain.bounded: {unit: missing, integration: missing, release: missing}
+lifecycle.drain.bounded: {unit: covered, integration: missing, release: missing}
 lifecycle.drain.on_cancel: {unit: covered, integration: missing, release: missing}
 pipeline.batch.timeout: {unit: missing, integration: missing, release: missing}
 pipeline.commit.after_flush: {unit: covered, integration: missing, release: missing}

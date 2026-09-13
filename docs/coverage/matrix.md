@@ -41,7 +41,7 @@ added, and this page changes only when a status does.
 | `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ |
 | `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ |
 | `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ |
-| `lifecycle.health` | /healthz reports starting, healthy, degraded or failed, with a reason. | ❌ **missing** | — | ❌ **missing** |
+| `lifecycle.health` | /healthz reports starting, healthy, degraded or failed, with a reason. | ✅ | — | ✅ |
 | `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — |
 | `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — |
 | `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — |
@@ -61,7 +61,7 @@ added, and this page changes only when a status does.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**38 features declared. 37 have at least one passing test attributed at every level they require, so 2 gap(s).**
+**38 features declared. 38 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -69,7 +69,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**37 invariants declared: 30 safety and 7 liveness. Of 141 (invariant, integration) cells: 61 proven, 52 missing, 0 skipped, 0 failing, 28 exempt. 3 gap(s).**
+**37 invariants declared: 30 safety and 7 liveness. Of 141 (invariant, integration) cells: 64 proven, 49 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -77,15 +77,6 @@ never flushes satisfies every safety invariant on this page.
 `keeps_batch` holds if you never flush, and `commit.after_flush`
 holds if you never commit. Only a liveness claim says the pipeline
 does anything at all.
-
-## Gaps
-
-These fail `make coverage-matrix`. There is no baseline: a gap
-is closed by a test, or by the registry honestly no longer
-requiring that level.
-
-- `lifecycle.health` requires **unit** coverage and is *missing*.
-- `lifecycle.health` requires **release** coverage and is *missing*.
 
 
 # Invariant matrix
@@ -194,7 +185,7 @@ drains. An invariant holds only if it holds on all four.
 | --- | --- | --- |
 | `manager.publish.eventually` | A closed window reaches the sink without anything else happening. The loop polls on its own, and a window that closes is published. | ✅ u |
 | `manager.failure.exits` | A poll the sink refuses stops the manager with the sink's error, after one attempt, and the process exits with its code. The sink ran its retry ladder before the error arrived, so the manager does not retry in place, and a window the destination will not take is never collected, written and refused every tick while the process reports healthy. *(violated once: #267)* | ✅ u |
-| `manager.drain.bounded` | The final poll after a cancel finishes or fails inside the drain deadline. A sink that never answers cannot hold the process past it, and every closed window it did not deliver stays in the state table. | ❌ missing |
+| `manager.drain.bounded` | The final poll after a cancel finishes or fails inside the drain deadline. A sink that never answers cannot hold the process past it, and every closed window it did not deliver stays in the state table. | ✅ u |
 
 These lifecycle invariants are properties of the consume loop
 rather than of anything a config file names. The columns are
@@ -207,14 +198,6 @@ drains. An invariant holds only if it holds on all four.
 | --- | --- | --- | --- |
 | `pipeline.flush.eventually` | A batch that never reaches batchSize still reaches the sink, within the flush interval. | ✅ u | ✅ u |
 | `pipeline.progress.no_silent_stall` | A configuration cannot remove the flush ticker. flush_interval_seconds absent, zero or negative all run with the thirty second default, so a batch a low-traffic topic never fills still leaves on time. This entry previously claimed the opposite, that zero removed the ticker and stalled such a topic forever; the run command has always defaulted it. Pinned by TestCliInvocation_FlushIntervalNeverZero, not by the harness, and unenforced for that reason: the harness drives a pipeline that is already constructed, and this is a property of resolving the config before construction. There is nothing per-subject to observe, so demanding a cell from every subject would buy a fake rather than a proof. The liveness the harness can see is pipeline.flush.eventually, which it proves. | ❌ missing | ❌ missing |
-| `lifecycle.drain.bounded` | A drain finishes or fails inside pipeline.drain_deadline_seconds. A sink that never answers cannot hold the process past it: the loop returns system.lifecycle.drain_incomplete, commits nothing for the batch it could not write, and the next start replays it. | ❌ missing | ❌ missing |
+| `lifecycle.drain.bounded` | A drain finishes or fails inside pipeline.drain_deadline_seconds. A sink that never answers cannot hold the process past it: the loop returns system.lifecycle.drain_incomplete, commits nothing for the batch it could not write, and the next start replays it. | ✅ u | ✅ u |
 | `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing | ❌ missing |
-
-## Invariant gaps
-
-These fail `make coverage-check`.
-
-- `lifecycle.drain.bounded` on `pipeline.stateful` requires **any** and is *missing*.
-- `lifecycle.drain.bounded` on `pipeline.stateless` requires **any** and is *missing*.
-- `manager.drain.bounded` on `manager.tumbling_window` requires **any** and is *missing*.
 

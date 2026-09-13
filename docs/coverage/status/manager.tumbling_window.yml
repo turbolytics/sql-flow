@@ -2,5 +2,6 @@
 # One line per invariant that applies to manager.tumbling_window, sorted by id: the status of each level.
 manager.delete.after_flush: {unit: covered, integration: missing, release: missing}
 manager.delete.nothing_on_failure: {unit: covered, integration: missing, release: missing}
+manager.drain.bounded: {unit: covered, integration: missing, release: missing}
 manager.failure.exits: {unit: covered, integration: missing, release: missing}
 manager.publish.eventually: {unit: covered, integration: missing, release: missing}
