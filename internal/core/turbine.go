@@ -258,6 +258,10 @@ type Turbine struct {
 	stats       *Stats
 	errorPolicy PipelineErrorPolicies
 
+	// drain bounds the final batch after a cancel. Shared with the managers
+	// and run's state syncs, so one deadline covers the whole shutdown.
+	drain *DrainBudget
+
 	// lagAttrCache keeps one attribute set per topic and partition, so the
 	// per-message lag metric costs no allocation. Touched only by mark, on
 	// the consume-loop goroutine.
@@ -484,6 +488,10 @@ func NewTurbine(
 		opt(t)
 	}
 
+	if t.drain == nil {
+		t.drain = NewDrainBudget(DefaultDrainDeadline)
+	}
+
 	return t
 }
 
@@ -614,11 +622,19 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// The source delivered this batch, but nothing has written it yet.
 			// Returning without it drops the tail of every graceful shutdown.
 			//
-			// The drain runs on a context of its own. Every step below reaches
-			// DuckDB and the sink. The cancelled ctx would fail the exact work
-			// the drain exists to finish.
+			// The drain runs on the budget's context, not the cancelled one.
+			// Every step below reaches DuckDB and the sink, and the cancelled
+			// ctx would fail the exact work the drain exists to finish. The
+			// budget bounds it instead: a supervisor gives a stop a fixed time
+			// and then kills the process with nothing recorded.
 			if numBatchMessages > 0 {
-				if err := t.processBatch(context.WithoutCancel(ctx), numBatchMessages); err != nil {
+				drainCtx := t.drain.Context()
+				if err := t.processBatch(drainCtx, numBatchMessages); err != nil {
+					if drainCtx.Err() != nil {
+						err = errs.Wrap(errs.CodeDrainIncomplete, err,
+							"drain deadline %s reached with %d messages buffered",
+							t.drain.Deadline(), numBatchMessages)
+					}
 					t.recordError(ctx, err, phaseSinkFlush, "error draining the final batch")
 					return nil, err
 				}
@@ -943,7 +959,11 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 	}
 	t.lock.Lock()
 	defer t.lock.Unlock()
-	if err := t.stateTx.Rollback(ctx); err != nil {
+	// Without cancellation. A rollback is local and must happen: on a drain
+	// that ran out of time the caller's context has already expired, and a
+	// rollback refused on it leaves this batch's writes in the transaction
+	// for the next state sync to commit without their offsets.
+	if err := t.stateTx.Rollback(context.WithoutCancel(ctx)); err != nil {
 		t.logger.Error("rollback failed", zap.Error(err))
 	}
 }
@@ -967,7 +987,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 	defer t.lock.Unlock()
 
 	if err := t.offsets.Save(ctx, t.marks); err != nil {
-		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
+		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed offset save", zap.Error(rbErr))
 		}
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offsets")
@@ -977,7 +997,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 		// The commit itself failed, so the transaction is still open and
 		// still holds this batch's writes; roll it back explicitly rather
 		// than leaving them to leak into the next batch.
-		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
+		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed commit", zap.Error(rbErr))
 		}
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing state")
