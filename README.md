@@ -166,6 +166,7 @@ sqlflow [command]
 | Command | Purpose |
 |---|---|
 | `run` | Run a pipeline against a live source |
+| `serve` | Serve a config's named SQL datasets over HTTP |
 | `validate` | Check a pipeline offline and report every fault at once |
 | `dev invoke` | Run a pipeline's handler against a static file |
 | `config validate` | Validate a config against the JSON Schema |
@@ -198,6 +199,129 @@ $ sqlflow run -c dev/config/examples/benchmark.structured.mem.yml \
 ...
 {"messages_consumed":2000,"num_errors":0}
 ```
+
+### `sqlflow serve`
+
+Serves named SQL over HTTP. A serve config declares datasets, each a name and
+a fixed SQL statement with typed parameters. `serve` attaches the data through
+the config's `commands`, then answers each request by binding its parameters
+into that statement. Nothing in a request becomes SQL text.
+
+```
+sqlflow serve <config> [flags]
+sqlflow serve -c <config> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-c`, `--config` | *(required)* | Path to the serve config, unless given positionally |
+| `--pprof` | `false` | Serve pprof on `:6060` |
+
+A serve config is its own file, with `commands` and `serve` and no
+`pipeline`. `sqlflow validate` checks it against the serve schema, and
+`sqlflow config example --serve` prints every key. This one serves a Postgres
+view:
+
+```yaml
+commands:
+  - name: pin the session timezone
+    sql: SET TimeZone='UTC';
+  - name: load postgres
+    sql: |
+      INSTALL postgres;
+      LOAD postgres;
+  - name: attach postgres read-only
+    sql: ATTACH '{{ SQLFLOW_POSTGRES_URI }}' AS pg (TYPE POSTGRES, READ_ONLY);
+
+serve:
+  http:
+    addr: "0.0.0.0:8080"
+    cors:
+      allowed_origins: [https://example.com]
+  auth:
+    tokens:
+      - name: demo-page
+        token: "{{ SQLFLOW_SERVE_TOKEN }}"
+  limits:
+    max_rows: 10000
+    timeout_seconds: 10
+  datasets:
+    - name: posts_by_lang
+      description: Posts per bucket per language.
+      params:
+        - {name: since, type: timestamp}
+        - {name: lang, type: string}
+      grains:
+        1h:
+          sql: |
+            SELECT bucket, lang, posts FROM pg.posts_per_hour_by_lang
+            WHERE bucket >= coalesce($since, now() - INTERVAL '7 days')
+              AND lang = coalesce($lang, lang)
+            ORDER BY bucket, lang
+```
+
+Parameters are `string`, `integer`, or `timestamp`. A timestamp is RFC 3339
+with an offset; encode a `+` as `%2B` in a URL. An absent parameter binds
+`NULL`, so default it in SQL with `coalesce`. Every statement must use every
+declared parameter. A dataset has either `sql` or `grains`, and a request
+names a grain with `?grain=`.
+
+Routes, all `GET`:
+
+| Route | Auth | Returns |
+|---|---|---|
+| `/healthz` | none | `200` when the connection answers `SELECT 1`, `503` otherwise |
+| `/v1/datasets` | bearer | Every dataset: its params, and its SQL as written |
+| `/v1/datasets/{name}` | bearer | Rows |
+
+```
+$ curl -H 'Authorization: Bearer <token>' \
+    'localhost:8080/v1/datasets/posts_by_lang?grain=1h&lang=en'
+{"dataset":"posts_by_lang","grain":"1h",
+ "columns":[{"name":"bucket","type":"TIMESTAMP WITH TIME ZONE"},...],
+ "rows":[{"bucket":"2026-09-10T00:00:00Z","lang":"en","posts":102340}],
+ "row_count":1,"truncated":false,"elapsed_ms":41}
+```
+
+A zoned timestamp is UTC. A decimal is a string of its exact digits. `NaN`
+and infinities are strings. `truncated: true` means `max_rows` cut the result.
+
+A token is an identifier, not a secret: a browser page ships it in plain
+sight. It names the caller in the request log, and deleting it revokes the
+caller.
+
+Every refusal is `{"error": {"code", "message"}}`:
+
+| Status | Code |
+|---|---|
+| `400` | `unknown_param`, `invalid_param`, `missing_grain`, `unknown_grain` |
+| `401` | `unauthorized` |
+| `404` | `unknown_dataset`, `not_found` |
+| `405` | `method_not_allowed` |
+| `500` | `query_failed`, carrying DuckDB's message |
+| `504` | `query_timeout` |
+
+At start, `serve` prepares every statement, so a missing table or a syntax
+error stops the process with `user.sql.invalid` rather than failing the first
+request. `rate_limit` is reserved: the config accepts the key, and a non-zero
+value stops the process with `user.config.serve_reserved`.
+
+What to know before you deploy it:
+
+- **Attach `READ_ONLY`.** `serve` runs the dataset SQL as written. A write in
+  it runs too, unless the attachment refuses.
+- **Aggregate in the backend.** DuckDB pushes filters and projections into an
+  attached Postgres and runs `GROUP BY` itself, so a rollup over raw rows
+  copies every row to DuckDB first. Put the `GROUP BY` in a Postgres view and
+  select from the view: the filter pushes into it. `postgres_query('pg', '…')`
+  runs a whole query in Postgres when a view does not fit.
+- **Bound Postgres connections.** One scan opens up to `pg_connection_limit`
+  connections, 64 by default. Set it low for a small database, as a command.
+- **A timeout does not stop the query.** DuckDB cannot be cancelled through
+  its Go driver. At the deadline the caller gets `504`, and the query runs to
+  completion. `max_rows` does stop it early.
+- **One connection serves every request.** Requests run one at a time. A slow
+  query makes the ones behind it wait, and `/healthz` waits with them.
 
 ### `sqlflow validate`
 
@@ -259,7 +383,8 @@ dev/config/examples/basic.agg.mem.yml: valid
 ### `sqlflow config example`
 
 Prints a fully commented YAML skeleton generated from the schema — every key,
-its description, and the accepted enum values.
+its description, and the accepted enum values. `--serve` prints the serve
+config's skeleton instead.
 
 ### `sqlflow tail`
 
