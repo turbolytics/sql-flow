@@ -27,6 +27,15 @@ const (
 	// error that was a misspelled variable name.
 	CodeConfigTemplateUndefined Code = "user.config.template_undefined"
 
+	// A serve file sets a policy this version parses and refuses, such as
+	// rate_limit. Accepting it silently would let an author ship a config
+	// believing it enforced.
+	CodeConfigServeReserved Code = "user.config.serve_reserved"
+
+	// A serve dataset breaks a rule the schema cannot state: a name, a
+	// param, a grain, or a placeholder its SQL uses.
+	CodeConfigServeDataset Code = "user.config.serve_dataset"
+
 	// Data: the messages themselves, as opposed to the pipeline definition.
 	// A malformed record is the producer's problem, never ours.
 	CodeDataMalformed Code = "user.data.malformed"
@@ -105,6 +114,16 @@ var registry = map[Code]Definition{
 		CodeConfigTemplateUndefined,
 		"The config reads a template variable that nothing defines. It renders as an empty string.",
 		"Define the variable, or correct its name. `sqlflow validate` lists every variable the config reads and every one you supplied.",
+	},
+	CodeConfigServeReserved: {
+		CodeConfigServeReserved,
+		"A serve config sets a policy this version parses and does not enforce.",
+		"Remove the key or set it to zero. The message names the key.",
+	},
+	CodeConfigServeDataset: {
+		CodeConfigServeDataset,
+		"A serve dataset breaks a rule: its name, its params, its grains, or the placeholders its SQL uses.",
+		"Read the message for the dataset, grain and rule, then correct the dataset.",
 	},
 	CodeDataMalformed: {
 		CodeDataMalformed,

@@ -297,6 +297,55 @@ def test_cli_version_is_stamped_into_the_image(image):
     )
 
 
+@pytest.mark.covers("cli.serve")
+def test_cli_serve_answers_requests_from_the_image(image):
+    """`sqlflow serve` exists in the artifact users pull, and answers.
+
+    Driven against the image rather than the handler, because what ships is
+    the command's registration, the listener and the libduckdb baked in, and
+    no unit test proves those together.
+    """
+    token = "release-token"
+    container = DockerContainer(image) \
+        .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+        .with_env("SQLFLOW_SERVE_TOKEN", token) \
+        .with_exposed_ports(8080) \
+        .with_command("serve /tmp/conf/config/serve/local.table.yml")
+    container.start()
+    try:
+        wait_for_logs(container, "serving", timeout=60)
+        base = f"http://localhost:{container.get_exposed_port(8080)}"
+        auth = {"Authorization": f"Bearer {token}"}
+
+        health = requests.get(f"{base}/healthz", timeout=10)
+        listing = requests.get(f"{base}/v1/datasets", headers=auth, timeout=10)
+        rows = requests.get(
+            f"{base}/v1/datasets/city_events",
+            params={"grain": "1d", "city": "Baltimore"},
+            headers=auth, timeout=10)
+        refused = requests.get(f"{base}/v1/datasets", timeout=10)
+    finally:
+        container.stop()
+
+    assert health.status_code == 200, health.text
+    assert health.json() == {"status": "ok"}
+
+    assert listing.status_code == 200, listing.text
+    names = [d["name"] for d in listing.json()["datasets"]]
+    assert names == ["event_totals", "city_events"]
+
+    assert rows.status_code == 200, rows.text
+    body = rows.json()
+    assert body["grain"] == "1d"
+    assert body["rows"] == [
+        {"bucket": "2026-09-10T00:00:00Z", "city": "Baltimore", "events": 1},
+        {"bucket": "2026-09-11T00:00:00Z", "city": "Baltimore", "events": 1},
+    ]
+
+    assert refused.status_code == 401
+    assert refused.json()["error"]["code"] == "unauthorized"
+
+
 @pytest.mark.covers("config.templating")
 @pytest.mark.covers("config.validation")
 def test_config_validation_accepts_a_shipped_example(image):

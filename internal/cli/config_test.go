@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/validate"
 	"github.com/zeebo/assert"
+	"gopkg.in/yaml.v3"
 )
 
 // The config schema is generated from internal/config, so the Go types are the
@@ -27,7 +29,7 @@ import (
 
 func TestConfigValidation_ExampleMatchesPythonOutput(t *testing.T) {
 	coverage.Covers(t, "config.validation")
-	out, err := configExample()
+	out, err := configExample(validate.SchemaJSON())
 	assert.NoError(t, err)
 
 	// The example is the second artifact of internal/config, beside the JSON
@@ -42,6 +44,33 @@ func TestConfigValidation_ExampleMatchesPythonOutput(t *testing.T) {
 	golden, err := os.ReadFile("testdata/config_example.golden")
 	assert.NoError(t, err)
 	assert.Equal(t, string(golden), out)
+}
+
+// `config example --serve` is the serve schema rendered the same way, and
+// held to a golden the same way. `make schema` regenerates it.
+func TestCliServe_ConfigExamplePrintsTheServeSkeleton(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	out, err := configExample(validate.ServeSchemaJSON())
+	assert.NoError(t, err)
+
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		assert.NoError(t, os.WriteFile("testdata/serve_example.golden", []byte(out), 0o644))
+		t.Log("serve example updated")
+		return
+	}
+
+	golden, err := os.ReadFile("testdata/serve_example.golden")
+	assert.NoError(t, err)
+	assert.Equal(t, string(golden), out)
+
+	// A grain is a map entry. Without the map branch, grains: prints empty
+	// and the skeleton never shows where a grain's sql goes.
+	assert.That(t, strings.Contains(out, "grains:\n        <name>:\n"))
+	assert.That(t, strings.Contains(out, "type: string | integer | timestamp"))
+
+	var doc any
+	assert.NoError(t, yaml.Unmarshal([]byte(out), &doc))
 }
 
 // TestConfigValidation_Examples validates the shipped example configs, mirroring

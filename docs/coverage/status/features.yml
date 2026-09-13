@@ -2,6 +2,7 @@
 # One line per feature in ../features.yml, sorted by id: the status of each level.
 cli.dev_invoke: {unit: covered, integration: not_required, release: covered}
 cli.invocation: {unit: covered, integration: not_required, release: not_required}
+cli.serve: {unit: covered, integration: not_required, release: covered}
 cli.version: {unit: not_required, integration: not_required, release: covered}
 config.templating: {unit: covered, integration: not_required, release: covered}
 config.validation: {unit: covered, integration: not_required, release: covered}

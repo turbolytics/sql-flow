@@ -1,0 +1,76 @@
+# Serves the sql-flow-bluesky-demo rollups from Postgres.
+#
+# DuckDB pushes filters and projections into an attached Postgres and runs
+# GROUP BY itself, so every grain reads a Postgres view that already did the
+# aggregation. Each view is a filtered select here, and the filter on bucket
+# pushes into the view.
+commands:
+  - name: pin the session timezone
+    sql: SET TimeZone='UTC';
+  - name: load the postgres extension
+    sql: |
+      INSTALL postgres;
+      LOAD postgres;
+  - name: bound the postgres connections one scan may open
+    sql: SET pg_connection_limit = 4;
+  - name: attach postgres read-only
+    sql: |
+      ATTACH '{{ SQLFLOW_POSTGRES_URI }}' AS pg (TYPE POSTGRES, READ_ONLY);
+
+serve:
+  name: bluesky-demo-api
+
+  http:
+    addr: "0.0.0.0:{{ SQLFLOW_SERVE_PORT|default('8080') }}"
+    cors:
+      allowed_origins:
+        - https://turbolytics.io
+
+  auth:
+    tokens:
+      - name: bluesky-demo-page
+        token: "{{ SQLFLOW_SERVE_TOKEN_BLUESKY_DEMO }}"
+
+  limits:
+    max_rows: 10000
+    timeout_seconds: 10
+
+  datasets:
+    - name: pipeline_status
+      description: First and latest minute, last write, totals. One row.
+      sql: |
+        SELECT first_bucket, latest_bucket, last_write_at,
+               minutes_observed, total_posts
+        FROM pg.pipeline_status
+
+    - name: posts_by_lang
+      description: Posts per bucket per language.
+      params:
+        - {name: since, type: timestamp}
+        - {name: until, type: timestamp}
+        - {name: lang, type: string}
+      grains:
+        5m:
+          sql: |
+            SELECT bucket, lang, posts
+            FROM pg.posts_per_5m_by_lang
+            WHERE bucket >= coalesce($since, now() - INTERVAL '12 hours')
+              AND bucket <  coalesce($until, now())
+              AND lang = coalesce($lang, lang)
+            ORDER BY bucket, lang
+        1h:
+          sql: |
+            SELECT bucket, lang, posts
+            FROM pg.posts_per_hour_by_lang
+            WHERE bucket >= coalesce($since, now() - INTERVAL '7 days')
+              AND bucket <  coalesce($until, now())
+              AND lang = coalesce($lang, lang)
+            ORDER BY bucket, lang
+        1d:
+          sql: |
+            SELECT bucket, lang, posts
+            FROM pg.posts_per_day_by_lang
+            WHERE bucket >= coalesce($since, now() - INTERVAL '30 days')
+              AND bucket <  coalesce($until, now())
+              AND lang = coalesce($lang, lang)
+            ORDER BY bucket, lang

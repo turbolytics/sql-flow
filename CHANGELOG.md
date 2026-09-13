@@ -17,6 +17,16 @@
 - `sqlflow validate` warns when a sink's `retry.deadline_seconds` is longer
   than the drain deadline.
 - `/stats` carries `errors` and `last_error` under `progress`.
+- `sqlflow serve` serves named SQL over HTTP. A serve config declares
+  datasets, each a fixed statement with typed parameters, and grains that
+  select one statement per aggregation level. Requests authenticate with a
+  bearer token that names the caller. Responses are JSON rows with DuckDB
+  type names. A row cap, a query timeout and CORS are configured in the
+  file. See the README's `sqlflow serve` section.
+- `sqlflow validate` and `sqlflow config validate` check a serve config
+  against its own schema, `serve.json`, and report every rule with its line.
+- `sqlflow config example --serve` prints the serve config skeleton.
+- Error codes `user.config.serve_reserved` and `user.config.serve_dataset`.
 
 ### Fixed
 
@@ -27,6 +37,13 @@
   a final poll that failed was logged while the process exited 0. The final
   poll always runs, and its failure is the exit code.
 - One failed flush counted as three errors.
+
+### Known limits
+
+- `sqlflow serve` refuses a non-zero `rate_limit`, which is reserved.
+- `sqlflow serve` runs every request on one DuckDB connection, one at a time.
+- A `sqlflow serve` timeout returns `504` and leaves the query running to
+  completion.
 
 ## v1.0.0 — sqlflow, the Go engine
 

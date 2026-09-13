@@ -124,15 +124,23 @@ func LoadRendered(path string, overrides map[string]string) (*Conf, []byte, erro
 	}
 
 	var conf Conf
-	// Decoded strictly: the config schema sets additionalProperties: false, so
-	// an unrecognized key is a typo the user wants to hear about rather than a
-	// setting silently dropped.
-	dec := yaml.NewDecoder(bytes.NewReader(rendered))
-	dec.KnownFields(true)
-	if err := dec.Decode(&conf); err != nil {
-		return nil, nil, errs.Wrap(errs.CodeConfigParseFailed, err, "parsing YAML failed")
+	if err := decodeStrict(rendered, &conf); err != nil {
+		return nil, nil, err
 	}
 	return &conf, rendered, nil
+}
+
+// decodeStrict decodes rendered config text into out, refusing unknown keys.
+// Both config schemas set additionalProperties: false, so an unrecognized key
+// is a typo the user wants to hear about rather than a setting silently
+// dropped.
+func decodeStrict(rendered []byte, out any) error {
+	dec := yaml.NewDecoder(bytes.NewReader(rendered))
+	dec.KnownFields(true)
+	if err := dec.Decode(out); err != nil {
+		return errs.Wrap(errs.CodeConfigParseFailed, err, "parsing YAML failed")
+	}
+	return nil
 }
 
 // Load is LoadRendered for callers that do not need the text.

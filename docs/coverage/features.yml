@@ -190,6 +190,10 @@ features:
     description: Runs a pipeline against a fixture file, without a source.
     requires: [unit, release]
 
+  - id: cli.serve
+    description: Serves a config's named SQL datasets over HTTP, with bearer tokens, typed params, grains and limits.
+    requires: [unit, release]
+
   # Release only. The defect this catches -- build args that never reached the
   # -ldflags symbol path, so the binary reports "dev" -- exists only in a built
   # image, and no unit test can see it.

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"gopkg.in/yaml.v3"
 )
@@ -21,14 +22,29 @@ import (
 //go:embed schemas/config.json
 var configSchemaJSON []byte
 
-const schemaURL = "https://turbolytics.io/schemas/config.json"
+// serveSchemaJSON is the schema for a serve file, generated from
+// config.ServeConf the same way.
+//
+//go:embed schemas/serve.json
+var serveSchemaJSON []byte
+
+const (
+	schemaURL      = "https://turbolytics.io/schemas/config.json"
+	serveSchemaURL = "https://turbolytics.io/schemas/serve.json"
+)
 
 // SchemaJSON returns the embedded config schema. `config example` renders it
 // as a commented skeleton.
 func SchemaJSON() []byte { return configSchemaJSON }
 
-// checkSchema validates the rendered config against the config schema and
-// reports every violation, each anchored to the line it came from.
+// ServeSchemaJSON returns the embedded serve schema, for `config example
+// --serve`.
+func ServeSchemaJSON() []byte { return serveSchemaJSON }
+
+// checkSchema validates the rendered config against its schema and reports
+// every violation, each anchored to the line it came from. A file with a
+// top-level serve key and no pipeline key is a serve file; every other file
+// is a pipeline, checked exactly as before serve existed.
 func checkSchema(rendered []byte, rep *Report) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(rendered, &root); err != nil {
@@ -56,7 +72,11 @@ func checkSchema(rendered []byte, rep *Report) {
 		return
 	}
 
-	schema, err := compileSchema()
+	schemaJSON, url := configSchemaJSON, schemaURL
+	if config.IsServe(rendered) {
+		schemaJSON, url = serveSchemaJSON, serveSchemaURL
+	}
+	schema, err := compileSchema(schemaJSON, url)
 	if err != nil {
 		// Ours, not the user's. Skipped rather than failed: the config was
 		// never actually checked and must not be reported as sound.
@@ -152,17 +172,17 @@ func lineOf(root *yaml.Node, path []string) (int, int, bool) {
 	return node.Line, node.Column, true
 }
 
-func compileSchema() (*jsonschema.Schema, error) {
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(configSchemaJSON))
+func compileSchema(schemaJSON []byte, url string) (*jsonschema.Schema, error) {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemaJSON))
 	if err != nil {
-		return nil, fmt.Errorf("parsing config schema failed: %w", err)
+		return nil, fmt.Errorf("parsing schema %s failed: %w", url, err)
 	}
 
 	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource(schemaURL, doc); err != nil {
-		return nil, fmt.Errorf("loading config schema failed: %w", err)
+	if err := compiler.AddResource(url, doc); err != nil {
+		return nil, fmt.Errorf("loading schema %s failed: %w", url, err)
 	}
-	return compiler.Compile(schemaURL)
+	return compiler.Compile(url)
 }
 
 func jsonRoundTrip(v any) (any, error) {

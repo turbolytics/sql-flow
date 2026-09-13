@@ -27,6 +27,9 @@ import (
 // not change.
 const ID = "https://turbolytics.io/schemas/config.json"
 
+// ServeID is the serve schema's published identifier.
+const ServeID = "https://turbolytics.io/schemas/serve.json"
+
 // configPkg is the import path of the package Generate reflects. It is the key
 // prefix the reflector builds doc-comment lookups from.
 const configPkg = "github.com/turbolytics/sql-flow/internal/config"
@@ -41,6 +44,28 @@ const configPkg = "github.com/turbolytics/sql-flow/internal/config"
 // The output is deterministic: the same types produce the same bytes, which is
 // what lets a golden test hold the committed file equal to this.
 func Generate(configDir string) ([]byte, error) {
+	s, err := reflectConfig(configDir, &config.Conf{}, ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyEnums(s); err != nil {
+		return nil, err
+	}
+	return encode(s)
+}
+
+// GenerateServe reflects config.ServeConf into the serve file's schema. A
+// serve file is a separate type with a separate schema: validate picks one by
+// the file's top-level keys.
+func GenerateServe(configDir string) ([]byte, error) {
+	s, err := reflectConfig(configDir, &config.ServeConf{}, ServeID)
+	if err != nil {
+		return nil, err
+	}
+	return encode(s)
+}
+
+func reflectConfig(configDir string, v any, id string) (*jsonschema.Schema, error) {
 	r := &jsonschema.Reflector{
 		// The config is YAML. Its Go types carry yaml tags and no json tags,
 		// so the reflector reads names, omitempty and inlining from those.
@@ -64,14 +89,13 @@ func Generate(configDir string) ([]byte, error) {
 		return nil, fmt.Errorf("reading config doc comments from %s: %w", configDir, err)
 	}
 
-	s := r.Reflect(&config.Conf{})
-	s.ID = ID
+	s := r.Reflect(v)
+	s.ID = jsonschema.ID(id)
 	s.Version = "https://json-schema.org/draft/2020-12/schema"
+	return s, nil
+}
 
-	if err := applyEnums(s); err != nil {
-		return nil, err
-	}
-
+func encode(s *jsonschema.Schema) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
