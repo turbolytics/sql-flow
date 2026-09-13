@@ -82,7 +82,7 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 			return readRows(rdr, 1)
 		})
 	if err != nil {
-		s.logger.Warn("health check failed", zap.Error(err))
+		s.logger.Warn("health check failed", zap.String("error", Redact(err.Error())))
 		writeJSON(w, r, http.StatusServiceUnavailable, []byte(`{"status":"unavailable"}`))
 		return
 	}
@@ -150,9 +150,13 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		entry.status, entry.code = 499, "client_closed"
 		return
 	case err != nil:
+		// The caller gets no part of DuckDB's error. A token is public, and a
+		// Postgres connection error carries the connection string, password
+		// included. The log gets it, redacted.
 		s.logger.Error("query failed", zap.String("dataset", name),
-			zap.String("grain", st.grain), zap.Error(err))
-		writeError(w, r, &apiError{http.StatusInternalServerError, "query_failed", err.Error()})
+			zap.String("grain", st.grain), zap.String("error", Redact(err.Error())))
+		writeError(w, r, &apiError{http.StatusInternalServerError, "query_failed",
+			st.where() + " failed; the server log has the database's error"})
 		return
 	}
 

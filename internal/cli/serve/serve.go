@@ -3,6 +3,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -104,8 +105,11 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 
 	// Uncoded, as in run: an ATTACH that fails because the database is not up
 	// yet exits 1, which a supervisor retries.
+	//
+	// Redacted: a failed ATTACH prints the connection string, password
+	// included, and this error goes to the log.
 	if err := core.InitCommands(conn, &config.Conf{Commands: conf.Commands}); err != nil {
-		return fmt.Errorf("failed to initialize commands: %w", err)
+		return errors.New("failed to initialize commands: " + api.Redact(err.Error()))
 	}
 
 	srv, err := api.New(ctx, conf, conn, api.WithLogger(l))

@@ -298,7 +298,7 @@ Every refusal is `{"error": {"code", "message"}}`:
 | `401` | `unauthorized` |
 | `404` | `unknown_dataset`, `not_found` |
 | `405` | `method_not_allowed` |
-| `500` | `query_failed`, carrying DuckDB's message |
+| `500` | `query_failed`. DuckDB's error goes to the server log, with passwords redacted, never to the caller |
 | `504` | `query_timeout` |
 
 At start, `serve` prepares every statement, so a missing table or a syntax

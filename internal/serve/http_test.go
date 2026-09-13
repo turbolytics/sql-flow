@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -246,7 +247,7 @@ func TestCliServe_ErrorsCarryTheirCodeAndNameTheCause(t *testing.T) {
 		{"missing grain", "GET", "/v1/datasets/posts_by_lang", 400, "missing_grain", "grains: 1d, 1h"},
 		{"unknown grain", "GET", "/v1/datasets/posts_by_lang?grain=15m", 400, "unknown_grain", "no grain 15m; grains: 1d, 1h"},
 		{"grain on a dataset without grains", "GET", "/v1/datasets/status?grain=1h", 400, "unknown_grain", "status has no grains"},
-		{"query failed", "GET", "/v1/datasets/cast?v=abc", 500, "query_failed", "abc"},
+		{"query failed", "GET", "/v1/datasets/cast?v=abc", 500, "query_failed", "dataset cast failed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := ts.do(t, tt.method, tt.target, pageToken)
@@ -456,4 +457,41 @@ func TestCliServe_NewRefusesWhatCannotAnswer(t *testing.T) {
 	_, err = New(context.Background(), noTable, conn)
 	assert.Equal(t, errs.CodeSQLInvalid, errs.CodeOf(err))
 	assert.That(t, strings.Contains(err.Error(), "dataset status"))
+}
+
+// A token is public, so a 500 carries nothing from the database. The probe
+// that found this stopped a Postgres mid-run and got back
+// "Unable to connect to Postgres at \"postgresql://postgres:postgres@...\"".
+// A cast error echoes its input, which stands in for that message here
+// without a Postgres.
+func TestCliServe_AQueryFailureKeepsTheDatabaseErrorOutOfTheResponse(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	uri := "postgresql://demo_user:s3cret-pw@db.internal:5432/bluesky"
+	r := ts.get(t, "/v1/datasets/cast?v="+url.QueryEscape(uri))
+	assert.Equal(t, http.StatusInternalServerError, r.status)
+	assert.False(t, strings.Contains(r.raw, "s3cret-pw"))
+	assert.False(t, strings.Contains(r.raw, "demo_user"))
+
+	failures := ts.logs.FilterMessage("query failed").All()
+	assert.Equal(t, 1, len(failures))
+	logged := failures[0].ContextMap()["error"].(string)
+	assert.That(t, strings.Contains(logged, "postgresql://demo_user:***@db.internal:5432/bluesky"))
+	assert.False(t, strings.Contains(logged, "s3cret-pw"))
+}
+
+func TestCliServe_RedactRemovesPasswords(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	for in, want := range map[string]string{
+		`Unable to connect to Postgres at "postgresql://u:p@h:5432/db": refused`: `Unable to connect to Postgres at "postgresql://u:***@h:5432/db": refused`,
+		`postgres://u:p%40ss@h/db?sslmode=require`:                               `postgres://u:***@h/db?sslmode=require`,
+		`host=h user=u password=hunter2 dbname=db`:                               `host=h user=u password=*** dbname=db`,
+		`host=h password='two words' dbname=db`:                                  `host=h password=*** dbname=db`,
+		`postgresql://u@h/db has no password`:                                    `postgresql://u@h/db has no password`,
+		`Conversion Error: Could not convert string 'abc' to INT32`:              `Conversion Error: Could not convert string 'abc' to INT32`,
+	} {
+		assert.Equal(t, want, Redact(in))
+	}
 }

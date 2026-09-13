@@ -401,7 +401,7 @@ One shape:
 | `404` | `unknown_dataset` | No dataset by that name. |
 | `404` | `not_found` | A path that is not a route. |
 | `405` | `method_not_allowed` | Anything but `GET`, except `OPTIONS` for CORS. |
-| `500` | `query_failed` | DuckDB returned an error. The message is DuckDB's. The SQL is the author's, so the error is the author's debugging aid. |
+| `500` | `query_failed` | DuckDB returned an error. The message names the dataset and grain and nothing else: a token is public, and a Postgres connection error carries the connection string, password included. The server log has DuckDB's error, redacted. |
 | `504` | `query_timeout` | The deadline passed before the query returned. |
 
 ### Headers
@@ -426,7 +426,8 @@ Without a `cors` block, no CORS header is ever sent and `OPTIONS` is `405`.
 One line per request at `INFO`: `path`, `token`, `dataset`, `grain`,
 `status`, `code` when non-empty, `rows`, `elapsed_ms`, `remote`. `path` names
 a `404` that matched no dataset. A `500` also logs the DuckDB error at
-`ERROR`. A caller that hangs up before the answer logs status `499` with code
+`ERROR`, with any password in a connection string replaced by `***`. A
+caller that hangs up before the answer logs status `499` with code
 `client_closed`, and nothing is written.
 
 ## The server
