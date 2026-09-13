@@ -68,7 +68,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**37 invariants declared: 31 safety and 6 liveness. Of 142 (invariant, integration) cells: 61 proven, 53 missing, 0 skipped, 0 failing, 28 exempt. 2 gap(s).**
+**37 invariants declared: 31 safety and 6 liveness. Of 142 (invariant, integration) cells: 63 proven, 51 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -133,7 +133,7 @@ drains. An invariant holds only if it holds on all four.
 | --- | --- | --- | --- |
 | `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ✅ u | ✅ u |
 | `pipeline.commit.only_delivered_rows` | The pipeline never commits a position covering a row the destination did not take, and never leaves a delivered row uncommitted after a clean run. *(violated once: #154)* | ✅ u | ✅ u |
-| `pipeline.shutdown.commits_only_delivered` | After the consume loop returns, clean or failed, the commits the process makes on its way out never make a position durable past the last message the sink acknowledged. Not in the state database, and not at the source. *(violated once: #279)* | ❌ missing | ❌ missing |
+| `pipeline.shutdown.commits_only_delivered` | After the consume loop returns, clean or failed, the commits the process makes on its way out never make a position durable past the last message the sink acknowledged. Not in the state database, and not at the source. *(violated once: #279)* | ✅ u | ✅ u |
 | `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u | ✅ u |
 | `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
 
@@ -199,11 +199,4 @@ drains. An invariant holds only if it holds on all four.
 | `pipeline.progress.no_silent_stall` | A configuration cannot remove the flush ticker. flush_interval_seconds absent, zero or negative all run with the thirty second default, so a batch a low-traffic topic never fills still leaves on time. This entry previously claimed the opposite, that zero removed the ticker and stalled such a topic forever; the run command has always defaulted it. Pinned by TestCliInvocation_FlushIntervalNeverZero, not by the harness, and unenforced for that reason: the harness drives a pipeline that is already constructed, and this is a property of resolving the config before construction. There is nothing per-subject to observe, so demanding a cell from every subject would buy a fake rather than a proof. The liveness the harness can see is pipeline.flush.eventually, which it proves. | ❌ missing | ❌ missing |
 | `lifecycle.drain.bounded` | The drain finishes or fails inside its deadline. *(declared, tracked by #161)* | ❌ missing | ❌ missing |
 | `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing | ❌ missing |
-
-## Invariant gaps
-
-These fail `make coverage-check`.
-
-- `pipeline.shutdown.commits_only_delivered` on `pipeline.stateful` requires **any** and is *missing*.
-- `pipeline.shutdown.commits_only_delivered` on `pipeline.stateless` requires **any** and is *missing*.
 

@@ -10,4 +10,5 @@ pipeline.commit.nothing_on_failure: {unit: covered, integration: missing, releas
 pipeline.commit.only_delivered_rows: {unit: covered, integration: missing, release: missing}
 pipeline.flush.eventually: {unit: covered, integration: missing, release: missing}
 pipeline.progress.no_silent_stall: {unit: missing, integration: missing, release: missing}
+pipeline.shutdown.commits_only_delivered: {unit: covered, integration: missing, release: missing}
 pipeline.state.with_offsets: {unit: covered, integration: missing, release: missing}
