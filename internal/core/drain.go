@@ -4,13 +4,14 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/turbolytics/sql-flow/internal/config"
 )
 
-// DefaultDrainDeadline bounds a shutdown that the config did not bound.
-// Thirty seconds is Kubernetes' default terminationGracePeriodSeconds, so a
-// pipeline with no setting at all still finishes or fails before the
-// supervisor stops waiting.
-const DefaultDrainDeadline = 30 * time.Second
+// DefaultDrainDeadline bounds a shutdown that the config did not bound. The
+// value is declared in config.DefaultDrainDeadlineSeconds, where `sqlflow
+// validate` reads it without linking DuckDB.
+const DefaultDrainDeadline = config.DefaultDrainDeadlineSeconds * time.Second
 
 // DrainBudget is one deadline for everything a shutdown does.
 //

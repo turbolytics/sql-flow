@@ -216,3 +216,13 @@ func flushIntervalFor(seconds int) time.Duration {
 	}
 	return 30 * time.Second
 }
+
+// drainDeadlineFor is the one place the drain deadline is decided. Absent,
+// zero and negative all mean the default, for the same reason as the flush
+// interval: a shutdown the config forgot to bound is still bounded.
+func drainDeadlineFor(seconds int) time.Duration {
+	if seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return core.DefaultDrainDeadline
+}
