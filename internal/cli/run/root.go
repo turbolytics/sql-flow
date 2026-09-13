@@ -9,7 +9,6 @@ import (
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/turbolytics/sql-flow/internal/handlers"
 	"github.com/turbolytics/sql-flow/internal/logging"
-	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/turbolytics/sql-flow/internal/sources"
 	"go.uber.org/zap"
@@ -39,6 +38,7 @@ func newErrorPolicies(
 	conf *config.Conf,
 	conn adbc.Connection,
 	mp metric.MeterProvider,
+	events sinks.RetryEvents,
 ) (core.PipelineErrorPolicies, error) {
 	var policies core.PipelineErrorPolicies
 
@@ -62,7 +62,8 @@ func newErrorPolicies(
 		// healthier the more records it rejects.
 		dlqSink, err := sinks.New(ctx, *onError.DLQ, conn,
 			sinks.WithMeterProvider(mp),
-			sinks.WithSinkRole("dlq"))
+			sinks.WithSinkRole("dlq"),
+			sinks.WithRetryEvents(events))
 		if err != nil {
 			return policies, fmt.Errorf("pipeline.on_error dlq: %w", err)
 		}
@@ -89,7 +90,7 @@ func NewCommand() *cobra.Command {
 		// Zero args for the -c form, one for the Python engine's positional
 		// form. See resolveConfigPath.
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			logger, levelErr := logging.New()
 			defer logger.Sync()
 			l := logger.Named("sqlflow.run")
@@ -223,6 +224,19 @@ func NewCommand() *cobra.Command {
 
 			flushInterval := flushIntervalFor(conf.Pipeline.FlushIntervalSeconds)
 
+			// One deadline for the whole shutdown. Its clock starts when the
+			// first step of the drain asks for it, and the turbine's final
+			// batch, both state syncs and every manager's final poll spend
+			// it. A supervisor gives a stop one grace period, not four.
+			budget := core.NewDrainBudget(drainDeadlineFor(conf.Pipeline.DrainDeadlineSeconds))
+			defer budget.Stop()
+
+			// What /healthz knows that the progress snapshot does not: the
+			// failure stopping the process, and the sinks whose retry ladders
+			// are running.
+			hs := newHealth()
+			retryEvents := sinks.RetryEvents{Retry: hs.Retry, Settle: hs.Settle}
+
 			// State wiring. Everything below is skipped for a pipeline with no
 			// state path, which then behaves exactly as it did before.
 			var (
@@ -310,7 +324,7 @@ func NewCommand() *cobra.Command {
 			}
 
 			meterProvider, err := newMeterProvider(metricsExporter, serveTurbostats, static, l,
-				statsFn, progressFn, flushInterval)
+				statsFn, progressFn, hs.Snapshot, flushInterval)
 			if err != nil {
 				return err
 			}
@@ -357,7 +371,8 @@ func NewCommand() *cobra.Command {
 			// its destination stops the start instead of waiting it out.
 			sink, err := sinks.New(ctx, conf.Pipeline.Sink, conn,
 				sinks.WithMeterProvider(meterProvider),
-				sinks.WithSinkRole(core.SinkRolePipeline))
+				sinks.WithSinkRole(core.SinkRolePipeline),
+				sinks.WithRetryEvents(retryEvents))
 			if err != nil {
 				return err
 			}
@@ -380,7 +395,7 @@ func NewCommand() *cobra.Command {
 				}()
 			}
 
-			errorPolicies, err := newErrorPolicies(ctx, conf, conn, meterProvider)
+			errorPolicies, err := newErrorPolicies(ctx, conf, conn, meterProvider, retryEvents)
 			if err != nil {
 				return err
 			}
@@ -396,11 +411,13 @@ func NewCommand() *cobra.Command {
 				append([]core.TurbineOption{
 					core.WithTurbineLogger(l),
 					core.WithMetrics(pipelineMetrics),
+					core.WithDrainBudget(budget),
 				}, turbineOpts...)...,
 			)
 			liveTurbine.Store(turbine)
 
-			managedTables, err := buildManagedTables(ctx, conf, conn, lock, l, meterProvider)
+			managedTables, err := buildManagedTables(ctx, conf, conn, lock, l, meterProvider,
+				budget, retryEvents)
 			if err != nil {
 				return err
 			}
@@ -419,33 +436,44 @@ func NewCommand() *cobra.Command {
 			runCtx, failRun := context.WithCancelCause(ctx)
 			defer failRun(nil)
 			managerCtx, stopManagers := context.WithCancel(context.Background())
-			var managerWG sync.WaitGroup
+			var group managerGroup
 			for _, m := range managedTables {
-				managerWG.Add(1)
-				go func(m *managers.Tumbling) {
-					defer managerWG.Done()
-					if err := m.Start(managerCtx); err != nil {
-						l.Error("table manager stopped", zap.Error(err))
-						failRun(err)
-					}
-				}(m)
+				group.start(managerCtx, m, func(err error) {
+					l.Error("table manager stopped", zap.Error(err))
+					hs.Fail(err)
+					failRun(err)
+				})
 			}
 			defer func() {
+				// Every step below spends the drain budget. On a stop that
+				// was not a signal, --max-msgs or a closed source, this starts
+				// the clock, and the steps finish in milliseconds.
+				drainCtx := budget.Context()
 				// Close the open transaction first. The managers' final poll
 				// runs on this connection, and its close predicate is
 				// evaluated against the transaction's clock -- which is
 				// frozen at the last commit until this runs.
-				if err := turbine.SyncState(context.Background()); err != nil {
+				if err := turbine.SyncState(drainCtx); err != nil {
 					l.Error("failed to sync state before final poll", zap.Error(err))
 				}
 				stopManagers()
-				managerWG.Wait()
+				managerErr := group.wait()
 				// And again afterwards, so what that poll published is
 				// actually deleted. Without this the delete is rolled back
 				// when the connection closes, and every clean shutdown
 				// guarantees a republished window on the next start.
-				if err := turbine.SyncState(context.Background()); err != nil {
+				if err := turbine.SyncState(drainCtx); err != nil {
 					l.Error("failed to sync state after final poll", zap.Error(err))
+				}
+				// A manager whose final poll failed is a stop that did not
+				// finish, whatever the loop reported: its windows are still
+				// in the table, and the next start publishes them. The
+				// manager says why, and a poll the drain deadline ended
+				// carries the drain code. A failure during the run reached
+				// here through failRun already, and the loop's own error
+				// outranks this one.
+				if managerErr != nil && runErr == nil {
+					runErr = managerErr
 				}
 			}()
 
@@ -482,6 +510,7 @@ func NewCommand() *cobra.Command {
 				return cause
 			}
 			if err != nil {
+				hs.Fail(err)
 				l.Error("failed to consume loop", zap.Error(err))
 				return err
 			}

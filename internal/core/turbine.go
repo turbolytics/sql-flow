@@ -265,6 +265,16 @@ type Turbine struct {
 	stats       *Stats
 	errorPolicy PipelineErrorPolicies
 
+	// drain bounds the final batch after a cancel. Shared with the managers
+	// and run's state syncs, so one deadline covers the whole shutdown.
+	drain *DrainBudget
+
+	// lastErrorUnixNano and errorCount feed Progress. Atomics rather than
+	// fields under lock, because recordError runs on paths that already
+	// hold it.
+	lastErrorUnixNano atomic.Int64
+	errorCount        atomic.Int64
+
 	// lagAttrCache keeps one attribute set per topic and partition, so the
 	// per-message lag metric costs no allocation. Touched only by mark, on
 	// the consume-loop goroutine.
@@ -334,8 +344,14 @@ func WithProgressWriteInterval(d time.Duration) TurbineOption {
 // nothing has been recorded yet.
 func (t *Turbine) Progress() Progress {
 	t.lock.Lock()
-	defer t.lock.Unlock()
-	return t.snapshot
+	p := t.snapshot
+	t.lock.Unlock()
+
+	if ns := t.lastErrorUnixNano.Load(); ns != 0 {
+		p.LastError = time.Unix(0, ns).UTC()
+	}
+	p.Errors = t.errorCount.Load()
+	return p
 }
 
 // commitCount is how many state commits have succeeded; tests wait on it.
@@ -492,6 +508,10 @@ func NewTurbine(
 		opt(t)
 	}
 
+	if t.drain == nil {
+		t.drain = NewDrainBudget(DefaultDrainDeadline)
+	}
+
 	return t
 }
 
@@ -578,6 +598,16 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		return nil, err
 	}
 
+	// Every batch runs on batchCtx, not ctx. A SIGTERM arrives as ctx being
+	// cancelled, and a busy pipeline is usually inside a flush when it does.
+	// On ctx the cancel aborted that flush at once, the loop returned the
+	// sink's error, and the drain never ran: the process exited with a
+	// retryable code and replayed a batch it could have finished. batchCtx
+	// ends when the drain budget does, so the batch in flight gets the same
+	// deadline the drain gets, and one clock covers both.
+	batchCtx, stopBatches := t.batchContext(ctx)
+	defer stopBatches()
+
 	numBatchMessages := 0
 	totalConsumed := int64(0)
 	hitMax := false
@@ -611,8 +641,8 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		case msgBatch, ok = <-stream:
 		case <-flushC:
 			if numBatchMessages > 0 {
-				if err := t.processBatch(ctx, numBatchMessages); err != nil {
-					return nil, err
+				if err := t.processBatch(batchCtx, numBatchMessages); err != nil {
+					return nil, t.drainError(err, numBatchMessages)
 				}
 				numBatchMessages = 0
 				continue
@@ -625,7 +655,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// silently, with the rows still reported as live state. This tick
 			// is also what makes a table manager's deletes durable while no
 			// messages are arriving.
-			if err := t.commitState(ctx); err != nil {
+			if err := t.commitState(batchCtx); err != nil {
 				t.recordError(ctx, err, phaseStateCommit, "error committing state on idle tick")
 				return nil, err
 			}
@@ -636,12 +666,14 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// The source delivered this batch, but nothing has written it yet.
 			// Returning without it drops the tail of every graceful shutdown.
 			//
-			// The drain runs on a context of its own. Every step below reaches
-			// DuckDB and the sink. The cancelled ctx would fail the exact work
-			// the drain exists to finish.
+			// batchCtx is still live here: the cancel that ended ctx started
+			// the drain budget's clock, and batchCtx ends with that clock. So
+			// the drain has the whole deadline, and the same one the batch in
+			// flight had.
 			if numBatchMessages > 0 {
-				if err := t.processBatch(context.WithoutCancel(ctx), numBatchMessages); err != nil {
-					t.recordError(ctx, err, phaseSinkFlush, "error draining the final batch")
+				if err := t.processBatch(batchCtx, numBatchMessages); err != nil {
+					err = t.drainError(err, numBatchMessages)
+					t.logger.Error("error draining the final batch", zap.Error(err))
 					return nil, err
 				}
 			}
@@ -723,8 +755,9 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				case <-ctx.Done():
 					t.logger.Info("context done at a batch boundary, draining the batch")
 					t.running = false
-					if err := t.processBatch(context.WithoutCancel(ctx), numBatchMessages); err != nil {
-						t.recordError(ctx, err, phaseSinkFlush, "error draining the final batch")
+					if err := t.processBatch(batchCtx, numBatchMessages); err != nil {
+						err = t.drainError(err, numBatchMessages)
+						t.logger.Error("error draining the final batch", zap.Error(err))
 						return nil, err
 					}
 					t.logThroughput()
@@ -733,8 +766,8 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				}
 
 				p0 := time.Now()
-				if err := t.processBatch(ctx, numBatchMessages); err != nil {
-					return nil, err
+				if err := t.processBatch(batchCtx, numBatchMessages); err != nil {
+					return nil, t.drainError(err, numBatchMessages)
 				}
 				batchTook += time.Since(p0)
 				numBatchMessages = 0
@@ -757,13 +790,46 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 	// reached or the source ended — still has to reach the sink, otherwise
 	// messages counted as consumed are silently dropped.
 	if numBatchMessages > 0 {
-		if err := t.processBatch(ctx, numBatchMessages); err != nil {
-			return nil, err
+		if err := t.processBatch(batchCtx, numBatchMessages); err != nil {
+			return nil, t.drainError(err, numBatchMessages)
 		}
 	}
 
 	t.logThroughput()
 	return t.stats, nil
+}
+
+// batchContext derives the context every batch runs on. It is not cancelled
+// when run is; it ends when the drain budget's deadline passes after run was
+// cancelled, and the budget's clock starts at that cancel. Stop it when the
+// loop returns, or the goroutine outlives the run.
+func (t *Turbine) batchContext(run context.Context) (context.Context, context.CancelFunc) {
+	batchCtx, cancel := context.WithCancel(context.WithoutCancel(run))
+	go func() {
+		select {
+		case <-run.Done():
+		case <-batchCtx.Done():
+			return
+		}
+		select {
+		case <-t.drain.Context().Done():
+			cancel()
+		case <-batchCtx.Done():
+		}
+	}()
+	return batchCtx, cancel
+}
+
+// drainError classifies a batch failure that happened after the drain
+// deadline passed. The batch was not delivered whatever the sink said, and
+// the code says why a supervisor sees a retryable exit: the stop ran out of
+// time, and the next start replays what was not written.
+func (t *Turbine) drainError(err error, buffered int) error {
+	if !t.drain.Exceeded() {
+		return err
+	}
+	return errs.Wrap(errs.CodeDrainIncomplete, err,
+		"drain deadline %s reached with %d messages buffered", t.drain.Deadline(), buffered)
 }
 
 // writeMessage hands the message to the handler, with its source metadata if
@@ -820,6 +886,8 @@ func (t *Turbine) recordPhase(ctx context.Context, phase string, took time.Durat
 // need the caching the per-message paths use.
 func (t *Turbine) recordError(ctx context.Context, err error, phase, message string) {
 	t.stats.NumErrors++
+	t.lastErrorUnixNano.Store(time.Now().UnixNano())
+	t.errorCount.Add(1)
 
 	code := errs.CodeOf(err)
 	t.metrics.ErrorCount.Add(ctx, 1, metric.WithAttributes(
@@ -973,7 +1041,13 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 	}
 	t.lock.Lock()
 	defer t.lock.Unlock()
-	if err := t.stateTx.Rollback(ctx); err != nil {
+	// Without cancellation. A rollback is local and must happen. The DuckDB
+	// driver ignores the context on a rollback today, so this changes nothing
+	// there; it is for any transaction that does honour it, where a rollback
+	// refused on an expired drain context would leave this batch's writes in
+	// the transaction for the next state sync to commit without their
+	// offsets. The harness's recording transaction is one.
+	if err := t.stateTx.Rollback(context.WithoutCancel(ctx)); err != nil {
 		t.logger.Error("rollback failed", zap.Error(err))
 	}
 }
@@ -997,7 +1071,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 	defer t.lock.Unlock()
 
 	if err := t.offsets.Save(ctx, t.marks); err != nil {
-		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
+		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed offset save", zap.Error(rbErr))
 		}
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offsets")
@@ -1007,7 +1081,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 		// The commit itself failed, so the transaction is still open and
 		// still holds this batch's writes; roll it back explicitly rather
 		// than leaving them to leak into the next batch.
-		if rbErr := t.stateTx.Rollback(ctx); rbErr != nil {
+		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed commit", zap.Error(rbErr))
 		}
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing state")
@@ -1237,10 +1311,8 @@ func (t *Turbine) logThroughput() {
 	}
 }
 
+// flush sends the buffered batch. The caller records a failure once; a
+// second record here counted every failed flush twice.
 func (t *Turbine) flush(ctx context.Context, batch arrow.Table) error {
-	if err := t.sink.Flush(ctx); err != nil {
-		t.recordError(ctx, err, phaseSinkFlush, "flush error")
-		return err
-	}
-	return nil
+	return t.sink.Flush(ctx)
 }

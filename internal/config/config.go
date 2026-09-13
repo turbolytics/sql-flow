@@ -312,6 +312,11 @@ type Pipeline struct {
 	BatchSize int `yaml:"batch_size,omitempty"`
 	// Longest a partial batch waits before it is invoked anyway.
 	FlushIntervalSeconds int `yaml:"flush_interval_seconds,omitempty"`
+	// Longest a shutdown may take after SIGTERM. The final batch, the
+	// managers' final poll and the state syncs share it. Absent means 30.
+	// When it passes the process exits 15, and the next start replays what
+	// was not written.
+	DrainDeadlineSeconds int `yaml:"drain_deadline_seconds,omitempty" jsonschema:"minimum=1"`
 	// Where the pipeline keeps its DuckDB state. Absent means in-memory, and
 	// state is lost on a crash.
 	State *StateConf `yaml:"state,omitempty"`

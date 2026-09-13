@@ -440,6 +440,11 @@
           "type": "integer",
           "description": "Longest a partial batch waits before it is invoked anyway."
         },
+        "drain_deadline_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Longest a shutdown may take after SIGTERM. The final batch, the\nmanagers' final poll and the state syncs share it. Absent means 30.\nWhen it passes the process exits 15, and the next start replays what\nwas not written."
+        },
         "state": {
           "properties": {
             "path": {

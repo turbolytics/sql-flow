@@ -6,6 +6,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -741,4 +742,98 @@ func TestManagerTumblingWindow__ReplayStillClosesEachWindowOnce(t *testing.T) {
 	rows, _ = sink.counts()
 	assert.Equal(t, int64(2), rows)
 	assert.Equal(t, int64(1), countRows(t, conn, "agg_cities_count"))
+}
+
+// hangingSink blocks in Flush until its context ends: the sink a drain
+// deadline exists for.
+type hangingSink struct{}
+
+func (hangingSink) WriteTable(context.Context, arrow.Table) error { return nil }
+
+func (hangingSink) Flush(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// The final poll runs on the shutdown budget. A sink that never answers must
+// not hold the process past it, and the closed window stays in the table for
+// the next start to publish.
+func TestManagerTumblingWindow__FinalPollStopsAtTheDrainDeadline(t *testing.T) {
+	coverage.Covers(t, "manager.tumbling_window")
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	budget := core.NewDrainBudget(200 * time.Millisecond)
+	defer budget.Stop()
+	m := NewTumbling(conn, collectSQL, deleteSQL, time.Hour, hangingSink{}, &sync.Mutex{},
+		WithDrainBudget(budget))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Start(ctx) }()
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.Equal(t, errs.CodeDrainIncomplete, errs.CodeOf(err))
+	case <-time.After(5 * time.Second):
+		t.Fatal("the final poll outlived the drain deadline")
+	}
+	assert.That(t, budget.Exceeded())
+	// Two closed rows and one open: nothing was deleted.
+	assert.Equal(t, int64(3), countRows(t, conn, "agg_cities_count"))
+}
+
+// countingHangingSink is a hangingSink that counts its flushes.
+type countingHangingSink struct {
+	hangingSink
+	mu      sync.Mutex
+	flushes int
+	entered chan struct{}
+}
+
+func (s *countingHangingSink) Flush(ctx context.Context) error {
+	s.mu.Lock()
+	s.flushes++
+	s.mu.Unlock()
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	return s.hangingSink.Flush(ctx)
+}
+
+// A cancel that lands during a regular poll still gets a final poll. The
+// regular poll fails because its context ended, and Start used to return
+// that failure without ever running the final poll, so a window that closed
+// during the last interval stayed in the table.
+func TestManagerTumblingWindow__ACancelDuringAPollStillRunsTheFinalPoll(t *testing.T) {
+	coverage.Covers(t, "manager.tumbling_window")
+	conn, cleanup := newTestConn(t)
+	defer cleanup()
+	seedWindows(t, conn)
+
+	sink := &countingHangingSink{entered: make(chan struct{}, 1)}
+	budget := core.NewDrainBudget(200 * time.Millisecond)
+	defer budget.Stop()
+	m := NewTumbling(conn, collectSQL, deleteSQL, 10*time.Millisecond, sink, &sync.Mutex{},
+		WithDrainBudget(budget))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Start(ctx) }()
+
+	<-sink.entered
+	cancel()
+	select {
+	case err := <-done:
+		assert.Equal(t, errs.CodeDrainIncomplete, errs.CodeOf(err))
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after the cancel")
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	assert.Equal(t, 2, sink.flushes)
+	assert.Equal(t, int64(3), countRows(t, conn, "agg_cities_count"))
 }
