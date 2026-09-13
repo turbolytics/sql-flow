@@ -262,6 +262,12 @@ type Turbine struct {
 	// and run's state syncs, so one deadline covers the whole shutdown.
 	drain *DrainBudget
 
+	// lastErrorUnixNano and errorCount feed Progress. Atomics rather than
+	// fields under lock, because recordError runs on paths that already
+	// hold it.
+	lastErrorUnixNano atomic.Int64
+	errorCount        atomic.Int64
+
 	// lagAttrCache keeps one attribute set per topic and partition, so the
 	// per-message lag metric costs no allocation. Touched only by mark, on
 	// the consume-loop goroutine.
@@ -331,8 +337,14 @@ func WithProgressWriteInterval(d time.Duration) TurbineOption {
 // nothing has been recorded yet.
 func (t *Turbine) Progress() Progress {
 	t.lock.Lock()
-	defer t.lock.Unlock()
-	return t.snapshot
+	p := t.snapshot
+	t.lock.Unlock()
+
+	if ns := t.lastErrorUnixNano.Load(); ns != 0 {
+		p.LastError = time.Unix(0, ns).UTC()
+	}
+	p.Errors = t.errorCount.Load()
+	return p
 }
 
 // commitCount is how many state commits have succeeded; tests wait on it.
@@ -806,6 +818,8 @@ func (t *Turbine) recordPhase(ctx context.Context, phase string, took time.Durat
 // need the caching the per-message paths use.
 func (t *Turbine) recordError(ctx context.Context, err error, phase, message string) {
 	t.stats.NumErrors++
+	t.lastErrorUnixNano.Store(time.Now().UnixNano())
+	t.errorCount.Add(1)
 
 	code := errs.CodeOf(err)
 	t.metrics.ErrorCount.Add(ctx, 1, metric.WithAttributes(
