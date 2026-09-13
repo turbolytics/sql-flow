@@ -37,11 +37,17 @@ func Validate(ctx context.Context, req Request) (Report, error) {
 
 	checkSchema(rendered, &rep)
 
-	// Before the demotion, so an empty token rendered from an unset variable
-	// is a warning here, as any other unsupplied value is. serve itself does
-	// not demote it.
+	// A serve file has no pipeline to hold to the drain deadline, and a
+	// pipeline has no datasets. Each file gets its own checks, so neither
+	// reports a pass for something it does not contain.
+	//
+	// The serve rules run before the demotion, so an empty token rendered
+	// from an unset variable is a warning here, as any other unsupplied value
+	// is. serve itself does not demote it.
 	if config.IsServe(rendered) {
 		checkServeRules(rendered, &rep)
+	} else {
+		checkDrainDeadline(rendered, &rep)
 	}
 
 	demoteUnsuppliedVariableErrors(&rep)

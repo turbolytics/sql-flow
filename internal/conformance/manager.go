@@ -37,9 +37,10 @@ type ManagerSubject struct {
 	Integration string
 
 	// New builds the manager around the sink the harness supplies, polling at
-	// the given interval. The harness owns the sink so it can fail a flush
-	// and record what the manager asked of it.
-	New func(t *testing.T, sink core.Sink, poll time.Duration) Manager
+	// the given interval, with its final poll bounded by the budget. The
+	// harness owns the sink so it can fail a flush and record what the
+	// manager asked of it, and owns the budget so it can run one out.
+	New func(t *testing.T, sink core.Sink, poll time.Duration, budget *core.DrainBudget) Manager
 
 	// Seed replaces the state table's contents with n closed windows.
 	Seed func(t *testing.T, n int)
@@ -85,6 +86,7 @@ const (
 	deleteNothingOnFail = "manager.delete.nothing_on_failure"
 	publishEventually   = "manager.publish.eventually"
 	failureExits        = "manager.failure.exits"
+	managerDrainBounded = "manager.drain.bounded"
 )
 
 // seededWindows is how many closed windows each check starts with. Two,
@@ -106,6 +108,7 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	onFailure := verdict{invariant: deleteNothingOnFail}
 	eventually := verdict{invariant: publishEventually}
 	exits := verdict{invariant: failureExits}
+	bounded := verdict{invariant: managerDrainBounded}
 
 	if err := checkDeleteAfterFlush(t, s); err != nil {
 		afterFlush.failure = err.Error()
@@ -119,8 +122,11 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	if err := checkFailureExits(t, s); err != nil {
 		exits.failure = err.Error()
 	}
+	if err := checkManagerDrainBounded(t, s); err != nil {
+		bounded.failure = err.Error()
+	}
 
-	return []verdict{afterFlush, onFailure, eventually, exits}
+	return []verdict{afterFlush, onFailure, eventually, exits, bounded}
 }
 
 // newManagerRun seeds the state table and builds the manager on a recording
@@ -132,7 +138,63 @@ func newManagerRun(t *testing.T, s ManagerSubject, fail bool) (Manager, *Recorde
 	rec := &Recorder{}
 	sink := newRecordingSink(rec, nil, noop.NewMeterProvider())
 	sink.fail = fail
-	return s.New(t, sink.counted, managerPoll), rec, sink
+	// The default deadline, so no check but the bounded one can run it out.
+	budget := core.NewDrainBudget(core.DefaultDrainDeadline)
+	t.Cleanup(budget.Stop)
+	return s.New(t, sink.counted, managerPoll, budget), rec, sink
+}
+
+// checkManagerDrainBounded cancels Start against a sink that never answers
+// and holds that it returns inside the drain deadline, with every closed
+// window still in the state table for the next start to publish.
+//
+// The final poll is the manager's drain. Before #161 it ran on a context with
+// no deadline, so a destination that stopped answering during shutdown held
+// the process until the supervisor killed it.
+func checkManagerDrainBounded(t *testing.T, s ManagerSubject) error {
+	t.Helper()
+	s.Seed(t, seededWindows)
+	sink := newRecordingSink(&Recorder{}, nil, noop.NewMeterProvider())
+	sink.hang = true
+	sink.release = make(chan struct{})
+	watchdog := time.AfterFunc(drainBoundedWait, func() { close(sink.release) })
+	defer watchdog.Stop()
+	budget := core.NewDrainBudget(drainBudget)
+	defer budget.Stop()
+	// An hour between polls, so the only poll that runs is the final one.
+	m := s.New(t, sink.counted, time.Hour, budget)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	started := time.Now()
+	go func() { done <- m.Start(ctx) }()
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			return fmt.Errorf("the sink never answered the final poll and Start " +
+				"returned nil, so the shutdown reports windows published that were not")
+		}
+	case <-time.After(2 * drainBoundedWait):
+		return fmt.Errorf("a %s drain deadline held the final poll past %s against "+
+			"a sink that never answered, and the watchdog could not release it",
+			drainBudget, 2*drainBoundedWait)
+	}
+	if took := time.Since(started); took >= drainBoundedWait {
+		return fmt.Errorf("a %s drain deadline held the final poll for %s against "+
+			"a sink that never answered", drainBudget, took)
+	}
+	if sink.Flushes() != 1 {
+		return fmt.Errorf("the final poll flushed %d times; want the one attempt the "+
+			"deadline ended", sink.Flushes())
+	}
+	if left := s.Remaining(t); left != seededWindows {
+		return fmt.Errorf("the final poll ran out of time and %d of %d closed windows "+
+			"are gone from the state table. They were never delivered, so a restart "+
+			"cannot publish them", seededWindows-left, seededWindows)
+	}
+	return nil
 }
 
 // checkDeleteAfterFlush holds that the state table still has every closed

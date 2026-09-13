@@ -29,8 +29,9 @@ func TestManagerTumblingWindow_Conformance(t *testing.T) {
 	conformance.Managers(t, conformance.ManagerSubject{
 		Integration: "manager.tumbling_window",
 
-		New: func(t *testing.T, sink core.Sink, poll time.Duration) conformance.Manager {
-			return NewTumbling(conn, collectSQL, deleteSQL, poll, sink, &sync.Mutex{})
+		New: func(t *testing.T, sink core.Sink, poll time.Duration, budget *core.DrainBudget) conformance.Manager {
+			return NewTumbling(conn, collectSQL, deleteSQL, poll, sink, &sync.Mutex{},
+				WithDrainBudget(budget))
 		},
 
 		// Every seeded row is ten minutes old, so the close predicate the

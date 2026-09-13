@@ -30,6 +30,26 @@ type Option func(*options)
 type options struct {
 	meterProvider metric.MeterProvider
 	role          string
+	retryEvents   RetryEvents
+}
+
+// RetryEvents is told when a sink's retry ladder runs. Retry fires per failed
+// attempt that will be tried again. Settle fires once when a ladder that
+// retried at all stops, whether it delivered, gave up, or was cancelled.
+//
+// sink names the ladder as role/type, "pipeline/clickhouse" or
+// "manager/clickhouse". The type alone was one key for every sink of that
+// type, so a manager's ladder settling cleared the pipeline's from the
+// health endpoint while it was still running.
+type RetryEvents struct {
+	Retry  func(sink string, attempt int, err error)
+	Settle func(sink string)
+}
+
+// WithRetryEvents adds a listener to the sink's retry ladder. The retry
+// counter records regardless. A sink with no ladder never calls it.
+func WithRetryEvents(e RetryEvents) Option {
+	return func(o *options) { o.retryEvents = e }
 }
 
 // WithSinkRole names what this sink is for: "pipeline", "dlq" or "manager".
@@ -85,39 +105,37 @@ func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Op
 		role = core.SinkRolePipeline
 	}
 
+	return wrap(built, sink, role, o), nil
+}
+
+// wrap puts the retry ladder and the row counters around a built sink. It is
+// the part of New that needs no destination, so it is tested without one.
+func wrap(built core.Sink, sink config.Sink, role string, o options) core.Sink {
 	policy := RetryPolicyFrom(sink.Retry)
 	if !retriesHelp(sink.Type) || !policy.Enabled() {
-		return core.NewCountingSink(built, o.meterProvider, sink.Type, role), nil
+		return core.NewCountingSink(built, o.meterProvider, sink.Type, role)
 	}
 
 	r := newRetrying(built, policy)
 	r.onRetry = retryCounter(o.meterProvider, sink.Type)
+	r.listen(role+"/"+sink.Type, o.retryEvents)
 
 	// Outside the ladder, so one logical flush is one counted flush. The
 	// totals come out the same either way -- retrying.WriteTable delegates and
 	// a failed attempt adds nothing -- but the invariant needs the position
 	// pinned to mean anything.
-	return core.NewCountingSink(r, o.meterProvider, sink.Type, role), nil
+	return core.NewCountingSink(r, o.meterProvider, sink.Type, role)
 }
 
 // retriesHelp reports whether a retry ladder belongs around a sink type.
 //
-// Only the sinks that cross a network to somebody else's server. Kafka is
-// excluded on purpose: it hands records to franz-go, which already retries a
-// produce with its own backoff, and a second ladder on top of that one delays
-// the report without improving delivery. Console, noop and sqlcommand reach
-// nothing that can be temporarily unavailable -- sqlcommand writes through the
-// pipeline's own DuckDB connection, and a failure there is not a blip.
+// The list lives in config.SinkRetries, where `sqlflow validate` can read it
+// without linking DuckDB. See that function for why these sinks and no others.
 //
 // Kept as a function of the type alone so the policy is testable without
 // building a sink, which would dial.
 func retriesHelp(sinkType string) bool {
-	switch sinkType {
-	case "clickhouse", "iceberg":
-		return true
-	default:
-		return false
-	}
+	return config.SinkRetries(sinkType)
 }
 
 // builders constructs each sink type.

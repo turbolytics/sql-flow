@@ -81,3 +81,31 @@ func (m *Marks) Each(fn func(topic string, partition int32, mark Mark)) {
 		}
 	}
 }
+
+// Reset makes m hold exactly what src holds, including positions lower than
+// the ones m had. It is the one way a position moves backwards, and it exists
+// for one caller: a batch that failed has to give back the positions it
+// advanced, or a later commit makes them durable for rows nothing wrote.
+//
+// The inner maps are cleared and reused rather than replaced, because the
+// turbine records the committed copy on every commit and a fresh map per
+// commit is garbage on the batch path.
+func (m *Marks) Reset(src *Marks) {
+	for topic, parts := range m.m {
+		if _, keep := src.m[topic]; !keep {
+			delete(m.m, topic)
+			continue
+		}
+		clear(parts)
+	}
+	for topic, parts := range src.m {
+		dst, ok := m.m[topic]
+		if !ok {
+			dst = make(map[int32]Mark, len(parts))
+			m.m[topic] = dst
+		}
+		for p, mark := range parts {
+			dst[p] = mark
+		}
+	}
+}

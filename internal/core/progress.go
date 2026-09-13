@@ -14,11 +14,17 @@ import (
 // stream from a replay; /stats and /healthz read the in-memory copy.
 const progressTable = "sqlflow_progress"
 
-// Progress is the pipeline's liveness in three facts. Wall clock, UTC.
+// Progress is the pipeline's liveness. Wall clock, UTC.
 type Progress struct {
 	LastArrival time.Time
 	LastCommit  time.Time
 	Messages    int64
+
+	// LastError is when the loop last recorded an error, and Errors is how
+	// many it has recorded. In memory only: they describe this process, not
+	// the durable state, so the progress table does not carry them.
+	LastError time.Time
+	Errors    int64
 }
 
 // progressSaver is what the Turbine needs; ProgressStore is the DuckDB one.

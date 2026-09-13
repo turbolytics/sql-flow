@@ -1,5 +1,7 @@
 system.batch.internal
 system.internal.unexpected
+system.lifecycle.drain_incomplete
+system.lifecycle.internal
 system.sink.internal
 system.sink.unreachable
 system.sink.write_failed

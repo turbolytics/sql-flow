@@ -40,6 +40,14 @@ func TestValidateServe_AValidServeFilePasses(t *testing.T) {
 	assert.That(t, rep.OK)
 	assert.Equal(t, StatusPass, checkStatus(t, rep, "config.schema"))
 	assert.Equal(t, StatusPass, checkStatus(t, rep, "serve.rules"))
+
+	// A serve file has no pipeline, so no pipeline check reports on it. A
+	// pass for a check that could not apply reads as proof.
+	for _, c := range rep.Checks {
+		if strings.HasPrefix(c.ID, "pipeline.") {
+			t.Fatalf("a serve file reports pipeline check %s: %s", c.ID, c.Status)
+		}
+	}
 }
 
 // A serve file is held to the serve schema, not the pipeline one: a missing

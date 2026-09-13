@@ -819,10 +819,12 @@ func TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants(t *te
 	assert.True(t, strings.Contains(vs[onlyDeliveredRows].skipped, "read back"))
 	assert.Equal(t, "", vs[stateWithOffsets].failure)
 
-	// The other three still apply to a stateless pipeline.
+	// The other five still apply to a stateless pipeline.
 	assert.Equal(t, "", vs[commitAfterFlush].failure)
 	assert.Equal(t, "", vs[commitNothingOnFail].failure)
 	assert.Equal(t, "", vs[drainOnCancel].failure)
+	assert.Equal(t, "", vs[shutdownDelivered].failure)
+	assert.Equal(t, "", vs[drainBounded].failure)
 }
 
 // Every invariant the pipeline harness judges must be declared, or its marker
@@ -849,7 +851,46 @@ func TestToolingConformancePipelines_RunsEveryTrigger(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 	assert.DeepEqual(t, []Trigger{
 		TriggerBatchFull, TriggerInterval, TriggerSourceClosed, TriggerDrain,
+		TriggerBoundaryCancel,
 	}, Triggers)
+}
+
+// The shutdown check fails when a durable position runs past what the sink
+// acknowledged, at the state database or at the source, and when a position
+// is durable for a partition the sink acknowledged nothing in. It passes when
+// every durable position is covered. Judged on a fabricated outcome, because
+// the engine no longer produces the bad one.
+func TestToolingConformancePipelines_ShutdownCheckCatchesAPositionPastDelivery(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	p0 := position{"events", 0}
+	p1 := position{"events", 1}
+
+	cases := []struct {
+		name string
+		run  outcome
+		fail bool
+	}{
+		{"nothing committed", outcome{}, false},
+		{"durable at the acknowledged offset",
+			outcome{acknowledged: map[position]int64{p0: 3}, durable: map[position]int64{p0: 3}}, false},
+		{"durable behind the acknowledged offset",
+			outcome{acknowledged: map[position]int64{p0: 3}, durable: map[position]int64{p0: 1}}, false},
+		{"durable past the acknowledged offset",
+			outcome{acknowledged: map[position]int64{p0: 3}, durable: map[position]int64{p0: 7}}, true},
+		{"durable with nothing acknowledged",
+			outcome{durable: map[position]int64{p0: 3}}, true},
+		{"durable in a partition the sink never saw",
+			outcome{acknowledged: map[position]int64{p0: 3}, durable: map[position]int64{p1: 0}}, true},
+		{"the source committed past delivery",
+			outcome{acknowledged: map[position]int64{p0: 3}, sourceCommitted: map[position]int64{p0: 4}}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			coverage.Covers(t, "tooling.conformance")
+			err := committedPastDelivery(c.run)
+			assert.Equal(t, c.fail, err != nil)
+		})
+	}
 }
 
 func pipelineVerdictsFor(t *testing.T, s PipelineSubject) map[string]verdict {
@@ -859,15 +900,15 @@ func pipelineVerdictsFor(t *testing.T, s PipelineSubject) map[string]verdict {
 	for _, v := range pipelineVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 6, len(out))
+	assert.Equal(t, 8, len(out))
 	return out
 }
 
-// The liveness claim is the only one that says the pipeline does anything.
-// Every safety verdict above holds for a pipeline that never flushes, so a
-// harness that judged safety alone would call a permanently stalled loop
-// conformant.
-func TestToolingConformancePipelines_JudgeOneLivenessClaim(t *testing.T) {
+// The liveness claims are the ones that say the pipeline does anything. Every
+// safety verdict above holds for a pipeline that never flushes, so a harness
+// that judged safety alone would call a permanently stalled loop conformant.
+// Two now: the batch reaches the sink, and a drain ends.
+func TestToolingConformancePipelines_JudgeTheLivenessClaims(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 
 	vs := pipelineVerdictsFor(t, PipelineSubject{
@@ -876,8 +917,10 @@ func TestToolingConformancePipelines_JudgeOneLivenessClaim(t *testing.T) {
 		Options:     func(*Recorder) []core.TurbineOption { return nil },
 	})
 
-	assert.Equal(t, "", vs[flushEventually].failure)
-	assert.Equal(t, "", vs[flushEventually].skipped)
+	for _, id := range []string{flushEventually, drainBounded} {
+		assert.Equal(t, "", vs[id].failure)
+		assert.Equal(t, "", vs[id].skipped)
+	}
 }
 
 // TestHarnessSinkCarriesRowCounters guards why sink.rows.counted_on_delivery
