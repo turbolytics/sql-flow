@@ -32,6 +32,10 @@ type Tumbling struct {
 	// both run against the same DuckDB connection.
 	lock   *sync.Mutex
 	logger *zap.Logger
+
+	// drain bounds the final poll after a cancel. Shared with the turbine,
+	// so one deadline covers the whole shutdown.
+	drain *core.DrainBudget
 }
 
 func NewTumbling(
@@ -59,6 +63,9 @@ func NewTumbling(
 	for _, opt := range opts {
 		opt(m)
 	}
+	if m.drain == nil {
+		m.drain = core.NewDrainBudget(core.DefaultDrainDeadline)
+	}
 	return m
 }
 
@@ -68,6 +75,12 @@ func WithLogger(l *zap.Logger) TumblingOption {
 	return func(m *Tumbling) {
 		m.logger = l.Named("manager.tumbling")
 	}
+}
+
+// WithDrainBudget bounds the final poll after a cancel. A manager built
+// without one gets core.DefaultDrainDeadline.
+func WithDrainBudget(b *core.DrainBudget) TumblingOption {
+	return func(m *Tumbling) { m.drain = b }
 }
 
 // Start polls until the context is cancelled, then polls once more so windows
@@ -96,7 +109,7 @@ func (m *Tumbling) Start(ctx context.Context) error {
 				return fmt.Errorf("tumbling window manager: %w", err)
 			}
 		case <-ctx.Done():
-			if err := m.Poll(context.Background()); err != nil {
+			if err := m.Poll(m.drain.Context()); err != nil {
 				m.logger.Error("final poll failed", zap.Error(err))
 				return fmt.Errorf("tumbling window manager: final poll: %w", err)
 			}
