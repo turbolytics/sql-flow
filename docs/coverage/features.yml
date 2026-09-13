@@ -120,6 +120,10 @@ features:
     description: The process exit status carries the error code a supervisor reads.
     requires: [unit, release]
 
+  - id: lifecycle.health
+    description: /healthz reports starting, healthy, degraded or failed, with a reason.
+    requires: [unit, release]
+
   # --- The batch loop -----------------------------------------------------
   - id: core.consume_loop
     description: Accumulates a batch, flushes it, and commits in that order.

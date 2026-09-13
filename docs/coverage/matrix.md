@@ -41,6 +41,7 @@ added, and this page changes only when a status does.
 | `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ |
 | `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ |
 | `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ |
+| `lifecycle.health` | /healthz reports starting, healthy, degraded or failed, with a reason. | ❌ **missing** | — | ❌ **missing** |
 | `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — |
 | `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — |
 | `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — |
@@ -60,7 +61,7 @@ added, and this page changes only when a status does.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**37 features declared. 37 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**38 features declared. 37 have at least one passing test attributed at every level they require, so 2 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -76,6 +77,15 @@ never flushes satisfies every safety invariant on this page.
 `keeps_batch` holds if you never flush, and `commit.after_flush`
 holds if you never commit. Only a liveness claim says the pipeline
 does anything at all.
+
+## Gaps
+
+These fail `make coverage-matrix`. There is no baseline: a gap
+is closed by a test, or by the registry honestly no longer
+requiring that level.
+
+- `lifecycle.health` requires **unit** coverage and is *missing*.
+- `lifecycle.health` requires **release** coverage and is *missing*.
 
 
 # Invariant matrix

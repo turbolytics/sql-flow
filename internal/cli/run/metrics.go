@@ -49,7 +49,8 @@ const stuckIntervals = 3
 // would answer with nothing is absent rather than half-working.
 func newHTTPMux(registry *prom.Registry, stats statsFunc,
 	collect func(context.Context) (turbostats.Bundle, error),
-	progress progressFunc, interval time.Duration, now func() time.Time) *http.ServeMux {
+	progress progressFunc, health healthFunc, interval time.Duration,
+	now func() time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
 	started := now()
 
@@ -97,7 +98,9 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 				out["progress"] = map[string]any{
 					"last_arrival":        p.LastArrival,
 					"last_commit":         p.LastCommit,
+					"last_error":          p.LastError,
 					"messages":            p.Messages,
+					"errors":              p.Errors,
 					"arrival_age_seconds": arrival,
 					"commit_age_seconds":  commit,
 				}
@@ -112,23 +115,24 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 
 	if progress != nil {
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			_, _, commit := ages()
-			w.Header().Set("Content-Type", "application/json")
-
-			if commit > float64(stuckIntervals)*interval.Seconds() {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"status":             "stuck",
-					"commit_age_seconds": commit,
-					"interval_seconds":   interval.Seconds(),
-				})
-				return
+			p, _, commit := ages()
+			var snap healthSnapshot
+			if health != nil {
+				snap = health()
 			}
+			status, reason, code := healthStatus(p, commit, snap, interval, now())
 
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":             "ok",
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			body := map[string]any{
+				"status":             status,
 				"commit_age_seconds": commit,
-			})
+				"interval_seconds":   interval.Seconds(),
+			}
+			if reason != "" {
+				body["reason"] = reason
+			}
+			_ = json.NewEncoder(w).Encode(body)
 		})
 	}
 
@@ -150,7 +154,8 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 // nothing -- so there was nothing for a bundle to read.
 func newMeterProvider(exporter string, serveTurbostats bool,
 	static turbostats.Static, l *zap.Logger, stats statsFunc,
-	progress progressFunc, interval time.Duration) (metric.MeterProvider, error) {
+	progress progressFunc, health healthFunc,
+	interval time.Duration) (metric.MeterProvider, error) {
 
 	reader := sdkmetric.NewManualReader()
 	opts := []sdkmetric.Option{sdkmetric.WithReader(reader)}
@@ -183,7 +188,7 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 			return turbostats.Collect(ctx, static, reader, stats)
 		}
 	}
-	mux := newHTTPMux(registry, stats, collect, progress, interval, time.Now)
+	mux := newHTTPMux(registry, stats, collect, progress, health, interval, time.Now)
 
 	go func() {
 		routes := []string{}
