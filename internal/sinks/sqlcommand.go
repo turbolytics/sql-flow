@@ -26,6 +26,12 @@ type SQLCommandSink struct {
 	sql           string
 	substitutions []config.SQLCommandSubstitution
 
+	// connLock serializes conn with the pipeline, the table managers and the
+	// debug API, which all run statements on it. New sets it. Nil leaves
+	// serialization to the caller, which only a test driving the sink alone
+	// can promise.
+	connLock *sync.Mutex
+
 	mu     sync.Mutex
 	tables []arrow.Table
 }
@@ -93,6 +99,17 @@ func (s *SQLCommandSink) requeue(tables []arrow.Table) {
 // send is one delivery attempt. It releases nothing: whether these batches can
 // be dropped is the caller's decision, and it depends on this error.
 func (s *SQLCommandSink) send(ctx context.Context, tables []arrow.Table) error {
+	// Held across the drop, the ingest and the user's SQL. The handler and the
+	// table managers run statements on this connection from other goroutines,
+	// and DuckDB closes a pending result the moment another statement runs on
+	// its connection, so an unlocked flush failed whatever query they had in
+	// flight (#280). Nobody calls Flush holding this lock: the pipeline and the
+	// managers release it before they flush.
+	if s.connLock != nil {
+		s.connLock.Lock()
+		defer s.connLock.Unlock()
+	}
+
 	if err := s.materialize(ctx, tables); err != nil {
 		return err
 	}

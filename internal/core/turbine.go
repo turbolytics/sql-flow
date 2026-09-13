@@ -388,7 +388,13 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 		return
 	}
 	now := time.Now().UTC()
+	// Held through the write below. The table managers collect on this same
+	// connection under this lock, and DuckDB closes a pending result the
+	// moment another statement runs on its connection. A write outside the
+	// lock failed whichever poll was in flight with "closed pending query
+	// result", at a rate set by batch size (#280).
 	t.lock.Lock()
+	defer t.lock.Unlock()
 	p := Progress{LastCommit: now, Messages: t.stats.MessagesConsumed()}
 	if !t.arrivedAt.IsZero() {
 		p.LastArrival = t.arrivedAt
@@ -413,7 +419,6 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 		t.progressWrittenAt = now
 		t.writtenArrival = t.arrivedAt
 	}
-	t.lock.Unlock()
 
 	// The snapshot above is exact and free. The table is not: one UPDATE
 	// through ADBC measures about 112 microseconds, and a batch of 5000 at a
@@ -594,7 +599,8 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 
 	t.stats.StartTime = time.Now().UTC()
 	t.stats.SetNumMessagesConsumed(0)
-	if err := t.handler.Init(ctx); err != nil {
+	// Under the lock: the managers are already polling this connection (#280).
+	if err := t.initHandler(ctx); err != nil {
 		return nil, err
 	}
 
@@ -1033,6 +1039,18 @@ func (t *Turbine) commitSource() error {
 	return t.source.Commit()
 }
 
+// initHandler resets the handler under the lock. Init drops or truncates the
+// batch table on the shared connection, and the table managers poll that
+// connection from their own goroutines. DuckDB closes a pending result the
+// moment another statement runs on its connection, so an unlocked reset
+// failed whichever collect was in flight with "closed pending query result",
+// once per batch at batch size 1 (#280).
+func (t *Turbine) initHandler(ctx context.Context) error {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	return t.handler.Init(ctx)
+}
+
 // rollbackState discards this batch's uncommitted state writes. Used on the
 // paths that fail before commitState is reached.
 func (t *Turbine) rollbackState(ctx context.Context) {
@@ -1272,7 +1290,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	}
 
 	i0 := time.Now()
-	err = t.handler.Init(ctx)
+	err = t.initHandler(ctx)
 	t.recordPhase(ctx, phaseHandlerInit, time.Since(i0))
 
 	if err != nil {

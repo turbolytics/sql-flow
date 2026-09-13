@@ -8,6 +8,7 @@ package sinks
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -107,6 +108,23 @@ func TestSinkSqlcommand_NewRequiresSQL(t *testing.T) {
 	// Whitespace is not a SQL statement either.
 	_, err = NewSQLCommandSink(conn, "   \n\t ", nil)
 	assert.Error(t, err)
+}
+
+// The sink runs statements on the pipeline's shared connection, so New refuses
+// to build one without the lock that serializes it. A call site that forgets
+// the option then fails at startup, not with a "closed pending query result"
+// in some other party's query at a rate set by traffic (#280).
+func TestSinkSqlcommand_NewRefusesWithoutTheConnectionLock(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
+	conn := newSinkTestConn(t)
+	conf := config.Sink{Type: "sqlcommand", SQLCommand: &config.SQLCommandSink{SQL: "SELECT 1"}}
+
+	_, err := New(context.Background(), conf, conn)
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "needs its lock"))
+
+	_, err = New(context.Background(), conf, conn, WithConnLock(&sync.Mutex{}))
+	assert.NoError(t, err)
 }
 
 // The batch reaches the user's SQL under the name the Python sink registered

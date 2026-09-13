@@ -37,6 +37,7 @@ func newErrorPolicies(
 	ctx context.Context,
 	conf *config.Conf,
 	conn adbc.Connection,
+	lock *sync.Mutex,
 	mp metric.MeterProvider,
 	events sinks.RetryEvents,
 ) (core.PipelineErrorPolicies, error) {
@@ -63,7 +64,8 @@ func newErrorPolicies(
 		dlqSink, err := sinks.New(ctx, *onError.DLQ, conn,
 			sinks.WithMeterProvider(mp),
 			sinks.WithSinkRole("dlq"),
-			sinks.WithRetryEvents(events))
+			sinks.WithRetryEvents(events),
+			sinks.WithConnLock(lock))
 		if err != nil {
 			return policies, fmt.Errorf("pipeline.on_error dlq: %w", err)
 		}
@@ -71,6 +73,23 @@ func newErrorPolicies(
 	}
 
 	return policies, nil
+}
+
+// newPipelineSink builds the pipeline's own sink. A function of its own so the
+// shared-connection test builds it exactly as the run command does.
+func newPipelineSink(
+	ctx context.Context,
+	conf *config.Conf,
+	conn adbc.Connection,
+	lock *sync.Mutex,
+	mp metric.MeterProvider,
+	events sinks.RetryEvents,
+) (core.Sink, error) {
+	return sinks.New(ctx, conf.Pipeline.Sink, conn,
+		sinks.WithMeterProvider(mp),
+		sinks.WithSinkRole(core.SinkRolePipeline),
+		sinks.WithRetryEvents(events),
+		sinks.WithConnLock(lock))
 }
 
 func NewCommand() *cobra.Command {
@@ -375,10 +394,7 @@ func NewCommand() *cobra.Command {
 
 			// The signal context, so a SIGTERM arriving while the sink dials
 			// its destination stops the start instead of waiting it out.
-			sink, err := sinks.New(ctx, conf.Pipeline.Sink, conn,
-				sinks.WithMeterProvider(meterProvider),
-				sinks.WithSinkRole(core.SinkRolePipeline),
-				sinks.WithRetryEvents(retryEvents))
+			sink, err := newPipelineSink(ctx, conf, conn, lock, meterProvider, retryEvents)
 			if err != nil {
 				return err
 			}
@@ -401,7 +417,7 @@ func NewCommand() *cobra.Command {
 				}()
 			}
 
-			errorPolicies, err := newErrorPolicies(ctx, conf, conn, meterProvider, retryEvents)
+			errorPolicies, err := newErrorPolicies(ctx, conf, conn, lock, meterProvider, retryEvents)
 			if err != nil {
 				return err
 			}

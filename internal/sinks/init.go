@@ -3,6 +3,7 @@ package sinks
 import (
 	"context"
 	"sort"
+	"sync"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -31,6 +32,14 @@ type options struct {
 	meterProvider metric.MeterProvider
 	role          string
 	retryEvents   RetryEvents
+	connLock      *sync.Mutex
+}
+
+// WithConnLock supplies the lock that serializes the pipeline's DuckDB
+// connection. The sqlcommand sink runs its statements on that connection, so
+// New refuses to build one without it. See SQLCommandSink.connLock.
+func WithConnLock(lock *sync.Mutex) Option {
+	return func(o *options) { o.connLock = lock }
 }
 
 // RetryEvents is told when a sink's retry ladder runs. Retry fires per failed
@@ -92,6 +101,18 @@ func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Op
 	built, err := buildSink(ctx, sink, conn)
 	if err != nil {
 		return nil, err
+	}
+
+	// Checked here rather than in the builder, so every caller of New is held
+	// to it: the pipeline, each table manager and the DLQ build their sinks in
+	// three different places, and one of them forgetting the lock is a race
+	// that no single-threaded test of that sink would see.
+	if s, ok := built.(*SQLCommandSink); ok {
+		if o.connLock == nil {
+			return nil, errs.New(errs.CodeSinkInvalid,
+				"sink: sqlcommand shares the pipeline's DuckDB connection and needs its lock")
+		}
+		s.connLock = o.connLock
 	}
 
 	// Checked before the pipeline consumes anything, so a destination that is
