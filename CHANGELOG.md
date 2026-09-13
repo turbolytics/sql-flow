@@ -20,10 +20,13 @@
 
 ### Fixed
 
-- A rollback after a failed batch no longer runs on the batch's context. On a
-  drain that ran out of time that context had expired, and a refused rollback
-  would have left the batch's handler writes for the next state sync to
-  commit without their offsets.
+- A SIGTERM that arrived while a batch was being flushed aborted the flush,
+  and the process exited with the sink's error instead of draining. The
+  batch now finishes inside the drain deadline.
+- A cancel during a table manager's regular poll skipped its final poll, and
+  a final poll that failed was logged while the process exited 0. The final
+  poll always runs, and its failure is the exit code.
+- One failed flush counted as three errors.
 
 ## v1.0.0 — sqlflow, the Go engine
 

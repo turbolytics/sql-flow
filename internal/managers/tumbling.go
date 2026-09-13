@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"go.uber.org/zap"
 )
 
@@ -104,18 +105,40 @@ func (m *Tumbling) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ticker.C:
-			if err := m.Poll(ctx); err != nil {
+			err := m.Poll(ctx)
+			if err != nil && ctx.Err() == nil {
 				m.logger.Error("poll failed, stopping the manager", zap.Error(err))
 				return fmt.Errorf("tumbling window manager: %w", err)
 			}
-		case <-ctx.Done():
-			if err := m.Poll(m.drain.Context()); err != nil {
-				m.logger.Error("final poll failed", zap.Error(err))
-				return fmt.Errorf("tumbling window manager: final poll: %w", err)
+			if ctx.Err() == nil {
+				continue
 			}
-			return nil
+			// The cancel landed during that poll, and the poll failed
+			// because of it or finished just before it. Either way the
+			// final poll below is the one that counts: returning here
+			// skipped it, and a window that closed during the last interval
+			// stayed in the table with the process reporting a clean stop.
+		case <-ctx.Done():
 		}
+		return m.finalPoll()
 	}
+}
+
+// finalPoll publishes what closed during the last interval, on the drain
+// budget. A poll the deadline ended is reported as the drain running out of
+// time, not as the sink's own failure: the windows are still in the table,
+// and the next start publishes them.
+func (m *Tumbling) finalPoll() error {
+	err := m.Poll(m.drain.Context())
+	if err == nil {
+		return nil
+	}
+	if m.drain.Exceeded() {
+		err = errs.Wrap(errs.CodeDrainIncomplete, err,
+			"drain deadline %s reached before the final poll finished", m.drain.Deadline())
+	}
+	m.logger.Error("final poll failed", zap.Error(err))
+	return fmt.Errorf("tumbling window manager: final poll: %w", err)
 }
 
 // Poll publishes any closed windows and removes them from the table.

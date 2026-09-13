@@ -116,6 +116,64 @@ func TestValidateSchema_ShortDrainWithRetryingOffIsQuiet(t *testing.T) {
 	assert.Equal(t, 0, len(drainWarnings(rep)))
 }
 
+// The ladders share the drain budget, so they are summed. Two ten-second
+// ladders under a fifteen-second drain warn, and the warning names both.
+func TestValidateSchema_LaddersAreSummedAgainstTheDrain(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, err := Validate(context.Background(), Request{Path: "drain.yml", Config: `
+tables:
+  sql:
+    - name: agg
+      sql: CREATE TABLE agg (id INT)
+      manager:
+        tumbling_window:
+          collect_closed_windows_sql: SELECT id FROM agg
+          delete_closed_windows_sql: DELETE FROM agg
+        sink:
+          type: iceberg
+          iceberg:
+            catalog_name: c
+            table_name: t
+          retry:
+            deadline_seconds: 10
+pipeline:
+  batch_size: 1
+  drain_deadline_seconds: 15
+  source:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: ["t"]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1
+  on_error:
+    policy: DLQ
+    dlq:
+      type: clickhouse
+      clickhouse:
+        dsn: clickhouse://localhost:9000
+        table: dlq
+      retry:
+        deadline_seconds: 10
+  sink:
+    type: console
+`})
+	assert.NoError(t, err)
+	assert.That(t, rep.OK)
+
+	warnings := drainWarnings(rep)
+	assert.Equal(t, 1, len(warnings))
+	msg := warnings[0].Message
+	assert.That(t, strings.Contains(msg, "add up to 20s"))
+	assert.That(t, strings.Contains(msg, "pipeline.on_error.dlq retry.deadline_seconds is 10s"))
+	assert.That(t, strings.Contains(msg, "tables.sql[agg].manager.sink retry.deadline_seconds is 10s"))
+	// The console sink has no ladder and is not in the sum.
+	assert.That(t, !strings.Contains(msg, "pipeline.sink"))
+}
+
 // The schema rejects a drain deadline of zero. Absent means the default; a
 // zero written down is a mistake.
 func TestValidateSchema_ZeroDrainDeadlineFails(t *testing.T) {

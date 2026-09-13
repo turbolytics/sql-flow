@@ -65,20 +65,20 @@ func newRetrying(inner core.Sink, policy RetryPolicy) *retrying {
 }
 
 // listen adds a RetryEvents listener beside whatever the ladder already
-// reports to, naming the sink type on every event.
-func (r *retrying) listen(sinkType string, e RetryEvents) {
+// reports to, naming the sink on every event.
+func (r *retrying) listen(sink string, e RetryEvents) {
 	if e.Retry != nil {
 		previous, notify := r.onRetry, e.Retry
 		r.onRetry = func(attempt int, err error) {
 			previous(attempt, err)
-			notify(sinkType, attempt, err)
+			notify(sink, attempt, err)
 		}
 	}
 	if e.Settle != nil {
 		previous, notify := r.onSettle, e.Settle
 		r.onSettle = func() {
 			previous()
-			notify(sinkType)
+			notify(sink)
 		}
 	}
 }

@@ -105,13 +105,13 @@ func TestLifecycleHealth_EndpointReportsFailuresAndRetries(t *testing.T) {
 		return resp.StatusCode, body
 	}
 
-	h.Retry("clickhouse", 2, errors.New("connection reset by peer"))
+	h.Retry("pipeline/clickhouse", 2, errors.New("connection reset by peer"))
 	code, body := get()
 	assert.Equal(t, http.StatusOK, code)
 	assert.Equal(t, "degraded", body["status"])
-	assert.Equal(t, "sink clickhouse is retrying, attempt 2", body["reason"])
+	assert.Equal(t, "sink pipeline/clickhouse is retrying, attempt 2", body["reason"])
 
-	h.Settle("clickhouse")
+	h.Settle("pipeline/clickhouse")
 	code, body = get()
 	assert.Equal(t, http.StatusOK, code)
 	assert.Equal(t, "healthy", body["status"])

@@ -64,3 +64,42 @@ func buildManagedTables(
 
 	return built, nil
 }
+
+// managerGroup runs every table manager and keeps the first error any of
+// them returned. run reads it after the shutdown, because a manager that
+// fails while the loop is running cancels the run itself, and one that fails
+// in its final poll has nobody left to tell: the loop has already returned.
+// Before this, that second failure was logged and the process exited 0 with
+// windows unpublished.
+type managerGroup struct {
+	wg    sync.WaitGroup
+	mu    sync.Mutex
+	first error
+}
+
+// start runs m until ctx ends. onFail is called with any error m returns,
+// so the caller can cancel the run and mark the process failed.
+func (g *managerGroup) start(ctx context.Context, m *managers.Tumbling, onFail func(error)) {
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		err := m.Start(ctx)
+		if err == nil {
+			return
+		}
+		g.mu.Lock()
+		if g.first == nil {
+			g.first = err
+		}
+		g.mu.Unlock()
+		onFail(err)
+	}()
+}
+
+// wait blocks until every manager has returned and reports the first error.
+func (g *managerGroup) wait() error {
+	g.wg.Wait()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.first
+}

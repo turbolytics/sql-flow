@@ -2,6 +2,7 @@ package validate
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
@@ -9,7 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// checkDrainDeadline warns when a sink's retry ladder can outlive the drain.
+// checkDrainDeadline warns when the sinks' retry ladders can outlive the
+// drain.
 //
 // A short drain deadline is a legitimate choice: the operator wants the
 // process out in five seconds whatever the sink is doing. So this is a
@@ -17,8 +19,10 @@ import (
 // a drain which reaches a retrying sink exits 15 before the ladder finishes,
 // and the tail of the stream replays on the next start.
 //
-// Every sink the pipeline builds is counted: the pipeline's own, the
-// dead-letter queue's, and each table manager's.
+// Every sink the pipeline builds is counted, and their ladders are summed:
+// the pipeline's own, the dead-letter queue's, and each table manager's all
+// spend the one drain budget, and the shutdown runs the loop's flush and then
+// each manager's final poll in turn.
 func checkDrainDeadline(rendered []byte, rep *Report) {
 	var conf config.Conf
 	if err := yaml.Unmarshal(rendered, &conf); err != nil {
@@ -49,15 +53,24 @@ func checkDrainDeadline(rendered []byte, rep *Report) {
 		}
 	}
 
+	var (
+		total   time.Duration
+		ladders []string
+	)
 	for _, s := range sinks {
 		ladder, ok := ladderDeadline(s.sink)
-		if !ok || ladder <= drain {
+		if !ok {
 			continue
 		}
+		total += ladder
+		ladders = append(ladders, fmt.Sprintf("%s retry.deadline_seconds is %s", s.path, ladder))
+	}
+	if total > drain {
 		rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
-			"pipeline.drain_deadline_seconds is %s and %s retry.deadline_seconds is %s, "+
-				"so a drain that reaches a retrying sink exits 15 before the ladder finishes",
-			drain, s.path, ladder), nil))
+			"pipeline.drain_deadline_seconds is %s and the retry ladders it has to cover "+
+				"add up to %s (%s), so a drain that reaches a retrying sink exits 15 "+
+				"before the ladders finish",
+			drain, total, strings.Join(ladders, ", ")), nil))
 	}
 	rep.SetCheck("pipeline.drain_deadline", StatusPass, "")
 }

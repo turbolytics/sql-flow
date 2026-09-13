@@ -426,7 +426,7 @@ func TestSinkRetry_RetryEventsNameTheSinkType(t *testing.T) {
 	var retried []string
 	var attempts []int
 	settled := ""
-	r.listen("clickhouse", RetryEvents{
+	r.listen("pipeline/clickhouse", RetryEvents{
 		Retry: func(sinkType string, attempt int, _ error) {
 			retried = append(retried, sinkType)
 			attempts = append(attempts, attempt)
@@ -436,7 +436,37 @@ func TestSinkRetry_RetryEventsNameTheSinkType(t *testing.T) {
 
 	assert.NoError(t, r.Flush(context.Background()))
 	assert.Equal(t, 2, counted)
-	assert.DeepEqual(t, []string{"clickhouse", "clickhouse"}, retried)
+	assert.DeepEqual(t, []string{"pipeline/clickhouse", "pipeline/clickhouse"}, retried)
 	assert.DeepEqual(t, []int{1, 2}, attempts)
-	assert.Equal(t, "clickhouse", settled)
+	assert.Equal(t, "pipeline/clickhouse", settled)
+}
+
+// The events reach a listener handed to New through WithRetryEvents, named
+// role/type, on a sink the ladder wraps. A sink the ladder does not wrap
+// never calls them. This is the wiring /healthz depends on, and nothing else
+// exercises it: every other test hands the ladder its listener directly.
+func TestSinkRetry_NewWiresRetryEventsByRoleAndType(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	inner := &flakySink{failures: 1, err: errors.New("connection reset by peer")}
+	var retried, settled []string
+	o := options{retryEvents: RetryEvents{
+		Retry:  func(sink string, _ int, _ error) { retried = append(retried, sink) },
+		Settle: func(sink string) { settled = append(settled, sink) },
+	}}
+	// A fast ladder, or the test waits out the default backoff.
+	conf := config.Sink{Type: "clickhouse", Retry: &config.SinkRetry{InitialBackoffMS: 1}}
+
+	s := wrap(inner, conf, "manager", o)
+	assert.NoError(t, s.WriteTable(context.Background(), nil))
+	assert.NoError(t, s.Flush(context.Background()))
+	assert.DeepEqual(t, []string{"manager/clickhouse"}, retried)
+	assert.DeepEqual(t, []string{"manager/clickhouse"}, settled)
+
+	// Kafka gets no ladder, so a failing flush fires nothing.
+	retried, settled = nil, nil
+	kafka := wrap(&flakySink{failures: 99, err: errors.New("down")},
+		config.Sink{Type: "kafka"}, "pipeline", o)
+	assert.Error(t, kafka.Flush(context.Background()))
+	assert.Equal(t, 0, len(retried))
+	assert.Equal(t, 0, len(settled))
 }

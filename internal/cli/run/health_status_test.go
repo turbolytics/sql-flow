@@ -38,11 +38,11 @@ func TestLifecycleHealth_StatusTable(t *testing.T) {
 		{"never committed past the grace", core.Progress{}, 120, healthSnapshot{},
 			"failed", "no commit for 120s", http.StatusServiceUnavailable},
 		{"retrying", core.Progress{LastCommit: committed}, 10,
-			healthSnapshot{retrying: map[string]int{"clickhouse": 2}},
-			"degraded", "sink clickhouse is retrying, attempt 2", http.StatusOK},
-		{"two sinks retrying names the first by type", core.Progress{LastCommit: committed}, 10,
-			healthSnapshot{retrying: map[string]int{"iceberg": 1, "clickhouse": 3}},
-			"degraded", "sink clickhouse is retrying, attempt 3", http.StatusOK},
+			healthSnapshot{retrying: map[string]int{"pipeline/clickhouse": 2}},
+			"degraded", "sink pipeline/clickhouse is retrying, attempt 2", http.StatusOK},
+		{"two sinks retrying names the first by key", core.Progress{LastCommit: committed}, 10,
+			healthSnapshot{retrying: map[string]int{"pipeline/iceberg": 1, "manager/clickhouse": 3}},
+			"degraded", "sink manager/clickhouse is retrying, attempt 3", http.StatusOK},
 		{"recent error", core.Progress{LastCommit: committed, LastError: now.Add(-5 * time.Second), Errors: 3},
 			10, healthSnapshot{},
 			"degraded", "3 errors recorded, last 5s ago", http.StatusOK},
@@ -50,8 +50,8 @@ func TestLifecycleHealth_StatusTable(t *testing.T) {
 			10, healthSnapshot{},
 			"healthy", "", http.StatusOK},
 		{"retrying before the first commit is degraded, not starting", core.Progress{}, 5,
-			healthSnapshot{retrying: map[string]int{"clickhouse": 1}},
-			"degraded", "sink clickhouse is retrying, attempt 1", http.StatusOK},
+			healthSnapshot{retrying: map[string]int{"pipeline/clickhouse": 1}},
+			"degraded", "sink pipeline/clickhouse is retrying, attempt 1", http.StatusOK},
 		{"a failure beats a fresh commit", core.Progress{LastCommit: committed}, 10,
 			healthSnapshot{failure: errors.New("[system.sink.write_failed] rejected")},
 			"failed", "[system.sink.write_failed] rejected", http.StatusServiceUnavailable},
@@ -84,13 +84,27 @@ func TestLifecycleHealth_FirstFailureIsKept(t *testing.T) {
 func TestLifecycleHealth_RetryAndSettle(t *testing.T) {
 	coverage.Covers(t, "lifecycle.health")
 	h := newHealth()
-	h.Retry("clickhouse", 1, errors.New("reset"))
-	h.Retry("clickhouse", 2, errors.New("reset"))
+	h.Retry("pipeline/clickhouse", 1, errors.New("reset"))
+	h.Retry("pipeline/clickhouse", 2, errors.New("reset"))
 
 	snap := h.Snapshot()
-	assert.Equal(t, 2, snap.retrying["clickhouse"])
+	assert.Equal(t, 2, snap.retrying["pipeline/clickhouse"])
 
-	h.Settle("clickhouse")
+	h.Settle("pipeline/clickhouse")
 	assert.Equal(t, 0, len(h.Snapshot().retrying))
-	assert.Equal(t, 2, snap.retrying["clickhouse"])
+	assert.Equal(t, 2, snap.retrying["pipeline/clickhouse"])
+}
+
+// The pipeline's sink and a manager's sink of the same type are two ladders.
+// One settling leaves the other in flight.
+func TestLifecycleHealth_TwoSinksOfOneTypeAreTwoLadders(t *testing.T) {
+	coverage.Covers(t, "lifecycle.health")
+	h := newHealth()
+	h.Retry("pipeline/clickhouse", 3, errors.New("reset"))
+	h.Retry("manager/clickhouse", 1, errors.New("reset"))
+	h.Settle("manager/clickhouse")
+
+	snap := h.Snapshot()
+	assert.Equal(t, 1, len(snap.retrying))
+	assert.Equal(t, 3, snap.retrying["pipeline/clickhouse"])
 }

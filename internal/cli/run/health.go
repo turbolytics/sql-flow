@@ -12,7 +12,7 @@ import (
 
 // health is what the process knows about itself that the progress snapshot
 // does not: a failure that has stopped the loop, and the sinks whose retry
-// ladders are running.
+// ladders are running, keyed the way sinks.RetryEvents names them, role/type.
 type health struct {
 	mu       sync.Mutex
 	failure  error
@@ -37,20 +37,19 @@ func (h *health) Fail(err error) {
 	}
 }
 
-// Retry records a ladder attempt in flight for one sink type. It matches
+// Retry records a ladder attempt in flight for one sink. It matches
 // sinks.RetryEvents.Retry.
-func (h *health) Retry(sinkType string, attempt int, _ error) {
+func (h *health) Retry(sink string, attempt int, _ error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.retrying[sinkType] = attempt
+	h.retrying[sink] = attempt
 }
 
-// Settle clears the ladder for one sink type. It matches
-// sinks.RetryEvents.Settle.
-func (h *health) Settle(sinkType string) {
+// Settle clears the ladder for one sink. It matches sinks.RetryEvents.Settle.
+func (h *health) Settle(sink string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.retrying, sinkType)
+	delete(h.retrying, sink)
 }
 
 // healthSnapshot is one read of health. The map is a copy, so the status
@@ -68,8 +67,8 @@ func (h *health) Snapshot() healthSnapshot {
 		failure:  h.failure,
 		retrying: make(map[string]int, len(h.retrying)),
 	}
-	for sinkType, attempt := range h.retrying {
-		out.retrying[sinkType] = attempt
+	for sink, attempt := range h.retrying {
+		out.retrying[sink] = attempt
 	}
 	return out
 }
@@ -98,15 +97,15 @@ func healthStatus(p core.Progress, commitAge float64, snap healthSnapshot,
 			http.StatusServiceUnavailable
 	}
 	if len(snap.retrying) > 0 {
-		// Named in type order, so the reason is stable between scrapes while
+		// Named in key order, so the reason is stable between scrapes while
 		// two ladders run.
-		types := make([]string, 0, len(snap.retrying))
-		for sinkType := range snap.retrying {
-			types = append(types, sinkType)
+		names := make([]string, 0, len(snap.retrying))
+		for sink := range snap.retrying {
+			names = append(names, sink)
 		}
-		sort.Strings(types)
+		sort.Strings(names)
 		return "degraded", fmt.Sprintf("sink %s is retrying, attempt %d",
-			types[0], snap.retrying[types[0]]), http.StatusOK
+			names[0], snap.retrying[names[0]]), http.StatusOK
 	}
 	if !p.LastError.IsZero() && now.Sub(p.LastError) <= interval {
 		return "degraded", fmt.Sprintf("%d errors recorded, last %.0fs ago",

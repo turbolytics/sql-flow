@@ -45,7 +45,7 @@ spend the same seconds. `Exceeded()` reports whether the deadline passed.
 ```go
 type DrainBudget struct {
     deadline time.Duration
-    once     sync.Once
+    mu       sync.Mutex
     ctx      context.Context
     cancel   context.CancelFunc
 }
@@ -56,10 +56,13 @@ func (b *DrainBudget) Exceeded() bool
 func (b *DrainBudget) Stop()
 ```
 
-The turbine takes `core.WithDrainBudget(b)`. In the `ctx.Done` branch the
-final batch runs on `b.Context()` instead of `context.WithoutCancel(ctx)`. A
-turbine built without one gets a budget of `core.DefaultDrainDeadline`, thirty
-seconds, so a caller that does not care still gets a bound.
+The turbine takes `core.WithDrainBudget(b)`. Every batch runs on a context
+that is not cancelled when the run is: it ends when the budget's deadline
+passes after the cancel. So a SIGTERM that lands during a flush lets that
+flush finish inside the deadline, and the drain of whatever is still buffered
+runs on the same clock. A turbine built without a budget gets
+`core.DefaultDrainDeadline`, thirty seconds, so a caller that does not care
+still gets a bound.
 
 The manager takes `managers.WithDrainBudget(b)`. Its final poll runs on
 `b.Context()` instead of `context.Background`.
@@ -69,9 +72,12 @@ and runs its two state syncs on `b.Context()`.
 
 ### When the deadline passes
 
-The in-flight work fails with a context error. The retry ladder already stops
-on a cancelled context and returns the sink's error. A DuckDB statement on a
-cancelled context returns a cancellation. Either way:
+The batch context ends. The retry ladder stops on a cancelled context and
+returns the sink's error, and a sink blocked inside one attempt returns when
+its client honours the context. DuckDB through the ADBC driver manager
+ignores the context entirely, so a statement or commit already in flight
+there runs to completion; the deadline bounds the sink, not DuckDB. Either
+way:
 
 - The batch's transaction rolls back. Offsets that were committed stay
   committed. The rows the drain could not write replay on the next start,
@@ -80,8 +86,8 @@ cancelled context returns a cancellation. Either way:
   returns it, and the process exits `15`.
 
 The classification happens in the turbine, which is the only place that
-knows the drain was in progress: when `processBatch` fails and
-`b.Context().Err()` is non-nil, the error is wrapped with the new code. The
+knows the drain was in progress: when a batch fails and the budget's deadline
+has passed, the error is wrapped with the new code. The
 managers' final poll and the state syncs run inside run's deferred block, so
 run checks `b.Exceeded()` after that block and returns the coded error when
 the loop itself returned nil.

@@ -9,7 +9,6 @@ import (
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/turbolytics/sql-flow/internal/handlers"
 	"github.com/turbolytics/sql-flow/internal/logging"
-	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/turbolytics/sql-flow/internal/sources"
 	"go.uber.org/zap"
@@ -437,17 +436,13 @@ func NewCommand() *cobra.Command {
 			runCtx, failRun := context.WithCancelCause(ctx)
 			defer failRun(nil)
 			managerCtx, stopManagers := context.WithCancel(context.Background())
-			var managerWG sync.WaitGroup
+			var group managerGroup
 			for _, m := range managedTables {
-				managerWG.Add(1)
-				go func(m *managers.Tumbling) {
-					defer managerWG.Done()
-					if err := m.Start(managerCtx); err != nil {
-						l.Error("table manager stopped", zap.Error(err))
-						hs.Fail(err)
-						failRun(err)
-					}
-				}(m)
+				group.start(managerCtx, m, func(err error) {
+					l.Error("table manager stopped", zap.Error(err))
+					hs.Fail(err)
+					failRun(err)
+				})
 			}
 			defer func() {
 				// Every step below spends the drain budget. On a stop that
@@ -462,7 +457,7 @@ func NewCommand() *cobra.Command {
 					l.Error("failed to sync state before final poll", zap.Error(err))
 				}
 				stopManagers()
-				managerWG.Wait()
+				managerErr := group.wait()
 				// And again afterwards, so what that poll published is
 				// actually deleted. Without this the delete is rolled back
 				// when the connection closes, and every clean shutdown
@@ -470,15 +465,15 @@ func NewCommand() *cobra.Command {
 				if err := turbine.SyncState(drainCtx); err != nil {
 					l.Error("failed to sync state after final poll", zap.Error(err))
 				}
-				// The loop drained inside the deadline and the managers did
-				// not. A clean exit would hide that their final windows were
-				// never published; they replay on the next start.
-				if budget.Exceeded() && runErr == nil {
-					runErr = errs.New(errs.CodeDrainIncomplete,
-						"drain deadline %s reached before the managers' final poll finished",
-						budget.Deadline())
-					hs.Fail(runErr)
-					l.Error("drain incomplete", zap.Error(runErr))
+				// A manager whose final poll failed is a stop that did not
+				// finish, whatever the loop reported: its windows are still
+				// in the table, and the next start publishes them. The
+				// manager says why, and a poll the drain deadline ended
+				// carries the drain code. A failure during the run reached
+				// here through failRun already, and the loop's own error
+				// outranks this one.
+				if managerErr != nil && runErr == nil {
+					runErr = managerErr
 				}
 			}()
 

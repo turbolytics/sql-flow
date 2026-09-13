@@ -36,9 +36,14 @@ type options struct {
 // RetryEvents is told when a sink's retry ladder runs. Retry fires per failed
 // attempt that will be tried again. Settle fires once when a ladder that
 // retried at all stops, whether it delivered, gave up, or was cancelled.
+//
+// sink names the ladder as role/type, "pipeline/clickhouse" or
+// "manager/clickhouse". The type alone was one key for every sink of that
+// type, so a manager's ladder settling cleared the pipeline's from the
+// health endpoint while it was still running.
 type RetryEvents struct {
-	Retry  func(sinkType string, attempt int, err error)
-	Settle func(sinkType string)
+	Retry  func(sink string, attempt int, err error)
+	Settle func(sink string)
 }
 
 // WithRetryEvents adds a listener to the sink's retry ladder. The retry
@@ -100,20 +105,26 @@ func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Op
 		role = core.SinkRolePipeline
 	}
 
+	return wrap(built, sink, role, o), nil
+}
+
+// wrap puts the retry ladder and the row counters around a built sink. It is
+// the part of New that needs no destination, so it is tested without one.
+func wrap(built core.Sink, sink config.Sink, role string, o options) core.Sink {
 	policy := RetryPolicyFrom(sink.Retry)
 	if !retriesHelp(sink.Type) || !policy.Enabled() {
-		return core.NewCountingSink(built, o.meterProvider, sink.Type, role), nil
+		return core.NewCountingSink(built, o.meterProvider, sink.Type, role)
 	}
 
 	r := newRetrying(built, policy)
 	r.onRetry = retryCounter(o.meterProvider, sink.Type)
-	r.listen(sink.Type, o.retryEvents)
+	r.listen(role+"/"+sink.Type, o.retryEvents)
 
 	// Outside the ladder, so one logical flush is one counted flush. The
 	// totals come out the same either way -- retrying.WriteTable delegates and
 	// a failed attempt adds nothing -- but the invariant needs the position
 	// pinned to mean anything.
-	return core.NewCountingSink(r, o.meterProvider, sink.Type, role), nil
+	return core.NewCountingSink(r, o.meterProvider, sink.Type, role)
 }
 
 // retriesHelp reports whether a retry ladder belongs around a sink type.
