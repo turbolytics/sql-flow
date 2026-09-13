@@ -129,3 +129,29 @@ func TestLifecycleExitCodes_UsageErrorStillPrintsUsage(t *testing.T) {
 		t.Errorf("a usage error lost its usage text:\n%s", output)
 	}
 }
+
+// A drain that ran out of time exits 15 through cobra, and a supervisor may
+// restart it: nothing unwritten was committed. The mapping is errs' test;
+// this one holds that the code survives the command boundary, the way the
+// corrupt state file's does.
+func TestLifecycleExitCodes_DrainIncompleteSurvivesCobra(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
+	root := NewRootCommand()
+	root.AddCommand(&cobra.Command{
+		Use: "drain-fixture",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return errs.New(errs.CodeDrainIncomplete, "drain deadline 30s reached")
+		},
+	})
+	root.SetArgs([]string{"drain-fixture"})
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+
+	code := execute(root)
+
+	assert.Equal(t, errs.ExitDrainIncomplete, code)
+	assert.That(t, errs.Retryable(code))
+	assert.That(t, strings.Contains(out.String(), string(errs.CodeDrainIncomplete)))
+	assert.That(t, !strings.Contains(out.String(), "Flags:"))
+}

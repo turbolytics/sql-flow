@@ -36,6 +36,12 @@ const (
 	// ExitStateCorrupt marks a state file that cannot be read. Terminal: a
 	// restart reads the same bytes. An operator has to look at it.
 	ExitStateCorrupt = 14
+
+	// ExitDrainIncomplete marks a stop that ran out of time. Retryable:
+	// nothing unwritten was committed, and the next start replays it. The
+	// code exists so an operator can see that the tail of the stream was
+	// replayed rather than written.
+	ExitDrainIncomplete = 15
 )
 
 // exitCodes overrides the class default for codes whose remedy is more
@@ -44,6 +50,7 @@ var exitCodes = map[Code]int{
 	CodeStateCorrupt:      ExitStateCorrupt,
 	CodeSourceUnreachable: ExitSourceUnreachable,
 	CodeSinkUnreachable:   ExitSinkUnreachable,
+	CodeDrainIncomplete:   ExitDrainIncomplete,
 }
 
 // ExitCode maps an error to the code the process should exit with.

@@ -819,10 +819,11 @@ func TestToolingConformancePipelines_AStatelessSubjectSkipsStateInvariants(t *te
 	assert.True(t, strings.Contains(vs[onlyDeliveredRows].skipped, "read back"))
 	assert.Equal(t, "", vs[stateWithOffsets].failure)
 
-	// The other three still apply to a stateless pipeline.
+	// The other four still apply to a stateless pipeline.
 	assert.Equal(t, "", vs[commitAfterFlush].failure)
 	assert.Equal(t, "", vs[commitNothingOnFail].failure)
 	assert.Equal(t, "", vs[drainOnCancel].failure)
+	assert.Equal(t, "", vs[drainBounded].failure)
 }
 
 // Every invariant the pipeline harness judges must be declared, or its marker
@@ -859,15 +860,15 @@ func pipelineVerdictsFor(t *testing.T, s PipelineSubject) map[string]verdict {
 	for _, v := range pipelineVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 6, len(out))
+	assert.Equal(t, 7, len(out))
 	return out
 }
 
-// The liveness claim is the only one that says the pipeline does anything.
-// Every safety verdict above holds for a pipeline that never flushes, so a
-// harness that judged safety alone would call a permanently stalled loop
-// conformant.
-func TestToolingConformancePipelines_JudgeOneLivenessClaim(t *testing.T) {
+// The liveness claims are the ones that say the pipeline does anything. Every
+// safety verdict above holds for a pipeline that never flushes, so a harness
+// that judged safety alone would call a permanently stalled loop conformant.
+// Two now: the batch reaches the sink, and a drain ends.
+func TestToolingConformancePipelines_JudgeTheLivenessClaims(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
 
 	vs := pipelineVerdictsFor(t, PipelineSubject{
@@ -876,8 +877,10 @@ func TestToolingConformancePipelines_JudgeOneLivenessClaim(t *testing.T) {
 		Options:     func(*Recorder) []core.TurbineOption { return nil },
 	})
 
-	assert.Equal(t, "", vs[flushEventually].failure)
-	assert.Equal(t, "", vs[flushEventually].skipped)
+	for _, id := range []string{flushEventually, drainBounded} {
+		assert.Equal(t, "", vs[id].failure)
+		assert.Equal(t, "", vs[id].skipped)
+	}
 }
 
 // TestHarnessSinkCarriesRowCounters guards why sink.rows.counted_on_delivery

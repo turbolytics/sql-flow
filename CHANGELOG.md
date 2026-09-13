@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `pipeline.drain_deadline_seconds` bounds the whole shutdown after SIGTERM.
+  The final batch, the managers' final poll and the state syncs share one
+  deadline, 30 seconds by default. When it passes the process exits 15 with
+  `system.lifecycle.drain_incomplete`. Nothing unwritten was committed, and
+  the next start replays it.
+- `/healthz` reports `starting`, `healthy`, `degraded` or `failed`, with a
+  `reason`. `degraded` means a sink's retry ladder is running, or the
+  pipeline recorded an error inside the last flush interval. `failed` answers
+  503 and the other three answer 200. The previous `ok` and `stuck` bodies
+  are now `healthy` and `failed`, and their HTTP codes did not change.
+- `sqlflow validate` warns when a sink's `retry.deadline_seconds` is longer
+  than the drain deadline.
+- `/stats` carries `errors` and `last_error` under `progress`.
+
+### Fixed
+
+- A rollback after a failed batch no longer runs on the batch's context. On a
+  drain that ran out of time that context had expired, and a refused rollback
+  would have left the batch's handler writes for the next state sync to
+  commit without their offsets.
+
 ## v1.0.0 — sqlflow, the Go engine
 
 SQLFlow now ships a second engine: **sqlflow**, a Go rewrite of the Python

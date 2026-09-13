@@ -64,6 +64,13 @@ const (
 	// Batch orchestration.
 	CodeBatchInternal Code = "system.batch.internal"
 
+	// Lifecycle: the process stopping. A drain that ran out of time is not a
+	// sink failure and not a user error. Nothing unwritten was committed, so
+	// nothing is lost; the code says the tail was replayed rather than
+	// written.
+	CodeDrainIncomplete   Code = "system.lifecycle.drain_incomplete"
+	CodeLifecycleInternal Code = "system.lifecycle.internal"
+
 	// The last resort. CodeOf returns it for an error carrying no code, so an
 	// unclassified failure still reports as ours rather than the user's.
 	CodeInternalUnexpected Code = "system.internal.unexpected"
@@ -197,6 +204,16 @@ var registry = map[Code]Definition{
 	CodeBatchInternal: {
 		CodeBatchInternal,
 		"A batch failed for a reason the specific codes do not cover.",
+		"Report it with the surrounding log lines.",
+	},
+	CodeDrainIncomplete: {
+		CodeDrainIncomplete,
+		"The drain deadline passed before the buffered batch or the closed windows were written.",
+		"Nothing is lost: what was not written was not committed, and the next start replays it. Raise pipeline.drain_deadline_seconds if the sink needs longer, or check the sink.",
+	},
+	CodeLifecycleInternal: {
+		CodeLifecycleInternal,
+		"Starting or stopping the process failed for a reason the specific codes do not cover.",
 		"Report it with the surrounding log lines.",
 	},
 	CodeInternalUnexpected: {

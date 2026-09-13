@@ -333,10 +333,14 @@ invariants:
     family: lifecycle
     class: liveness
     applies_to: pipeline
-    claim: The drain finishes or fails inside its deadline.
+    claim: >
+      A drain finishes or fails inside pipeline.drain_deadline_seconds. A sink
+      that never answers cannot hold the process past it: the loop returns
+      system.lifecycle.drain_incomplete, commits nothing for the batch it
+      could not write, and the next start replays it.
     verified_by: harness
     requires: []
-    tracked_by: "#161"
+    enforced: true
 
   - id: lifecycle.close.idempotent
     family: lifecycle
@@ -432,3 +436,15 @@ invariants:
     requires: []
     enforced: true
     violated_once: ["#267"]
+
+  - id: manager.drain.bounded
+    family: lifecycle
+    class: liveness
+    applies_to: manager
+    claim: >
+      The final poll after a cancel finishes or fails inside the drain
+      deadline. A sink that never answers cannot hold the process past it,
+      and every closed window it did not deliver stays in the state table.
+    verified_by: harness
+    requires: []
+    enforced: true

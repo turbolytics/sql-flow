@@ -13,6 +13,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/zeebo/assert"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -104,7 +105,7 @@ func TestDLQRowsCarryTheDLQRole(t *testing.T) {
 		DLQ:    &config.Sink{Type: "console"},
 	}
 
-	policies, err := newErrorPolicies(context.Background(), conf, nil, mp)
+	policies, err := newErrorPolicies(context.Background(), conf, nil, mp, sinks.RetryEvents{})
 	assert.NoError(t, err)
 	assert.That(t, policies.DLQSink != nil)
 
@@ -152,7 +153,8 @@ func TestWindowManagerRowsAreCounted(t *testing.T) {
 	}
 
 	built, err := buildManagedTables(
-		context.Background(), conf, conn, &sync.Mutex{}, zap.NewNop(), mp)
+		context.Background(), conf, conn, &sync.Mutex{}, zap.NewNop(), mp,
+		nil, sinks.RetryEvents{})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(built))
 

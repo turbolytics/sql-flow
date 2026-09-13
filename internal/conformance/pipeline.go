@@ -29,6 +29,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -144,6 +145,7 @@ const (
 	commitNothingOnFail = "pipeline.commit.nothing_on_failure"
 	stateWithOffsets    = "pipeline.state.with_offsets"
 	drainOnCancel       = "lifecycle.drain.on_cancel"
+	drainBounded        = "lifecycle.drain.bounded"
 	flushEventually     = "pipeline.flush.eventually"
 	onlyDeliveredRows   = "pipeline.commit.only_delivered_rows"
 )
@@ -162,6 +164,7 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 	onFailure := verdict{invariant: commitNothingOnFail}
 	withOffsets := verdict{invariant: stateWithOffsets}
 	drain := verdict{invariant: drainOnCancel}
+	bounded := verdict{invariant: drainBounded}
 	eventually := verdict{invariant: flushEventually}
 	delivered := verdict{invariant: onlyDeliveredRows}
 
@@ -207,6 +210,12 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 		drain.failure = err.Error()
 	}
 
+	// The liveness half of the drain. on_cancel says the buffered rows are
+	// written; this says the attempt ends, against a sink that never answers.
+	if err := checkDrainBounded(t, s); err != nil {
+		bounded.failure = err.Error()
+	}
+
 	// The outcome, not the order. after_flush asserts the sequence the loop
 	// happens to use; this asserts the guarantee that sequence exists for, and
 	// it needs a destination to count.
@@ -221,15 +230,15 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 		}
 	}
 
-	// The only liveness claim here. Everything above says the pipeline does
+	// The progress claim. The safety checks above say the pipeline does
 	// nothing wrong; this says it does something. A sink that never flushed
 	// would satisfy every one of them and fail this one alone.
 	if err := checkFlushEventually(t, s); err != nil {
 		eventually.failure = err.Error()
 	}
 
-	return []verdict{afterFlush, onFailure, withOffsets, drain, eventually,
-		delivered}
+	return []verdict{afterFlush, onFailure, withOffsets, drain, bounded,
+		eventually, delivered}
 }
 
 // checkCommitAfterFlush runs one trigger and holds the event order.
@@ -376,6 +385,53 @@ func checkDrain(t *testing.T, s PipelineSubject) error {
 	return nil
 }
 
+// checkDrainBounded cancels mid-run against a sink that never answers, and
+// holds that the loop returns inside the drain deadline with the drain code
+// and commits nothing after the flush it could not finish.
+//
+// Before #161 the drain ran on a context with no deadline, so this run would
+// have waited on the sink for as long as the sink chose. A supervisor does
+// not wait that long: it kills the process, and nothing records that the tail
+// of the stream was replayed rather than written.
+func checkDrainBounded(t *testing.T, s PipelineSubject) error {
+	t.Helper()
+	started := time.Now()
+	run := runPipeline(t, s, TriggerDrain, faults{hang: true})
+	took := time.Since(started)
+
+	if took >= drainBoundedWait {
+		return fmt.Errorf("drain.bounded: a %s drain deadline held the pipeline for %s "+
+			"against a sink that never answered", drainBudget, took)
+	}
+	if run.err == nil {
+		return fmt.Errorf("drain.bounded: the sink never answered and the pipeline " +
+			"reported a clean stop, so a supervisor cannot tell the tail was replayed")
+	}
+	if code := errs.CodeOf(run.err); code != errs.CodeDrainIncomplete {
+		return fmt.Errorf("drain.bounded: the drain ran out of time and reported %s; "+
+			"want %s", code, errs.CodeDrainIncomplete)
+	}
+
+	last := -1
+	for i, e := range run.events {
+		if e == "flush-failed" {
+			last = i
+		}
+	}
+	if last < 0 {
+		return fmt.Errorf("drain.bounded: the pipeline did %s and never reached the "+
+			"sink, so the deadline bounded nothing", list(run.events))
+	}
+	for _, e := range run.events[last+1:] {
+		if e == "commit" || e == "save-offsets" {
+			return fmt.Errorf("drain.bounded: the sink never took the batch and the "+
+				"pipeline then did %s; the next start would skip those rows",
+				list(run.events[last:]))
+		}
+	}
+	return nil
+}
+
 // checkOnlyDeliveredRows compares what the pipeline committed with what the
 // destination holds, on a clean run and on a broken one.
 //
@@ -492,6 +548,10 @@ func list(events []string) string {
 type faults struct {
 	flush   bool
 	offsets bool
+
+	// hang makes the sink's Flush block until its context ends, and runs the
+	// pipeline under drainBudget.
+	hang bool
 }
 
 // outcome is what one run produced.
@@ -507,6 +567,16 @@ type outcome struct {
 	// flushes would otherwise hang the suite rather than fail one invariant.
 	stalled bool
 }
+
+// drainBudget is the deadline the bounded-drain scenario runs under. Short, so
+// the check is fast; the check's own bound is many times it, so a loaded CI
+// machine does not turn scheduling delay into a failed invariant.
+const drainBudget = 300 * time.Millisecond
+
+// drainBoundedWait is how long the bounded-drain check lets the whole run
+// take, from start to return. Many times drainBudget on purpose: #245 failed
+// on CI because a tight bound measured the machine.
+const drainBoundedWait = 5 * time.Second
 
 // drainRows is the number of messages the drain scenario buffers. Small, and
 // larger than one, so a drain that writes a partial batch is visible.
@@ -538,6 +608,14 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 		inner = s.NewSink(t)
 	}
 	sink := newRecordingSink(rec, inner, nil)
+	sink.hang = f.hang
+	if f.hang {
+		// The check's bound, enforced from outside the pipeline. A drain that
+		// ignores its deadline is released here and reported as too slow.
+		sink.release = make(chan struct{})
+		watchdog := time.AfterFunc(drainBoundedWait, func() { close(sink.release) })
+		defer watchdog.Stop()
+	}
 	// Break the destination where there is one, so the flush fails the way it
 	// would in production. Only a subject with nothing to break needs the
 	// harness to fake it.
@@ -597,8 +675,14 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	// sink.counted, not sink: the pipeline must drive the same wrapper a real
 	// deployment gets, or sink.rows.counted_on_delivery is asserted against a
 	// sink that counts nothing.
+	opts := s.Options(rec)
+	if f.hang {
+		budget := core.NewDrainBudget(drainBudget)
+		defer budget.Stop()
+		opts = append(opts, core.WithDrainBudget(budget))
+	}
 	tb := core.NewTurbine(src, &passthroughHandler{}, sink.counted, batchSize, interval,
-		&sync.Mutex{}, core.PipelineErrorPolicies{}, s.Options(rec)...)
+		&sync.Mutex{}, core.PipelineErrorPolicies{}, opts...)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -825,6 +909,14 @@ type recordingSink struct {
 	inner core.Sink
 	fail  bool
 
+	// hang makes Flush block until its context ends: the sink a drain
+	// deadline exists for, one that neither succeeds nor fails on its own.
+	// release ends the block regardless. The harness closes it when the
+	// check's own bound passes, so a pipeline that ignores its deadline fails
+	// the check instead of hanging the suite.
+	hang    bool
+	release chan struct{}
+
 	// counted is this sink wrapped in the row counters, and it is what the
 	// pipeline is given.
 	counted core.Sink
@@ -863,8 +955,17 @@ func (s *recordingSink) WriteTable(ctx context.Context, batch arrow.Table) error
 func (s *recordingSink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	s.flushes++
-	inner, fail := s.inner, s.fail
+	inner, fail, hang, release := s.inner, s.fail, s.hang, s.release
 	s.mu.Unlock()
+
+	if hang {
+		select {
+		case <-ctx.Done():
+		case <-release:
+		}
+		s.rec.record("flush-failed")
+		return errors.New("conformance: sink never answered")
+	}
 
 	// The synthetic failure is for subjects with no destination to break. A
 	// subject that has one gets a real error from a really broken sink.

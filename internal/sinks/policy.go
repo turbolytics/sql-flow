@@ -14,11 +14,15 @@ import (
 // Retrying is on by default. Before this, one refused connection killed the
 // process, which cost a cold start, a group rejoin and a rebalance to recover
 // from a blip. That default was the defect, not a safe baseline.
+//
+// The attempt count and deadline are declared in internal/config, because
+// `sqlflow validate` compares the deadline with the drain deadline and must
+// not link this package.
 const (
-	DefaultRetryMaxAttempts    = 4
+	DefaultRetryMaxAttempts    = config.DefaultSinkRetryMaxAttempts
 	DefaultRetryInitialBackoff = 100 * time.Millisecond
 	DefaultRetryMaxBackoff     = 2 * time.Second
-	DefaultRetryDeadline       = 10 * time.Second
+	DefaultRetryDeadline       = config.DefaultSinkRetryDeadlineSeconds * time.Second
 )
 
 // RetryPolicyFrom resolves a config block into a policy, filling in defaults

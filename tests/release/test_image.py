@@ -236,6 +236,8 @@ EXIT_SOURCE_UNREACHABLE = 11
 EXIT_SINK_UNREACHABLE = 12
 EXIT_RESOURCE_LIMIT = 13
 EXIT_STATE_CORRUPT = 14
+# Retryable: nothing unwritten was committed, and the next start replays it.
+EXIT_DRAIN_INCOMPLETE = 15
 
 # A supervisor must stop on these rather than restart into the same failure.
 TERMINAL_EXITS = {EXIT_USER_ERROR, EXIT_STATE_CORRUPT}
@@ -1004,3 +1006,56 @@ def test_turbostats_endpoint_serves_the_bundle(image, stack):
     # absent rather than 1970.
     assert "last_message_at" not in bundle
     assert bundle["pipeline"]["message_count"] == 0
+
+
+@pytest.mark.covers("lifecycle.health")
+def test_lifecycle_health_reports_healthy_once_committed(image, stack):
+    """The shipped image answers /healthz with the four-state body.
+
+    Before the first commit the pipeline is starting. The first idle tick
+    commits, and from then on it is healthy. Both answer 200: neither is a
+    reason for a supervisor to restart it.
+
+    Driven against the image because what ships is the mux, the health state
+    run wires into it and the port together, and a unit test proves none of
+    those joined up.
+    """
+    topic = f"healthz-{int(time.time())}"
+    # The example sets no flush_interval_seconds, so the idle tick is the
+    # thirty second default. Three of them is the most the first commit can
+    # take before /healthz calls the pipeline failed.
+    wait_seconds = 90
+
+    with container_writable_dir() as state_dir:
+        container = DockerContainer(image) \
+            .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+            .with_volume_mapping(state_dir, "/state", "rw") \
+            .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
+            .with_env("SQLFLOW_STATE_PATH", "/state/state.db") \
+            .with_env("SQLFLOW_TOPIC", topic) \
+            .with_env("SQLFLOW_GROUP_ID", topic) \
+            .with_exposed_ports(8000) \
+            .with_network(stack.network) \
+            .with_command("run /tmp/conf/config/examples/kafka.stateful.window.yml")
+        container.start()
+        try:
+            wait_for_logs(container, "consumer loop starting", timeout=90)
+            url = f"http://localhost:{container.get_exposed_port(8000)}/healthz"
+            first = requests.get(url, timeout=10)
+            seen = [first.json()["status"]]
+            deadline = time.time() + wait_seconds
+            last = first
+            while seen[-1] != "healthy" and time.time() < deadline:
+                time.sleep(2)
+                last = requests.get(url, timeout=10)
+                seen.append(last.json()["status"])
+        finally:
+            container.stop()
+
+    assert first.status_code == 200, first.text
+    assert seen[0] in ("starting", "healthy"), seen
+    assert last.status_code == 200, last.text
+    assert seen[-1] == "healthy", f"never healthy in {wait_seconds}s: {seen}"
+    # A pipeline that never left starting and never failed is the only other
+    # way through this loop, and the assertion above catches it.
+    assert "failed" not in seen, seen

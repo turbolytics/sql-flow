@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
@@ -19,4 +20,13 @@ func TestCliInvocation_FlushIntervalNeverZero(t *testing.T) {
 	assert.Equal(t, 30*time.Second, flushIntervalFor(-5))
 	assert.Equal(t, 45*time.Second, flushIntervalFor(45))
 	assert.Equal(t, time.Second, flushIntervalFor(1))
+}
+
+// The drain deadline resolves the way the flush interval does. A config that
+// omits it, or writes a nonsense value past the schema, still gets a bound.
+func TestLifecycleDrain_DeadlineDefaultsWhenAbsent(t *testing.T) {
+	coverage.Covers(t, "lifecycle.drain")
+	assert.Equal(t, core.DefaultDrainDeadline, drainDeadlineFor(0))
+	assert.Equal(t, core.DefaultDrainDeadline, drainDeadlineFor(-5))
+	assert.Equal(t, 45*time.Second, drainDeadlineFor(45))
 }

@@ -275,3 +275,26 @@ func TestStateDurability_ProgressNeverReportsAnArrivalOlderThanTheNewest(t *test
 	close(src.release)
 	<-done
 }
+
+// The health endpoint calls a pipeline degraded when it recorded an error
+// inside the last interval, so the snapshot has to carry when that was and
+// how many there have been.
+func TestCoreConsumeLoop_ProgressRecordsTheLastError(t *testing.T) {
+	coverage.Covers(t, "core.consume_loop")
+	src := &fakeSource{batches: [][]Message{{{Value: []byte("bad")}, {Value: []byte("ok")}}}}
+	h := &failingHandler{failWriteOn: "bad"}
+	tb := NewTurbine(src, h, &fakeSink{}, 2, time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyIgnore})
+
+	assert.Equal(t, int64(0), tb.Progress().Errors)
+	assert.That(t, tb.Progress().LastError.IsZero())
+
+	before := time.Now().UTC()
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	p := tb.Progress()
+	assert.Equal(t, int64(1), p.Errors)
+	assert.That(t, !p.LastError.Before(before))
+	assert.That(t, !p.LastError.After(time.Now().UTC()))
+}
