@@ -191,13 +191,29 @@ tables:
     -
       name: <string>
       sql: <string>
-      manager:
-        tumbling_window:
-          collect_closed_windows_sql: <string>
-          delete_closed_windows_sql: <string>
-          # How often to collect closed windows. Optional; the manager applies its
-          # own default when this is absent or not positive.
-          poll_interval_seconds: <integer>
+      # A tumbling window over this table, closed by the engine.
+      window:
+        # The column holding each row's bucket start. TIMESTAMPTZ.
+        time_column: <string>
+        # The bucket length. A bucket ends at time_column + size.
+        size_seconds: <integer>
+        # How far past a bucket's end the stream's own clock must reach before
+        # the bucket closes. Absent means 0.
+        grace_seconds: <integer>
+        # How long the stream may be quiet before every open bucket closes.
+        # Absent means never: a stream that stops leaves its last bucket open.
+        idle_close_seconds: <integer>
+        # What happens to a row for a bucket that already closed. drop discards
+        # it and counts it. reemit publishes the bucket again, for a sink that
+        # merges. Absent means reemit.
+        late_rows: drop | reemit
+        # How often the engine looks for closed buckets. Absent means 10.
+        poll_interval_seconds: <integer>
+        # Shapes the closed rows before the sink. It reads one relation, closed,
+        # which holds every row of every bucket that just closed. Absent means
+        # SELECT * FROM closed.
+        emit_sql: <string>
+        # Where closed windows go.
         sink:
           # Sink identifier.
           type: clickhouse | console | iceberg | kafka | noop | sqlcommand

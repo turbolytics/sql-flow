@@ -44,10 +44,10 @@ func checkDrainDeadline(rendered []byte, rep *Report) {
 	}
 	if conf.Tables != nil {
 		for _, table := range conf.Tables.SQL {
-			if table.Manager != nil {
+			if table.Window != nil {
 				sinks = append(sinks, named{
-					fmt.Sprintf("tables.sql[%s].manager.sink", table.Name),
-					table.Manager.Sink,
+					fmt.Sprintf("tables.sql[%s].window.sink", table.Name),
+					table.Window.Sink,
 				})
 			}
 		}

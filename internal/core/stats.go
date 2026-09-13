@@ -126,7 +126,7 @@ func userTables(ctx context.Context, conn adbc.Connection) ([]string, error) {
 		}
 		for i := 0; i < int(rec.NumRows()); i++ {
 			name := col.Value(i)
-			if name == offsetsTable || name == batchTable || name == progressTable {
+			if IsEngineTable(name) {
 				continue
 			}
 			// Clone: the value aliases the record's backing buffer, which is

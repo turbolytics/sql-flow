@@ -17,6 +17,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"github.com/turbolytics/sql-flow/internal/webhook"
@@ -149,6 +150,13 @@ func exportedNames(t *testing.T) []string {
 	wm.RequestCount.Add(ctx, 1)
 	wm.RequestDuration.Record(ctx, 1)
 
+	// The window instruments live in internal/managers, driven through their
+	// constructor for the same reason as the row counters below.
+	win := managers.NewWindowMetrics(mp, "w")
+	win.Watermark.Record(ctx, 1)
+	win.Closed.Add(ctx, 1)
+	win.Late.Add(ctx, 1)
+
 	// The row counters are declared in internal/sinks, not core.NewMetrics, so
 	// a core-only sweep would miss them and let the README document series no
 	// test knows about. Driven through the real constructor rather than
@@ -217,6 +225,9 @@ func TestExportedSeriesNames(t *testing.T) {
 		"state_table_rows",
 		"webhook_request_duration_seconds",
 		"webhook_requests_total",
+		"window_closed_total",
+		"window_late_rows_total",
+		"window_watermark_seconds",
 	}
 	assert.DeepEqual(t, want, exportedNames(t))
 }

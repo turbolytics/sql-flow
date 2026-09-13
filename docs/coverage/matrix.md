@@ -47,7 +47,7 @@ added, and this page changes only when a status does.
 | `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — |
 | `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ |
 | `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ |
-| `manager.tumbling_window` | Publishes and deletes closed windows on an interval. | ✅ | — | ✅ |
+| `manager.window` | A declared window is closed by the engine against a persisted event-time watermark, with a late-row policy. | ✅ | — | ✅ |
 | `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ |
 | `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ |
 | `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — |
@@ -70,7 +70,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**38 invariants declared: 31 safety and 7 liveness. Of 143 (invariant, integration) cells: 66 proven, 49 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
+**41 invariants declared: 34 safety and 7 liveness. Of 146 (invariant, integration) cells: 61 proven, 57 missing, 0 skipped, 0 failing, 28 exempt. 8 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -115,14 +115,17 @@ until an invariant's `requires` is filled in, and none is yet.
 
 ## Safety invariants: checkpoint
 
-| Invariant | Claim | `source.kafka` | `source.webhook` | `source.websocket` | `manager.tumbling_window` |
+| Invariant | Claim | `source.kafka` | `source.webhook` | `source.websocket` | `manager.watermark` |
 | --- | --- | --- | --- | --- | --- |
 | `source.commit.only_processed` | A source commits the marks the pipeline processed, never what it fetched. *(violated once: #154)* | ❌ missing | — exempt | — exempt | · |
 | `source.resume.from_committed` | Restart resumes at the committed position. No gap, and no replay before it. | ❌ missing | — exempt | — exempt | · |
 | `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt | · |
 | `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt | · |
-| `manager.delete.after_flush` | Closed windows leave the state table only after the sink acknowledged them. The table still holds every one of them when Flush runs. | · | · | · | ✅ u |
-| `manager.delete.nothing_on_failure` | A failed flush deletes nothing. Every closed window stays in the state table for the next attempt. | · | · | · | ✅ u |
+| `manager.delete.after_flush` | Closed windows leave the state table only after the sink acknowledged them. The table still holds every one of them when Flush runs. | · | · | · | ❌ missing |
+| `manager.delete.nothing_on_failure` | A failed flush deletes nothing. Every closed window stays in the state table for the next attempt. | · | · | · | ❌ missing |
+| `manager.watermark.never_regresses` | The persisted watermark never moves backwards, across polls and across a restart. A manager built over the state another one saved publishes nothing that one published. | · | · | · | ❌ missing |
+| `manager.close.committed_rows_only` | A close publishes rows the pipeline has committed and no others. Rows an open batch has written are not counted, so a batch that rolls back was never published. | · | · | · | ❌ missing |
+| `manager.late.policy_holds` | A row for a bucket below the watermark is late. Under drop it is discarded and counted, and the bucket is never published again. Under reemit it is published once. | · | · | · | ❌ missing |
 
 These checkpoint invariants are properties of the consume loop
 rather than of anything a config file names. The columns are
@@ -183,11 +186,11 @@ drains. An invariant holds only if it holds on all four.
 
 ## Liveness invariants: lifecycle
 
-| Invariant | Claim | `manager.tumbling_window` |
+| Invariant | Claim | `manager.watermark` |
 | --- | --- | --- |
-| `manager.publish.eventually` | A closed window reaches the sink without anything else happening. The loop polls on its own, and a window that closes is published. | ✅ u |
-| `manager.failure.exits` | A poll the sink refuses stops the manager with the sink's error, after one attempt, and the process exits with its code. The sink ran its retry ladder before the error arrived, so the manager does not retry in place, and a window the destination will not take is never collected, written and refused every tick while the process reports healthy. *(violated once: #267)* | ✅ u |
-| `manager.drain.bounded` | The final poll after a cancel finishes or fails inside the drain deadline. A sink that never answers cannot hold the process past it, and every closed window it did not deliver stays in the state table. | ✅ u |
+| `manager.publish.eventually` | A closed window reaches the sink without anything else happening. The loop polls on its own, and a window that closes is published. | ❌ missing |
+| `manager.failure.exits` | A poll the sink refuses stops the manager with the sink's error, after one attempt, and the process exits with its code. The sink ran its retry ladder before the error arrived, so the manager does not retry in place, and a window the destination will not take is never collected, written and refused every tick while the process reports healthy. *(violated once: #267)* | ❌ missing |
+| `manager.drain.bounded` | The final poll after a cancel finishes or fails inside the drain deadline. A sink that never answers cannot hold the process past it, and every closed window it did not deliver stays in the state table. | ❌ missing |
 
 These lifecycle invariants are properties of the consume loop
 rather than of anything a config file names. The columns are
@@ -202,4 +205,17 @@ drains. An invariant holds only if it holds on all four.
 | `pipeline.progress.no_silent_stall` | A configuration cannot remove the flush ticker. flush_interval_seconds absent, zero or negative all run with the thirty second default, so a batch a low-traffic topic never fills still leaves on time. This entry previously claimed the opposite, that zero removed the ticker and stalled such a topic forever; the run command has always defaulted it. Pinned by TestCliInvocation_FlushIntervalNeverZero, not by the harness, and unenforced for that reason: the harness drives a pipeline that is already constructed, and this is a property of resolving the config before construction. There is nothing per-subject to observe, so demanding a cell from every subject would buy a fake rather than a proof. The liveness the harness can see is pipeline.flush.eventually, which it proves. | ❌ missing | ❌ missing |
 | `lifecycle.drain.bounded` | A drain finishes or fails inside pipeline.drain_deadline_seconds. A sink that never answers cannot hold the process past it: the loop returns system.lifecycle.drain_incomplete, commits nothing for the batch it could not write, and the next start replays it. | ✅ u | ✅ u |
 | `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing | ❌ missing |
+
+## Invariant gaps
+
+These fail `make coverage-check`.
+
+- `manager.delete.after_flush` on `manager.watermark` requires **any** and is *missing*.
+- `manager.delete.nothing_on_failure` on `manager.watermark` requires **any** and is *missing*.
+- `manager.publish.eventually` on `manager.watermark` requires **any** and is *missing*.
+- `manager.failure.exits` on `manager.watermark` requires **any** and is *missing*.
+- `manager.watermark.never_regresses` on `manager.watermark` requires **any** and is *missing*.
+- `manager.close.committed_rows_only` on `manager.watermark` requires **any** and is *missing*.
+- `manager.late.policy_holds` on `manager.watermark` requires **any** and is *missing*.
+- `manager.drain.bounded` on `manager.watermark` requires **any** and is *missing*.
 

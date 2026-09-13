@@ -17,7 +17,7 @@ handler.structured: {unit: covered, integration: not_required, release: covered}
 lifecycle.drain: {unit: covered, integration: not_required, release: covered}
 lifecycle.exit_codes: {unit: covered, integration: not_required, release: covered}
 lifecycle.health: {unit: covered, integration: not_required, release: covered}
-manager.tumbling_window: {unit: covered, integration: not_required, release: covered}
+manager.window: {unit: covered, integration: not_required, release: covered}
 observability.debug_api: {unit: covered, integration: not_required, release: not_required}
 observability.metrics: {unit: covered, integration: not_required, release: not_required}
 observability.turbostats: {unit: covered, integration: not_required, release: covered}

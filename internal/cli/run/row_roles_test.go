@@ -3,7 +3,6 @@ package run
 import (
 	"context"
 	"os"
-	"sync"
 	"testing"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -53,6 +52,14 @@ func writtenRowsByRole(t *testing.T, r *sdkmetric.ManualReader) map[string]int64
 
 func rowsTestConn(t *testing.T) adbc.Connection {
 	t.Helper()
+	_, conn := rowsTestDB(t)
+	return conn
+}
+
+// rowsTestDB opens an in-memory DuckDB and one connection to it, for tests
+// that need a second connection the way a window manager does.
+func rowsTestDB(t *testing.T) (*duckdb.DB, adbc.Connection) {
+	t.Helper()
 	if os.Getenv("SQLFLOW_DUCKDB_LIB") == "" {
 		os.Setenv("SQLFLOW_DUCKDB_LIB", "/opt/homebrew/lib/libduckdb.dylib")
 	}
@@ -61,7 +68,7 @@ func rowsTestConn(t *testing.T) adbc.Connection {
 	conn, err := db.Connect(context.Background())
 	assert.NoError(t, err)
 	t.Cleanup(func() { conn.Close(); db.Close() })
-	return conn
+	return db, conn
 }
 
 func rowsTestExec(t *testing.T, conn adbc.Connection, sql string) {
@@ -129,9 +136,18 @@ func TestDLQRowsCarryTheDLQRole(t *testing.T) {
 func TestWindowManagerRowsAreCounted(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
 
-	conn := rowsTestConn(t)
-	rowsTestExec(t, conn, "CREATE TABLE agg (id BIGINT)")
-	rowsTestExec(t, conn, "INSERT INTO agg VALUES (1), (2), (3)")
+	db, conn := rowsTestDB(t)
+	rowsTestExec(t, conn, "CREATE TABLE agg (bucket TIMESTAMPTZ, id BIGINT)")
+	// Three rows in one bucket an hour old, and a newer bucket that keeps
+	// the stream's clock past it, so the first bucket is closed.
+	rowsTestExec(t, conn, `INSERT INTO agg VALUES
+		(TIMESTAMPTZ '2026-09-13 10:00:00+00', 1),
+		(TIMESTAMPTZ '2026-09-13 10:00:00+00', 2),
+		(TIMESTAMPTZ '2026-09-13 10:00:00+00', 3),
+		(TIMESTAMPTZ '2026-09-13 11:00:00+00', 4)`)
+	assert.NoError(t, initWindowStores(context.Background(), &config.Conf{
+		Tables: &config.Tables{SQL: []config.TableSQL{{Name: "agg", Window: &config.Window{}}}},
+	}, conn))
 
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -140,25 +156,23 @@ func TestWindowManagerRowsAreCounted(t *testing.T) {
 		Tables: &config.Tables{
 			SQL: []config.TableSQL{{
 				Name: "agg",
-				Manager: &config.TableManager{
-					TumblingWindow: &config.TumblingWindow{
-						CollectSQL:       "SELECT id FROM agg",
-						DeleteSQL:        "DELETE FROM agg",
-						PollIntervalSecs: 3600,
-					},
-					Sink: config.Sink{Type: "console"},
+				Window: &config.Window{
+					TimeColumn:       "bucket",
+					SizeSeconds:      60,
+					PollIntervalSecs: 3600,
+					Sink:             config.Sink{Type: "console"},
 				},
 			}},
 		},
 	}
 
-	built, err := buildManagedTables(
-		context.Background(), conf, conn, &sync.Mutex{}, zap.NewNop(), mp,
-		nil, sinks.RetryEvents{})
+	built, closeConns, err := buildManagedTables(
+		context.Background(), conf, db, zap.NewNop(), mp, nil, sinks.RetryEvents{})
 	assert.NoError(t, err)
+	defer closeConns()
 	assert.Equal(t, 1, len(built))
 
-	// One poll closes the window, writes the rows to the manager's sink and
+	// One poll closes the bucket, writes the rows to the manager's sink and
 	// flushes them.
 	assert.NoError(t, built[0].Poll(context.Background()))
 

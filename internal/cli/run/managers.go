@@ -9,60 +9,122 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
 
-// buildManagedTables constructs a manager per table that declares one. Each
-// manager gets its own sink and shares the pipeline's DuckDB lock.
+// windowDeclaration turns a config block into what the manager is built
+// from.
+func windowDeclaration(table config.TableSQL) managers.Declaration {
+	w := table.Window
+	return managers.Declaration{
+		Table:      table.Name,
+		TimeColumn: w.TimeColumn,
+		Size:       time.Duration(w.SizeSeconds) * time.Second,
+		Grace:      time.Duration(w.GraceSeconds) * time.Second,
+		IdleClose:  time.Duration(w.IdleCloseSeconds) * time.Second,
+		Late:       managers.LatePolicy(w.LateRows),
+		EmitSQL:    w.EmitSQL,
+	}
+}
+
+// initWindowStores creates sqlflow_windows on the pipeline's connection,
+// under autocommit, so the DDL commits on its own the way the offsets and
+// progress tables' does. Nothing to do for a pipeline with no window.
+func initWindowStores(ctx context.Context, conf *config.Conf, conn adbc.Connection) error {
+	if conf.Tables == nil {
+		return nil
+	}
+	for _, table := range conf.Tables.SQL {
+		if table.Window != nil {
+			return managers.NewStore(conn).Init(ctx)
+		}
+	}
+	return nil
+}
+
+// buildManagedTables constructs a watermark manager per table that declares
+// a window. Each manager gets its own sink and its own connection to the
+// pipeline's DuckDB, with autocommit off, so it reads committed rows only
+// and its delete commits with its watermark. The returned close func closes
+// those connections; call it after the managers have returned.
 func buildManagedTables(
 	ctx context.Context,
 	conf *config.Conf,
-	conn adbc.Connection,
-	lock *sync.Mutex,
+	db *duckdb.DB,
 	l *zap.Logger,
 	mp metric.MeterProvider,
 	budget *core.DrainBudget,
 	events sinks.RetryEvents,
-) ([]*managers.Tumbling, error) {
+) (built []*managers.Watermark, closeConns func(), err error) {
+	var conns []adbc.Connection
+	closeConns = func() {
+		for _, c := range conns {
+			if err := c.Close(); err != nil {
+				l.Error("failed to close window connection", zap.Error(err))
+			}
+		}
+	}
+	defer func() {
+		if err != nil {
+			closeConns()
+		}
+	}()
+
 	if conf.Tables == nil {
-		return nil, nil
+		return nil, closeConns, nil
 	}
 
-	var built []*managers.Tumbling
 	for _, table := range conf.Tables.SQL {
-		if table.Manager == nil {
+		if table.Window == nil {
 			continue
 		}
-		if table.Manager.TumblingWindow == nil {
-			return nil, fmt.Errorf("table %q: only tumbling_window managers are supported", table.Name)
+
+		conn, err := db.Connect(ctx)
+		if err != nil {
+			return nil, closeConns, errs.Wrap(errs.CodeStateInternal, err,
+				"table %q: opening the window's connection", table.Name)
 		}
-		// A windowed pipeline's entire output comes through here. Without the
-		// counters on this sink, sink_rows_written would report zero for it.
-		sink, err := sinks.New(ctx, table.Manager.Sink, conn,
+		conns = append(conns, conn)
+		po, ok := conn.(adbc.PostInitOptions)
+		if !ok {
+			return nil, closeConns, errs.New(errs.CodeStateInternal,
+				"table %q: the window's connection does not support transactions", table.Name)
+		}
+		if err := po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled); err != nil {
+			return nil, closeConns, errs.Wrap(errs.CodeStateInternal, err,
+				"table %q: disabling autocommit on the window's connection", table.Name)
+		}
+
+		// The sink runs on the window's connection too: a sqlcommand sink
+		// reads sqlflow_sink_batch, which the sink stages on the connection
+		// it is given. A windowed pipeline's entire output comes through
+		// here, so the counters on this sink are what sink_rows_written
+		// reports for it.
+		sink, err := sinks.New(ctx, table.Window.Sink, conn,
 			sinks.WithMeterProvider(mp),
 			sinks.WithSinkRole("manager"),
 			sinks.WithRetryEvents(events))
 		if err != nil {
-			return nil, fmt.Errorf("table %q manager sink: %w", table.Name, err)
+			return nil, closeConns, fmt.Errorf("table %q window sink: %w", table.Name, err)
 		}
 
-		window := table.Manager.TumblingWindow
-		built = append(built, managers.NewTumbling(
-			conn,
-			window.CollectSQL,
-			window.DeleteSQL,
-			time.Duration(window.PollIntervalSecs)*time.Second,
-			sink,
-			lock,
+		m, err := managers.NewWatermark(conn, windowDeclaration(table),
+			time.Duration(table.Window.PollIntervalSecs)*time.Second, sink,
 			managers.WithLogger(l),
 			managers.WithDrainBudget(budget),
-		))
+			managers.WithMeterProvider(mp))
+		if err != nil {
+			return nil, closeConns, fmt.Errorf("table %q window: %w", table.Name, err)
+		}
+		built = append(built, m)
 	}
 
-	return built, nil
+	return built, closeConns, nil
 }
 
 // managerGroup runs every table manager and keeps the first error any of
@@ -79,7 +141,7 @@ type managerGroup struct {
 
 // start runs m until ctx ends. onFail is called with any error m returns,
 // so the caller can cancel the run and mark the process failed.
-func (g *managerGroup) start(ctx context.Context, m *managers.Tumbling, onFail func(error)) {
+func (g *managerGroup) start(ctx context.Context, m *managers.Watermark, onFail func(error)) {
 	g.wg.Add(1)
 	go func() {
 		defer g.wg.Done()

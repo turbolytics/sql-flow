@@ -147,8 +147,8 @@ features:
     requires: [unit, release]
 
   # --- Table managers -----------------------------------------------------
-  - id: manager.tumbling_window
-    description: Publishes and deletes closed windows on an interval.
+  - id: manager.window
+    description: A declared window is closed by the engine against a persisted event-time watermark, with a late-row policy.
     requires: [unit, release]
 
   # --- Config -------------------------------------------------------------

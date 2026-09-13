@@ -124,11 +124,10 @@ func TestValidateSchema_LaddersAreSummedAgainstTheDrain(t *testing.T) {
 tables:
   sql:
     - name: agg
-      sql: CREATE TABLE agg (id INT)
-      manager:
-        tumbling_window:
-          collect_closed_windows_sql: SELECT id FROM agg
-          delete_closed_windows_sql: DELETE FROM agg
+      sql: CREATE TABLE agg (bucket TIMESTAMPTZ, id INT)
+      window:
+        time_column: bucket
+        size_seconds: 60
         sink:
           type: iceberg
           iceberg:
@@ -169,7 +168,7 @@ pipeline:
 	msg := warnings[0].Message
 	assert.That(t, strings.Contains(msg, "add up to 20s"))
 	assert.That(t, strings.Contains(msg, "pipeline.on_error.dlq retry.deadline_seconds is 10s"))
-	assert.That(t, strings.Contains(msg, "tables.sql[agg].manager.sink retry.deadline_seconds is 10s"))
+	assert.That(t, strings.Contains(msg, "tables.sql[agg].window.sink retry.deadline_seconds is 10s"))
 	// The console sink has no ladder and is not in the sum.
 	assert.That(t, !strings.Contains(msg, "pipeline.sink"))
 }

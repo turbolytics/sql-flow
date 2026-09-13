@@ -6,17 +6,17 @@
 # aggregate while its offsets are already committed, silently, with the
 # consumer group reporting no lag.
 #
-# The close predicate here is deliberately an hour, so the window stays open
-# for the length of a test run and recovery can be observed on a partial
+# The grace and the idle close are deliberately an hour, so the window stays
+# open for the length of a test run and recovery can be observed on a partial
 # aggregate rather than one that has already been published and deleted.
 tables:
   sql:
     - name: agg_city_count
       # No UNIQUE INDEX, on purpose. DuckDB never frees rows deleted from an
-      # indexed table, and the manager deletes every closed window, so an index
+      # indexed table, and the engine deletes every closed window, so an index
       # grows memory and the state file without bound. A state path does not
-      # avoid it. Each batch appends its own counts and the collect query sums
-      # them. See #268.
+      # avoid it. Each batch appends its own counts and emit_sql sums them.
+      # See #268.
       sql: |
         CREATE TABLE IF NOT EXISTS agg_city_count (
           bucket TIMESTAMPTZ,
@@ -24,46 +24,26 @@ tables:
           count INT
         );
 
-      manager:
-          # A window closes against the stream's own clock, not wall clock.
-          # max(bucket) is the newest window the data has reached, so a window
-          # closes only once the stream has moved past it. That keeps the
-          # result identical whether the data arrives live or as a replay.
-          #
-          # With now() here instead, a pipeline running behind real time by
-          # more than the grace period closes a window whose rows are still
-          # arriving and publishes it in parts, once per poll. Downstream those
-          # parts are indistinguishable from an at-least-once duplicate.
-          #
-          # The trade: the newest window waits for a later one, so a stream
-          # that stops leaves its final window unpublished.
-          #
-          # The second branch is the idleness bound. A stream that goes quiet
-          # never moves its own clock, so the first branch alone would hold
-          # the newest window open until data a full grace newer arrived: a
-          # surge that stops leaves its last bucket unpublished forever.
-          # sqlflow_progress is the engine's one-row liveness table and
-          # last_arrival is when the newest batch was written, so after a
-          # grace of silence every open window closes. It is TIMESTAMPTZ, so
-          # the comparison holds whatever timezone the host runs in.
-        tumbling_window:
-          poll_interval_seconds: 3600
-          # GROUP BY ALL groups by the output columns. GROUP BY bucket would
-          # group by the table's bucket column, which the output renames.
-          collect_closed_windows_sql: |
-            SELECT
-              strftime(bucket, '%Y-%m-%dT%H:%M:%S') AS bucket,
-              city,
-              sum(count)::INT AS count
-            FROM agg_city_count
-            WHERE bucket < (SELECT max(bucket) FROM agg_city_count) - INTERVAL '3600' SECOND
-               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '3600' SECOND
-            GROUP BY ALL
-          delete_closed_windows_sql: |
-            DELETE FROM agg_city_count
-            WHERE bucket < (SELECT max(bucket) FROM agg_city_count) - INTERVAL '3600' SECOND
-               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '3600' SECOND
-
+      # The engine closes the window against a watermark in event time: the
+      # newest bucket the data has reached, less the grace. A bucket closes
+      # once its end is at or before the watermark. With a state path the
+      # watermark survives a restart, so a bucket published before the
+      # restart is not published again.
+      window:
+        time_column: bucket
+        size_seconds: 3600
+        grace_seconds: 3600
+        idle_close_seconds: 3600
+        poll_interval_seconds: 3600
+        # GROUP BY ALL groups by the output columns. GROUP BY bucket would
+        # group by the table's bucket column, which the output renames.
+        emit_sql: |
+          SELECT
+            strftime(bucket, '%Y-%m-%dT%H:%M:%S') AS bucket,
+            city,
+            sum(count)::INT AS count
+          FROM closed
+          GROUP BY ALL
         sink:
           type: console
 

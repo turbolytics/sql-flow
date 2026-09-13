@@ -196,8 +196,9 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 
-			// Shared with everything that touches the connection: the pipeline,
-			// the table managers and the debug API.
+			// Shared with everything that touches the pipeline's connection:
+			// the pipeline itself and the debug API. A window manager has a
+			// connection of its own and never takes it.
 			lock := &sync.Mutex{}
 
 			// Liveness, for every pipeline whether or not it has a state path.
@@ -207,6 +208,11 @@ func NewCommand() *cobra.Command {
 			// transaction; without one they autocommit.
 			progressStore := core.NewProgressStore(conn)
 			if err := progressStore.Init(context.Background()); err != nil {
+				return err
+			}
+			// The windows' watermarks, for the same reason and at the same
+			// point: under autocommit, before the state branch turns it off.
+			if err := initWindowStores(context.Background(), conf, conn); err != nil {
 				return err
 			}
 
@@ -416,11 +422,15 @@ func NewCommand() *cobra.Command {
 			)
 			liveTurbine.Store(turbine)
 
-			managedTables, err := buildManagedTables(ctx, conf, conn, lock, l, meterProvider,
-				budget, retryEvents)
+			managedTables, closeWindowConns, err := buildManagedTables(ctx, conf, db, l,
+				meterProvider, budget, retryEvents)
 			if err != nil {
 				return err
 			}
+			// Registered before the managers' own deferred block, so it runs
+			// after the final polls have returned: a connection closed under
+			// a poll in flight is a use-after-free inside DuckDB.
+			defer closeWindowConns()
 
 			// Managers run for the lifetime of the pipeline. Cancelling their
 			// context makes each publish one final time before returning, so

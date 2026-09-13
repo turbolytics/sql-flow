@@ -1,0 +1,73 @@
+package managers
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/turbolytics/sql-flow/internal/core"
+)
+
+// The SQL the watermark manager runs. Every statement is generated from the
+// declaration, so the collect and the delete cannot disagree, and no clock
+// but the watermark appears in any of them. now() is absent on purpose: it
+// is frozen at the start of an open transaction, which is the bug #158
+// fixed and the reason the user's predicates were hard to get right.
+
+// closedView is the relation emit_sql reads: the rows of every bucket that
+// has just closed. A temporary view on the manager's own connection, so
+// emit_sql can be any SELECT, including one that starts with WITH.
+const closedView = "closed"
+
+// defaultEmitSQL publishes the closed rows as they are.
+const defaultEmitSQL = "SELECT * FROM " + closedView
+
+// quoteIdent double-quotes an identifier, doubling any quote inside it.
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// closedBefore is the predicate for rows whose bucket ended at or before an
+// instant: time_column + size <= instant.
+func (d Declaration) closedBefore(instant time.Time) string {
+	return fmt.Sprintf("%s + INTERVAL '%d' SECOND <= TIMESTAMPTZ '%s'",
+		quoteIdent(d.TimeColumn), int64(d.Size/time.Second), core.UTCLiteral(instant))
+}
+
+// newestSQL reads the newest bucket start the table holds, as microseconds
+// since the epoch. NULL on an empty table.
+func (d Declaration) newestSQL() string {
+	return fmt.Sprintf("SELECT epoch_us(max(%s)) FROM %s", quoteIdent(d.TimeColumn), quoteIdent(d.Table))
+}
+
+// lastArrivalSQL reads when the newest batch reached the handler, from the
+// engine's progress row, as microseconds since the epoch. NULL before the
+// first batch.
+func lastArrivalSQL() string {
+	return "SELECT epoch_us(last_arrival) FROM sqlflow_progress"
+}
+
+// countClosedSQL counts the rows a close at the instant would collect.
+func (d Declaration) countClosedSQL(instant time.Time) string {
+	return fmt.Sprintf("SELECT count(*)::BIGINT FROM %s WHERE %s", quoteIdent(d.Table), d.closedBefore(instant))
+}
+
+// deleteClosedSQL removes the rows a close at the instant collected.
+func (d Declaration) deleteClosedSQL(instant time.Time) string {
+	return fmt.Sprintf("DELETE FROM %s WHERE %s", quoteIdent(d.Table), d.closedBefore(instant))
+}
+
+// closedViewSQL defines the relation emit_sql reads for a close at the
+// instant.
+func (d Declaration) closedViewSQL(instant time.Time) string {
+	return fmt.Sprintf("CREATE OR REPLACE TEMP VIEW %s AS SELECT * FROM %s WHERE %s",
+		closedView, quoteIdent(d.Table), d.closedBefore(instant))
+}
+
+// emitSQL is what the sink receives, over the closed view.
+func (d Declaration) emitSQL() string {
+	if strings.TrimSpace(d.EmitSQL) == "" {
+		return defaultEmitSQL
+	}
+	return d.EmitSQL
+}
