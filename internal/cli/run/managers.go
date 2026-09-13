@@ -8,6 +8,7 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"go.opentelemetry.io/otel/metric"
@@ -23,6 +24,8 @@ func buildManagedTables(
 	lock *sync.Mutex,
 	l *zap.Logger,
 	mp metric.MeterProvider,
+	budget *core.DrainBudget,
+	events sinks.RetryEvents,
 ) ([]*managers.Tumbling, error) {
 	if conf.Tables == nil {
 		return nil, nil
@@ -40,7 +43,8 @@ func buildManagedTables(
 		// counters on this sink, sink_rows_written would report zero for it.
 		sink, err := sinks.New(ctx, table.Manager.Sink, conn,
 			sinks.WithMeterProvider(mp),
-			sinks.WithSinkRole("manager"))
+			sinks.WithSinkRole("manager"),
+			sinks.WithRetryEvents(events))
 		if err != nil {
 			return nil, fmt.Errorf("table %q manager sink: %w", table.Name, err)
 		}
@@ -54,6 +58,7 @@ func buildManagedTables(
 			sink,
 			lock,
 			managers.WithLogger(l),
+			managers.WithDrainBudget(budget),
 		))
 	}
 
