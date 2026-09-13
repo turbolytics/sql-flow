@@ -102,22 +102,13 @@ func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Op
 
 // retriesHelp reports whether a retry ladder belongs around a sink type.
 //
-// Only the sinks that cross a network to somebody else's server. Kafka is
-// excluded on purpose: it hands records to franz-go, which already retries a
-// produce with its own backoff, and a second ladder on top of that one delays
-// the report without improving delivery. Console, noop and sqlcommand reach
-// nothing that can be temporarily unavailable -- sqlcommand writes through the
-// pipeline's own DuckDB connection, and a failure there is not a blip.
+// The list lives in config.SinkRetries, where `sqlflow validate` can read it
+// without linking DuckDB. See that function for why these sinks and no others.
 //
 // Kept as a function of the type alone so the policy is testable without
 // building a sink, which would dial.
 func retriesHelp(sinkType string) bool {
-	switch sinkType {
-	case "clickhouse", "iceberg":
-		return true
-	default:
-		return false
-	}
+	return config.SinkRetries(sinkType)
 }
 
 // builders constructs each sink type.

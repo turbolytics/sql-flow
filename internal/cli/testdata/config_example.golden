@@ -111,6 +111,11 @@ pipeline:
   batch_size: <integer>
   # Longest a partial batch waits before it is invoked anyway.
   flush_interval_seconds: <integer>
+  # Longest a shutdown may take after SIGTERM. The final batch, the
+  # managers' final poll and the state syncs share it. Absent means 30.
+  # When it passes the process exits 15, and the next start replays what
+  # was not written.
+  drain_deadline_seconds: <integer>
   # Where the pipeline keeps its DuckDB state. Absent means in-memory, and
   # state is lost on a crash.
   state:
