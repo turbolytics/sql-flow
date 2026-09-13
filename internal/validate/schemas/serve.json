@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://turbolytics.io/schemas/serve.json",
+  "properties": {
+    "commands": {
+      "items": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the command for reference."
+          },
+          "sql": {
+            "type": "string",
+            "description": "SQL statements to execute."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "sql"
+        ],
+        "description": "SQLCommand is one statement run at startup, before any table is created."
+      },
+      "type": "array",
+      "description": "SQL commands run once at startup, before the server listens. Attach the\nbackend here, READ_ONLY."
+    },
+    "serve": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Names this server in its logs."
+        },
+        "http": {
+          "properties": {
+            "addr": {
+              "type": "string",
+              "description": "host:port to listen on. Defaults to 0.0.0.0:8080."
+            },
+            "cors": {
+              "properties": {
+                "allowed_origins": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "description": "Exact origins, such as https://turbolytics.io: a scheme, a host and an\noptional port. No path and no wildcard."
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "allowed_origins"
+              ],
+              "description": "Browser origins allowed to call. Omit to send no CORS headers."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "description": "Where to listen, and which browser origins may call."
+        },
+        "auth": {
+          "properties": {
+            "tokens": {
+              "items": {
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Names the client in the request log."
+                  },
+                  "token": {
+                    "type": "string",
+                    "description": "The value a client sends as Authorization: Bearer \u003ctoken\u003e. It is an\nidentifier, not a secret: a browser page ships it in plain sight."
+                  }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "name",
+                  "token"
+                ],
+                "description": "ServeToken names one client identity."
+              },
+              "type": "array",
+              "description": "One entry per client identity."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "tokens"
+          ],
+          "description": "Who may call."
+        },
+        "limits": {
+          "properties": {
+            "max_rows": {
+              "type": "integer",
+              "description": "Most rows one response carries. 0 means 10000. A cut result says\ntruncated: true."
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "description": "Longest a caller waits for a query, in seconds. 0 means 10. The query\nitself runs to completion: DuckDB cannot be cancelled."
+            },
+            "rate_limit": {
+              "properties": {
+                "requests_per_second": {
+                  "type": "number",
+                  "description": "Reserved. Must be 0."
+                },
+                "burst": {
+                  "type": "integer",
+                  "description": "Reserved. Must be 0."
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "description": "Reserved. Parsed so a config written now keeps its shape; refused when\nany field is non-zero."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "description": "Limits for every dataset. A dataset's own non-zero limit overrides one."
+        },
+        "datasets": {
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The URL path segment: /v1/datasets/\u003cname\u003e. Lowercase letters, digits\nand underscores, starting with a letter."
+              },
+              "description": {
+                "type": "string",
+                "description": "Shown in /v1/datasets."
+              },
+              "params": {
+                "items": {
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "The query parameter name, and the $name the SQL reads."
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "string",
+                        "integer",
+                        "timestamp"
+                      ],
+                      "description": "How the value parses and binds: string as VARCHAR, integer as BIGINT,\ntimestamp (RFC 3339 with an offset) as TIMESTAMP WITH TIME ZONE."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "type"
+                  ],
+                  "description": "ServeParam declares one query parameter."
+                },
+                "type": "array",
+                "description": "Query parameters the SQL reads as $name. Every statement must use every\nparam. An absent param binds NULL; default it in SQL with coalesce."
+              },
+              "limits": {
+                "properties": {
+                  "max_rows": {
+                    "type": "integer",
+                    "description": "Most rows one response carries. 0 means 10000. A cut result says\ntruncated: true."
+                  },
+                  "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Longest a caller waits for a query, in seconds. 0 means 10. The query\nitself runs to completion: DuckDB cannot be cancelled."
+                  },
+                  "rate_limit": {
+                    "properties": {
+                      "requests_per_second": {
+                        "type": "number",
+                        "description": "Reserved. Must be 0."
+                      },
+                      "burst": {
+                        "type": "integer",
+                        "description": "Reserved. Must be 0."
+                      }
+                    },
+                    "additionalProperties": false,
+                    "type": "object",
+                    "description": "Reserved. Parsed so a config written now keeps its shape; refused when\nany field is non-zero."
+                  }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "description": "Overrides the top-level limits for this dataset."
+              },
+              "sql": {
+                "type": "string",
+                "description": "The statement, for a dataset without grains. Set sql or grains."
+              },
+              "grains": {
+                "additionalProperties": {
+                  "properties": {
+                    "sql": {
+                      "type": "string",
+                      "description": "The statement for this grain."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "sql"
+                  ],
+                  "description": "ServeGrain is one grain's statement."
+                },
+                "type": "object",
+                "description": "One statement per grain, selected by ?grain=\u003cname\u003e. Set sql or grains."
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "description": "ServeDataset is one named, parameterized SQL statement, or one per grain."
+          },
+          "type": "array",
+          "description": "The datasets this server answers. Nothing else is reachable."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "auth",
+        "datasets"
+      ],
+      "description": "What to serve, to whom, and within which limits."
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "serve"
+  ],
+  "description": "ServeConf is a whole serve file: the commands that attach the data, and the serve block that exposes it."
+}

@@ -1,0 +1,86 @@
+# SQL commands run once at startup, before the server listens. Attach the
+# backend here, READ_ONLY.
+commands:
+  -
+    # Name of the command for reference.
+    name: <string>
+    # SQL statements to execute.
+    sql: <string>
+# What to serve, to whom, and within which limits.
+serve:
+  # Names this server in its logs.
+  name: <string>
+  # Where to listen, and which browser origins may call.
+  http:
+    # host:port to listen on. Defaults to 0.0.0.0:8080.
+    addr: <string>
+    # Browser origins allowed to call. Omit to send no CORS headers.
+    cors:
+      # Exact origins, such as https://turbolytics.io: a scheme, a host and an
+      # optional port. No path and no wildcard.
+      allowed_origins:
+        - <array>
+  # Who may call.
+  auth:
+    # One entry per client identity.
+    tokens:
+      -
+        # Names the client in the request log.
+        name: <string>
+        # The value a client sends as Authorization: Bearer <token>. It is an
+        # identifier, not a secret: a browser page ships it in plain sight.
+        token: <string>
+  # Limits for every dataset. A dataset's own non-zero limit overrides one.
+  limits:
+    # Most rows one response carries. 0 means 10000. A cut result says
+    # truncated: true.
+    max_rows: <integer>
+    # Longest a caller waits for a query, in seconds. 0 means 10. The query
+    # itself runs to completion: DuckDB cannot be cancelled.
+    timeout_seconds: <integer>
+    # Reserved. Parsed so a config written now keeps its shape; refused when
+    # any field is non-zero.
+    rate_limit:
+      # Reserved. Must be 0.
+      requests_per_second: <number>
+      # Reserved. Must be 0.
+      burst: <integer>
+  # The datasets this server answers. Nothing else is reachable.
+  datasets:
+    -
+      # The URL path segment: /v1/datasets/<name>. Lowercase letters, digits
+      # and underscores, starting with a letter.
+      name: <string>
+      # Shown in /v1/datasets.
+      description: <string>
+      # Query parameters the SQL reads as $name. Every statement must use every
+      # param. An absent param binds NULL; default it in SQL with coalesce.
+      params:
+        -
+          # The query parameter name, and the $name the SQL reads.
+          name: <string>
+          # How the value parses and binds: string as VARCHAR, integer as BIGINT,
+          # timestamp (RFC 3339 with an offset) as TIMESTAMP WITH TIME ZONE.
+          type: string | integer | timestamp
+      # Overrides the top-level limits for this dataset.
+      limits:
+        # Most rows one response carries. 0 means 10000. A cut result says
+        # truncated: true.
+        max_rows: <integer>
+        # Longest a caller waits for a query, in seconds. 0 means 10. The query
+        # itself runs to completion: DuckDB cannot be cancelled.
+        timeout_seconds: <integer>
+        # Reserved. Parsed so a config written now keeps its shape; refused when
+        # any field is non-zero.
+        rate_limit:
+          # Reserved. Must be 0.
+          requests_per_second: <number>
+          # Reserved. Must be 0.
+          burst: <integer>
+      # The statement, for a dataset without grains. Set sql or grains.
+      sql: <string>
+      # One statement per grain, selected by ?grain=<name>. Set sql or grains.
+      grains:
+        <name>:
+          # The statement for this grain.
+          sql: <string>

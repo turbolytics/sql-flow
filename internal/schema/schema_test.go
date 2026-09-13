@@ -23,6 +23,9 @@ const commentsDir = "../config"
 // goldenPath is the schema the engine embeds and ships.
 const goldenPath = "../validate/schemas/config.json"
 
+// serveGoldenPath is the serve file's schema, embedded beside it.
+const serveGoldenPath = "../validate/schemas/serve.json"
+
 // The schema is generated, so the committed file is a build artifact and this
 // is the golden test that keeps it current. Regenerate with `make schema`.
 func TestConfigSchema_CommittedFileMatchesTheTypes(t *testing.T) {
@@ -136,4 +139,65 @@ func enumAt(t *testing.T, doc map[string]any, path []string) []string {
 		node = props
 	}
 	return nil
+}
+
+// The serve schema is generated from config.ServeConf and held to it the same
+// way. Regenerate with `make schema`.
+func TestServeSchema_CommittedFileMatchesTheTypes(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	generated, err := GenerateServe(commentsDir)
+	assert.NoError(t, err)
+
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		assert.NoError(t, os.WriteFile(serveGoldenPath, generated, 0o644))
+		t.Log("serve schema updated")
+		return
+	}
+
+	committed, err := os.ReadFile(serveGoldenPath)
+	assert.NoError(t, err)
+
+	if !bytes.Equal(committed, generated) {
+		t.Fatalf("%s is stale. Run `make schema`.", serveGoldenPath)
+	}
+}
+
+// Every shipped serve example satisfies the serve schema. The examples live
+// in dev/config/serve, outside dev/config/examples, because two sweeps decode
+// every file there as a pipeline.
+func TestServeSchema_AcceptsEveryShippedServeExample(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	generated, err := GenerateServe(commentsDir)
+	assert.NoError(t, err)
+
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(generated))
+	assert.NoError(t, err)
+
+	c := jsonschema.NewCompiler()
+	assert.NoError(t, c.AddResource(ServeID, doc))
+	compiled, err := c.Compile(ServeID)
+	assert.NoError(t, err)
+
+	paths, err := filepath.Glob("../../dev/config/serve/*.yml")
+	assert.NoError(t, err)
+	assert.That(t, len(paths) > 0)
+
+	for _, p := range paths {
+		t.Run(filepath.Base(p), func(t *testing.T) {
+			rendered, err := config.RenderTemplate(p, nil)
+			assert.NoError(t, err)
+
+			var v any
+			assert.NoError(t, yaml.Unmarshal(rendered, &v))
+
+			norm, err := jsonRoundTrip(v)
+			assert.NoError(t, err)
+
+			if err := compiled.Validate(norm); err != nil {
+				t.Fatalf("serve schema rejects a shipped example:\n%v", err)
+			}
+		})
+	}
 }

@@ -46,14 +46,20 @@ func newConfigValidateCommand() *cobra.Command {
 }
 
 func newConfigExampleCommand() *cobra.Command {
-	return &cobra.Command{
+	var serve bool
+
+	cmd := &cobra.Command{
 		Use:   "example",
 		Short: "Print a commented example configuration",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 
-			out, err := configExample()
+			schema := validate.SchemaJSON()
+			if serve {
+				schema = validate.ServeSchemaJSON()
+			}
+			out, err := configExample(schema)
 			if err != nil {
 				return err
 			}
@@ -62,6 +68,9 @@ func newConfigExampleCommand() *cobra.Command {
 			return err
 		},
 	}
+
+	cmd.Flags().BoolVar(&serve, "serve", false, "Print the serve config skeleton instead of the pipeline's")
+	return cmd
 }
 
 // validateConfig renders the config template and validates the result,
@@ -100,9 +109,9 @@ func validateConfig(path string) error {
 // configExample renders the schema as a commented YAML skeleton, a port of the
 // Python jsonschema_to_yaml: descriptions become comments, primitives become
 // <type> placeholders, and enums are listed as alternatives.
-func configExample() (string, error) {
+func configExample(schema []byte) (string, error) {
 	var root schemaNode
-	if err := json.Unmarshal(validate.SchemaJSON(), &root); err != nil {
+	if err := json.Unmarshal(schema, &root); err != nil {
 		return "", fmt.Errorf("parsing config schema failed: %w", err)
 	}
 
@@ -132,6 +141,13 @@ func processProperties(properties []schemaProperty, level int) []string {
 		switch value.Type {
 		case "object":
 			out = append(out, fmt.Sprintf("%s%s:", indent, prop.Name))
+			if len(value.Properties) == 0 && value.Values != nil {
+				// A map, such as a dataset's grains: one entry under a
+				// placeholder key, so the value's own keys still print.
+				out = append(out, fmt.Sprintf("%s  <name>:", indent))
+				out = append(out, processProperties(value.Values.Properties, level+2)...)
+				continue
+			}
 			out = append(out, processProperties(value.Properties, level+1)...)
 		case "array":
 			out = append(out, fmt.Sprintf("%s%s:", indent, prop.Name))
@@ -179,6 +195,9 @@ type schemaNode struct {
 	Enum        []string
 	Properties  []schemaProperty
 	Items       *schemaNode
+	// Values is a map's value schema, from additionalProperties when that is
+	// an object rather than false.
+	Values *schemaNode
 }
 
 type schemaProperty struct {
@@ -188,11 +207,12 @@ type schemaProperty struct {
 
 func (n *schemaNode) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Description string            `json:"description"`
-		Type        string            `json:"type"`
-		Enum        []json.RawMessage `json:"enum"`
-		Properties  orderedProperties `json:"properties"`
-		Items       *schemaNode       `json:"items"`
+		Description          string            `json:"description"`
+		Type                 string            `json:"type"`
+		Enum                 []json.RawMessage `json:"enum"`
+		Properties           orderedProperties `json:"properties"`
+		Items                *schemaNode       `json:"items"`
+		AdditionalProperties json.RawMessage   `json:"additionalProperties"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -202,6 +222,14 @@ func (n *schemaNode) UnmarshalJSON(data []byte) error {
 	n.Type = raw.Type
 	n.Properties = raw.Properties
 	n.Items = raw.Items
+
+	// Every struct says additionalProperties: false, which is not a node.
+	if bytes.HasPrefix(bytes.TrimSpace(raw.AdditionalProperties), []byte("{")) {
+		n.Values = &schemaNode{}
+		if err := json.Unmarshal(raw.AdditionalProperties, n.Values); err != nil {
+			return err
+		}
+	}
 
 	// Python renders enum members with str(), which prints a string bare and
 	// any other scalar as its literal text.

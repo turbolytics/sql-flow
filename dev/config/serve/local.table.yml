@@ -1,0 +1,61 @@
+# Serves a table this file creates, so it runs with nothing installed.
+#
+#   SQLFLOW_SERVE_TOKEN=local-dev-token sqlflow serve dev/config/serve/local.table.yml
+#   curl -H 'Authorization: Bearer local-dev-token' \
+#     'http://localhost:8080/v1/datasets/city_events?grain=1d&city=Baltimore'
+commands:
+  - name: pin the session timezone
+    sql: SET TimeZone='UTC';
+  - name: create the events table
+    sql: |
+      CREATE TABLE events AS
+      SELECT * FROM (VALUES
+        (TIMESTAMPTZ '2026-09-10 00:05:00+00', 'New York'),
+        (TIMESTAMPTZ '2026-09-10 00:40:00+00', 'New York'),
+        (TIMESTAMPTZ '2026-09-10 01:15:00+00', 'Baltimore'),
+        (TIMESTAMPTZ '2026-09-11 09:30:00+00', 'Baltimore'),
+        (TIMESTAMPTZ '2026-09-11 09:45:00+00', 'New York')
+      ) AS t(event_at, city);
+
+serve:
+  name: local-table
+
+  http:
+    addr: "0.0.0.0:{{ SQLFLOW_SERVE_PORT|default('8080') }}"
+
+  auth:
+    tokens:
+      - name: local
+        token: "{{ SQLFLOW_SERVE_TOKEN }}"
+
+  limits:
+    max_rows: 1000
+    timeout_seconds: 5
+
+  datasets:
+    - name: event_totals
+      description: Every event, counted. One row.
+      sql: SELECT count(*) AS events, min(event_at) AS first_event_at FROM events
+
+    - name: city_events
+      description: Events per bucket per city.
+      params:
+        - {name: city, type: string}
+        - {name: since, type: timestamp}
+      grains:
+        1h:
+          sql: |
+            SELECT time_bucket(INTERVAL '1 hour', event_at) AS bucket, city, count(*) AS events
+            FROM events
+            WHERE city = coalesce($city, city)
+              AND event_at >= coalesce($since, TIMESTAMPTZ '1970-01-01 00:00:00+00')
+            GROUP BY ALL
+            ORDER BY bucket, city
+        1d:
+          sql: |
+            SELECT time_bucket(INTERVAL '1 day', event_at) AS bucket, city, count(*) AS events
+            FROM events
+            WHERE city = coalesce($city, city)
+              AND event_at >= coalesce($since, TIMESTAMPTZ '1970-01-01 00:00:00+00')
+            GROUP BY ALL
+            ORDER BY bucket, city
