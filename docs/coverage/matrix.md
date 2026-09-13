@@ -133,7 +133,7 @@ drains. An invariant holds only if it holds on all four.
 | --- | --- | --- | --- |
 | `pipeline.commit.after_flush` | Offsets and state commit only after Flush returned nil. | ✅ u | ✅ u |
 | `pipeline.commit.only_delivered_rows` | The pipeline never commits a position covering a row the destination did not take, and never leaves a delivered row uncommitted after a clean run. *(violated once: #154)* | ✅ u | ✅ u |
-| `pipeline.shutdown.commits_only_delivered` | After the consume loop returns, clean or failed, the commits the process makes on its way out never make a position durable past the last message the sink acknowledged. Not in the state database, and not at the source. | ❌ missing | ❌ missing |
+| `pipeline.shutdown.commits_only_delivered` | After the consume loop returns, clean or failed, the commits the process makes on its way out never make a position durable past the last message the sink acknowledged. Not in the state database, and not at the source. *(violated once: #279)* | ❌ missing | ❌ missing |
 | `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u | ✅ u |
 | `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
 
