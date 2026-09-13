@@ -310,7 +310,7 @@ func NewCommand() *cobra.Command {
 			}
 
 			meterProvider, err := newMeterProvider(metricsExporter, serveTurbostats, static, l,
-				statsFn, progressFn, flushInterval)
+				statsFn, progressFn, nil, flushInterval)
 			if err != nil {
 				return err
 			}
