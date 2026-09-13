@@ -1,0 +1,22 @@
+# Without this file Dependabot only opens security PRs, and only for
+# advisories it already knows about. The alerts page accumulated 39 open
+# items that way, 30 of them against requirements files deleted in #224.
+# Weekly version PRs keep the list short enough to act on.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-modules:
+        patterns:
+          - "*"
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns:
+          - "*"

@@ -68,7 +68,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**32 invariants declared: 28 safety and 4 liveness. Of 136 (invariant, integration) cells: 57 proven, 51 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
+**36 invariants declared: 30 safety and 6 liveness. Of 140 (invariant, integration) cells: 61 proven, 51 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -108,17 +108,19 @@ until an invariant's `requires` is filled in, and none is yet.
 | `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt |
 | `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
 | `sink.buffer.reports_depth` | A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
-| `sink.error.classifies` | The sink's errors classify as unreachable or rejected, so the retry ladder retries the right ones. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt | ❌ missing |
+| `sink.error.classifies` | The sink's errors classify as unreachable, rejected, or a user fault, so the retry ladder retries only the first. A value the sink's client cannot encode is a user fault: it never reaches the network and fails the same way every attempt. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt | ❌ missing |
 | `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt |
 
 ## Safety invariants: checkpoint
 
-| Invariant | Claim | `source.kafka` | `source.webhook` | `source.websocket` |
-| --- | --- | --- | --- | --- |
-| `source.commit.only_processed` | A source commits the marks the pipeline processed, never what it fetched. *(violated once: #154)* | ❌ missing | — exempt | — exempt |
-| `source.resume.from_committed` | Restart resumes at the committed position. No gap, and no replay before it. | ❌ missing | — exempt | — exempt |
-| `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt |
-| `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt |
+| Invariant | Claim | `source.kafka` | `source.webhook` | `source.websocket` | `manager.tumbling_window` |
+| --- | --- | --- | --- | --- | --- |
+| `source.commit.only_processed` | A source commits the marks the pipeline processed, never what it fetched. *(violated once: #154)* | ❌ missing | — exempt | — exempt | · |
+| `source.resume.from_committed` | Restart resumes at the committed position. No gap, and no replay before it. | ❌ missing | — exempt | — exempt | · |
+| `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt | · |
+| `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt | · |
+| `manager.delete.after_flush` | Closed windows leave the state table only after the sink acknowledged them. The table still holds every one of them when Flush runs. | · | · | · | ✅ u |
+| `manager.delete.nothing_on_failure` | A failed flush deletes nothing. Every closed window stays in the state table for the next attempt. | · | · | · | ✅ u |
 
 These checkpoint invariants are properties of the consume loop
 rather than of anything a config file names. The columns are
@@ -177,6 +179,11 @@ drains. An invariant holds only if it holds on all four.
 | `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ missing | ❌ missing |
 
 ## Liveness invariants: lifecycle
+
+| Invariant | Claim | `manager.tumbling_window` |
+| --- | --- | --- |
+| `manager.publish.eventually` | A closed window reaches the sink without anything else happening. The loop polls on its own, and a window that closes is published. | ✅ u |
+| `manager.failure.exits` | A poll the sink refuses stops the manager with the sink's error, after one attempt, and the process exits with its code. The sink ran its retry ladder before the error arrived, so the manager does not retry in place, and a window the destination will not take is never collected, written and refused every tick while the process reports healthy. *(violated once: #267)* | ✅ u |
 
 These lifecycle invariants are properties of the consume loop
 rather than of anything a config file names. The columns are

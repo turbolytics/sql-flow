@@ -91,7 +91,7 @@ def test_the_committed_registries_load_and_validate():
     assert validate_registries(invariants, integrations, features) == []
     assert len(invariants) >= 20
     assert {i["kind"] for i in integrations} == {
-        "sink", "source", "handler", "pipeline"}
+        "sink", "source", "handler", "pipeline", "manager"}
 
 
 def test_every_committed_invariant_is_unenforced_in_this_revision():

@@ -245,3 +245,20 @@ func TestErrorTaxonomy_NoExitCodeUsesTwo(t *testing.T) {
 		assert.False(t, ExitCode(New(d.Code, "x")) == 2)
 	}
 }
+
+// A value the sink's driver refuses is the user's to fix: the value is in the
+// topic and a restart re-reads it. The exit code has to say terminal, or a
+// supervisor loops on it.
+func TestErrorTaxonomy_EncodeFailedIsAUserErrorThatExitsTerminal(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
+	err := New(CodeSinkEncodeFailed, "dt_plain parsing time")
+
+	assert.Equal(t, ClassUser, ClassOf(err))
+	assert.Equal(t, "sink", CodeSinkEncodeFailed.Domain())
+	assert.Equal(t, ExitUserError, ExitCode(err))
+	assert.False(t, Retryable(ExitCode(err)))
+
+	def, ok := Lookup(CodeSinkEncodeFailed)
+	assert.True(t, ok)
+	assert.True(t, strings.Contains(def.Action, "handler SQL"))
+}

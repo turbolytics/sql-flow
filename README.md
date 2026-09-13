@@ -534,6 +534,49 @@ sink:
 
 `sink.format.type: parquet` is parsed and ignored.
 
+### Sink retries
+
+ClickHouse and Iceberg flushes retry when the destination is not answering.
+Omit the block to accept the defaults. Set `max_attempts: 1` to turn retrying
+off. The Kafka sink ignores this block: franz-go already retries a produce
+with its own backoff.
+
+```yaml
+sink:
+  type: clickhouse
+  retry:
+    max_attempts: 4           # total attempts, including the first
+    initial_backoff_ms: 100   # doubles each attempt
+    max_backoff_ms: 2000      # ceiling on the backoff
+    deadline_seconds: 10      # bounds the whole ladder, not one attempt
+```
+
+The values shown are the defaults.
+
+Keep `deadline_seconds` below `pipeline.flush_interval_seconds`. The retry
+runs inside the open state transaction, and a ladder that outlives the flush
+interval freezes the window clock.
+
+The ladder retries only what another attempt could change. The error code
+decides:
+
+| Error | Retried | Why |
+| --- | --- | --- |
+| Any `user.*` code, including `user.sink.encode_failed` and `user.sink.type_unsupported` | No | The config, SQL or a value is wrong. It fails identically every time. |
+| `system.sink.write_failed` | No | The destination answered and refused the write. |
+| `system.sink.unreachable` | Yes | The destination may come back. |
+| An error with no code | Yes | A driver's timeout or reset arrives unclassified. The deadline bounds the cost. |
+| Any other `system.*` code | Yes | |
+
+A failure that is not retried keeps its own code and exit code. A retried
+failure that outlasts the ladder is reported as `system.sink.unreachable`,
+exit 12, and `sink_retry_count_total` counts each attempt after the first.
+
+`user.sink.encode_failed` is the sink's client refusing a value before
+anything reaches the network, such as a timestamp string the ClickHouse
+driver's `DateTime` layout cannot parse. Cast or format the column in the
+handler SQL. The message names the column and quotes the value.
+
 ## Error policies
 
 `pipeline.on_error.policy` is `RAISE` (default), `IGNORE`, or `DLQ`. It is

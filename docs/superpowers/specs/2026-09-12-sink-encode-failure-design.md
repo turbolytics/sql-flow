@@ -185,6 +185,20 @@ path. It names the new code and the retry rule.
 
 The error code reference, wherever `errs.All()` is rendered, picks up the new
 entry from the registry.
+README gains a "Sink retries" subsection under Sinks. It documents the retry
+block, which the README did not cover, and states the retry rule as a table
+keyed by error code. The `retryable` doc comment carries the same table and
+names the README section, so a change to one points at the other.
+
+The `sink.error.classifies` invariant claim names the third class.
+
+Release notes live in the annotated tag, not in `CHANGELOG.md`, which stops
+at v1.0.0. The v1.2.1 tag message names the defect: an encode failure was
+retried and then reported as unreachable, and any user-class sink error took
+the same path. It names the new code and the retry rule.
+
+Nothing renders `errs.All()` into documentation today, so the registry entry
+is the code's only published description.
 
 ## What breaks if this is wrong
 

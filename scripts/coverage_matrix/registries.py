@@ -93,7 +93,7 @@ FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors")
 CLASSES = ("safety", "liveness")
 
 
-KINDS = ("sink", "source", "handler", "pipeline")
+KINDS = ("sink", "source", "handler", "pipeline", "manager")
 
 
 # How an invariant collects evidence. Both are explicit markers: a test says
@@ -113,8 +113,9 @@ PIPELINE = "pipeline"
 
 # A pipeline configuration is an integration of the harness, though no
 # constructor switch builds one. `constructed: false` says so, and the Kinds()
-# agreement tests skip those entries.
-INTEGRATION_KINDS = ("sink", "source", "handler", "pipeline")
+# agreement tests skip those entries. A manager is the same: buildManagedTables
+# builds the one kind there is, and no switch lists it.
+INTEGRATION_KINDS = ("sink", "source", "handler", "pipeline", "manager")
 
 
 def load_features():
