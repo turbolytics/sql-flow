@@ -179,6 +179,12 @@ One attempt. `sink_retry_count_total` does not move.
 
 ### Docs
 
+The v1.2.1 changelog entry names the defect: an encode failure was retried
+and then reported as unreachable, and any user-class sink error took the same
+path. It names the new code and the retry rule.
+
+The error code reference, wherever `errs.All()` is rendered, picks up the new
+entry from the registry.
 README gains a "Sink retries" subsection under Sinks. It documents the retry
 block, which the README did not cover, and states the retry rule as a table
 keyed by error code. The `retryable` doc comment carries the same table and
