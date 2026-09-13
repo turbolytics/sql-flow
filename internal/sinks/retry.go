@@ -46,15 +46,40 @@ type retrying struct {
 	// onRetry reports an attempt that failed and will be tried again, so a
 	// stalled sink is visible before the deadline fires.
 	onRetry func(attempt int, err error)
+
+	// onSettle reports that a ladder which retried at least once has
+	// stopped, whether it delivered, gave up, or was cancelled. The health
+	// endpoint clears its "retrying" state on it.
+	onSettle func()
 }
 
 func newRetrying(inner core.Sink, policy RetryPolicy) *retrying {
 	return &retrying{
-		inner:   inner,
-		policy:  policy,
-		sleep:   sleepCtx,
-		now:     time.Now,
-		onRetry: func(int, error) {},
+		inner:    inner,
+		policy:   policy,
+		sleep:    sleepCtx,
+		now:      time.Now,
+		onRetry:  func(int, error) {},
+		onSettle: func() {},
+	}
+}
+
+// listen adds a RetryEvents listener beside whatever the ladder already
+// reports to, naming the sink type on every event.
+func (r *retrying) listen(sinkType string, e RetryEvents) {
+	if e.Retry != nil {
+		previous, notify := r.onRetry, e.Retry
+		r.onRetry = func(attempt int, err error) {
+			previous(attempt, err)
+			notify(sinkType, attempt, err)
+		}
+	}
+	if e.Settle != nil {
+		previous, notify := r.onSettle, e.Settle
+		r.onSettle = func() {
+			previous()
+			notify(sinkType)
+		}
 	}
 }
 
@@ -97,6 +122,15 @@ func (r *retrying) Flush(ctx context.Context) error {
 	backoff := clamp(r.policy.InitialBackoff, maxBackoff)
 	deadline := r.now().Add(r.policy.Deadline)
 
+	// Every return below settles a ladder that retried, so a listener never
+	// holds a "retrying" state for a flush that has finished.
+	retried := false
+	defer func() {
+		if retried {
+			r.onSettle()
+		}
+	}()
+
 	for attempt := 1; ; attempt++ {
 		err := r.inner.Flush(ctx)
 		if err == nil {
@@ -125,6 +159,7 @@ func (r *retrying) Flush(ctx context.Context) error {
 		}
 
 		r.onRetry(attempt, err)
+		retried = true
 		if sleepErr := r.sleep(ctx, backoff); sleepErr != nil {
 			// The context ended. Report the sink's failure rather than the
 			// cancellation: the sink is why this batch did not land.

@@ -30,6 +30,21 @@ type Option func(*options)
 type options struct {
 	meterProvider metric.MeterProvider
 	role          string
+	retryEvents   RetryEvents
+}
+
+// RetryEvents is told when a sink's retry ladder runs. Retry fires per failed
+// attempt that will be tried again. Settle fires once when a ladder that
+// retried at all stops, whether it delivered, gave up, or was cancelled.
+type RetryEvents struct {
+	Retry  func(sinkType string, attempt int, err error)
+	Settle func(sinkType string)
+}
+
+// WithRetryEvents adds a listener to the sink's retry ladder. The retry
+// counter records regardless. A sink with no ladder never calls it.
+func WithRetryEvents(e RetryEvents) Option {
+	return func(o *options) { o.retryEvents = e }
 }
 
 // WithSinkRole names what this sink is for: "pipeline", "dlq" or "manager".
@@ -92,6 +107,7 @@ func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Op
 
 	r := newRetrying(built, policy)
 	r.onRetry = retryCounter(o.meterProvider, sink.Type)
+	r.listen(sink.Type, o.retryEvents)
 
 	// Outside the ladder, so one logical flush is one counted flush. The
 	// totals come out the same either way -- retrying.WriteTable delegates and

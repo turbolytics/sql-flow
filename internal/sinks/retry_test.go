@@ -357,3 +357,86 @@ func TestSinkRetry_UncodedErrorRunsTheWholeLadder(t *testing.T) {
 	assert.Equal(t, p.MaxAttempts, inner.attempts)
 	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
 }
+
+// The health endpoint needs to know when a ladder is running and when it has
+// stopped, whichever way it stopped. Settle fires once per flush that retried
+// at all: after a success, after the last failure, and after a cancel.
+func TestSinkRetry_SettleFiresOnceAfterALadderEitherWay(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+
+	run := func(ctx context.Context, failures int) (retries, settles int, err error) {
+		sink := &flakySink{failures: failures, err: errors.New("connection reset by peer")}
+		r := newRetrying(sink, testPolicy())
+		r.onRetry = func(int, error) { retries++ }
+		r.onSettle = func() { settles++ }
+		assert.NoError(t, r.WriteTable(ctx, nil))
+		return retries, settles, r.Flush(ctx)
+	}
+
+	// Delivered on the second attempt: one retry, one settle.
+	retries, settles, err := run(context.Background(), 1)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, retries)
+	assert.Equal(t, 1, settles)
+
+	// Never delivered: the ladder is spent, and it still settles once.
+	retries, settles, err = run(context.Background(), 99)
+	assert.Error(t, err)
+	assert.Equal(t, testPolicy().MaxAttempts-1, retries)
+	assert.Equal(t, 1, settles)
+
+	// Delivered first time: no ladder ran, so nothing settles.
+	_, settles, err = run(context.Background(), 0)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, settles)
+
+	// Cancelled mid-ladder, which is what a drain deadline does: it settles,
+	// or /healthz reports a retry in flight for a process that stopped one.
+	ctx, cancel := context.WithCancel(context.Background())
+	sink := &flakySink{failures: 99, err: errors.New("connection reset by peer")}
+	r := newRetrying(sink, testPolicy())
+	settles = 0
+	r.onRetry = func(int, error) { cancel() }
+	r.onSettle = func() { settles++ }
+	assert.Error(t, r.Flush(ctx))
+	assert.Equal(t, 1, settles)
+}
+
+// A failure the ladder does not retry never starts one, so nothing settles.
+func TestSinkRetry_ARejectedWriteNeverSettles(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	sink := &flakySink{failures: 99, err: errs.New(errs.CodeSinkWriteFailed, "rejected")}
+	r := newRetrying(sink, testPolicy())
+	settles := 0
+	r.onSettle = func() { settles++ }
+	assert.Error(t, r.Flush(context.Background()))
+	assert.Equal(t, 0, settles)
+}
+
+// RetryEvents reach the listener with the sink's type, beside the counter the
+// ladder already reports to.
+func TestSinkRetry_RetryEventsNameTheSinkType(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	sink := &flakySink{failures: 2, err: errors.New("connection reset by peer")}
+	r := newRetrying(sink, testPolicy())
+
+	counted := 0
+	r.onRetry = func(int, error) { counted++ }
+
+	var retried []string
+	var attempts []int
+	settled := ""
+	r.listen("clickhouse", RetryEvents{
+		Retry: func(sinkType string, attempt int, _ error) {
+			retried = append(retried, sinkType)
+			attempts = append(attempts, attempt)
+		},
+		Settle: func(sinkType string) { settled = sinkType },
+	})
+
+	assert.NoError(t, r.Flush(context.Background()))
+	assert.Equal(t, 2, counted)
+	assert.DeepEqual(t, []string{"clickhouse", "clickhouse"}, retried)
+	assert.DeepEqual(t, []int{1, 2}, attempts)
+	assert.Equal(t, "clickhouse", settled)
+}
