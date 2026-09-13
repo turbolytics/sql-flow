@@ -1,7 +1,7 @@
 # The invariants every integration must hold, and the evidence each requires.
 #
 # This file is declared, not derived, for the reason features.yml gives: the
-# failure it catches is an integration with no evidence at all. Eight of these
+# failure it catches is an integration with no evidence at all. Nine of these
 # have been violated and fixed since v1.0.4, and each of those rows names the
 # fix.
 #
@@ -163,6 +163,25 @@ invariants:
     requires: []
     enforced: true
     violated_once: ["#154"]
+
+  # The same guarantee as only_delivered_rows, judged after the consume loop
+  # returns. run commits again on the way out, syncing state before and after
+  # the table managers' final poll, and every other pipeline check stops at
+  # the loop's return. Positions advance when a message reaches the handler,
+  # before its batch is flushed, so a batch the sink refused left positions
+  # the shutdown then made durable.
+  - id: pipeline.shutdown.commits_only_delivered
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      After the consume loop returns, clean or failed, the commits the process
+      makes on its way out never make a position durable past the last
+      message the sink acknowledged. Not in the state database, and not at
+      the source.
+    verified_by: harness
+    requires: []
+    enforced: true
 
   - id: pipeline.commit.nothing_on_failure
     family: checkpoint

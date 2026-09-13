@@ -252,7 +252,14 @@ type Turbine struct {
 
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
-	marks       *Marks
+	marks *Marks
+	// committed is what the last successful commit made durable: the state
+	// transaction's offsets, or for a pipeline with no state database the
+	// positions the source accepted. A batch that fails resets marks to this,
+	// because marks advance when a message reaches the handler, before its
+	// batch is flushed, and anything that commits later would otherwise make
+	// those positions durable for rows the sink never took.
+	committed   *Marks
 	lock        *sync.Mutex
 	running     bool
 	stats       *Stats
@@ -445,6 +452,7 @@ func NewTurbine(
 	t := &Turbine{
 		source:        source,
 		marks:         NewMarks(),
+		committed:     NewMarks(),
 		sink:          sink,
 		handler:       handler,
 		batchSize:     batchSize,
@@ -534,6 +542,20 @@ func (t *Turbine) recordStateGauges(ctx context.Context) {
 
 func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, err error) {
 	t.logger.Info("consumer loop starting")
+
+	// Whatever made the loop fail, the batch in flight was not delivered, and
+	// the positions it advanced must not outlive it. The caller commits again
+	// after this returns: run syncs state before and after the table managers'
+	// final poll. Those syncs save the positions held here, and the DuckDB
+	// driver ignores the context on commit, so nothing about a failed or
+	// cancelled run stops them. Before this reset, a batch the sink refused
+	// had its offsets made durable on the way out, and a restart resumed past
+	// rows nothing had written.
+	defer func() {
+		if err != nil {
+			t.marks.Reset(t.committed)
+		}
+	}()
 
 	if err := t.source.Start(); err != nil {
 		return nil, err
@@ -692,11 +714,19 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			}
 
 			if numBatchMessages == t.batchSize {
-				// Check for cancellation at batch boundaries
+				// A cancel that lands as the batch fills drains it, the same as
+				// the select's cancel branch. Returning here without it used to
+				// report a clean stop while the batch's positions were already
+				// advanced, and the shutdown then committed them for rows the
+				// sink never received.
 				select {
 				case <-ctx.Done():
-					t.logger.Warn("context done, stopping consumer loop")
+					t.logger.Info("context done at a batch boundary, draining the batch")
 					t.running = false
+					if err := t.processBatch(context.WithoutCancel(ctx), numBatchMessages); err != nil {
+						t.recordError(ctx, err, phaseSinkFlush, "error draining the final batch")
+						return nil, err
+					}
 					t.logThroughput()
 					return t.stats, nil
 				default:
@@ -984,6 +1014,7 @@ func (t *Turbine) commitState(ctx context.Context) error {
 	}
 
 	t.commits++
+	t.committed.Reset(t.marks)
 	t.metrics.StateCommitLatency.Record(ctx, time.Since(c0).Seconds())
 	t.metrics.StateCommitCount.Add(ctx, 1, t.resultAttrs(resultOK)...)
 	// Success only. The error path below records the dimensioned series and
@@ -1155,6 +1186,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 			}
 			return err
 		}
+	} else if t.stateTx == nil {
+		// Without a state database the source's commit is the durable one.
+		t.committed.Reset(t.marks)
 	}
 
 	b3 := time.Now()

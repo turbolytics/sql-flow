@@ -104,3 +104,35 @@ func TestStateOffsets_MarksEachOverEmptyIsANoop(t *testing.T) {
 	m.Each(func(string, int32, Mark) { called++ })
 	assert.Equal(t, 0, called)
 }
+
+// Reset is the one operation allowed to move a position backwards, and it
+// drops partitions the source does not hold.
+func TestStateOffsets_MarksResetCopiesExactlyAndMayRewind(t *testing.T) {
+	coverage.Covers(t, "state.offsets")
+	committed := NewMarks()
+	committed.Advance("events", 0, Mark{Offset: 4, LeaderEpoch: 7})
+
+	live := NewMarks()
+	live.Advance("events", 0, Mark{Offset: 9, LeaderEpoch: 7})
+	live.Advance("events", 1, Mark{Offset: 3})
+	live.Advance("other", 0, Mark{Offset: 1})
+
+	live.Reset(committed)
+
+	mark, ok := live.Get("events", 0)
+	assert.That(t, ok)
+	assert.Equal(t, Mark{Offset: 4, LeaderEpoch: 7}, mark)
+	_, ok = live.Get("events", 1)
+	assert.That(t, !ok)
+	_, ok = live.Get("other", 0)
+	assert.That(t, !ok)
+	assert.Equal(t, 1, live.Len())
+
+	// A copy, not an alias: advancing one leaves the other alone.
+	live.Advance("events", 0, Mark{Offset: 20})
+	mark, _ = committed.Get("events", 0)
+	assert.Equal(t, int64(4), mark.Offset)
+
+	live.Reset(NewMarks())
+	assert.That(t, live.Empty())
+}

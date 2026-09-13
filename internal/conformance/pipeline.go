@@ -7,9 +7,10 @@ package conformance
 // first proven by markers on hand-written tests. That was wrong twice over.
 //
 // The consume loop has two configurations that change what a commit means,
-// durable state or none, and four paths that reach processBatch: the batch
-// filled, the flush interval elapsed, the source closed, and a cancel that
-// drains. Eight combinations. Two were tested.
+// durable state or none, and five paths that reach processBatch: the batch
+// filled, the flush interval elapsed, the source closed, a cancel that drains
+// a partial batch, and a cancel that lands as a batch fills. Ten
+// combinations. Two were tested.
 //
 // So the subject is a configuration, the harness runs every trigger against
 // it, and each combination that goes unproven says so in the matrix instead
@@ -49,6 +50,11 @@ const (
 	// loop drains through a context stripped of cancellation, so this is the
 	// one path whose flush must run after the caller gave up.
 	TriggerDrain Trigger = "drain"
+	// TriggerBoundaryCancel is a cancel that lands as the batch reaches
+	// batchSize. The loop checks for it at the boundary rather than in its
+	// select, and that check once returned a clean stop without writing the
+	// batch whose positions it had already advanced.
+	TriggerBoundaryCancel Trigger = "boundary-cancel"
 )
 
 // Triggers is every path in the order the harness runs them.
@@ -57,6 +63,7 @@ var Triggers = []Trigger{
 	TriggerInterval,
 	TriggerSourceClosed,
 	TriggerDrain,
+	TriggerBoundaryCancel,
 }
 
 // PipelineSubject is one configuration of the consume loop.
@@ -145,6 +152,7 @@ const (
 	stateWithOffsets    = "pipeline.state.with_offsets"
 	drainOnCancel       = "lifecycle.drain.on_cancel"
 	flushEventually     = "pipeline.flush.eventually"
+	shutdownDelivered   = "pipeline.shutdown.commits_only_delivered"
 	onlyDeliveredRows   = "pipeline.commit.only_delivered_rows"
 )
 
@@ -163,6 +171,7 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 	withOffsets := verdict{invariant: stateWithOffsets}
 	drain := verdict{invariant: drainOnCancel}
 	eventually := verdict{invariant: flushEventually}
+	shutdown := verdict{invariant: shutdownDelivered}
 	delivered := verdict{invariant: onlyDeliveredRows}
 
 	if !s.readsBack() {
@@ -207,6 +216,20 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 		drain.failure = err.Error()
 	}
 
+	// The shutdown, not just the loop. run commits again after the loop
+	// returns, and every check above stops at the return.
+	for _, trigger := range Triggers {
+		if shutdown.failure != "" {
+			break
+		}
+		for _, f := range []faults{{}, {flush: true}} {
+			if err := checkShutdownCommitsOnlyDelivered(t, s, trigger, f); err != nil {
+				shutdown.failure = err.Error()
+				break
+			}
+		}
+	}
+
 	// The outcome, not the order. after_flush asserts the sequence the loop
 	// happens to use; this asserts the guarantee that sequence exists for, and
 	// it needs a destination to count.
@@ -229,7 +252,7 @@ func pipelineVerdicts(t *testing.T, s PipelineSubject) []verdict {
 	}
 
 	return []verdict{afterFlush, onFailure, withOffsets, drain, eventually,
-		delivered}
+		delivered, shutdown}
 }
 
 // checkCommitAfterFlush runs one trigger and holds the event order.
@@ -376,6 +399,65 @@ func checkDrain(t *testing.T, s PipelineSubject) error {
 	return nil
 }
 
+// checkShutdownCommitsOnlyDelivered runs one trigger, then the commits run
+// makes after the loop returns, and holds that no durable position covers a
+// message the sink did not acknowledge.
+//
+// Every other check stops when ConsumeLoop returns. run does not: it syncs
+// state before and after the table managers' final poll, and those syncs save
+// whatever positions the turbine holds. Positions advance when a message
+// reaches the handler, before its batch is flushed, so a batch the sink
+// refused left positions for rows it never took, and the shutdown made them
+// durable. Nothing inside the loop could see that.
+func checkShutdownCommitsOnlyDelivered(t *testing.T, s PipelineSubject, trigger Trigger, f faults) error {
+	t.Helper()
+	f.shutdown = true
+	run := runPipeline(t, s, trigger, f)
+
+	fault := "a clean run"
+	if f.flush {
+		fault = "a failed flush"
+	}
+	if run.stalled {
+		return fmt.Errorf("%s on %s: the run never reached the sink", trigger, fault)
+	}
+	if err := committedPastDelivery(run); err != nil {
+		return fmt.Errorf("%s on %s: %v", trigger, fault, err)
+	}
+	return nil
+}
+
+// committedPastDelivery reports a durable position, in the state database or
+// at the source, that covers a message the sink did not acknowledge.
+func committedPastDelivery(run outcome) error {
+	for _, c := range []struct {
+		what  string
+		marks map[position]int64
+	}{
+		{"the state database", run.durable},
+		{"the source", run.sourceCommitted},
+	} {
+		for pos, offset := range c.marks {
+			acked, ok := run.acknowledged[pos]
+			if !ok || offset > acked {
+				return fmt.Errorf(
+					"after the shutdown's commits %s holds offset %d for %s/%d, and "+
+						"the sink acknowledged %s. A restart resumes past rows nothing "+
+						"wrote",
+					c.what, offset, pos.topic, pos.partition, ackedText(acked, ok))
+			}
+		}
+	}
+	return nil
+}
+
+func ackedText(offset int64, ok bool) string {
+	if !ok {
+		return "nothing"
+	}
+	return fmt.Sprintf("up to offset %d", offset)
+}
+
 // checkOnlyDeliveredRows compares what the pipeline committed with what the
 // destination holds, on a clean run and on a broken one.
 //
@@ -492,6 +574,10 @@ func list(events []string) string {
 type faults struct {
 	flush   bool
 	offsets bool
+
+	// shutdown runs run's commits after the loop returns: a state sync before
+	// the managers' final poll and one after it.
+	shutdown bool
 }
 
 // outcome is what one run produced.
@@ -502,6 +588,13 @@ type outcome struct {
 	sourceCommits int
 	err           error
 
+	// Positions, per partition: the highest offset the sink acknowledged, the
+	// highest a state commit made durable, and the highest the source was
+	// told to commit.
+	acknowledged    map[position]int64
+	durable         map[position]int64
+	sourceCommitted map[position]int64
+
 	// stalled is set when the run had to be cancelled to end it. A liveness
 	// check must never wait on the thing it is testing: a pipeline that never
 	// flushes would otherwise hang the suite rather than fail one invariant.
@@ -511,6 +604,10 @@ type outcome struct {
 // drainRows is the number of messages the drain scenario buffers. Small, and
 // larger than one, so a drain that writes a partial batch is visible.
 const drainRows = 10
+
+// boundaryRows is both the batch size and the message count in the
+// boundary-cancel scenario, so the cancel lands exactly as the batch fills.
+const boundaryRows = 4
 
 // intervalRows is the partial batch the flush interval has to move. Fewer than
 // any batchSize the harness sets, so the batch can never fill.
@@ -527,6 +624,7 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	t.Helper()
 
 	rec := &Recorder{failOffsets: f.offsets}
+	handler := &passthroughHandler{rec: rec}
 	src := newRecordingSource(rec)
 	// Every scenario ends by signalling the source, including the ones that
 	// never call Close themselves: the blocking sender waits on that signal,
@@ -587,6 +685,12 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	case TriggerDrain:
 		src.batch = messages(drainRows)
 		batchSize, src.block = 1000, true
+	case TriggerBoundaryCancel:
+		// The stream stays open, so the only way out of the loop is the cancel
+		// the handler fires as it takes the batch's last message.
+		src.batch = messages(boundaryRows)
+		batchSize, src.block = boundaryRows, true
+		handler.cancelAt = boundaryRows
 	}
 
 	if trigger != TriggerInterval {
@@ -597,11 +701,12 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 	// sink.counted, not sink: the pipeline must drive the same wrapper a real
 	// deployment gets, or sink.rows.counted_on_delivery is asserted against a
 	// sink that counts nothing.
-	tb := core.NewTurbine(src, &passthroughHandler{}, sink.counted, batchSize, interval,
-		&sync.Mutex{}, core.PipelineErrorPolicies{}, s.Options(rec)...)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	handler.cancel = cancel
+
+	tb := core.NewTurbine(src, handler, sink.counted, batchSize, interval,
+		&sync.Mutex{}, core.PipelineErrorPolicies{}, s.Options(rec)...)
 
 	stalled := false
 	if flushed != nil {
@@ -630,13 +735,24 @@ func runPipeline(t *testing.T, s PipelineSubject, trigger Trigger, f faults) out
 
 	_, err := tb.ConsumeLoop(ctx, 0)
 
+	if f.shutdown {
+		// run's deferred sequence, on a context that is not cancelled: run's
+		// is not, and the DuckDB driver ignores the context on commit anyway.
+		_ = tb.SyncState(context.Background())
+		_ = tb.SyncState(context.Background())
+	}
+
+	acknowledged, durable, sourceCommitted := rec.positions()
 	return outcome{
-		events:        rec.Events(),
-		rows:          sink.Rows(),
-		flushes:       sink.Flushes(),
-		sourceCommits: src.Commits(),
-		err:           err,
-		stalled:       stalled,
+		events:          rec.Events(),
+		rows:            sink.Rows(),
+		flushes:         sink.Flushes(),
+		sourceCommits:   src.Commits(),
+		err:             err,
+		stalled:         stalled,
+		acknowledged:    acknowledged,
+		durable:         durable,
+		sourceCommitted: sourceCommitted,
 	}
 }
 
@@ -664,6 +780,111 @@ type Recorder struct {
 	// interval scenario uses it to close the source the moment the interval's
 	// flush lands, so the run ends without a sleep and without a second tick.
 	onEvent func(event string)
+
+	// Positions, so a check can compare what became durable with what the
+	// sink took. written holds messages the handler received since the last
+	// successful flush; a successful flush acknowledges them. staged is what
+	// the open state transaction saved; a commit makes it durable and a
+	// rollback discards it.
+	written         []written
+	acknowledged    map[position]int64
+	staged          map[position]int64
+	durable         map[position]int64
+	sourceCommitted map[position]int64
+}
+
+// position is one topic and partition.
+type position struct {
+	topic     string
+	partition int32
+}
+
+// written is one message the handler received.
+type written struct {
+	pos    position
+	offset int64
+}
+
+func raise(m map[position]int64, pos position, offset int64) map[position]int64 {
+	if m == nil {
+		m = map[position]int64{}
+	}
+	if cur, ok := m[pos]; !ok || offset > cur {
+		m[pos] = offset
+	}
+	return m
+}
+
+func marksOf(marks *core.Marks) map[position]int64 {
+	out := map[position]int64{}
+	marks.Each(func(topic string, partition int32, mark core.Mark) {
+		out[position{topic, partition}] = mark.Offset
+	})
+	return out
+}
+
+// wrote records a message reaching the handler.
+func (r *Recorder) wrote(m core.Message) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.written = append(r.written, written{position{m.Topic, m.Partition}, m.Offset})
+}
+
+// delivered acknowledges every message written since the last delivery.
+func (r *Recorder) delivered() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, w := range r.written {
+		r.acknowledged = raise(r.acknowledged, w.pos, w.offset)
+	}
+	r.written = nil
+}
+
+func (r *Recorder) stage(marks *core.Marks) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.staged = marksOf(marks)
+}
+
+func (r *Recorder) commitStaged() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for pos, offset := range r.staged {
+		// The offsets table upserts, so a commit overwrites, even downwards.
+		if r.durable == nil {
+			r.durable = map[position]int64{}
+		}
+		r.durable[pos] = offset
+	}
+	r.staged = nil
+}
+
+func (r *Recorder) discardStaged() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.staged = nil
+}
+
+func (r *Recorder) committedToSource(marks *core.Marks) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for pos, offset := range marksOf(marks) {
+		r.sourceCommitted = raise(r.sourceCommitted, pos, offset)
+	}
+}
+
+// positions returns copies of the three position maps.
+func (r *Recorder) positions() (acknowledged, durable, sourceCommitted map[position]int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := func(m map[position]int64) map[position]int64 {
+		out := make(map[position]int64, len(m))
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	}
+	return cp(r.acknowledged), cp(r.durable), cp(r.sourceCommitted)
 }
 
 func (r *Recorder) record(event string) {
@@ -698,6 +919,7 @@ func (o *RecordingOffsets) Save(ctx context.Context, marks *core.Marks) error {
 		o.rec.record("save-offsets-failed")
 		return errors.New("conformance: offset store is down")
 	}
+	o.rec.stage(marks)
 	o.rec.record("save-offsets")
 	return nil
 }
@@ -706,11 +928,13 @@ func (o *RecordingOffsets) Save(ctx context.Context, marks *core.Marks) error {
 type RecordingTx struct{ rec *Recorder }
 
 func (x *RecordingTx) Commit(ctx context.Context) error {
+	x.rec.commitStaged()
 	x.rec.record("commit")
 	return nil
 }
 
 func (x *RecordingTx) Rollback(ctx context.Context) error {
+	x.rec.discardStaged()
 	x.rec.record("rollback")
 	return nil
 }
@@ -799,6 +1023,7 @@ func (s *recordingSource) CommitMarks(marks *core.Marks) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.commits++
+	s.rec.committedToSource(marks)
 	return nil
 }
 
@@ -878,6 +1103,7 @@ func (s *recordingSink) Flush(ctx context.Context) error {
 			return err
 		}
 	}
+	s.rec.delivered()
 	s.rec.record("flush")
 	return nil
 }
@@ -901,6 +1127,18 @@ type passthroughHandler struct {
 	mu       sync.Mutex
 	rows     int
 	rowsRead int64
+
+	// rec learns every message's position, so a check can tell which ones the
+	// sink acknowledged. A handler that takes metadata gets it: the loop hands
+	// WriteMessage the whole message.
+	rec *Recorder
+
+	// cancelAt, when set, cancels the run as the handler takes that many
+	// messages, which is how the boundary-cancel scenario lands its cancel
+	// exactly as the batch fills.
+	cancelAt int
+	seen     int
+	cancel   context.CancelFunc
 }
 
 func (h *passthroughHandler) Init(context.Context) error { return nil }
@@ -909,6 +1147,23 @@ func (h *passthroughHandler) Write([]byte) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.rows++
+	return nil
+}
+
+func (h *passthroughHandler) WriteMessage(m core.Message) error {
+	if h.rec != nil {
+		h.rec.wrote(m)
+	}
+	if err := h.Write(m.Value); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	h.seen++
+	fire := h.cancelAt > 0 && h.seen == h.cancelAt && h.cancel != nil
+	h.mu.Unlock()
+	if fire {
+		h.cancel()
+	}
 	return nil
 }
 
