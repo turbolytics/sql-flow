@@ -262,3 +262,19 @@ func TestErrorTaxonomy_EncodeFailedIsAUserErrorThatExitsTerminal(t *testing.T) {
 	assert.True(t, ok)
 	assert.True(t, strings.Contains(def.Action, "handler SQL"))
 }
+
+// A drain that ran out of time is its own exit code. It is retryable, because
+// nothing unwritten was committed and the next start replays it; the code
+// exists so an operator can see the tail was replayed rather than written.
+func TestLifecycleExitCodes_DrainIncompleteExitsFifteen(t *testing.T) {
+	coverage.Covers(t, "lifecycle.exit_codes")
+	err := New(CodeDrainIncomplete, "drain deadline 1s reached")
+
+	assert.Equal(t, ExitDrainIncomplete, ExitCode(err))
+	assert.Equal(t, 15, ExitDrainIncomplete)
+	assert.That(t, Retryable(ExitDrainIncomplete))
+
+	def, ok := Lookup(CodeDrainIncomplete)
+	assert.That(t, ok)
+	assert.That(t, strings.Contains(def.Action, "drain_deadline_seconds"))
+}
