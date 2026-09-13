@@ -255,6 +255,8 @@ YAML position:
   `user.config.serve_reserved`: "rate_limit is not enforced in this version".
 - `max_rows` and `timeout_seconds` are not negative. Zero means the default.
   A dataset value overrides the global one.
+- Every `allowed_origins` entry is lowercase. Browsers send origins lowercase,
+  and the comparison is exact, so `https://Example.com` would never match.
 
 DuckDB accepts SQL keywords as parameter names. `$from` prepares through
 ADBC. The CLI's `EXECUTE q(from := …)` call syntax is what rejects it, so no
@@ -277,9 +279,10 @@ All routes are `GET`. Any other method is `405`.
 
 ### Auth
 
-`Authorization: Bearer <token>`. The token is compared in constant time
-against every configured token. A missing header, a malformed header, or an
-unknown token is `401` with `unauthorized`. The matched token's `name` goes
+`Authorization: Bearer <token>`. The scheme is case-insensitive. The token is
+compared in constant time against every configured token. A missing header, a
+malformed header, or an unknown token is `401` with `unauthorized` and
+`WWW-Authenticate: Bearer`. The matched token's `name` goes
 in the request log; the token value never does. Tokens are not accepted in
 the query string.
 
@@ -403,9 +406,10 @@ One shape:
 
 ### Headers
 
-Every response carries `Content-Type: application/json`. Every data response
-carries `Cache-Control: no-store`, so nothing between the caller and the
-server holds an answer while caching is deferred.
+Every response carries `Content-Type: application/json` and
+`Cache-Control: no-store`, so nothing between the caller and the server holds
+an answer while caching is deferred. A `503` from `/healthz` is
+`{"status":"unavailable"}`.
 
 CORS, when `cors` is configured: every response carries `Vary: Origin`. An
 `OPTIONS` request gets `204`, and from an allowed origin it also carries
@@ -419,9 +423,11 @@ Without a `cors` block, no CORS header is ever sent and `OPTIONS` is `405`.
 
 ### Logging
 
-One line per request at `INFO`: `token`, `dataset`, `grain`, `status`,
-`code` when non-empty, `rows`, `elapsed_ms`, `remote`. A `500` also logs the
-DuckDB error at `ERROR`.
+One line per request at `INFO`: `path`, `token`, `dataset`, `grain`,
+`status`, `code` when non-empty, `rows`, `elapsed_ms`, `remote`. `path` names
+a `404` that matched no dataset. A `500` also logs the DuckDB error at
+`ERROR`. A caller that hangs up before the answer logs status `499` with code
+`client_closed`, and nothing is written.
 
 ## The server
 
@@ -577,9 +583,10 @@ test creates. No Postgres. Every test attaches to the coverage feature
   grains.
 - Truncation at `max_rows`, dataset override beats global, and the next
   request on the same dataset still answers.
-- Timeout: a query over `range(200000000)` runs past a 100 ms deadline and
-  returns `504`. A request made right after also waits, and the lock frees
-  once the query completes.
+- Timeout: a 100M-row cross join runs past a 100 ms deadline and returns
+  `504`. A request made right after also waits, and the lock frees once the
+  query completes. `range(200000000)` alone took 320 ms on a 10-core laptop,
+  close enough to race the deadline on a larger runner.
 - Response shape: every field, `grain` omitted without grains, and each value
   rule above, including `HUGEINT`, a naive timestamp, a timestamp under a
   non-UTC session, and `NaN`.
