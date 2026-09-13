@@ -1,0 +1,459 @@
+package serve
+
+import (
+	"context"
+	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
+	"github.com/zeebo/assert"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+)
+
+const testServe = `
+serve:
+  http:
+    cors:
+      allowed_origins: [https://turbolytics.io]
+  auth:
+    tokens:
+      - {name: page, token: page-token}
+      - {name: ops, token: ops-token}
+  limits:
+    max_rows: 3
+  datasets:
+    - name: status
+      description: One row.
+      sql: SELECT count(*) AS n FROM posts
+    - name: every_post
+      sql: SELECT lang, posts FROM posts ORDER BY bucket, lang
+    - name: posts_by_lang
+      description: Posts per bucket per language.
+      params:
+        - {name: since, type: timestamp}
+        - {name: lang, type: string}
+        - {name: min_posts, type: integer}
+      limits:
+        max_rows: 100
+      grains:
+        1h:
+          sql: |
+            SELECT bucket, lang, posts FROM posts
+            WHERE bucket >= coalesce($since, TIMESTAMPTZ '2000-01-01 00:00:00+00')
+              AND lang = coalesce($lang, lang)
+              AND posts >= coalesce($min_posts, 0)
+            ORDER BY bucket, lang
+        1d:
+          sql: |
+            SELECT date_trunc('day', bucket) AS bucket, lang, sum(posts)::BIGINT AS posts FROM posts
+            WHERE bucket >= coalesce($since, TIMESTAMPTZ '2000-01-01 00:00:00+00')
+              AND lang = coalesce($lang, lang)
+              AND posts >= coalesce($min_posts, 0)
+            GROUP BY ALL
+            ORDER BY bucket, lang
+    - name: cast
+      params:
+        - {name: v, type: string}
+      sql: SELECT CAST($v AS INTEGER) AS n
+    - name: slow
+      sql: ` + slowSQL + `
+`
+
+type testServer struct {
+	srv     *Server
+	handler http.Handler
+	logs    *observer.ObservedLogs
+}
+
+func newTestServer(t *testing.T, text string) *testServer {
+	t.Helper()
+	conn := newConn(t)
+	execSQL(t, conn, "SET TimeZone='UTC'")
+	execSQL(t, conn, `CREATE TABLE posts AS SELECT * FROM (VALUES
+		(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'en', 10::BIGINT),
+		(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'ja', 4::BIGINT),
+		(TIMESTAMPTZ '2026-09-10 01:00:00+00', 'en', 7::BIGINT),
+		(TIMESTAMPTZ '2026-09-11 00:00:00+00', 'en', 1::BIGINT)
+	) AS t(bucket, lang, posts)`)
+
+	conf, err := config.ParseServe([]byte(text))
+	assert.NoError(t, err)
+
+	core, logs := observer.New(zap.InfoLevel)
+	srv, err := New(context.Background(), conf, conn, WithLogger(zap.New(core)))
+	assert.NoError(t, err)
+	// Registered after newConn's cleanup, so it runs first: a slow query
+	// still holding the lock finishes before the connection closes.
+	t.Cleanup(srv.Close)
+
+	return &testServer{srv: srv, handler: srv.Handler(), logs: logs}
+}
+
+type response struct {
+	status int
+	header http.Header
+	body   map[string]any
+	raw    string
+}
+
+func (ts *testServer) do(t *testing.T, method, target string, header map[string]string) response {
+	t.Helper()
+	req := httptest.NewRequest(method, target, nil)
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	ts.handler.ServeHTTP(w, req)
+
+	resp := response{status: w.Code, header: w.Header(), raw: w.Body.String()}
+	if w.Body.Len() > 0 {
+		assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp.body))
+	}
+	return resp
+}
+
+var pageToken = map[string]string{"Authorization": "Bearer page-token"}
+
+func (ts *testServer) get(t *testing.T, target string) response {
+	t.Helper()
+	return ts.do(t, http.MethodGet, target, pageToken)
+}
+
+func errorOf(t *testing.T, r response) (string, string) {
+	t.Helper()
+	e, ok := r.body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("no error object in %s", r.raw)
+	}
+	return e["code"].(string), e["message"].(string)
+}
+
+func TestCliServe_HealthzNeedsNoToken(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	r := ts.do(t, http.MethodGet, "/healthz", nil)
+	assert.Equal(t, http.StatusOK, r.status)
+	assert.Equal(t, "ok", r.body["status"])
+	assert.Equal(t, "application/json", r.header.Get("Content-Type"))
+}
+
+// A missing header, another scheme, an empty token and an unknown token are
+// all 401. The scheme is case-insensitive, as RFC 7235 says.
+func TestCliServe_AuthRequiresAConfiguredBearerToken(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	for name, header := range map[string]map[string]string{
+		"no header":     nil,
+		"basic scheme":  {"Authorization": "Basic page-token"},
+		"empty token":   {"Authorization": "Bearer "},
+		"unknown token": {"Authorization": "Bearer nope"},
+		"prefix only":   {"Authorization": "Bearer page"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := ts.do(t, http.MethodGet, "/v1/datasets/status", header)
+			assert.Equal(t, http.StatusUnauthorized, r.status)
+			code, _ := errorOf(t, r)
+			assert.Equal(t, "unauthorized", code)
+			assert.Equal(t, "Bearer", r.header.Get("WWW-Authenticate"))
+		})
+	}
+
+	r := ts.do(t, http.MethodGet, "/v1/datasets/status", map[string]string{"Authorization": "bearer ops-token"})
+	assert.Equal(t, http.StatusOK, r.status)
+}
+
+// Every field of a data response, against rows the test inserted.
+func TestCliServe_DatasetResponseCarriesEveryField(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	r := ts.get(t, "/v1/datasets/posts_by_lang?grain=1d&lang=en")
+	assert.Equal(t, http.StatusOK, r.status)
+	assert.Equal(t, "application/json", r.header.Get("Content-Type"))
+	assert.Equal(t, "no-store", r.header.Get("Cache-Control"))
+
+	assert.Equal(t, "posts_by_lang", r.body["dataset"])
+	assert.Equal(t, "1d", r.body["grain"])
+	assert.DeepEqual(t, []any{
+		map[string]any{"name": "bucket", "type": "TIMESTAMP WITH TIME ZONE"},
+		map[string]any{"name": "lang", "type": "VARCHAR"},
+		map[string]any{"name": "posts", "type": "BIGINT"},
+	}, r.body["columns"])
+	assert.DeepEqual(t, []any{
+		map[string]any{"bucket": "2026-09-10T00:00:00Z", "lang": "en", "posts": float64(17)},
+		map[string]any{"bucket": "2026-09-11T00:00:00Z", "lang": "en", "posts": float64(1)},
+	}, r.body["rows"])
+	assert.Equal(t, float64(2), r.body["row_count"])
+	assert.Equal(t, false, r.body["truncated"])
+	_, hasElapsed := r.body["elapsed_ms"]
+	assert.That(t, hasElapsed)
+
+	plain := ts.get(t, "/v1/datasets/status")
+	assert.Equal(t, http.StatusOK, plain.status)
+	_, hasGrain := plain.body["grain"]
+	assert.False(t, hasGrain)
+	assert.DeepEqual(t, []any{map[string]any{"n": float64(4)}}, plain.body["rows"])
+}
+
+// Each param type filters, and an absent param leaves its coalesce default.
+func TestCliServe_ParamsBindByDeclaredType(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	count := func(target string) float64 {
+		t.Helper()
+		r := ts.get(t, target)
+		assert.Equal(t, http.StatusOK, r.status)
+		return r.body["row_count"].(float64)
+	}
+
+	assert.Equal(t, float64(4), count("/v1/datasets/posts_by_lang?grain=1h"))
+	assert.Equal(t, float64(3), count("/v1/datasets/posts_by_lang?grain=1h&lang=en"))
+	assert.Equal(t, float64(2), count("/v1/datasets/posts_by_lang?grain=1h&min_posts=5"))
+	assert.Equal(t, float64(1), count("/v1/datasets/posts_by_lang?grain=1h&since=2026-09-10T20:00:00-04:00"))
+	assert.Equal(t, float64(1), count("/v1/datasets/posts_by_lang?grain=1h&since=2026-09-11T00:00:00%2B00:00"))
+}
+
+// Every error code the contract lists, with a message that names the thing.
+func TestCliServe_ErrorsCarryTheirCodeAndNameTheCause(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	for _, tt := range []struct {
+		name, method, target string
+		status               int
+		code, message        string
+	}{
+		{"unknown dataset", "GET", "/v1/datasets/nope", 404, "unknown_dataset", "nope"},
+		{"not a route", "GET", "/v2/anything", 404, "not_found", "/v2/anything"},
+		{"a nested path", "GET", "/v1/datasets/status/extra", 404, "not_found", "/v1/datasets/status/extra"},
+		{"not GET", "POST", "/v1/datasets/status", 405, "method_not_allowed", "POST"},
+		{"unknown param", "GET", "/v1/datasets/posts_by_lang?grain=1h&language=en", 400, "unknown_param", "language; params: since, lang, min_posts"},
+		{"param on a dataset with none", "GET", "/v1/datasets/status?lang=en", 400, "unknown_param", "lang"},
+		{"bad integer", "GET", "/v1/datasets/posts_by_lang?grain=1h&min_posts=five", 400, "invalid_param", "min_posts is a base-10 integer"},
+		{"timestamp without offset", "GET", "/v1/datasets/posts_by_lang?grain=1h&since=2026-09-10T00:00:00", 400, "invalid_param", "since is an RFC 3339 timestamp"},
+		{"repeated param", "GET", "/v1/datasets/posts_by_lang?grain=1h&lang=en&lang=ja", 400, "invalid_param", "lang is given 2 times"},
+		{"missing grain", "GET", "/v1/datasets/posts_by_lang", 400, "missing_grain", "grains: 1d, 1h"},
+		{"unknown grain", "GET", "/v1/datasets/posts_by_lang?grain=15m", 400, "unknown_grain", "no grain 15m; grains: 1d, 1h"},
+		{"grain on a dataset without grains", "GET", "/v1/datasets/status?grain=1h", 400, "unknown_grain", "status has no grains"},
+		{"query failed", "GET", "/v1/datasets/cast?v=abc", 500, "query_failed", "abc"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := ts.do(t, tt.method, tt.target, pageToken)
+			assert.Equal(t, tt.status, r.status)
+			code, message := errorOf(t, r)
+			assert.Equal(t, tt.code, code)
+			if !strings.Contains(message, tt.message) {
+				t.Fatalf("message %q does not contain %q", message, tt.message)
+			}
+		})
+	}
+}
+
+// max_rows cuts the result and says so with a 200. A dataset's own limit
+// beats the top level's, and the next request still answers.
+func TestCliServe_MaxRowsTruncatesAndTheNextRequestAnswers(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	cut := ts.get(t, "/v1/datasets/every_post")
+	assert.Equal(t, http.StatusOK, cut.status)
+	assert.Equal(t, float64(3), cut.body["row_count"])
+	assert.Equal(t, true, cut.body["truncated"])
+
+	override := ts.get(t, "/v1/datasets/posts_by_lang?grain=1h")
+	assert.Equal(t, float64(4), override.body["row_count"])
+	assert.Equal(t, false, override.body["truncated"])
+
+	again := ts.get(t, "/v1/datasets/every_post")
+	assert.Equal(t, http.StatusOK, again.status)
+	assert.Equal(t, float64(3), again.body["row_count"])
+}
+
+// A query past its deadline is a 504, and the health check, waiting on the
+// same lock, goes red until the query finishes.
+func TestCliServe_ASlowQueryIsA504AndTurnsHealthRed(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+	ts.srv.datasets["slow"].timeout = 100 * time.Millisecond
+	ts.srv.healthTimeout = 100 * time.Millisecond
+
+	r := ts.get(t, "/v1/datasets/slow")
+	assert.Equal(t, http.StatusGatewayTimeout, r.status)
+	code, message := errorOf(t, r)
+	assert.Equal(t, "query_timeout", code)
+	assert.That(t, strings.Contains(message, "dataset slow"))
+
+	health := ts.do(t, http.MethodGet, "/healthz", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, health.status)
+}
+
+func TestCliServe_CORSAnswersAllowedOriginsOnly(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	preflight := ts.do(t, http.MethodOptions, "/v1/datasets/status", map[string]string{
+		"Origin":                        "https://turbolytics.io",
+		"Access-Control-Request-Method": "GET",
+	})
+	assert.Equal(t, http.StatusNoContent, preflight.status)
+	assert.Equal(t, "https://turbolytics.io", preflight.header.Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "GET", preflight.header.Get("Access-Control-Allow-Methods"))
+	assert.Equal(t, "Authorization", preflight.header.Get("Access-Control-Allow-Headers"))
+	assert.Equal(t, "600", preflight.header.Get("Access-Control-Max-Age"))
+	assert.Equal(t, "Origin", preflight.header.Get("Vary"))
+
+	stranger := ts.do(t, http.MethodOptions, "/v1/datasets/status", map[string]string{
+		"Origin": "https://evil.example",
+	})
+	assert.Equal(t, http.StatusNoContent, stranger.status)
+	assert.Equal(t, "", stranger.header.Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "", stranger.header.Get("Access-Control-Allow-Methods"))
+
+	get := ts.do(t, http.MethodGet, "/v1/datasets/status", map[string]string{
+		"Origin":        "https://turbolytics.io",
+		"Authorization": "Bearer page-token",
+	})
+	assert.Equal(t, http.StatusOK, get.status)
+	assert.Equal(t, "https://turbolytics.io", get.header.Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "", get.header.Get("Access-Control-Allow-Credentials"))
+
+	noCORS := newTestServer(t, strings.Replace(testServe,
+		"  http:\n    cors:\n      allowed_origins: [https://turbolytics.io]\n", "", 1))
+	options := noCORS.do(t, http.MethodOptions, "/v1/datasets/status", map[string]string{
+		"Origin": "https://turbolytics.io",
+	})
+	assert.Equal(t, http.StatusMethodNotAllowed, options.status)
+	assert.Equal(t, "", options.header.Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "", options.header.Get("Vary"))
+}
+
+// The listing shows the SQL as the config wrote it. $since is what the author
+// wrote; $1 is the server's business.
+func TestCliServe_ListingReturnsTheSQLAsWritten(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	r := ts.get(t, "/v1/datasets")
+	assert.Equal(t, http.StatusOK, r.status)
+	assert.That(t, strings.Contains(r.raw, "$since"))
+	assert.False(t, strings.Contains(r.raw, "$1"))
+
+	datasets := r.body["datasets"].([]any)
+	assert.Equal(t, 5, len(datasets))
+
+	status := datasets[0].(map[string]any)
+	assert.Equal(t, "status", status["name"])
+	assert.Equal(t, "One row.", status["description"])
+	assert.DeepEqual(t, []any{}, status["params"])
+	assert.Equal(t, "SELECT count(*) AS n FROM posts", status["sql"])
+
+	posts := datasets[2].(map[string]any)
+	grains := posts["grains"].(map[string]any)
+	assert.Equal(t, 2, len(grains))
+	_, hasSQL := posts["sql"]
+	assert.False(t, hasSQL)
+	assert.DeepEqual(t, map[string]any{"name": "since", "type": "timestamp"}, posts["params"].([]any)[0])
+
+	unauthorized := ts.do(t, http.MethodGet, "/v1/datasets", nil)
+	assert.Equal(t, http.StatusUnauthorized, unauthorized.status)
+}
+
+// One line per request, naming the token's identity and never its value.
+func TestCliServe_LogsOneLinePerRequest(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	ts.get(t, "/v1/datasets/posts_by_lang?grain=1h&lang=en")
+	ts.do(t, http.MethodGet, "/v1/datasets/posts_by_lang?grain=15m", map[string]string{"Authorization": "Bearer ops-token"})
+
+	lines := ts.logs.FilterMessage("request").All()
+	assert.Equal(t, 2, len(lines))
+
+	ok := lines[0].ContextMap()
+	assert.Equal(t, "page", ok["token"])
+	assert.Equal(t, "posts_by_lang", ok["dataset"])
+	assert.Equal(t, "1h", ok["grain"])
+	assert.Equal(t, int64(200), ok["status"])
+	assert.Equal(t, int64(3), ok["rows"])
+	_, hasCode := ok["code"]
+	assert.False(t, hasCode)
+
+	bad := lines[1].ContextMap()
+	assert.Equal(t, "ops", bad["token"])
+	assert.Equal(t, int64(400), bad["status"])
+	assert.Equal(t, "unknown_grain", bad["code"])
+
+	for _, entry := range ts.logs.All() {
+		for _, v := range entry.ContextMap() {
+			if s, isString := v.(string); isString && strings.Contains(s, "-token") {
+				t.Fatalf("a log line carries a token value: %v", entry.ContextMap())
+			}
+		}
+	}
+}
+
+// Shutdown lets an in-flight request finish, then Serve returns.
+func TestCliServe_ServeDrainsAnInFlightRequest(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- ts.srv.Serve(ctx, ln) }()
+
+	status := make(chan int, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/v1/datasets/slow", nil)
+		req.Header.Set("Authorization", "Bearer page-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			status <- 0
+			return
+		}
+		resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	assert.Equal(t, http.StatusOK, <-status)
+	select {
+	case err := <-served:
+		assert.NoError(t, err)
+	case <-time.After(shutdownTimeout + time.Second):
+		t.Fatal("Serve did not return after its context ended")
+	}
+}
+
+// A config that breaks a rule, or a statement that does not prepare, stops
+// New. Neither is found on the first request.
+func TestCliServe_NewRefusesWhatCannotAnswer(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	conn := newConn(t)
+
+	emptyToken, err := config.ParseServe([]byte(strings.Replace(testServe, "token: page-token", `token: ""`, 1)))
+	assert.NoError(t, err)
+	_, err = New(context.Background(), emptyToken, conn)
+	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
+
+	noTable, err := config.ParseServe([]byte(testServe))
+	assert.NoError(t, err)
+	_, err = New(context.Background(), noTable, conn)
+	assert.Equal(t, errs.CodeSQLInvalid, errs.CodeOf(err))
+	assert.That(t, strings.Contains(err.Error(), "dataset status"))
+}
