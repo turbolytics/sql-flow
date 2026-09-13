@@ -5,13 +5,16 @@ tables:
     # Create the table to store the count of each post kind in 5 minute buckets
     # This table is available for reference within the pipeline.
     - name: agg_post_kind_count_1_minute
+      # No UNIQUE INDEX, on purpose. DuckDB never frees rows deleted from an
+      # indexed table, and the manager deletes every closed window, so an index
+      # grows memory without bound. Each batch appends its own counts and the
+      # collect query sums them. See #268.
       sql: |
         CREATE TABLE agg_post_kind_count_1_minute (
           bucket TIMESTAMPTZ,
           kind VARCHAR,
-          count INT 
+          count INT
         );
-        CREATE UNIQUE INDEX five_minute_post_kind_count_idx ON agg_post_kind_count_1_minute (bucket, kind);
 
       manager:
         # The tumbling window manager will identify records with "closed" windows i.e. windows < now - duration_seconds
@@ -38,13 +41,14 @@ tables:
           # the comparison holds whatever timezone the host runs in.
         tumbling_window:
           collect_closed_windows_sql: |
-            SELECT 
+            SELECT
               strftime(bucket, '%Y-%m-%dT%H:%M:%S') AS iso_string,
               kind,
-              count
+              sum(count)::INT AS count
             FROM agg_post_kind_count_1_minute
             WHERE bucket < (SELECT max(bucket) FROM agg_post_kind_count_1_minute) - INTERVAL '60' SECOND
                OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '60' SECOND
+            GROUP BY ALL
 
           delete_closed_windows_sql: |
             DELETE FROM agg_post_kind_count_1_minute
@@ -73,10 +77,8 @@ pipeline:
         kind,
         count(*) as count
       FROM batch
-      GROUP BY 
-        bucket, kind 
-      ON CONFLICT (bucket, kind)
-      DO UPDATE SET count = count + EXCLUDED.count
+      GROUP BY
+        bucket, kind
 
   sink:
     type: noop
