@@ -549,7 +549,7 @@ def test_sink_clickhouse_inserts_rows(image, stack, request):
         "SELECT count(DISTINCT action) FROM test.user_actions") == str(len(actions))
 
 
-@pytest.mark.covers("state.offsets", "manager.tumbling_window", "source.kafka")
+@pytest.mark.covers("state.offsets", "manager.window", "source.kafka")
 @pytest.mark.covers("state.durability")
 def test_state_durability_survives_a_restart(image, stack):
     """A crash mid-window must not lose the aggregate.

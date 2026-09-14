@@ -793,7 +793,7 @@ survive the process.
 
 1. Stop consuming.
 2. Write the batch it had buffered.
-3. Run each table manager's final poll.
+3. Run each window's final poll.
 4. Commit state and offsets.
 5. Exit 0.
 
@@ -807,10 +807,10 @@ supervisor escalates to `SIGKILL`.
 
 ## Tumbling windows
 
-A table declared under `tables.sql` can carry a `manager`, which polls the table
-on an interval, publishes the closed windows to its own sink, and then deletes
-them. The handler SQL appends each batch's counts to the window table, and the
-collect query sums them per window:
+A table declared under `tables.sql` can carry a `window`. The handler appends
+each batch's counts to the table, keyed by a bucket start, and the engine does
+the rest: it keeps a watermark, publishes every bucket the watermark has passed
+to the window's sink, and deletes it.
 
 ```yaml
 tables:
@@ -820,17 +820,17 @@ tables:
         CREATE TABLE agg_cities_count (
           bucket TIMESTAMPTZ, city VARCHAR, count INT
         );
-      manager:
-        tumbling_window:
-          poll_interval_seconds: 10      # optional, default 10
-          collect_closed_windows_sql: |
-            SELECT bucket, city, sum(count)::INT AS count
-            FROM agg_cities_count
-            WHERE bucket < (now()::timestamptz - INTERVAL '60' SECOND)
-            GROUP BY ALL
-          delete_closed_windows_sql: |
-            DELETE FROM agg_cities_count
-            WHERE bucket < (now()::timestamptz - INTERVAL '60' SECOND)
+      window:
+        time_column: bucket
+        size_seconds: 3600
+        grace_seconds: 0
+        idle_close_seconds: 60
+        late_rows: drop              # or reemit; required
+        poll_interval_seconds: 10    # optional
+        emit_sql: |                  # optional; default SELECT * FROM closed
+          SELECT bucket, city, sum(count)::INT AS count
+          FROM closed
+          GROUP BY ALL
         sink:
           type: kafka
           kafka:
@@ -850,46 +850,66 @@ pipeline:
       GROUP BY bucket, city
 ```
 
+**The watermark.** One instant per window, in event time, persisted in
+`sqlflow_windows`, never moving backwards. A bucket is closed when its end,
+`time_column + size_seconds`, is at or before the watermark. While data
+arrives the watermark is the newest bucket start the table holds, less
+`grace_seconds`: a bucket closes once the stream has moved past it, so a
+replay and a live run produce the same rows. The newest bucket start is what
+the table holds, so a grace shorter than one bucket rounds up to one. After
+`idle_close_seconds` with nothing arriving, the watermark moves past the newest
+bucket and every open bucket closes. Wall clock appears nowhere in the close.
+
+**Late rows.** A row for a bucket below the watermark arrived after that
+bucket was published. `late_rows` is required, because the two policies are
+different promises to the sink. `drop` deletes the row and counts it in
+`window_late_rows_total`, so a sink that appends sees each bucket once.
+`reemit` publishes the bucket again: a sink that upserts on the bucket's key
+replaces the value, and a sink that appends holds both rows, so its reader
+has to treat the later one as a correction. `sqlflow validate` warns when
+`reemit` is paired with the Iceberg or Kafka sink. A rising drop count means
+the grace is too short for the stream.
+
+The watermark is one value for the whole table, which makes it the fastest
+partition's clock. A topic whose partitions run at uneven rates has a slow
+partition whose rows arrive late, and the grace is the allowance for them.
+Size it from `window_late_rows_total`.
+
+**emit_sql** shapes the rows before the sink. It reads one relation, `closed`,
+holding every row of every bucket that just closed. Cast a `sum` back to the
+column's type, because DuckDB widens integers to `HUGEINT`, and use
+`GROUP BY ALL`, which groups by the output columns.
+
 **Do not put a `UNIQUE INDEX` or `PRIMARY KEY` on a window table.** DuckDB
-never frees rows deleted from an indexed table. The manager deletes every
-window it publishes, so an index grows memory without bound, with or without a
-state path. A Bluesky pipeline built on an indexed window table and an
-`ON CONFLICT` upsert grew from 100 MB to 450 MB in a day. See
-[#268](https://github.com/turbolytics/sql-flow/issues/268).
+never frees rows deleted from an indexed table. The engine deletes every
+bucket it publishes, so an index grows memory without bound, with or without a
+state path. See [#268](https://github.com/turbolytics/sql-flow/issues/268). A
+keyed table with no window, such as a running total, can keep its index.
 
-Three details keep the append-and-sum pattern correct:
+**Guarantees.** The window runs on a connection of its own and reads committed
+rows only, so a batch that rolls back was never published. Collect, write and
+flush happen before the delete, and the delete and the watermark commit
+together, so a sink failure leaves the bucket in the table and stops the
+process rather than dropping the bucket. A crash between the flush and that
+commit republishes the bucket on the next start, so give a window sink a key
+it can deduplicate on. One final poll runs on shutdown, inside the drain
+deadline. With a state path the watermark survives a restart; without one the
+window table and its watermark are lost together.
 
-- Cast the sum back to the column's type. DuckDB's `sum` widens integers to
-  `HUGEINT`, which changes the type the sink receives.
-- Use `GROUP BY ALL`. It groups by the output columns. `GROUP BY bucket` groups
-  by the table's column instead, and splits a window whose output column
-  reformats `bucket`.
-- A keyed table the manager never deletes from, such as a running total, can
-  keep its index. The leak needs the delete.
+`sqlflow validate` checks the declaration: the time column must be declared
+`TIMESTAMPTZ` in the table's `CREATE`, `emit_sql` must read `closed`, and the
+old `manager` block is refused with the keys that replace it. That block and
+its two predicates are gone, and a file that carries them does not run; the
+declaration cannot be derived from two arbitrary predicates, so the change
+is a major version with the migration in the changelog.
 
-Collect, write and flush happen before the delete, so a sink failure retries
-rather than dropping a window. A retry re-sends rows the sink already received,
-so give a window sink a key it can deduplicate on. One final poll runs on
-shutdown, against a current clock and with its delete committed, so a window
-that closes during shutdown is published once and not republished on the next
-start.
-
-Windows close on wall-clock time, as written in your
-`collect_closed_windows_sql`. There is no event-time watermarking and no
-late-arrival policy: a message that arrives after its window closed lands in
-whichever window its own SQL puts it in.
-
-State in a managed table is lost on a crash unless the pipeline sets
-[`state.path`](#durable-state).
-
-`tumbling_window` is currently the only manager type. See
-[`tumbling.window.yml`](dev/config/examples/tumbling.window.yml) and
+See [`tumbling.window.yml`](dev/config/examples/tumbling.window.yml) and
 [`kafka.stateful.window.yml`](dev/config/examples/kafka.stateful.window.yml).
 
 ## Metrics
 
-`--metrics prometheus` serves `/metrics` on `:8000`. Nineteen instruments are
-exported, all under the meter name `sqlflow` except the two webhook ones.
+`--metrics prometheus` serves `/metrics` on `:8000`. Twenty-two instruments
+are exported, all under the meter name `sqlflow` except the two webhook ones.
 
 The instrument name and the Prometheus series name differ: the exporter appends
 the unit, then `_total` for counters, and skips the unit when the name already
@@ -958,6 +978,17 @@ joins, with or without a state path:
 | Instrument | Series | Type | Attrs |
 |---|---|---|---|
 | `reference_table_rows` | `reference_table_rows` | gauge | `table` |
+
+**Windows**, one set per declared window:
+
+| Instrument | Series | Type | Attrs |
+|---|---|---|---|
+| `window_watermark_seconds` | `window_watermark_seconds` | gauge | `window` |
+| `window_closed` | `window_closed_total` | counter | `window` |
+| `window_late_rows` | `window_late_rows_total` | counter | `window`, `policy` |
+
+Wall time minus `window_watermark_seconds` is how far the stream's clock
+trails, which is the number to size `grace_seconds` from.
 
 **Durable state**, present only when the pipeline declares a state path. An
 absent series and an empty state are different facts, so a pipeline with state

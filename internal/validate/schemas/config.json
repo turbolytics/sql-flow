@@ -707,27 +707,43 @@
               "sql": {
                 "type": "string"
               },
-              "manager": {
+              "window": {
                 "properties": {
-                  "tumbling_window": {
-                    "properties": {
-                      "collect_closed_windows_sql": {
-                        "type": "string"
-                      },
-                      "delete_closed_windows_sql": {
-                        "type": "string"
-                      },
-                      "poll_interval_seconds": {
-                        "type": "integer",
-                        "description": "How often to collect closed windows. Optional; the manager applies its\nown default when this is absent or not positive."
-                      }
-                    },
-                    "additionalProperties": false,
-                    "type": "object",
-                    "required": [
-                      "collect_closed_windows_sql",
-                      "delete_closed_windows_sql"
-                    ]
+                  "time_column": {
+                    "type": "string",
+                    "description": "The column holding each row's bucket start. TIMESTAMPTZ."
+                  },
+                  "size_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The bucket length. A bucket ends at time_column + size."
+                  },
+                  "grace_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "How far past a bucket's end the stream's own clock must reach before\nthe bucket closes. Absent means 0."
+                  },
+                  "idle_close_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "How long the stream may be quiet before every open bucket closes.\nAbsent means never: a stream that stops leaves its last bucket open."
+                  },
+                  "late_rows": {
+                    "type": "string",
+                    "enum": [
+                      "drop",
+                      "reemit"
+                    ],
+                    "description": "What happens to a row for a bucket that already closed. drop discards\nit and counts it. reemit publishes the bucket again, for a sink that\nmerges on the bucket's key; a sink that appends holds both rows.\nRequired: the two are different promises to the sink."
+                  },
+                  "poll_interval_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How often the engine looks for closed buckets. Absent means 10."
+                  },
+                  "emit_sql": {
+                    "type": "string",
+                    "description": "Shapes the closed rows before the sink. It reads one relation, closed,\nwhich holds every row of every bucket that just closed. Absent means\nSELECT * FROM closed."
                   },
                   "sink": {
                     "properties": {
@@ -934,15 +950,19 @@
                     "type": "object",
                     "required": [
                       "type"
-                    ]
+                    ],
+                    "description": "Where closed windows go."
                   }
                 },
                 "additionalProperties": false,
                 "type": "object",
                 "required": [
-                  "tumbling_window",
+                  "time_column",
+                  "size_seconds",
+                  "late_rows",
                   "sink"
-                ]
+                ],
+                "description": "A tumbling window over this table, closed by the engine."
               }
             },
             "additionalProperties": false,

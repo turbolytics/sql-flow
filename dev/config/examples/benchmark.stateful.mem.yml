@@ -1,10 +1,13 @@
 # Measures what durable state costs.
 #
 # Identical to benchmark.inferred.mem.yml except the handler writes to a
-# managed table instead of returning rows. Set SQLFLOW_STATE_PATH to make
+# declared table instead of returning rows. Set SQLFLOW_STATE_PATH to make
 # DuckDB file-backed and put every batch in a transaction. Leave it unset to
 # measure the same pipeline with state in memory. The difference is the cost
 # of the durability guarantee.
+#
+# No window: the table is a running total, and nothing is ever deleted from
+# it, so it may keep its index.
 tables:
   sql:
     - name: agg_city_count
@@ -15,14 +18,6 @@ tables:
         );
         CREATE UNIQUE INDEX IF NOT EXISTS agg_city_count_idx
           ON agg_city_count (city);
-
-      manager:
-        tumbling_window:
-          poll_interval_seconds: 3600
-          collect_closed_windows_sql: "SELECT city, count FROM agg_city_count WHERE false"
-          delete_closed_windows_sql: "DELETE FROM agg_city_count WHERE false"
-        sink:
-          type: noop
 
 pipeline:
   batch_size: {{ SQLFLOW_BATCH_SIZE|default(500) }}

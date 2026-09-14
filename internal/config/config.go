@@ -123,26 +123,43 @@ type SinkRetry struct {
 	DeadlineSeconds int `yaml:"deadline_seconds,omitempty"`
 }
 
-// Tumbling Window Manager
-type TumblingWindow struct {
-	CollectSQL string `yaml:"collect_closed_windows_sql"`
-	DeleteSQL  string `yaml:"delete_closed_windows_sql"`
-	// How often to collect closed windows. Optional; the manager applies its
-	// own default when this is absent or not positive.
-	PollIntervalSecs int `yaml:"poll_interval_seconds,omitempty"`
-}
-
-// Table Manager
-type TableManager struct {
-	TumblingWindow *TumblingWindow `yaml:"tumbling_window"`
-	Sink           Sink            `yaml:"sink"`
+// Window is a tumbling window the engine closes for the user. The handler
+// writes rows keyed by a bucket start into the table; the engine keeps an
+// event-time watermark, publishes every bucket the watermark has passed to
+// the window's sink, and deletes it. Nothing here is SQL the user has to get
+// right twice.
+type Window struct {
+	// The column holding each row's bucket start. TIMESTAMPTZ.
+	TimeColumn string `yaml:"time_column"`
+	// The bucket length. A bucket ends at time_column + size.
+	SizeSeconds int `yaml:"size_seconds" jsonschema:"minimum=1"`
+	// How far past a bucket's end the stream's own clock must reach before
+	// the bucket closes. Absent means 0.
+	GraceSeconds int `yaml:"grace_seconds,omitempty" jsonschema:"minimum=0"`
+	// How long the stream may be quiet before every open bucket closes.
+	// Absent means never: a stream that stops leaves its last bucket open.
+	IdleCloseSeconds int `yaml:"idle_close_seconds,omitempty" jsonschema:"minimum=0"`
+	// What happens to a row for a bucket that already closed. drop discards
+	// it and counts it. reemit publishes the bucket again, for a sink that
+	// merges on the bucket's key; a sink that appends holds both rows.
+	// Required: the two are different promises to the sink.
+	LateRows string `yaml:"late_rows" jsonschema:"enum=drop,enum=reemit"`
+	// How often the engine looks for closed buckets. Absent means 10.
+	PollIntervalSecs int `yaml:"poll_interval_seconds,omitempty" jsonschema:"minimum=1"`
+	// Shapes the closed rows before the sink. It reads one relation, closed,
+	// which holds every row of every bucket that just closed. Absent means
+	// SELECT * FROM closed.
+	EmitSQL string `yaml:"emit_sql,omitempty"`
+	// Where closed windows go.
+	Sink Sink `yaml:"sink"`
 }
 
 // SQL Tables
 type TableSQL struct {
-	Name    string        `yaml:"name"`
-	SQL     string        `yaml:"sql"`
-	Manager *TableManager `yaml:"manager,omitempty"`
+	Name string `yaml:"name"`
+	SQL  string `yaml:"sql"`
+	// A tumbling window over this table, closed by the engine.
+	Window *Window `yaml:"window,omitempty"`
 }
 
 // Tables holds the SQL tables the pipeline creates before it consumes.

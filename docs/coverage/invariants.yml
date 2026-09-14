@@ -403,12 +403,14 @@ invariants:
     tracked_by: "#166"
 
   # --- Managers: a second loop that reaches a sink ------------------------
-  # A table manager collects the windows that have closed, flushes them, and
-  # deletes them from the state table. The delete is its commit, so these are
-  # the consume loop's checkpoint claims restated for it, plus the liveness a
-  # poll loop owes on its own. The manager is not a sink and not a handler:
-  # it has a commit step and a liveness obligation, and a handler has
-  # neither. internal/conformance drives it the way it drives the loop.
+  # A watermark manager collects the buckets its watermark has passed,
+  # flushes them, deletes them from the table, and advances the watermark.
+  # The delete and the watermark are its commit, so these are the consume
+  # loop's checkpoint claims restated for it, plus the liveness a poll loop
+  # owes on its own, plus what the watermark adds. The manager is not a sink
+  # and not a handler: it has a commit step and a liveness obligation, and a
+  # handler has neither. internal/conformance drives it the way it drives
+  # the loop.
   - id: manager.delete.after_flush
     family: checkpoint
     class: safety
@@ -456,6 +458,42 @@ invariants:
     requires: []
     enforced: true
     violated_once: ["#267"]
+
+  - id: manager.watermark.never_regresses
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      The persisted watermark never moves backwards, across polls and across
+      a restart. A manager built over the state another one saved publishes
+      nothing that one published.
+    verified_by: harness
+    requires: []
+    enforced: true
+
+  - id: manager.close.committed_rows_only
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      A close publishes rows the pipeline has committed and no others. Rows
+      an open batch has written are not counted, so a batch that rolls back
+      was never published.
+    verified_by: harness
+    requires: []
+    enforced: true
+
+  - id: manager.late.policy_holds
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      A row for a bucket below the watermark is late. Under drop it is
+      discarded and counted, and the bucket is never published again. Under
+      reemit it is published once.
+    verified_by: harness
+    requires: []
+    enforced: true
 
   - id: manager.drain.bounded
     family: lifecycle

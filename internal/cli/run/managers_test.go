@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/zeebo/assert"
@@ -30,14 +32,16 @@ func (hangingSink) Flush(ctx context.Context) error {
 // /healthz learns of it.
 func TestLifecycleDrain_AFailedFinalPollReachesTheRun(t *testing.T) {
 	coverage.Covers(t, "lifecycle.drain")
-	conn := rowsTestConn(t)
-	rowsTestExec(t, conn, "CREATE TABLE agg (id BIGINT)")
-	rowsTestExec(t, conn, "INSERT INTO agg VALUES (1), (2), (3)")
+	db, conn := rowsTestDB(t)
+	rowsTestExec(t, conn, "CREATE TABLE agg (bucket TIMESTAMPTZ, id BIGINT)")
+	rowsTestExec(t, conn, `INSERT INTO agg VALUES
+		(TIMESTAMPTZ '2026-09-13 10:00:00+00', 1),
+		(TIMESTAMPTZ '2026-09-13 11:00:00+00', 2)`)
+	assert.NoError(t, managers.NewStore(conn).Init(context.Background()))
 
 	budget := core.NewDrainBudget(200 * time.Millisecond)
 	defer budget.Stop()
-	m := managers.NewTumbling(conn, "SELECT id FROM agg", "DELETE FROM agg",
-		time.Hour, hangingSink{}, &sync.Mutex{}, managers.WithDrainBudget(budget))
+	m := newTestWindow(t, db, hangingSink{}, managers.WithDrainBudget(budget))
 
 	var (
 		group  managerGroup
@@ -63,15 +67,33 @@ func TestLifecycleDrain_AFailedFinalPollReachesTheRun(t *testing.T) {
 // A clean final poll reports nothing, so a clean stop stays exit 0.
 func TestLifecycleDrain_ACleanFinalPollReportsNothing(t *testing.T) {
 	coverage.Covers(t, "lifecycle.drain")
-	conn := rowsTestConn(t)
-	rowsTestExec(t, conn, "CREATE TABLE agg (id BIGINT)")
+	db, conn := rowsTestDB(t)
+	rowsTestExec(t, conn, "CREATE TABLE agg (bucket TIMESTAMPTZ, id BIGINT)")
+	assert.NoError(t, managers.NewStore(conn).Init(context.Background()))
 
-	m := managers.NewTumbling(conn, "SELECT id FROM agg", "DELETE FROM agg",
-		time.Hour, hangingSink{}, &sync.Mutex{})
+	m := newTestWindow(t, db, hangingSink{})
 
 	var group managerGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	group.start(ctx, m, func(err error) { t.Errorf("onFail called: %v", err) })
 	cancel()
 	assert.NoError(t, group.wait())
+}
+
+// newTestWindow builds a one-minute window over agg on a connection of its
+// own, the way buildManagedTables does.
+func newTestWindow(t *testing.T, db *duckdb.DB, sink core.Sink, opts ...managers.Option) *managers.Watermark {
+	t.Helper()
+	conn, err := db.Connect(context.Background())
+	assert.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	po, ok := conn.(adbc.PostInitOptions)
+	assert.That(t, ok)
+	assert.NoError(t, po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled))
+
+	m, err := managers.NewWatermark(conn, managers.Declaration{
+		Table: "agg", TimeColumn: "bucket", Size: time.Minute, Late: managers.LateDrop,
+	}, time.Hour, sink, opts...)
+	assert.NoError(t, err)
+	return m
 }

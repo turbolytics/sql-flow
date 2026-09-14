@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -77,7 +76,7 @@ type leakScenario struct {
 }
 
 func (s leakScenario) tableDDL() string {
-	ddl := "CREATE TABLE IF NOT EXISTS w (bucket BIGINT, lang VARCHAR, posts INTEGER);"
+	ddl := "CREATE TABLE IF NOT EXISTS w (bucket TIMESTAMPTZ, lang VARCHAR, posts INTEGER);"
 	if s.index {
 		ddl += " CREATE UNIQUE INDEX IF NOT EXISTS w_idx ON w (bucket, lang);"
 	}
@@ -86,7 +85,8 @@ func (s leakScenario) tableDDL() string {
 
 func (s leakScenario) handlerSQL() string {
 	sql := `INSERT INTO w
-		SELECT time_us // 60000000 AS bucket, lang, count(*) AS posts
+		SELECT time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000)) AS bucket,
+		       lang, count(*) AS posts
 		FROM posts GROUP BY bucket, lang`
 	if s.upsert {
 		sql += ` ON CONFLICT (bucket, lang) DO UPDATE SET posts = posts + EXCLUDED.posts`
@@ -94,17 +94,21 @@ func (s leakScenario) handlerSQL() string {
 	return sql
 }
 
-func (s leakScenario) collectSQL() string {
-	if s.upsert {
-		return fmt.Sprintf(`SELECT bucket, lang, posts FROM w
-			WHERE bucket < (SELECT max(bucket) FROM w) - %d`, leakCloseAfter)
+// declaration is the window over w. The grace is leakCloseAfter minutes less
+// one bucket, so a bucket closes once the stream is leakCloseAfter buckets
+// past it, as the demo's predicate closed.
+func (s leakScenario) declaration() Declaration {
+	d := Declaration{
+		Table:      "w",
+		TimeColumn: "bucket",
+		Size:       time.Minute,
+		Grace:      time.Duration(leakCloseAfter-1) * time.Minute,
+		Late:       LateReemit,
 	}
-	return fmt.Sprintf(`SELECT bucket, lang, sum(posts) AS posts FROM w
-		WHERE bucket < (SELECT max(bucket) FROM w) - %d GROUP BY bucket, lang`, leakCloseAfter)
-}
-
-func (s leakScenario) deleteSQL() string {
-	return fmt.Sprintf(`DELETE FROM w WHERE bucket < (SELECT max(bucket) FROM w) - %d`, leakCloseAfter)
+	if !s.upsert {
+		d.EmitSQL = "SELECT bucket, lang, sum(posts) AS posts FROM closed GROUP BY bucket, lang"
+	}
+	return d
 }
 
 // leakSample is what the loop measures. All three come from the process, not
@@ -202,6 +206,11 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 		tb.Fatal(err)
 	}
 	defer conn.Close()
+	if err := NewStore(conn).Init(ctx); err != nil {
+		tb.Fatal(err)
+	}
+	mconn := managerConn(tb, db)
+	defer mconn.Close()
 
 	// The batch table StructuredBatch loads, and the window table the
 	// handler SQL writes. Both come from the config's commands and tables
@@ -221,10 +230,12 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 		tb.Fatal(err)
 	}
 
-	// A lock shared with nobody: the pipeline serializes the handler and
-	// the manager on one mutex, and this loop is the only caller of both.
+	// The manager on its own connection, as run builds it.
 	sink := &recordingSink{}
-	m := NewTumbling(conn, sc.collectSQL(), sc.deleteSQL(), time.Hour, sink, &sync.Mutex{})
+	m, err := NewWatermark(mconn, sc.declaration(), time.Hour, sink)
+	if err != nil {
+		tb.Fatal(err)
+	}
 
 	// Messages for one batch, regenerated per minute so the bucket moves.
 	// Forty languages per minute is the demo's cardinality.
@@ -288,7 +299,7 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 // it starts passing the flat check, DuckDB changed and the warning in the
 // README and #268 is out of date.
 func TestManagerTumblingWindow__IndexedTableInMemoryRetainsDeletedRows(t *testing.T) {
-	coverage.Covers(t, "manager.tumbling_window")
+	coverage.Covers(t, "manager.window")
 	before, after := leakLoop(t, leakScenario{name: "indexed, upsert, in memory", index: true, upsert: true}, leakBatches(t))
 	assertLeaks(t, before, after)
 }
@@ -297,7 +308,7 @@ func TestManagerTumblingWindow__IndexedTableInMemoryRetainsDeletedRows(t *testin
 // stays at one row group however long it runs: measured at 15 million
 // messages and 30,000 manager polls.
 func TestManagerTumblingWindow__PlainInsertInMemoryStaysFlat(t *testing.T) {
-	coverage.Covers(t, "manager.tumbling_window")
+	coverage.Covers(t, "manager.window")
 	before, after := leakLoop(t, leakScenario{name: "no index, plain insert, in memory"}, leakBatches(t))
 	assertLeakFlat(t, before, after)
 }
@@ -311,7 +322,7 @@ func TestManagerTumblingWindow__PlainInsertInMemoryStaysFlat(t *testing.T) {
 // log reaches checkpoint_threshold, 16 MiB by default, so a real pipeline
 // always gets there.
 func TestManagerTumblingWindow__IndexedTableOnDiskRetainsDeletedRows(t *testing.T) {
-	coverage.Covers(t, "manager.tumbling_window")
+	coverage.Covers(t, "manager.window")
 	path := filepath.Join(t.TempDir(), "window.duckdb")
 	before, after := leakLoop(t, leakScenario{name: "indexed, upsert, on disk", path: path, index: true, upsert: true}, leakBatches(t))
 	assertLeaks(t, before, after)

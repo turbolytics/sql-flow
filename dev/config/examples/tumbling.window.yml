@@ -2,9 +2,9 @@ tables:
   sql:
     - name: agg_cities_count
       # No UNIQUE INDEX, on purpose. DuckDB never frees rows deleted from an
-      # indexed table, and the manager deletes every closed window, so an index
-      # grows memory without bound. Each batch appends its own counts and the
-      # collect query sums them. See #268.
+      # indexed table, and the engine deletes every closed window, so an index
+      # grows memory without bound. Each batch appends its own counts and
+      # emit_sql sums them. See #268.
       sql: |
         CREATE TABLE agg_cities_count (
           bucket TIMESTAMPTZ,
@@ -12,47 +12,39 @@ tables:
           count INT
         );
 
-      manager:
-          # A window closes against the stream's own clock, not wall clock.
-          # max(bucket) is the newest window the data has reached, so a window
-          # closes only once the stream has moved past it. That keeps the
-          # result identical whether the data arrives live or as a replay.
-          #
-          # With now() here instead, a pipeline running behind real time by
-          # more than the grace period closes a window whose rows are still
-          # arriving and publishes it in parts, once per poll. Downstream those
-          # parts are indistinguishable from an at-least-once duplicate.
-          #
-          # The trade: the newest window waits for a later one, so a stream
-          # that stops leaves its final window unpublished.
-          #
-          # The second branch is the idleness bound. A stream that goes quiet
-          # never moves its own clock, so the first branch alone would hold
-          # the newest window open until data a full grace newer arrived: a
-          # surge that stops leaves its last bucket unpublished forever.
-          # sqlflow_progress is the engine's one-row liveness table and
-          # last_arrival is when the newest batch was written, so after a
-          # grace of silence every open window closes. It is TIMESTAMPTZ, so
-          # the comparison holds whatever timezone the host runs in.
-        tumbling_window:
-          # GROUP BY ALL groups by the output columns. GROUP BY bucket would
-          # group by the table's bucket column, which the output renames.
-          collect_closed_windows_sql: |
-            SELECT
-              strftime(date_trunc('hour', bucket), '%Y-%m-%dT%H:%M:%S') AS bucket,
-              city,
-              sum(count)::INT AS count
-            FROM agg_cities_count
-            WHERE bucket < (SELECT max(bucket) FROM agg_cities_count) - INTERVAL '60' SECOND
-               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '60' SECOND
-            GROUP BY ALL
-            ORDER BY city
-
-          delete_closed_windows_sql: |
-            DELETE FROM agg_cities_count 
-            WHERE bucket < (SELECT max(bucket) FROM agg_cities_count) - INTERVAL '60' SECOND
-               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '60' SECOND
-          
+      # The engine closes the window. It keeps a watermark in event time: the
+      # newest bucket the data has reached, less the grace. A bucket closes
+      # once its end is at or before the watermark, so the result is the same
+      # whether the data arrives live or as a replay. The watermark never moves
+      # backwards, and it survives a restart when the pipeline has a state
+      # path.
+      #
+      # The trade: the newest bucket waits for a later one. idle_close_seconds
+      # is the bound on that wait: after that long with nothing arriving,
+      # every open bucket closes.
+      window:
+        time_column: bucket
+        size_seconds: 3600
+        # The watermark is the newest bucket start, so a grace shorter than a
+        # bucket rounds up to one: an hourly bucket closes when the next hour's
+        # first row arrives. Zero says that plainly.
+        grace_seconds: 0
+        idle_close_seconds: 60
+        # The sink is a topic, which appends. drop keeps each bucket to one
+        # message; reemit would publish a correction the consumer has to
+        # apply itself.
+        late_rows: drop
+        # emit_sql shapes the closed rows. closed is every row of every bucket
+        # that just closed. GROUP BY ALL groups by the output columns, which
+        # is what the renamed bucket needs.
+        emit_sql: |
+          SELECT
+            strftime(bucket, '%Y-%m-%dT%H:%M:%S') AS bucket,
+            city,
+            sum(count)::INT AS count
+          FROM closed
+          GROUP BY ALL
+          ORDER BY city
         sink:
           type: kafka
           kafka:
@@ -76,7 +68,7 @@ pipeline:
     sql: |
       INSERT INTO agg_cities_count
       BY NAME
-      SELECT 
+      SELECT
         date_trunc('hour', CAST(timestamp as TIMESTAMPTZ)) as bucket,
         properties.city as city,
         count(*) as count

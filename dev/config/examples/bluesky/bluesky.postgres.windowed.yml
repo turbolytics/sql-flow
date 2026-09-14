@@ -24,67 +24,53 @@ tables:
   sql:
     - name: posts_per_minute_by_lang
       # No UNIQUE INDEX, on purpose. DuckDB never frees rows deleted from an
-      # indexed table, and the manager deletes every closed window, so an index
-      # grows memory without bound. Each batch appends its own counts and the
-      # collect query sums them, so the Postgres upsert below still sees each
-      # key once. See #268.
+      # indexed table, and the engine deletes every closed window, so an index
+      # grows memory without bound. Each batch appends its own counts and
+      # emit_sql sums them, so the Postgres upsert below still sees each key
+      # once. See #268.
+      #
+      # bucket is TIMESTAMPTZ, an instant, so the write into a Postgres
+      # TIMESTAMPTZ column needs no interpretation and the watermark compares
+      # instants.
       sql: |
         CREATE TABLE IF NOT EXISTS posts_per_minute_by_lang (
-          bucket TIMESTAMP,
+          bucket TIMESTAMPTZ,
           lang TEXT,
           posts INTEGER
         );
 
-      manager:
-        # The grace period outlives the batch wait on purpose. A batch flushes
-        # when it fills or after flush_interval_seconds, so an event from the
-        # last seconds of a window can reach DuckDB up to that long after the
-        # window ended. A grace period shorter than the batch wait publishes
-        # the window before those events land.
-          # A window closes against the stream's own clock, not wall clock.
-          # max(bucket) is the newest window the data has reached, so a window
-          # closes only once the stream has moved past it. That keeps the
-          # result identical whether the data arrives live or as a replay.
-          #
-          # With now() here instead, a pipeline running behind real time by
-          # more than the grace period closes a window whose rows are still
-          # arriving and publishes it in parts, once per poll. Downstream those
-          # parts are indistinguishable from an at-least-once duplicate.
-          #
-          # The trade: the newest window waits for a later one, so a stream
-          # that stops leaves its final window unpublished.
-          #
-          # The second branch is the idleness bound. A stream that goes quiet
-          # never moves its own clock, so the first branch alone would hold
-          # the newest window open until data a full grace newer arrived: a
-          # surge that stops leaves its last bucket unpublished forever.
-          # sqlflow_progress is the engine's one-row liveness table and
-          # last_arrival is when the newest batch was written, so after a
-          # grace of silence every open window closes. It is TIMESTAMPTZ, so
-          # the comparison holds whatever timezone the host runs in.
-        tumbling_window:
-          poll_interval_seconds: 10
-          collect_closed_windows_sql: |
-            SELECT bucket, lang, sum(posts)::INTEGER AS posts
-            FROM posts_per_minute_by_lang
-            WHERE bucket + INTERVAL '1 minute' < (SELECT max(bucket) FROM posts_per_minute_by_lang) - INTERVAL '60 seconds'
-               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '1 minute'
-            GROUP BY ALL
-          delete_closed_windows_sql: |
-            DELETE FROM posts_per_minute_by_lang
-            WHERE bucket + INTERVAL '1 minute' < (SELECT max(bucket) FROM posts_per_minute_by_lang) - INTERVAL '60 seconds'
-               OR (SELECT now() - last_arrival FROM sqlflow_progress) > INTERVAL '1 minute'
-
+      # The engine closes the window against a watermark in event time: the
+      # newest bucket the data has reached, less the grace. The grace outlives
+      # the batch wait on purpose. A batch flushes when it fills or after
+      # flush_interval_seconds, so an event from the last seconds of a window
+      # can reach DuckDB up to that long after the window ended. A grace
+      # shorter than the batch wait publishes the window before those events
+      # land. After idle_close_seconds with nothing arriving, every open
+      # bucket closes.
+      #
+      # late_rows: reemit, because the sink upserts: a row for a bucket that
+      # already closed publishes the bucket again, and ON CONFLICT replaces
+      # the value.
+      window:
+        time_column: bucket
+        size_seconds: 60
+        grace_seconds: 60
+        idle_close_seconds: 60
+        late_rows: reemit
+        poll_interval_seconds: 10
+        emit_sql: |
+          SELECT bucket, lang, sum(posts)::INTEGER AS posts
+          FROM closed
+          GROUP BY ALL
         sink:
           type: sqlcommand
           sqlcommand:
             # ON CONFLICT is what keeps at-least-once delivery survivable. The
-            # manager deletes a window only after the sink accepts it, so a
+            # engine deletes a window only after the sink accepts it, so a
             # crash between the two republishes that window on the next poll.
             # Against the target table's primary key on (bucket, lang), a bare
-            # INSERT fails that republish -- and because the failed flush also
-            # blocks the delete, every later poll collects the same rows and
-            # fails the same way. One duplicate stops the pipeline publishing
+            # INSERT fails that republish, and because the failed flush stops
+            # the process, one duplicate stops the pipeline publishing
             # anything, ever again.
             sql: |
               INSERT INTO pg.posts_per_minute_by_lang (bucket, lang, posts)
@@ -106,7 +92,7 @@ pipeline:
     sql: |
       INSERT INTO posts_per_minute_by_lang
       SELECT
-        date_trunc('minute', make_timestamp(time_us)) AS bucket,
+        time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000)) AS bucket,
         coalesce(commit.record.langs[1], 'unknown') AS lang,
         count(*) AS posts
       FROM posts

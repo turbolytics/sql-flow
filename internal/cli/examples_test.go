@@ -171,11 +171,11 @@ func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
 
 			if conf.Tables != nil {
 				for _, table := range conf.Tables.SQL {
-					if table.Manager == nil {
+					if table.Window == nil {
 						continue
 					}
-					_, err := sinks.New(ctx, table.Manager.Sink, conn)
-					checkBuildError(t, "manager sink for "+table.Name, err)
+					_, err := sinks.New(ctx, table.Window.Sink, conn)
+					checkBuildError(t, "window sink for "+table.Name, err)
 				}
 			}
 

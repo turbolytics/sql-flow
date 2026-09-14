@@ -141,7 +141,7 @@ func applyEnums(s *jsonschema.Schema) error {
 	// hand-written schema drifted.
 	for _, path := range [][]string{
 		{"pipeline", "on_error", "dlq", "type"},
-		{"tables", "sql", "manager", "sink", "type"},
+		{"tables", "sql", "window", "sink", "type"},
 	} {
 		node, err := resolve(s, path)
 		if err != nil {
