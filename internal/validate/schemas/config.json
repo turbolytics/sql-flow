@@ -454,7 +454,7 @@
                 },
                 "deadline_seconds": {
                   "type": "integer",
-                  "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
+                  "description": "Bounds the whole ladder. The postgres sink also bounds each attempt by\nit, so raise it for a batch whose write takes longer. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
                 }
               },
               "additionalProperties": false,
@@ -735,7 +735,7 @@
                     },
                     "deadline_seconds": {
                       "type": "integer",
-                      "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
+                      "description": "Bounds the whole ladder. The postgres sink also bounds each attempt by\nit, so raise it for a batch whose write takes longer. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
                     }
                   },
                   "additionalProperties": false,
@@ -1046,7 +1046,7 @@
                           },
                           "deadline_seconds": {
                             "type": "integer",
-                            "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
+                            "description": "Bounds the whole ladder. The postgres sink also bounds each attempt by\nit, so raise it for a batch whose write takes longer. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
                           }
                         },
                         "additionalProperties": false,

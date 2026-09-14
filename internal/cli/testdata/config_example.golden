@@ -116,7 +116,8 @@ pipeline:
       initial_backoff_ms: <integer>
       # Ceiling on the backoff.
       max_backoff_ms: <integer>
-      # Bounds the whole ladder, not one attempt. Keep it below
+      # Bounds the whole ladder. The postgres sink also bounds each attempt by
+      # it, so raise it for a batch whose write takes longer. Keep it below
       # pipeline.flush_interval_seconds: the retry runs inside the open state
       # transaction, whose clock the window depends on.
       deadline_seconds: <integer>
@@ -208,7 +209,8 @@ pipeline:
         initial_backoff_ms: <integer>
         # Ceiling on the backoff.
         max_backoff_ms: <integer>
-        # Bounds the whole ladder, not one attempt. Keep it below
+        # Bounds the whole ladder. The postgres sink also bounds each attempt by
+        # it, so raise it for a batch whose write takes longer. Keep it below
         # pipeline.flush_interval_seconds: the retry runs inside the open state
         # transaction, whose clock the window depends on.
         deadline_seconds: <integer>
@@ -310,7 +312,8 @@ tables:
             initial_backoff_ms: <integer>
             # Ceiling on the backoff.
             max_backoff_ms: <integer>
-            # Bounds the whole ladder, not one attempt. Keep it below
+            # Bounds the whole ladder. The postgres sink also bounds each attempt by
+            # it, so raise it for a batch whose write takes longer. Keep it below
             # pipeline.flush_interval_seconds: the retry runs inside the open state
             # transaction, whose clock the window depends on.
             deadline_seconds: <integer>

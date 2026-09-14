@@ -61,11 +61,9 @@ func checkSinks(rendered []byte, rep *Report) {
 			node := windowNode(&root, i)
 			checkSink(fmt.Sprintf("tables.sql[%d] window sink", i), table.Window.Sink, mappingValue(node, "sink"), attached, fail, warn)
 
-			s := table.Window.Sink
-			if s.Type == "postgres" && s.Postgres != nil && s.Postgres.Mode == "upsert" && table.Window.LateRows == "reemit" {
-				fail(fmt.Sprintf("tables.sql[%d] window: late_rows is reemit and the postgres sink upserts. "+
-					"A reemit publishes emit_sql over the late rows alone, and the sink replaces the "+
-					"bucket's row with that. Use drop", i), position(mappingKey(node, "late_rows")))
+			if table.Window.ReemitOverwrites() {
+				fail(fmt.Sprintf("tables.sql[%d] window: %s", i, config.ReemitOverwritesMessage),
+					position(mappingKey(node, "late_rows")))
 			}
 		}
 	}

@@ -136,7 +136,8 @@ type SinkRetry struct {
 	InitialBackoffMS int `yaml:"initial_backoff_ms,omitempty"`
 	// Ceiling on the backoff.
 	MaxBackoffMS int `yaml:"max_backoff_ms,omitempty"`
-	// Bounds the whole ladder, not one attempt. Keep it below
+	// Bounds the whole ladder. The postgres sink also bounds each attempt by
+	// it, so raise it for a batch whose write takes longer. Keep it below
 	// pipeline.flush_interval_seconds: the retry runs inside the open state
 	// transaction, whose clock the window depends on.
 	DeadlineSeconds int `yaml:"deadline_seconds,omitempty"`
@@ -173,6 +174,21 @@ type Window struct {
 	// Where closed windows go.
 	Sink Sink `yaml:"sink"`
 }
+
+// ReemitOverwrites reports the one pairing of late_rows and sink no pipeline
+// may run: a postgres sink that upserts by key, handed a reemit. A reemit
+// publishes emit_sql over the late rows alone, because the bucket's other
+// rows were deleted when it closed, and the upsert replaces the bucket's
+// published row with that. validate refuses it, and so does run, for a config
+// that never went through validate.
+func (w Window) ReemitOverwrites() bool {
+	return w.LateRows == "reemit" && w.Sink.Type == "postgres" &&
+		w.Sink.Postgres != nil && w.Sink.Postgres.Mode == "upsert"
+}
+
+// ReemitOverwritesMessage says why, for validate and run alike.
+const ReemitOverwritesMessage = "late_rows is reemit and the postgres sink upserts. A reemit publishes " +
+	"emit_sql over the late rows alone, and the sink replaces the bucket's row with that. Use drop"
 
 // SQL Tables
 type TableSQL struct {
