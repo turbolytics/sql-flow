@@ -1048,7 +1048,27 @@ func (t *Turbine) commitSource() error {
 func (t *Turbine) initHandler(ctx context.Context) error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
-	return t.handler.Init(ctx)
+	if err := t.handler.Init(ctx); err != nil {
+		return err
+	}
+	// Read under the lock, so a panic in Init still releases it and the flag
+	// is the one this Init set.
+	if r, ok := t.handler.(CheckpointSkipReporter); ok && r.CheckpointSkipped() {
+		t.metrics.HandlerCheckpointsSkipped.Add(ctx, 1)
+	}
+	return nil
+}
+
+// CheckpointSkipReporter is a handler that checkpoints as it re-initialises
+// and skips the checkpoint when another connection's write refuses it.
+//
+// Optional, like BufferedRowReporter: a handler that never checkpoints
+// reports nothing. The count exists so a window whose I/O holds a write open
+// for longer than a batch shows as a run of skipped checkpoints, not as
+// memory growth nobody can explain.
+type CheckpointSkipReporter interface {
+	// CheckpointSkipped reports whether the last Init skipped its checkpoint.
+	CheckpointSkipped() bool
 }
 
 // rollbackState discards this batch's uncommitted state writes. Used on the

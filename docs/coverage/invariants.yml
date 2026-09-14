@@ -506,3 +506,22 @@ invariants:
     verified_by: harness
     requires: []
     enforced: true
+
+  # A window closes and publishes on DuckDB connections of its own (#281), so
+  # the consume loop's lock no longer orders its statements against the
+  # window's. #283's rule, every statement on the pipeline's connection holds
+  # the lock, stopped reaching the window when it moved, and no row said so.
+  # This one does, from the pipeline's side: whatever the window's I/O is
+  # doing and however long it takes, a batch does not fail because of it.
+  - id: pipeline.batch.independent_of_window_io
+    family: lifecycle
+    class: safety
+    applies_to: manager
+    claim: >
+      A window's sink write or close, however long, never fails the consume
+      loop. A batch that runs while the window's flush has not returned, or
+      while its close has written the delete and the watermark and not
+      committed them, succeeds, and the close still lands once released.
+    verified_by: harness
+    requires: []
+    enforced: true

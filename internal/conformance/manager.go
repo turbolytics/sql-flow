@@ -9,7 +9,8 @@ package conformance
 // owes on its own: a closed bucket leaves, a poll that cannot deliver stops
 // the process, and a drain ends. And three the watermark adds: it never
 // moves backwards, it publishes committed rows only, and the late-row
-// policy holds.
+// policy holds. And one the pipeline is owed: a window's I/O, however long,
+// never fails a batch.
 //
 // The failure-exits claim is #267. The manager logged a failed poll and
 // polled again, so a bucket the destination rejected was collected, written
@@ -19,6 +20,7 @@ package conformance
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,6 +66,17 @@ type ManagerSubject struct {
 	// subject that cannot hold a transaction open skips the committed-rows
 	// claim.
 	Uncommitted func(t *testing.T, n int) (release func())
+
+	// Batch runs one batch of the consume loop on the pipeline's connection:
+	// the handler ingests messages, runs its SQL, and re-initialises for the
+	// next batch. Optional, with HoldCommit: a subject without both skips
+	// the window-I/O claim.
+	Batch func(t *testing.T) error
+
+	// HoldCommit builds like New, polling only when asked, over a connection
+	// whose commit calls hold first. By then the close has written its
+	// delete and its watermark and committed neither.
+	HoldCommit func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, hold func()) Manager
 }
 
 // Managers proves every manager invariant against the subject.
@@ -110,6 +123,7 @@ const (
 	watermarkNeverRegress  = "manager.watermark.never_regresses"
 	closeCommittedRowsOnly = "manager.close.committed_rows_only"
 	latePolicyHolds        = "manager.late.policy_holds"
+	batchIndependentOfIO   = "pipeline.batch.independent_of_window_io"
 )
 
 // seededWindows is how many closed buckets each check starts with. Two, so
@@ -135,6 +149,7 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	regress := verdict{invariant: watermarkNeverRegress}
 	committedOnly := verdict{invariant: closeCommittedRowsOnly}
 	late := verdict{invariant: latePolicyHolds}
+	independent := verdict{invariant: batchIndependentOfIO}
 
 	if err := checkDeleteAfterFlush(t, s); err != nil {
 		afterFlush.failure = err.Error()
@@ -163,9 +178,15 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	if err := checkLatePolicyHolds(t, s); err != nil {
 		late.failure = err.Error()
 	}
+	if s.Batch == nil || s.HoldCommit == nil {
+		independent.skipped = s.Integration + " cannot run a batch beside a " +
+			"held close; supply Batch and HoldCommit"
+	} else if err := checkBatchIndependentOfWindowIO(t, s); err != nil {
+		independent.failure = err.Error()
+	}
 
 	return []verdict{afterFlush, onFailure, eventually, exits, bounded, regress,
-		committedOnly, late}
+		committedOnly, late, independent}
 }
 
 // newManagerRun seeds the table and builds the manager on a recording sink.
@@ -506,6 +527,106 @@ func checkLatePolicyHolds(t *testing.T, s ManagerSubject) error {
 					"being published", left)
 			}
 		}
+	}
+	return nil
+}
+
+// batchesDuringHold is how many batches run while a close is held. More
+// than one, so a handler that fails only its second batch after a refused
+// statement is caught.
+const batchesDuringHold = 3
+
+// checkBatchIndependentOfWindowIO holds a window's I/O open and runs batches
+// beside it, twice: while the sink's flush has not returned, and while a
+// close has written its delete and its watermark and not committed them.
+// Every batch must succeed, and the held close must still land.
+//
+// The second hold is the one that failed in production (the bluesky demo on
+// v2026.09.14). The structured handler checkpoints as it re-initialises,
+// DuckDB refuses a checkpoint while another connection holds an uncommitted
+// UPDATE, and saving the watermark is one. The refusal failed the batch,
+// and the batch's failure stopped the process. #283's rule, that every
+// statement on the pipeline's connection holds its lock, stopped reaching
+// the window when #281 moved it to connections of its own, and no invariant
+// said so.
+func checkBatchIndependentOfWindowIO(t *testing.T, s ManagerSubject) error {
+	t.Helper()
+	budget := core.NewDrainBudget(core.DefaultDrainDeadline)
+	defer budget.Stop()
+
+	var flushHeld, commitHeld atomic.Bool
+	var entered, release chan struct{}
+	hold := func(armed *atomic.Bool) {
+		if armed.CompareAndSwap(true, false) {
+			close(entered)
+			<-release
+		}
+	}
+
+	s.Seed(t, seededWindows)
+	rec := &Recorder{}
+	rec.onEvent = func(event string) {
+		if event == "flush" {
+			hold(&flushHeld)
+		}
+	}
+	sink := newRecordingSink(rec, nil, noop.NewMeterProvider())
+	m := s.HoldCommit(t, sink.counted, budget, "reemit", func() { hold(&commitHeld) })
+
+	during := func(armed *atomic.Bool, what string) error {
+		entered, release = make(chan struct{}), make(chan struct{})
+		armed.Store(true)
+		polled := make(chan error, 1)
+		go func() { polled <- m.Poll(context.Background()) }()
+
+		select {
+		case <-entered:
+		case err := <-polled:
+			return fmt.Errorf("the close returned before reaching %s: %v", what, err)
+		case <-time.After(managerWait):
+			close(release)
+			return fmt.Errorf("the close did not reach %s within %s", what, managerWait)
+		}
+
+		var batchErr error
+		for i := 0; i < batchesDuringHold && batchErr == nil; i++ {
+			if err := s.Batch(t); err != nil {
+				batchErr = fmt.Errorf(
+					"batch %d of %d, run while the window held %s, failed: %v. "+
+						"The consume loop stops on a failed batch, so a window "+
+						"whose I/O outlasts a batch stops the pipeline",
+					i+1, batchesDuringHold, what, err)
+			}
+		}
+		close(release)
+
+		select {
+		case err := <-polled:
+			if batchErr != nil {
+				return batchErr
+			}
+			if err != nil {
+				return fmt.Errorf("the close held at %s failed once released: %v", what, err)
+			}
+		case <-time.After(managerWait):
+			return fmt.Errorf("the close held at %s did not finish within %s of its release", what, managerWait)
+		}
+		return nil
+	}
+
+	// A sink write that has not returned. The first close also saves the
+	// window's first watermark, so the next one updates it.
+	if err := during(&flushHeld, "its sink's flush"); err != nil {
+		return err
+	}
+	// A late row under reemit makes the next close publish, delete and
+	// update the watermark's row, then stop before committing.
+	s.SeedLate(t, 1)
+	if err := during(&commitHeld, "its uncommitted delete and watermark"); err != nil {
+		return err
+	}
+	if left := s.Remaining(t); left != 0 {
+		return fmt.Errorf("both held closes finished and %d rows are still in the table", left)
 	}
 	return nil
 }

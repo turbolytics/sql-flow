@@ -8,3 +8,4 @@ manager.failure.exits: {unit: covered, integration: missing, release: missing}
 manager.late.policy_holds: {unit: covered, integration: missing, release: missing}
 manager.publish.eventually: {unit: covered, integration: missing, release: missing}
 manager.watermark.never_regresses: {unit: covered, integration: missing, release: missing}
+pipeline.batch.independent_of_window_io: {unit: covered, integration: missing, release: missing}

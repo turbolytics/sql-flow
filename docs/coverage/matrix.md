@@ -70,7 +70,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**41 invariants declared: 34 safety and 7 liveness. Of 146 (invariant, integration) cells: 69 proven, 49 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
+**42 invariants declared: 35 safety and 7 liveness. Of 147 (invariant, integration) cells: 70 proven, 49 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -155,9 +155,10 @@ drains. An invariant holds only if it holds on all four.
 
 ## Safety invariants: lifecycle
 
-| Invariant | Claim | `sink.clickhouse` | `sink.console` | `sink.iceberg` | `sink.kafka` | `sink.noop` | `sink.sqlcommand` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `lifecycle.close.idempotent` | Close twice is safe. | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt |
+| Invariant | Claim | `sink.clickhouse` | `sink.console` | `sink.iceberg` | `sink.kafka` | `sink.noop` | `sink.sqlcommand` | `manager.watermark` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `lifecycle.close.idempotent` | Close twice is safe. | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt | · |
+| `pipeline.batch.independent_of_window_io` | A window's sink write or close, however long, never fails the consume loop. A batch that runs while the window's flush has not returned, or while its close has written the delete and the watermark and not committed them, succeeds, and the close still lands once released. | · | · | · | · | · | · | ✅ u |
 
 These lifecycle invariants are properties of the consume loop
 rather than of anything a config file names. The columns are

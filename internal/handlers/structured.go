@@ -11,6 +11,7 @@ import (
 	"github.com/buger/jsonparser"
 	"go.uber.org/zap"
 	"strconv"
+	"strings"
 	"time"
 	"unsafe"
 )
@@ -20,6 +21,10 @@ type StructuredBatchHandler struct {
 
 	// rowsRead is the row count of the last Invoke, for handler_rows_read.
 	rowsRead int64
+
+	// checkpointSkipped is whether the last Init's checkpoint was refused,
+	// for handler_checkpoints_skipped.
+	checkpointSkipped bool
 
 	alloc      memory.Allocator
 	conn       adbc.Connection
@@ -38,14 +43,39 @@ type StructuredBatchHandler struct {
 
 func (h *StructuredBatchHandler) Init(ctx context.Context) error {
 	h.rawBatch = h.rawBatch[:0]
+	h.checkpointSkipped = false
 
 	if _, err := h.truncStmt.ExecuteUpdate(ctx); err != nil {
 		return err
 	}
+	// The checkpoint only reclaims what the truncate left, so a refused one
+	// is skipped rather than failing the batch. DuckDB refuses it while
+	// another connection holds an uncommitted UPDATE or DDL, and a window
+	// closes and publishes on connections of its own: its watermark save is
+	// an UPDATE, and the sqlcommand sink drops and creates its batch table.
+	// The next batch's checkpoint reclaims what this one left. A run of
+	// skips is the signal that something holds a write open for longer than
+	// a batch, so each one is counted.
 	if _, err := h.ckptStmt.ExecuteUpdate(ctx); err != nil {
-		return fmt.Errorf("checkpoint after truncate: %w", err)
+		if !checkpointRefused(err) {
+			return fmt.Errorf("checkpoint after truncate: %w", err)
+		}
+		h.checkpointSkipped = true
+		h.logger.Debug("checkpoint skipped: another connection holds a write transaction",
+			zap.String("table", h.tableName))
 	}
 	return nil
+}
+
+// CheckpointSkipped reports whether the last Init skipped its checkpoint
+// because another connection held a write transaction.
+func (h *StructuredBatchHandler) CheckpointSkipped() bool { return h.checkpointSkipped }
+
+// checkpointRefused reports DuckDB refusing a CHECKPOINT because another
+// connection has a write transaction open. DuckDB gives it no code of its
+// own, so the message is the only thing to match.
+func checkpointRefused(err error) bool {
+	return strings.Contains(err.Error(), "Cannot CHECKPOINT: there are other write transactions active")
 }
 
 func (h *StructuredBatchHandler) Write(r []byte) error {
