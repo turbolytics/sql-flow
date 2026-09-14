@@ -1,0 +1,341 @@
+id: sink.postgres
+kind: sink
+implements: [Sink, Prober, KeyedSink]
+feature: sink.postgres
+exempt: []
+# Arrow key -> what the sink does with it. Keys come from lattice.yml.
+#
+# `columns` are the Postgres column types that accept the key, and `expect`
+# is what `SELECT v::text` returns on a session with TimeZone UTC. Written
+# by hand from internal/sinks/postgres_types.go and the spec's type table,
+# never generated from the sink. A row the runner disagrees with is a
+# finding: when the stored value is right and only the rendering differs,
+# fix the row and say so in the commit; when the value is wrong, fix the
+# sink.
+types:
+  bool:
+    outcome: exact
+    columns:
+      - type: boolean
+        expect: "true"
+  int8:
+    outcome: exact
+    columns:
+      - type: smallint
+        expect: "-128"
+  int16:
+    outcome: exact
+    columns:
+      - type: smallint
+        expect: "-32768"
+  int32:
+    outcome: exact
+    columns:
+      - type: integer
+        expect: "-2147483648"
+  int64:
+    outcome: exact
+    columns:
+      - type: bigint
+        expect: "-9223372036854775808"
+  # Postgres has no unsigned integers. Each is sent as the next signed
+  # width, and uint64 above the bigint range as numeric.
+  uint8:
+    outcome: coerced
+    rule: sent as smallint
+    columns:
+      - type: smallint
+        expect: "255"
+  uint16:
+    outcome: coerced
+    rule: sent as integer
+    columns:
+      - type: integer
+        expect: "65535"
+  uint32:
+    outcome: coerced
+    rule: sent as bigint
+    columns:
+      - type: bigint
+        expect: "4294967295"
+  uint64:
+    outcome: coerced
+    rule: sent as bigint when it fits, otherwise as numeric
+    columns:
+      - type: numeric
+        expect: "18446744073709551615"
+  float32:
+    outcome: exact
+    columns:
+      - type: real
+        expect: "3.4028235e+38"
+  float64:
+    outcome: exact
+    columns:
+      - type: double precision
+        expect: "1.7976931348623157e+308"
+  "decimal(*, *)":
+    outcome: exact
+    columns:
+      - type: numeric
+        expect: "170141183460469231"
+  utf8:
+    outcome: exact
+    columns:
+      - type: text
+        expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
+      - type: varchar(100)
+        expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
+      # The destinations that parse the text. jsonb normalises spacing.
+      - type: jsonb
+        value: '{"a":1}'
+        expect: '{"a": 1}'
+      - type: uuid
+        value: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+        expect: "0b7e2c9a-4d31-4f6e-9a02-7c1de3f10b45"
+      - type: numeric
+        value: "1234.56"
+        expect: "1234.56"
+      # #153's shape: a timestamp the handler passed through without a CAST,
+      # so it arrives as text and lands in a temporal column. Postgres parses
+      # a zone-less string in the session's TimeZone, which is the server's,
+      # never the sqlflow host's; `instant` runs this with the host clock
+      # nine hours ahead to prove it.
+      - type: timestamp
+        value: "2026-09-01 12:00:00"
+        expect: "2026-09-01 12:00:00"
+        instant: true
+      - type: timestamptz
+        value: "2026-09-01 12:00:00+00"
+        expect: "2026-09-01 12:00:00+00"
+        instant: true
+  binary:
+    outcome: exact
+    columns:
+      - type: bytea
+        expect: "\\x00ff7f80"
+  date32:
+    outcome: exact
+    columns:
+      - type: date
+        expect: "2026-09-08"
+  "timestamp[s]":
+    outcome: exact
+    columns:
+      - type: timestamp
+        expect: "2026-09-08 12:00:00"
+  "timestamp[ms]":
+    outcome: exact
+    columns:
+      - type: timestamp
+        expect: "2026-09-08 12:00:00.123"
+  "timestamp[us]":
+    outcome: exact
+    columns:
+      - type: timestamp
+        expect: "2026-09-08 12:00:00.123456"
+      # A naive timestamp into timestamptz is read as a UTC instant.
+      - type: timestamptz
+        expect: "2026-09-08 12:00:00.123456+00"
+  "timestamp[ns]":
+    outcome: coerced
+    rule: Postgres keeps microseconds; the nanoseconds are truncated
+    columns:
+      - type: timestamp
+        expect: "2026-09-08 12:00:00.123456"
+  "timestamp[us, tz=*]":
+    outcome: exact
+    columns:
+      - type: timestamptz
+        expect: "2026-09-08 12:00:00.123456+00"
+      # The instant's UTC wall clock, into a column with no zone.
+      - type: timestamp
+        expect: "2026-09-08 12:00:00.123456"
+  month_day_nano_interval:
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  "time64[us]":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  "time64[ns]":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+
+  # Containers go as JSON text rendered from the Arrow array, into a json
+  # column, which stores the text as sent. Element renderings follow
+  # arrow-go's own MarshalJSON: a date as YYYY-MM-DD, a timestamp as
+  # RFC 3339 in the type's zone (Z for none), binary as base64. Measured,
+  # not assumed: the first draft of these rows used a space and no zone.
+  "list<bool>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[true,true,true]"
+  "list<int8>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[-128,-128,-128]"
+  "list<int16>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[-32768,-32768,-32768]"
+  "list<int32>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[-2147483648,-2147483648,-2147483648]"
+  "list<int64>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[-9223372036854775808,-9223372036854775808,-9223372036854775808]"
+  "list<uint8>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[255,255,255]"
+  "list<uint16>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[65535,65535,65535]"
+  "list<uint32>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[4294967295,4294967295,4294967295]"
+  "list<uint64>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[18446744073709551615,18446744073709551615,18446744073709551615]"
+  "list<float32>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[3.4028235e+38,3.4028235e+38,3.4028235e+38]"
+  "list<float64>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[1.7976931348623157e+308,1.7976931348623157e+308,1.7976931348623157e+308]"
+  "list<utf8>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: '["L''Œil 👁 \"quoted\" back\\slash\ttab","L''Œil 👁 \"quoted\" back\\slash\ttab","L''Œil 👁 \"quoted\" back\\slash\ttab"]'
+  "list<binary>":
+    outcome: coerced
+    rule: rendered as JSON text, each element base64
+    columns:
+      - type: json
+        expect: '["AP9/gA==","AP9/gA==","AP9/gA=="]'
+  "list<date32>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: '["2026-09-08","2026-09-08","2026-09-08"]'
+  "list<timestamp[s]>":
+    outcome: coerced
+    rule: rendered as JSON text, each element RFC 3339 in UTC
+    columns:
+      - type: json
+        expect: '["2026-09-08T12:00:00Z","2026-09-08T12:00:00Z","2026-09-08T12:00:00Z"]'
+  "list<timestamp[ms]>":
+    outcome: coerced
+    rule: rendered as JSON text, each element RFC 3339 in UTC
+    columns:
+      - type: json
+        expect: '["2026-09-08T12:00:00.123Z","2026-09-08T12:00:00.123Z","2026-09-08T12:00:00.123Z"]'
+  "list<timestamp[us]>":
+    outcome: coerced
+    rule: rendered as JSON text, each element RFC 3339 in UTC
+    columns:
+      - type: json
+        expect: '["2026-09-08T12:00:00.123456Z","2026-09-08T12:00:00.123456Z","2026-09-08T12:00:00.123456Z"]'
+  "list<timestamp[ns]>":
+    outcome: coerced
+    rule: rendered as JSON text, each element RFC 3339 in UTC
+    columns:
+      - type: json
+        expect: '["2026-09-08T12:00:00.123456789Z","2026-09-08T12:00:00.123456789Z","2026-09-08T12:00:00.123456789Z"]'
+  "list<timestamp[us, tz=*]>":
+    outcome: coerced
+    rule: rendered as JSON text, each element RFC 3339 in the type's own zone
+    columns:
+      - type: json
+        expect: '["2026-09-08T21:00:00.123456+09:00","2026-09-08T21:00:00.123456+09:00","2026-09-08T21:00:00.123456+09:00"]'
+  "list<list<int64>>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808],[-9223372036854775808,-9223372036854775808,-9223372036854775808]]"
+  "list<struct>":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: '[{"a":7},{"a":7},{"a":7}]'
+  "fixed_size_list<int32>[3]":
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: "[1,2,3]"
+  struct:
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: '{"a":7}'
+  map:
+    outcome: coerced
+    rule: rendered as JSON text, an array of key and value pairs
+    columns:
+      - type: json
+        expect: '[{"key":"k","value":9}]'
+  # A container does not launder an element the sink cannot convert.
+  "list<decimal(*, *)>":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  "list<time64[us]>":
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  sparse_union:
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+  dictionary:
+    outcome: unsupported
+    code: user.sink.type_unsupported
+    columns: []
+# A null is sent as NULL. The test columns are nullable, so it is stored as
+# NULL; a NOT NULL column refuses it at the merge with 23502.
+nulls:
+  default:
+    outcome: exact
+    rule: stored as NULL; a NOT NULL column refuses it at the merge
+  list_element:
+    outcome: exact
+    rule: a JSON null inside the rendered array

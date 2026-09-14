@@ -7,6 +7,9 @@ feature: sink.noop
 # delivering rows is vacuous for it, and one test states that contract
 # directly rather than eight reasons asserting it.
 exempt:
+  - invariant: sink.flush.idempotent_on_key
+    reason: has no destination; discarding every row is the contract
+    proven_by: TestSinkNoop_IsNotKeyed
   - invariant: sink.write.buffers_only
     reason: has no destination; discarding every row is the contract
     proven_by: TestSinkNoop_DeliversNothingAndSaysSo

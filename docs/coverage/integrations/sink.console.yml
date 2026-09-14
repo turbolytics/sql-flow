@@ -3,6 +3,9 @@ kind: sink
 implements: [Sink]
 feature: sink.console
 exempt:
+  - invariant: sink.flush.idempotent_on_key
+    reason: writes lines to an io.Writer; nothing holds a row to identify
+    proven_by: TestSinkConsole_IsNotKeyed
   - invariant: sink.probe.fails_start
     reason: implements no Prober, so there is no start-time check to fail
     proven_by: TestSinkConsole_ImplementsNoProber

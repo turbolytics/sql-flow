@@ -2,4 +2,7 @@ id: sink.kafka
 kind: sink
 implements: [Sink, Prober]
 feature: sink.kafka
-exempt: []
+exempt:
+  - invariant: sink.flush.idempotent_on_key
+    reason: a topic is a log; a second delivery is a second record, which is at-least-once as Kafka defines it
+    proven_by: TestSinkKafka_IsNotKeyed

@@ -409,6 +409,34 @@ func (m *memSink) rows() []Row {
 	return out
 }
 
+// keyedSink identifies rows by id. replaces decides whether a second
+// delivery of an id replaces the row, which is the contract, or appends a
+// second one, which is the defect idempotent_on_key exists to catch.
+type keyedSink struct {
+	*memSink
+	replaces bool
+}
+
+func (k *keyedSink) Key() []string { return []string{"id"} }
+
+func (k *keyedSink) Flush(ctx context.Context) error {
+	if err := k.memSink.Flush(ctx); err != nil || !k.replaces {
+		return err
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	seen := map[int64]bool{}
+	kept := k.delivered[:0]
+	for _, id := range k.delivered {
+		if !seen[id] {
+			seen[id] = true
+			kept = append(kept, id)
+		}
+	}
+	k.delivered = kept
+	return nil
+}
+
 // dropSink discards its buffer when the flush fails.
 type dropSink struct{ *memSink }
 
@@ -688,8 +716,35 @@ func verdicts(t *testing.T, s SinkSubject) map[string]verdict {
 	for _, v := range sinkVerdicts(t, s) {
 		out[v.invariant] = v
 	}
-	assert.Equal(t, 10, len(out))
+	assert.Equal(t, 11, len(out))
 	return out
+}
+
+// A sink that names no key cannot claim a second delivery is harmless, and
+// the harness says so rather than failing it.
+func TestToolingConformanceSinks_AnUnkeyedSinkIsSkippedOnKey(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(newMemSink()))
+
+	assert.Equal(t, "", vs[idempotentOnKey].failure)
+	assert.True(t, strings.Contains(vs[idempotentOnKey].skipped, "integrations file"))
+}
+
+func TestToolingConformanceSinks_AKeyedSinkThatReplacesPasses(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(&keyedSink{memSink: newMemSink(), replaces: true}))
+
+	assert.Equal(t, "", vs[idempotentOnKey].failure)
+	assert.Equal(t, "", vs[idempotentOnKey].skipped)
+}
+
+// A sink that says it is keyed and appends a second row for the same id is
+// the defect: the reader sees a bucket twice.
+func TestToolingConformanceSinks_AKeyedSinkThatDoublesIsCaught(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	vs := verdicts(t, subject(&keyedSink{memSink: newMemSink()}))
+
+	assert.True(t, strings.Contains(vs[idempotentOnKey].failure, "once each"))
 }
 
 // Every invariant the harness judges must be declared, or its marker reports

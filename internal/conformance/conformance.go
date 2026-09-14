@@ -163,6 +163,7 @@ const (
 
 	probeFailsStart = "sink.probe.fails_start"
 	closeIdempotent = "lifecycle.close.idempotent"
+	idempotentOnKey = "sink.flush.idempotent_on_key"
 
 	rowsCounted = "sink.rows.counted_on_delivery"
 )
@@ -261,6 +262,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			{invariant: probeFailsStart, skipped: skip},
 			{invariant: closeIdempotent, skipped: skip},
 			{invariant: rowsCounted, skipped: skip},
+			{invariant: idempotentOnKey, skipped: skip},
 		}
 	}
 
@@ -271,8 +273,9 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 	// A manual reader rather than the noop provider, because the assertion is
 	// on the counter's value.
 	reader := sdkmetric.NewManualReader()
+	raw := s.New(t)
 	sink := core.NewCountingSink(
-		s.New(t),
+		raw,
 		sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)),
 		s.Integration,
 		"conformance",
@@ -393,6 +396,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			{invariant: probeFailsStart, skipped: stuck},
 			{invariant: closeIdempotent, skipped: stuck},
 			{invariant: rowsCounted, skipped: stuck},
+			{invariant: idempotentOnKey, skipped: stuck},
 		}
 	}
 
@@ -441,6 +445,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 			{invariant: noHollowSuccess, skipped: "the rows were delivered on write"},
 			{invariant: preservesOrder, skipped: "the rows were delivered on write"},
 			{invariant: rowsCounted, skipped: "the rows were delivered on write"},
+			{invariant: idempotentOnKey, skipped: "the rows were delivered on write"},
 		}, startAndStop(t, s)...)
 	}
 
@@ -515,7 +520,8 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		}
 		return append([]verdict{empty, buffers, keeps, depth, honours, hollow,
 			{invariant: preservesOrder, skipped: "the retry never delivered"},
-			{invariant: rowsCounted, skipped: "the retry never delivered"}},
+			{invariant: rowsCounted, skipped: "the retry never delivered"},
+			{invariant: idempotentOnKey, skipped: "the retry never delivered"}},
 			startAndStop(t, s)...)
 	}
 
@@ -562,7 +568,34 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 		}
 	}
 
-	return append([]verdict{empty, buffers, keeps, depth, honours, hollow, order, counted},
+	// A second delivery of a batch the destination already holds. The engine
+	// republishes a bucket whose delete lost a race with its flush, and a
+	// sink that identifies rows by key absorbs that rather than doubling it.
+	keyed := verdict{invariant: idempotentOnKey}
+	k, isKeyed := raw.(core.KeyedSink)
+	switch {
+	case !isKeyed || len(k.Key()) == 0:
+		keyed.skipped = s.Integration + " identifies rows by no key, so a second " +
+			"delivery is a second row; exempt it in its docs/coverage/integrations file"
+	case keeps.failure != "":
+		keyed.skipped = "rows were lost, so there is no second delivery to judge"
+	default:
+		again := s.Table(t, 1)
+		err := sink.WriteTable(ctx, again)
+		again.Release()
+		if err != nil {
+			t.Fatalf("conformance: WriteTable for the second delivery: %v", err)
+		}
+		if err := sink.Flush(ctx); err != nil {
+			keyed.failure = "delivering id=1 a second time failed with " + err.Error() +
+				"; a keyed sink replaces the row it already holds"
+		} else if got := s.ReadBack(t); len(got) != 3 || countOf(got, int64(1)) != 1 {
+			keyed.failure = "after delivering id=1 twice the destination holds " +
+				describe(got) + "; want ids 1, 2 and 3 once each"
+		}
+	}
+
+	return append([]verdict{empty, buffers, keeps, depth, honours, hollow, order, counted, keyed},
 		startAndStop(t, s)...)
 }
 
@@ -682,6 +715,17 @@ func deliveredInOrder(got, want []Row) string {
 			describe(want) + ", got " + describe(got)
 	}
 	return ""
+}
+
+// countOf reports how many rows carry id.
+func countOf(rows []Row, id int64) int {
+	n := 0
+	for _, r := range rows {
+		if r["id"] == id {
+			n++
+		}
+	}
+	return n
 }
 
 func indexOf(rows []Row, want Row) int {
