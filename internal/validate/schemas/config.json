@@ -407,7 +407,7 @@
               "properties": {
                 "dsn": {
                   "type": "string",
-                  "description": "A libpq connection URI or key-value string."
+                  "description": "A libpq connection URI or key-value string. Connect directly, or through\na pooler in session mode: the staging table lives for the session, and\ntransaction pooling hands each transaction whichever server connection\nis free."
                 },
                 "table": {
                   "type": "string",
@@ -688,7 +688,7 @@
                   "properties": {
                     "dsn": {
                       "type": "string",
-                      "description": "A libpq connection URI or key-value string."
+                      "description": "A libpq connection URI or key-value string. Connect directly, or through\na pooler in session mode: the staging table lives for the session, and\ntransaction pooling hands each transaction whichever server connection\nis free."
                     },
                     "table": {
                       "type": "string",
@@ -999,7 +999,7 @@
                         "properties": {
                           "dsn": {
                             "type": "string",
-                            "description": "A libpq connection URI or key-value string."
+                            "description": "A libpq connection URI or key-value string. Connect directly, or through\na pooler in session mode: the staging table lives for the session, and\ntransaction pooling hands each transaction whichever server connection\nis free."
                           },
                           "table": {
                             "type": "string",

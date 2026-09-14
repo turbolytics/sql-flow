@@ -80,8 +80,16 @@ type ClickhouseSink struct {
 // PostgresSink writes result rows to a Postgres table over a native client,
 // at the cost of the batch: a COPY into a staging table and a server-side
 // merge, in one transaction per batch.
+//
+// A batch is one transaction, so one value Postgres refuses, a NUL byte in
+// text or a number too wide for its column, fails the whole batch with exit
+// 10, and a source that replays on restart replays it. Clean such values in
+// the handler's SQL.
 type PostgresSink struct {
-	// A libpq connection URI or key-value string.
+	// A libpq connection URI or key-value string. Connect directly, or through
+	// a pooler in session mode: the staging table lives for the session, and
+	// transaction pooling hands each transaction whichever server connection
+	// is free.
 	DSN string `yaml:"dsn"`
 	// The target table, optionally schema-qualified. The sink never creates
 	// it.

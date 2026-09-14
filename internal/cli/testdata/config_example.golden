@@ -93,7 +93,10 @@ pipeline:
       table: <string>
     # Postgres-specific sink configuration.
     postgres:
-      # A libpq connection URI or key-value string.
+      # A libpq connection URI or key-value string. Connect directly, or through
+      # a pooler in session mode: the staging table lives for the session, and
+      # transaction pooling hands each transaction whichever server connection
+      # is free.
       dsn: <string>
       # The target table, optionally schema-qualified. The sink never creates
       # it.
@@ -186,7 +189,10 @@ pipeline:
         table: <string>
       # Postgres-specific sink configuration.
       postgres:
-        # A libpq connection URI or key-value string.
+        # A libpq connection URI or key-value string. Connect directly, or through
+        # a pooler in session mode: the staging table lives for the session, and
+        # transaction pooling hands each transaction whichever server connection
+        # is free.
         dsn: <string>
         # The target table, optionally schema-qualified. The sink never creates
         # it.
@@ -289,7 +295,10 @@ tables:
             table: <string>
           # Postgres-specific sink configuration.
           postgres:
-            # A libpq connection URI or key-value string.
+            # A libpq connection URI or key-value string. Connect directly, or through
+            # a pooler in session mode: the staging table lives for the session, and
+            # transaction pooling hands each transaction whichever server connection
+            # is free.
             dsn: <string>
             # The target table, optionally schema-qualified. The sink never creates
             # it.

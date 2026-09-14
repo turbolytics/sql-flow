@@ -24,6 +24,10 @@ pipeline:
 
   # Every consumed row is inserted; a redelivery after a crash inserts it
   # again, so append is at-least-once for the reader.
+  #
+  # A batch is one transaction. One value Postgres refuses, a browser string
+  # carrying a NUL byte say, fails the whole batch with exit 10, and Kafka
+  # replays it on restart. Clean raw event strings in the handler's SQL.
   sink:
     type: postgres
     postgres:

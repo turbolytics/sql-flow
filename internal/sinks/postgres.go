@@ -259,7 +259,9 @@ func (s *PostgresSink) connect(ctx context.Context) (*pgx.Conn, error) {
 
 // ensureStaging creates the temp table for this column set, once per
 // connection and column set. A batch whose columns differ from the last
-// drops and recreates it.
+// drops and recreates it, so a handler whose output columns change from batch
+// to batch, InferredMemBatch over sparse JSON say, pays three DDL statements
+// on every flush where they change.
 func (s *PostgresSink) ensureStaging(ctx context.Context, conn *pgx.Conn, cols []string) error {
 	if s.staging != nil && sameStrings(s.staging, cols) {
 		return nil

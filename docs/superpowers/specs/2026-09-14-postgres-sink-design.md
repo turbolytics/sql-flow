@@ -1,6 +1,6 @@
 # A keyed Postgres sink on a native client
 
-PR #290, issues #268 and #287. Verified against `main` at aae403f on 2026-09-14 with DuckDB v1.5.2 and postgres extension `c89234f`. Reviewed the same day; the review's decisions are folded in below.
+PR #290, issues #268 and #287. Verified against `main` at aae403f on 2026-09-14 with DuckDB v1.5.2 and postgres extension `c89234f`. Reviewed the same day; the review's decisions are folded in below. An adversarial review of the implementation followed, and its fixes are in "After the second review" at the end.
 
 ## The problem
 
@@ -215,3 +215,21 @@ Nothing in code. In the taught pattern, it removes `INSTALL postgres`, `LOAD pos
 - The window leak loop through the `postgres` sink reports the plain-insert rate, within noise, and #290's description gets that row.
 - Stopping Postgres under the windowed example exits 12 with `system.sink.unreachable`, and a batch whose value does not fit its column exits 10.
 - The CHANGELOG's `## Unreleased` names the sink, the validate rules, and `MALLOC_ARENA_MAX`.
+
+## After the second review
+
+An adversarial review ran the sink through `sinks.New` against Postgres 16 and broke it nine ways. Each finding is now a test, and the design above changes where the finding required it.
+
+| Finding | Change |
+| --- | --- |
+| A server that holds packets blocked a flush and the probe forever; the ladder checks its deadline only between attempts | Each attempt, a probe or one batch's transaction, is bounded by the retry deadline (`WithPostgresTimeout`). `retry.deadline_seconds` now also bounds one attempt. |
+| A connection closed with a FIN between flushes failed as `write_failed` and stopped the pipeline | A failure that closed the connection, or that pgx reports safe to retry, is `system.sink.unreachable` and retried. |
+| `DROP TABLE IF EXISTS sqlflow_staging` resolved on `search_path` and dropped a user's table | Every staging reference is `pg_temp.sqlflow_staging`. |
+| A nullable key column let a null key be inserted on every redelivery | The probe refuses a nullable key column. |
+| `run` did not refuse `upsert` with `late_rows: reemit` | `config.Window.ReemitOverwrites` holds the rule, and validate and run both refuse it. |
+| The batch was boxed into `[][]any` before the COPY: +177 MiB peak for 1M rows | A `CopyFromSource` streams one row at a time: +29 MiB. A schema check refuses an unsupported type before the transaction. |
+| One refused value fails the whole batch | Documented on the config and in `kafka.postgres.sink.yml`. A sink-side DLQ is a separate change. |
+| DuckDB `TIME`, `INTERVAL` and `ENUM` failed the first flush | `time32`, `time64`, `duration` and `month_day_nano_interval` convert to `pgtype.Time` and `pgtype.Interval`, and a dictionary writes its value. |
+| A deferrable unique constraint and an invalid index passed the probe | The probe requires `indimmediate` and `indisvalid`. |
+
+Not changed: a pooler in transaction mode does not keep a session temp table, so the sink requires a direct connection or session pooling, and the DSN's documentation says so. The harness's `idempotent_on_key` step re-delivers an identical row, so a sink that does `DO NOTHING` would pass it; replacement is proven for this sink by `LastRowInABatchWins` and `RetryAppliesBufferedBatchesInOrder`.
