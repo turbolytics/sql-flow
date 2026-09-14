@@ -248,6 +248,19 @@ func TestSinkPostgres_SQLStateClassifies(t *testing.T) {
 	err = postgresCopyError(errors.New("unable to encode 1.5 into binary format for int8"))
 	assert.Equal(t, errs.CodeSinkEncodeFailed, errs.CodeOf(err))
 	assert.That(t, !retryable(err))
+
+	// The same refusal after the COPY started reaches the sink as the
+	// server's 57014. Measured against postgres:16 with 1<<40 into smallint.
+	err = postgresCopyError(&pgconn.PgError{Code: "57014",
+		Message: "COPY from stdin failed: unable to encode 1099511627776 into binary format for int2 (OID 21)"})
+	assert.Equal(t, errs.CodeSinkEncodeFailed, errs.CodeOf(err))
+	assert.Equal(t, errs.ExitUserError, errs.ExitCode(err))
+	assert.That(t, !retryable(err))
+
+	// A statement the server cancelled for any other reason keeps the class
+	// rule: it may succeed on the next attempt.
+	err = postgresCopyError(&pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"})
+	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
 }
 
 func TestSinkPostgres_NewChecksTheBlock(t *testing.T) {

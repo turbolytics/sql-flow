@@ -3,6 +3,7 @@ package sinks
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -51,13 +52,30 @@ func postgresError(err error, format string, args ...any) error {
 	return errs.Wrap(errs.CodeSinkWriteFailed, err, format, args...)
 }
 
-// postgresCopyError codes a CopyFrom failure. A server answer or a network
-// failure classifies as any other statement's. Anything else is pgx refusing
-// to encode a Go value for the column's type, which fails identically on
-// every attempt.
+// copyFailedPrefix is how the server words a COPY the client abandoned. pgx
+// abandons one when it cannot encode a value for its column, and the server
+// then answers 57014, query_canceled, the same code a cancelled statement
+// gets.
+const copyFailedPrefix = "COPY from stdin failed"
+
+// postgresCopyError codes a CopyFrom failure.
+//
+// A value pgx cannot encode for its column fails identically on every
+// attempt, and it reaches the sink two ways: as a plain error before any row
+// is sent, or as the server's 57014 after pgx abandoned a COPY it had
+// started. Read by class alone, the second is operator intervention and
+// would be retried as unreachable, so it is recognised by the server's
+// wording first. Any other server answer or network failure classifies as
+// any other statement's.
 func postgresCopyError(err error) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) || isUnreachable(err) || errors.Is(err, context.Canceled) {
+	if errors.As(err, &pgErr) {
+		if pgErr.Code == "57014" && strings.HasPrefix(pgErr.Message, copyFailedPrefix) {
+			return errs.Wrap(errs.CodeSinkEncodeFailed, err, "postgres sink: encode a value for its column (SQLSTATE %s)", pgErr.Code)
+		}
+		return postgresError(err, "postgres sink: copy into staging")
+	}
+	if isUnreachable(err) || errors.Is(err, context.Canceled) {
 		return postgresError(err, "postgres sink: copy into staging")
 	}
 	return errs.Wrap(errs.CodeSinkEncodeFailed, err, "postgres sink: encode a value for its column")
