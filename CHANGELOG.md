@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v2026.09.14
+
+The first date-tagged release. Upgrade from v1.2.0. The pipeline file
+changes: the tumbling window `manager` block is gone, and a file that
+carries one does not start until it declares a `window`. The full notes are
+in the tag message.
 
 ### Added
 
@@ -26,20 +31,6 @@
 - `manager.watermark.never_regresses`, `manager.close.committed_rows_only`
   and `manager.late.policy_holds` join the enforced manager invariants.
 
-### Removed
-
-- The `manager` block, `collect_closed_windows_sql` and
-  `delete_closed_windows_sql`. This is a breaking change to the pipeline
-  file: a config that carries them stops validating and stops running, and
-  there is no translation, because the declaration cannot be derived from
-  two arbitrary predicates. Every shipped example carries a `window`
-  declaration instead. To migrate: `collect_closed_windows_sql` becomes
-  `emit_sql` over `closed` with its WHERE dropped; `delete_closed_windows_sql`
-  goes; the predicate's grace, idleness clause and bucket length become
-  `grace_seconds`, `idle_close_seconds` and `size_seconds`; the bucket column
-  becomes `time_column`; `poll_interval_seconds` and `sink` keep their names;
-  and `late_rows` is new and required.
-
 - `pipeline.drain_deadline_seconds` bounds the whole shutdown after SIGTERM.
   The final batch, the managers' final poll and the state syncs share one
   deadline, 30 seconds by default. When it passes the process exits 15 with
@@ -64,14 +55,43 @@
 - `sqlflow config example --serve` prints the serve config skeleton.
 - Error codes `user.config.serve_reserved` and `user.config.serve_dataset`.
 
+### Removed
+
+- The `manager` block, `collect_closed_windows_sql` and
+  `delete_closed_windows_sql`. This is a breaking change to the pipeline
+  file: a config that carries them stops validating and stops running, and
+  there is no translation, because the declaration cannot be derived from
+  two arbitrary predicates. Every shipped example carries a `window`
+  declaration instead. To migrate: `collect_closed_windows_sql` becomes
+  `emit_sql` over `closed` with its WHERE dropped; `delete_closed_windows_sql`
+  goes; the predicate's grace, idleness clause and bucket length become
+  `grace_seconds`, `idle_close_seconds` and `size_seconds`; the bucket column
+  becomes `time_column`; `poll_interval_seconds` and `sink` keep their names;
+  and `late_rows` is new and required.
+
 ### Fixed
 
+- A batch the sink refused had its offsets committed on the way out.
+  Positions advanced when a message reached the handler, and the shutdown's
+  state syncs made them durable, so a restart resumed past rows nothing had
+  written. The loop resets to the last committed positions on any error,
+  proven by the enforced invariant `pipeline.shutdown.commits_only_delivered`.
+- A window poll the sink refused was retried every tick while the container
+  reported healthy. It stops the process with the sink's error after one
+  attempt.
 - A SIGTERM that arrived while a batch was being flushed aborted the flush,
   and the process exited with the sink's error instead of draining. The
   batch now finishes inside the drain deadline.
-- A cancel during a table manager's regular poll skipped its final poll, and
+- A cancel during a window's regular poll skipped its final poll, and
   a final poll that failed was logged while the process exited 0. The final
   poll always runs, and its failure is the exit code.
+- A value the sink's driver cannot encode was retried the full ladder and
+  reported as unreachable. It fails once, as `user.sink.encode_failed`,
+  exit 10.
+- The handler reset, the progress write and the sqlcommand sink ran on the
+  pipeline's DuckDB connection without its lock, so a `--with-http-debug`
+  query could close a result the loop had in flight. Every statement on that
+  connection holds the lock.
 - One failed flush counted as three errors.
 
 ### Known limits
