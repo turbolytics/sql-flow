@@ -20,6 +20,11 @@
   its batch table. A batch that re-initialised during either failed, and the
   process exited. The handler skips a refused checkpoint, and the next batch
   reclaims what it left.
+- The reference-table check at startup parsed memory DuckDB had already
+  freed. It read the handler SQL's AST as a string that pointed into the
+  query result, and released the result before parsing it. When DuckDB
+  reused that memory, the check warned `parse serialized sql: invalid
+  character` or counted another query's tables. It copies the AST first.
 
 ### Added
 
