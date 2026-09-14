@@ -27,6 +27,7 @@ sink.iceberg: {unit: covered, integration: not_required, release: covered}
 sink.kafka: {unit: covered, integration: covered, release: covered}
 sink.noop: {unit: covered, integration: not_required, release: not_required}
 sink.parquet: {unit: not_required, integration: not_required, release: covered}
+sink.postgres: {unit: covered, integration: covered, release: not_required}
 sink.retry: {unit: covered, integration: not_required, release: not_required}
 sink.sqlcommand: {unit: covered, integration: not_required, release: not_required}
 source.kafka: {unit: covered, integration: covered, release: covered}

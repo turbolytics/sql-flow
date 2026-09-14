@@ -5,6 +5,7 @@ sink.buffer.reports_depth: {unit: exempt, integration: exempt, release: exempt}
 sink.error.classifies: {unit: exempt, integration: exempt, release: exempt}
 sink.flush.empty_is_noop: {unit: exempt, integration: exempt, release: exempt}
 sink.flush.honours_context: {unit: exempt, integration: exempt, release: exempt}
+sink.flush.idempotent_on_key: {unit: exempt, integration: exempt, release: exempt}
 sink.flush.keeps_batch: {unit: exempt, integration: exempt, release: exempt}
 sink.flush.no_hollow_success: {unit: exempt, integration: exempt, release: exempt}
 sink.flush.preserves_order: {unit: exempt, integration: exempt, release: exempt}
