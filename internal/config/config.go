@@ -77,6 +77,23 @@ type ClickhouseSink struct {
 	Table string `yaml:"table"`
 }
 
+// PostgresSink writes result rows to a Postgres table over a native client,
+// at the cost of the batch: a COPY into a staging table and a server-side
+// merge, in one transaction per batch.
+type PostgresSink struct {
+	// A libpq connection URI or key-value string.
+	DSN string `yaml:"dsn"`
+	// The target table, optionally schema-qualified. The sink never creates
+	// it.
+	Table string `yaml:"table"`
+	// upsert replaces the row a key already identifies; append inserts every
+	// row. Required: the two are different promises to the reader.
+	Mode string `yaml:"mode" jsonschema:"enum=upsert,enum=append"`
+	// The columns a row is identified by. Required for upsert, refused for
+	// append. A unique index or constraint must cover exactly these columns.
+	Key []string `yaml:"key,omitempty"`
+}
+
 // Sink is where result rows go. One block per destination, and the type field
 // selects which one the pipeline builds.
 //
@@ -97,6 +114,8 @@ type Sink struct {
 	Iceberg *IcebergSink `yaml:"iceberg,omitempty"`
 	// ClickHouse-specific sink configuration.
 	Clickhouse *ClickhouseSink `yaml:"clickhouse,omitempty"`
+	// Postgres-specific sink configuration.
+	Postgres *PostgresSink `yaml:"postgres,omitempty"`
 	// Bounds how long this sink keeps trying a destination that is not
 	// answering. Omit to accept the defaults; set max_attempts to 1 to turn
 	// retrying off. The kafka sink ignores this: franz-go already retries a

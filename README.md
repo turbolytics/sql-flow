@@ -661,7 +661,7 @@ sink:
 
 ### Sink retries
 
-ClickHouse and Iceberg flushes retry when the destination is not answering.
+ClickHouse, Iceberg and Postgres flushes retry when the destination is not answering.
 Omit the block to accept the defaults. Set `max_attempts: 1` to turn retrying
 off. The Kafka sink ignores this block: franz-go already retries a produce
 with its own backoff.
