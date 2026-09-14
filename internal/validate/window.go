@@ -87,14 +87,15 @@ func checkWindows(rendered []byte, rep *Report) {
 						"Drop the index and sum the appended rows in emit_sql, or set "+
 						"pipeline.state.path", i), position(node)))
 			}
-			// reemit publishes a bucket the sink already holds. A sink that
-			// upserts replaces it; a sink that appends keeps both rows, and
-			// its reader cannot tell which is current.
+			// reemit publishes emit_sql over the late rows alone, for a bucket
+			// the sink already holds. A sink that appends keeps both rows, and
+			// its reader has to add them rather than keep the newest.
 			if w.LateRows == "reemit" && appendsOnly(w.Sink.Type) {
 				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
 					"tables.sql[%d] window: late_rows is reemit and the %s sink appends, so a "+
-						"late row publishes a second row for a bucket the sink already holds. "+
-						"Use drop, or a sink that upserts on the bucket's key",
+						"late row publishes a second row for a bucket the sink already holds, "+
+						"computed over the late rows alone. Its reader has to add the two. "+
+						"Use drop unless it does",
 					i, w.Sink.Type), position(mappingKey(node, "late_rows"))))
 			}
 		}

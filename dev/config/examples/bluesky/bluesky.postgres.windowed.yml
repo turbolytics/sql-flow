@@ -48,15 +48,17 @@ tables:
       # land. After idle_close_seconds with nothing arriving, every open
       # bucket closes.
       #
-      # late_rows: reemit, because the sink upserts: a row for a bucket that
-      # already closed publishes the bucket again, and ON CONFLICT replaces
-      # the value.
+      # late_rows: drop, because the sink replaces. A row for a bucket that
+      # already closed is discarded and counted in window_late_rows_total.
+      # reemit would run emit_sql over the late rows alone, because the
+      # bucket's other rows were deleted when it closed, and ON CONFLICT
+      # would replace the bucket's count with theirs.
       window:
         time_column: bucket
         size_seconds: 60
         grace_seconds: 60
         idle_close_seconds: 60
-        late_rows: reemit
+        late_rows: drop
         poll_interval_seconds: 10
         emit_sql: |
           SELECT bucket, lang, sum(posts)::INTEGER AS posts

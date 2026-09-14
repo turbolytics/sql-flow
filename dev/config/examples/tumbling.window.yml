@@ -31,8 +31,8 @@ tables:
         grace_seconds: 0
         idle_close_seconds: 60
         # The sink is a topic, which appends. drop keeps each bucket to one
-        # message; reemit would publish a correction the consumer has to
-        # apply itself.
+        # message; reemit would publish a second message counted over the
+        # late rows alone, which the consumer has to add to the first.
         late_rows: drop
         # emit_sql shapes the closed rows. closed is every row of every bucket
         # that just closed. GROUP BY ALL groups by the output columns, which
