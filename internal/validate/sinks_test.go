@@ -171,3 +171,40 @@ func TestValidateSchema_PostgresBlockShape(t *testing.T) {
 		}
 	}
 }
+
+// The warning is about the extension, so it fires only for a statement whose
+// target is the Postgres attachment. An upsert into a DuckDB table, with a
+// Postgres attached for a join, sends Postgres nothing. INSERT OR REPLACE
+// into the attachment takes the same full-table path as ON CONFLICT.
+func TestValidateSchema_SqlcommandUpsertWarnsOnlyForThePostgresTarget(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	local := `type: sqlcommand
+sqlcommand:
+  sql: INSERT INTO agg SELECT * FROM sqlflow_sink_batch ON CONFLICT (bucket) DO UPDATE SET count = EXCLUDED.count`
+	rep := validateSinks(t, "POSTGRES", "drop", local, noopBlock)
+	assert.Equal(t, 0, len(sinkDiagnostics(rep)))
+
+	replace := `type: sqlcommand
+sqlcommand:
+  sql: INSERT OR REPLACE INTO "pg".agg SELECT * FROM sqlflow_sink_batch`
+	rep = validateSinks(t, "POSTGRES", "drop", replace, noopBlock)
+	diags := sinkDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.That(t, strings.Contains(diags[0].Message, "whole target table"))
+}
+
+// An ATTACH with no AS names its database after the path, which validate
+// does not resolve, so any upsert warns: the target cannot be ruled out.
+func TestValidateSchema_SqlcommandUpsertWarnsWhenTheAliasIsImplicit(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	cfg := strings.Replace(sinksConfig, "AS pg (TYPE %s)", "(TYPE %s)", 1)
+	local := `type: sqlcommand
+sqlcommand:
+  sql: INSERT INTO agg SELECT * FROM sqlflow_sink_batch ON CONFLICT (bucket) DO UPDATE SET count = EXCLUDED.count`
+	for _, v := range []string{"POSTGRES", "drop", indent(local, 10), indent(noopBlock, 4)} {
+		cfg = strings.Replace(cfg, "%s", v, 1)
+	}
+	rep, err := Validate(context.Background(), Request{Path: "p.yml", Config: cfg})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(sinkDiagnostics(rep)))
+}

@@ -118,19 +118,29 @@ func (s *PostgresSink) Flush(ctx context.Context) error {
 			s.mu.Unlock()
 			return nil
 		}
+		// A reference of the flush's own, so a Close that releases the
+		// buffer mid-send cannot free the batch being sent.
 		head := s.tables[0]
+		head.Retain()
 		s.mu.Unlock()
 
-		if err := s.send(ctx, head); err != nil {
+		err := s.send(ctx, head)
+
+		s.mu.Lock()
+		// WriteTable only appends, so the head is still this batch unless
+		// Close emptied the buffer while it was being sent.
+		delivered := err == nil && len(s.tables) > 0 && s.tables[0] == head
+		if delivered {
+			s.tables = s.tables[1:]
+		}
+		s.mu.Unlock()
+		if delivered {
+			head.Release()
+		}
+		head.Release()
+		if err != nil {
 			return err
 		}
-
-		// Still at the head: WriteTable only appends, and nothing else
-		// removes.
-		s.mu.Lock()
-		s.tables = s.tables[1:]
-		s.mu.Unlock()
-		head.Release()
 	}
 }
 
@@ -326,8 +336,17 @@ func (s *PostgresSink) Probe(ctx context.Context) error {
 // Warnings reports what Probe found that is not an error.
 func (s *PostgresSink) Warnings() []string { return append([]string(nil), s.warnings...) }
 
-// Close releases the connection. Safe to call twice.
+// Close releases every batch still buffered and the connection. Safe to
+// call twice. A batch a failed flush kept is dropped here, not delivered:
+// the pipeline did not commit its offsets, so the next start replays it.
 func (s *PostgresSink) Close() error {
+	s.mu.Lock()
+	for _, t := range s.tables {
+		t.Release()
+	}
+	s.tables = nil
+	s.mu.Unlock()
+
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 	if s.conn == nil {

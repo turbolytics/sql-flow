@@ -18,10 +18,13 @@ import (
 //   - A window whose postgres sink upserts and whose late_rows is reemit.
 //     The sink replaces a bucket's row with what it is handed, and a reemit
 //     hands it emit_sql over the late rows alone. Refused.
-//   - A sqlcommand sink whose SQL carries ON CONFLICT while a command
-//     attaches a Postgres. The DuckDB postgres extension runs that upsert by
-//     copying every row's key from the target into DuckDB, so a flush costs
-//     the table, not the batch. A warning that names the postgres sink.
+//   - A sqlcommand sink that upserts into an attached Postgres: ON CONFLICT
+//     or INSERT OR REPLACE with an INTO naming a Postgres attachment. The
+//     DuckDB postgres extension runs that upsert by copying every row's key
+//     from the target into DuckDB, so a flush costs the table, not the
+//     batch. A warning that names the postgres sink. An upsert into a DuckDB
+//     table sends Postgres nothing and is not warned. The check is textual:
+//     a USE that makes the attachment the default database hides the target.
 func checkSinks(rendered []byte, rep *Report) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(rendered, &root); err != nil {
@@ -42,7 +45,7 @@ func checkSinks(rendered []byte, rep *Report) {
 	warn := func(msg string, pos *Position) {
 		rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, msg, pos))
 	}
-	attached := attachesPostgres(conf)
+	attached := postgresAttachments(conf)
 
 	doc := &root
 	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
@@ -71,7 +74,7 @@ func checkSinks(rendered []byte, rep *Report) {
 }
 
 // checkSink holds one sink block to the rules that need no window.
-func checkSink(where string, s config.Sink, node *yaml.Node, attached bool, fail, warn func(string, *Position)) {
+func checkSink(where string, s config.Sink, node *yaml.Node, attached attachments, fail, warn func(string, *Position)) {
 	switch s.Type {
 	case "postgres":
 		if s.Postgres == nil {
@@ -90,8 +93,8 @@ func checkSink(where string, s config.Sink, node *yaml.Node, attached bool, fail
 			}
 		}
 	case "sqlcommand":
-		if attached && s.SQLCommand != nil && onConflict.MatchString(s.SQLCommand.SQL) {
-			warn(where+": ON CONFLICT through the DuckDB postgres extension copies every row's key "+
+		if s.SQLCommand != nil && attached.upsertsInto(s.SQLCommand.SQL) {
+			warn(where+": an upsert through the DuckDB postgres extension copies every row's key "+
 				"from the whole target table into DuckDB on every flush, so a flush costs the table, not "+
 				"the batch. The postgres sink does the same write at the cost of the batch: "+
 				"type: postgres with table, mode: upsert and key", position(mappingValue(node, "sqlcommand")))
@@ -100,14 +103,51 @@ func checkSink(where string, s config.Sink, node *yaml.Node, attached bool, fail
 }
 
 var (
-	onConflict     = regexp.MustCompile(`(?i)\bON\s+CONFLICT\b`)
-	attachPostgres = regexp.MustCompile(`(?is)\bATTACH\b.*\bTYPE\s+POSTGRES\b`)
+	upsert = regexp.MustCompile(`(?i)\bON\s+CONFLICT\b|\bINSERT\s+OR\s+REPLACE\b`)
+	// attachStatement is one ATTACH, up to the semicolon that ends it.
+	attachStatement = regexp.MustCompile(`(?is)\bATTACH\b[^;]*`)
+	postgresType    = regexp.MustCompile(`(?i)\bTYPE\s+POSTGRES\b`)
+	// attachAlias is the AS after the quoted path: ATTACH 'dsn' AS pg (...).
+	attachAlias = regexp.MustCompile(`(?is)'[^']*'\s+AS\s+"?([A-Za-z_][A-Za-z0-9_]*)"?`)
 )
 
-// attachesPostgres reports whether any command attaches a Postgres.
-func attachesPostgres(conf config.Conf) bool {
+// attachments are the Postgres databases a config's commands attach.
+type attachments struct {
+	aliases []string
+	// unnamed is an ATTACH with no AS, whose database takes its name from
+	// the connection string. validate does not resolve that name, so any
+	// upsert could be aimed at it.
+	unnamed bool
+}
+
+func postgresAttachments(conf config.Conf) attachments {
+	var a attachments
 	for _, c := range conf.Commands {
-		if attachPostgres.MatchString(c.SQL) {
+		for _, stmt := range attachStatement.FindAllString(c.SQL, -1) {
+			if !postgresType.MatchString(stmt) {
+				continue
+			}
+			if m := attachAlias.FindStringSubmatch(stmt); m != nil {
+				a.aliases = append(a.aliases, m[1])
+			} else {
+				a.unnamed = true
+			}
+		}
+	}
+	return a
+}
+
+// upsertsInto reports whether sql upserts into one of the attachments.
+func (a attachments) upsertsInto(sql string) bool {
+	if !upsert.MatchString(sql) {
+		return false
+	}
+	if a.unnamed {
+		return true
+	}
+	for _, alias := range a.aliases {
+		into := regexp.MustCompile(`(?i)\bINTO\s+"?` + regexp.QuoteMeta(alias) + `"?\s*\.`)
+		if into.MatchString(sql) {
 			return true
 		}
 	}

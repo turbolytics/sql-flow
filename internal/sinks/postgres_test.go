@@ -348,3 +348,28 @@ func TestSinkPostgres_FlushAgainstNoServerIsUnreachableAndKeepsTheBatch(t *testi
 	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
 	assert.Equal(t, 1, s.BufferedRows())
 }
+
+// Close releases what the sink still holds. A shutdown with a batch stuck in
+// the retry ladder used to drop the connection and leak the batch.
+func TestSinkPostgres_CloseReleasesBufferedTables(t *testing.T) {
+	coverage.Covers(t, "sink.postgres")
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	schema := arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	b := array.NewRecordBuilder(mem, schema)
+	b.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2, 3}, nil)
+	rec := b.NewRecord()
+	b.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	rec.Release()
+
+	s, err := NewPostgresSink(config.PostgresSink{DSN: "postgres://u:p@no-such-host.invalid:5432/db", Table: "t", Mode: "append"})
+	assert.NoError(t, err)
+	assert.NoError(t, s.WriteTable(context.Background(), tbl))
+	tbl.Release()
+	assert.That(t, mem.CurrentAlloc() > 0)
+
+	assert.NoError(t, s.Close())
+	assert.Equal(t, 0, mem.CurrentAlloc())
+	assert.Equal(t, 0, s.BufferedRows())
+	assert.NoError(t, s.Close())
+}
