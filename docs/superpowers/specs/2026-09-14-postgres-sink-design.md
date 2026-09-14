@@ -1,6 +1,6 @@
 # A keyed Postgres sink on a native client
 
-PR #290, issues #268 and #287. Verified against `main` at aae403f on 2026-09-14 with DuckDB v1.5.2 and postgres extension `c89234f`.
+PR #290, issues #268 and #287. Verified against `main` at aae403f on 2026-09-14 with DuckDB v1.5.2 and postgres extension `c89234f`. Reviewed the same day; the review's decisions are folded in below.
 
 ## The problem
 
@@ -25,7 +25,7 @@ The cost of a flush is the size of the table, not the size of the batch. The dem
 
 Three of the five footguns the #268 post describes are the same defect. The extension's `COPY ... FROM STDIN` for the conflicting path carries no column list, so an omitted `NOT NULL DEFAULT` column arrives as `NULL`. Its catalog query reads only `pg_constraint`, so a unique index is not a conflict target. Postgres never sees `ON CONFLICT`, so its "cannot affect row a second time" check never runs and duplicate keys in one batch keep one row silently.
 
-The shipped `bluesky.postgres.windowed.yml` also pairs `late_rows: reemit` with this upsert. A reemit publishes only the late rows, and the upsert replaces the bucket's count with theirs. That trap is writable today because the sink's contract lives in user SQL.
+Until #288, the shipped `bluesky.postgres.windowed.yml` paired `late_rows: reemit` with this upsert. A reemit publishes only the late rows, and the upsert replaces the bucket's count with theirs. #288 moved the example to `drop`; the trap stays writable because the sink's contract lives in user SQL.
 
 ## The rule
 
@@ -60,16 +60,20 @@ The sink runs on its own pgx connection. It touches no DuckDB connection and nee
 
 ### 2. One flush
 
-`WriteTable` retains the batch and buffers it. `Flush` sends every buffered batch and keeps them buffered when it cannot, in the order they arrived, as the ClickHouse sink does. Then, in one transaction on the sink's connection:
+`WriteTable` retains the batch and buffers it. `Flush` delivers the buffered batches one at a time, in arrival order, each in its own transaction, and stops at the first failure with that batch and every later one still buffered. One transaction per batch, not one for all of them: after a failed flush the retry ladder calls `Flush` with two or more batches buffered, and a running total or a CDC stream carries the same key in consecutive batches. Merged in one statement those rows hit `ON CONFLICT DO UPDATE` twice and fail with `21000`, which the first attempt would have applied in order. A retry must not fail a batch the first attempt would have accepted.
 
-1. `CREATE TEMP TABLE <staging> ON COMMIT DELETE ROWS AS SELECT <batch columns> FROM <target> WITH NO DATA`. Once per connection and column set: a temp table lives for the connection and empties itself at every commit, so there is no catalog churn per flush, no name to collide with another pipeline's, and nothing left behind by a crash. It has exactly the batch's columns with the target's types and none of the target's constraints or defaults, so the merge is the only place a row is judged, and the error names the target. A batch whose columns differ from the last drops and recreates it.
-2. `COPY <staging> (<batch columns>) FROM STDIN (FORMAT binary)` through pgx `CopyFrom`. Cost is the batch.
+For one batch, on the sink's connection:
+
+1. `CREATE TEMP TABLE IF NOT EXISTS <staging> ON COMMIT DELETE ROWS AS SELECT <batch columns> FROM <target> WITH NO DATA`, then a `__seq bigint` column. Once per connection and column set, and again after every redial, because a temp table dies with its session. It empties itself at every commit, so there is no catalog churn per flush, no name to collide with another pipeline's, and nothing left behind by a crash. It has exactly the batch's columns with the target's types and none of the target's constraints or defaults, so the merge is the only place a row is judged, and the error names the target. A batch whose columns differ from the last drops and recreates it.
+2. `COPY <staging> (<batch columns>, __seq) FROM STDIN (FORMAT binary)` through pgx `CopyFrom`. The sink fills `__seq` with the row's position in the batch. Cost is the batch.
 3. The merge, on the server:
-   - `upsert`: `INSERT INTO <target> (<batch columns>) SELECT <batch columns> FROM <staging> ON CONFLICT (<key>) DO UPDATE SET <c> = EXCLUDED.<c>` for every batch column not in the key. A batch whose only columns are the key gets `DO NOTHING`.
-   - `append`: `INSERT INTO <target> (<batch columns>) SELECT <batch columns> FROM <staging>`.
+   - `upsert`: `INSERT INTO <target> (<batch columns>) SELECT DISTINCT ON (<key>) <batch columns> FROM <staging> ORDER BY <key>, __seq DESC ON CONFLICT (<key>) DO UPDATE SET <c> = EXCLUDED.<c>` for every batch column not in the key. A batch whose only columns are the key gets `DO NOTHING`.
+   - `append`: `INSERT INTO <target> (<batch columns>) SELECT <batch columns> FROM <staging> ORDER BY __seq`.
 4. `COMMIT`.
 
-The `INSERT` names the batch's columns and no others, so a column the batch omits takes the table's default on both paths. Postgres runs the `ON CONFLICT`, so a unique index is a valid conflict target and two rows with one key in a batch fail with `21000 cardinality_violation` rather than silently keeping one. The three footguns close without a line of user SQL.
+Two rows with one key in a batch: the last one in the batch wins, and the sink says so in its docs. The footgun in #268 was that the extension kept one of the two without saying which. Failing instead would make an ordinary CDC batch, two updates for one id, an exit 10 and a crash loop, and it would make `emit_sql`'s `GROUP BY` load-bearing for the sink's correctness. Kafka Connect's and Flink's JDBC sinks apply a batch in order and let the last row win, and so does this one. "Last" is the row's position in the batch, which is the handler's output order.
+
+The `INSERT` names the batch's columns and no others, so a column the batch omits takes the table's default on insert and keeps its value on update. The demo's `updated_at = EXCLUDED.updated_at` has no equivalent: a column that should change on every republish is emitted from `emit_sql`. Postgres runs the `ON CONFLICT`, so a unique index is a valid conflict target. The three footguns close without a line of user SQL.
 
 Every step takes the flush's context. A drain deadline cancels a `COPY` mid-stream and the transaction rolls back.
 
@@ -78,8 +82,9 @@ Every step takes the flush's context. A drain deadline cancels a `COPY` mid-stre
 `New` parses the DSN and dials nothing. `Probe`, which `sinks.New` runs before the pipeline consumes anything, dials and checks:
 
 - The table exists. Missing: `user.sink.invalid`.
-- For `upsert`, a unique index or constraint covers exactly the key columns, in any order. Read from `pg_index` with `indisunique`, so a unique index counts, as it does for native Postgres. Missing: `user.sink.invalid`, naming the key and the table.
+- For `upsert`, a unique index or constraint covers exactly the key columns, in any order. Read from `pg_index` with `indisunique` and `indpred IS NULL`: a unique index counts, as it does for native Postgres, and a partial index does not, because `ON CONFLICT (<key>)` will not infer one without its predicate. Missing: `user.sink.invalid`, naming the key and the table.
 - Every key column exists in the table.
+- For `append`, a unique index or constraint on the table is a warning in the log: a redelivery after a crash inserts the same rows again and exits 10 on it. `append` is at-least-once for the reader, and the docs say so.
 
 A refused or unresolvable host: `system.sink.unreachable`, exit 12. A server that answered and refused: `user.sink.invalid`, exit 10. The batch's columns are not known until the first `Flush`, because the handler's Arrow schema decides them. A column the table lacks fails that flush with `42703 undefined_column`, classified below.
 
@@ -95,7 +100,7 @@ pgx returns `*pgconn.PgError` with a SQLSTATE, and dial failures wrap `net.OpErr
 | `40` | serialization failure, deadlock | `system.sink.unreachable` | yes | 12 |
 | `22` | data exception: a value does not fit the column | `user.sink.encode_failed` | no | 10 |
 | `23` | integrity constraint violation | `user.sink.invalid` | no | 10 |
-| `21` | cardinality violation: two rows with one key | `user.sink.invalid` | no | 10 |
+| `21` | cardinality violation | `user.sink.invalid` | no | 10 |
 | `42` | undefined column or table, syntax, privilege | `user.sink.invalid` | no | 10 |
 | `28` | authentication | `user.sink.invalid` | no | 10 |
 | `3D`, `3F` | database or schema does not exist | `user.sink.invalid` | no | 10 |
@@ -121,7 +126,7 @@ The sink converts each Arrow column to the Go value pgx encodes for the target c
 | `date32` | `time.Time` at midnight UTC | `date` |
 | `timestamp` with a zone | `time.Time`, the instant | `timestamptz`; `timestamp` receives the UTC wall clock |
 | `timestamp` without a zone | `time.Time`, the wall clock read as UTC | `timestamp`; `timestamptz` receives it as a UTC instant |
-| `list`, `struct`, `map` | the JSON text DuckDB renders | `jsonb`, `json`, `text` |
+| `list`, `struct`, `map` | JSON text the sink renders from the Arrow array | `jsonb`, `json`, `text` |
 | `time32`, `time64`, `duration`, `interval`, `dictionary` | unsupported | fails the flush with `user.sink.encode_failed` naming the column and type |
 
 A `list` of scalars could map to a Postgres array. It does not in this revision: JSON is one rule that covers every nesting, and the integration file records the gap. `docs/coverage/integrations/sink.postgres.yml` declares every key in `lattice.yml` with its outcome, written by hand from this table, and the type round-trip runner proves each row against a live Postgres.
@@ -130,7 +135,7 @@ A `list` of scalars could map to a Postgres array. It does not in this revision:
 
 - A window whose sink is `postgres` with `mode: upsert` and `late_rows: reemit` is refused, `user.config.invalid`. The sink replaces a bucket's row with what it is handed, and a reemit hands it only the late rows.
 - `mode: append` with `reemit` warns, as `kafka` and `iceberg` do. `appendsOnly` reads the sink block, not only the type.
-- A window whose sink is `sqlcommand`, whose SQL contains `ON CONFLICT`, in a config whose commands `ATTACH ... (TYPE POSTGRES)`, warns: every flush reads the whole target table's keys through the extension, and the `postgres` sink does the same write at the cost of the batch.
+- Any `sqlcommand` sink, pipeline or window, whose SQL contains `ON CONFLICT`, in a config whose commands `ATTACH ... (TYPE POSTGRES)`, warns: every flush reads the whole target table's keys through the extension, and the `postgres` sink does the same write at the cost of the batch.
 
 The validate schema and the CLI's example output regenerate with the new block.
 
@@ -203,8 +208,10 @@ Nothing in code. In the taught pattern, it removes `INSTALL postgres`, `LOAD pos
 - `go test -short -race ./...` passes with unit tests marked `sink.postgres` for the config rules, the merge statement, the SQLSTATE table, and the type conversion.
 - `TestIntegrationSinkPostgres_Conformance` passes every sink invariant, including `sink.flush.idempotent_on_key`, against a testcontainers Postgres behind the proxy.
 - `make coverage-check` passes with `sink.postgres` declared, its type table answering every lattice key, and every other sink exempt from the new invariant with a proof.
-- `sqlflow validate` refuses `upsert` with `reemit`, warns on `append` with `reemit`, and warns on a `sqlcommand` window upsert into an attached Postgres, each with a test.
+- `sqlflow validate` refuses `upsert` with `reemit`, warns on `append` with `reemit`, and warns on a `sqlcommand` upsert into an attached Postgres, each with a test.
+- A test fails the first flush, lets the ladder retry with two buffered batches that share a key, and asserts the table holds the second batch's value. That is the case a merge-all-at-once flush fails with `21000`.
+- A test delivers one batch with two rows for one key and asserts the table holds the last one.
 - `bluesky.postgres.windowed.yml` runs against the local Postgres end to end and the read-back matches the `sqlcommand` version's rows.
 - The window leak loop through the `postgres` sink reports the plain-insert rate, within noise, and #290's description gets that row.
-- Stopping Postgres under the windowed example exits 12 with `system.sink.unreachable`, and a batch with two rows for one key exits 10 with the cardinality error.
+- Stopping Postgres under the windowed example exits 12 with `system.sink.unreachable`, and a batch whose value does not fit its column exits 10.
 - The CHANGELOG's `## Unreleased` names the sink, the validate rules, and `MALLOC_ARENA_MAX`.
