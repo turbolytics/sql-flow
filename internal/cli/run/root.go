@@ -40,6 +40,7 @@ func newErrorPolicies(
 	lock *sync.Mutex,
 	mp metric.MeterProvider,
 	events sinks.RetryEvents,
+	logger *zap.Logger,
 ) (core.PipelineErrorPolicies, error) {
 	var policies core.PipelineErrorPolicies
 
@@ -65,7 +66,8 @@ func newErrorPolicies(
 			sinks.WithMeterProvider(mp),
 			sinks.WithSinkRole("dlq"),
 			sinks.WithRetryEvents(events),
-			sinks.WithConnLock(lock))
+			sinks.WithConnLock(lock),
+			sinks.WithLogger(logger))
 		if err != nil {
 			return policies, fmt.Errorf("pipeline.on_error dlq: %w", err)
 		}
@@ -84,12 +86,14 @@ func newPipelineSink(
 	lock *sync.Mutex,
 	mp metric.MeterProvider,
 	events sinks.RetryEvents,
+	logger *zap.Logger,
 ) (core.Sink, error) {
 	return sinks.New(ctx, conf.Pipeline.Sink, conn,
 		sinks.WithMeterProvider(mp),
 		sinks.WithSinkRole(core.SinkRolePipeline),
 		sinks.WithRetryEvents(events),
-		sinks.WithConnLock(lock))
+		sinks.WithConnLock(lock),
+		sinks.WithLogger(logger))
 }
 
 func NewCommand() *cobra.Command {
@@ -394,7 +398,7 @@ func NewCommand() *cobra.Command {
 
 			// The signal context, so a SIGTERM arriving while the sink dials
 			// its destination stops the start instead of waiting it out.
-			sink, err := newPipelineSink(ctx, conf, conn, lock, meterProvider, retryEvents)
+			sink, err := newPipelineSink(ctx, conf, conn, lock, meterProvider, retryEvents, logger)
 			if err != nil {
 				return err
 			}
@@ -417,7 +421,7 @@ func NewCommand() *cobra.Command {
 				}()
 			}
 
-			errorPolicies, err := newErrorPolicies(ctx, conf, conn, lock, meterProvider, retryEvents)
+			errorPolicies, err := newErrorPolicies(ctx, conf, conn, lock, meterProvider, retryEvents, logger)
 			if err != nil {
 				return err
 			}

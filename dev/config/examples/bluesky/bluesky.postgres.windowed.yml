@@ -1,15 +1,6 @@
 # Counts Bluesky posts per minute by language in a 1-minute tumbling window
 # and writes each closed window to Postgres.
 commands:
-  - name: load postgres extension
-    sql: |
-      INSTALL postgres;
-      LOAD postgres;
-
-  - name: attach postgres
-    sql: |
-      ATTACH '{{ SQLFLOW_POSTGRES_URI|default('postgresql://postgres:postgres@sqlflow-postgres:5432/postgres') }}' AS pg (TYPE POSTGRES);
-
   - name: declare the post schema
     sql: |
       CREATE TABLE IF NOT EXISTS posts (
@@ -26,8 +17,7 @@ tables:
       # No UNIQUE INDEX, on purpose. DuckDB never frees rows deleted from an
       # indexed table, and the engine deletes every closed window, so an index
       # grows memory without bound. Each batch appends its own counts and
-      # emit_sql sums them, so the Postgres upsert below still sees each key
-      # once. See #268.
+      # emit_sql sums them per minute and language. See #268.
       #
       # bucket is TIMESTAMPTZ, an instant, so the write into a Postgres
       # TIMESTAMPTZ column needs no interpretation and the watermark compares
@@ -51,8 +41,8 @@ tables:
       # late_rows: drop, because the sink replaces. A row for a bucket that
       # already closed is discarded and counted in window_late_rows_total.
       # reemit would run emit_sql over the late rows alone, because the
-      # bucket's other rows were deleted when it closed, and ON CONFLICT
-      # would replace the bucket's count with theirs.
+      # bucket's other rows were deleted when it closed, and the upsert would
+      # replace the bucket's count with theirs. validate refuses that pairing.
       window:
         time_column: bucket
         size_seconds: 60
@@ -65,19 +55,19 @@ tables:
           FROM closed
           GROUP BY ALL
         sink:
-          type: sqlcommand
-          sqlcommand:
-            # ON CONFLICT is what keeps at-least-once delivery survivable. The
-            # engine deletes a window only after the sink accepts it, so a
-            # crash between the two republishes that window on the next poll.
-            # Against the target table's primary key on (bucket, lang), a bare
-            # INSERT fails that republish, and because the failed flush stops
-            # the process, one duplicate stops the pipeline publishing
-            # anything, ever again.
-            sql: |
-              INSERT INTO pg.posts_per_minute_by_lang (bucket, lang, posts)
-              SELECT bucket, lang, posts FROM sqlflow_sink_batch
-              ON CONFLICT (bucket, lang) DO UPDATE SET posts = EXCLUDED.posts
+          # A keyed sink replaces the row a (bucket, lang) already identifies.
+          # The engine deletes a window only after the sink accepts it, so a
+          # crash between the two republishes that window on the next poll,
+          # and the republish lands harmlessly. Each flush costs the batch: a
+          # COPY into a staging table and a server-side merge, in one
+          # transaction. The target needs PRIMARY KEY (bucket, lang) or a
+          # unique index on the pair; the sink checks at startup.
+          type: postgres
+          postgres:
+            dsn: "{{ SQLFLOW_POSTGRES_URI|default('postgresql://postgres:postgres@sqlflow-postgres:5432/postgres') }}"
+            table: posts_per_minute_by_lang
+            mode: upsert
+            key: [bucket, lang]
 
 pipeline:
   name: bluesky-posts-per-minute-by-lang

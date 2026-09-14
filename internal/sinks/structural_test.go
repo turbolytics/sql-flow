@@ -10,6 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
@@ -23,6 +24,75 @@ import (
 // nothing crosses a network. That is the argument for skipping a retry
 // ladder, not for skipping the invariant a ladder depends on. Each exemption
 // now names one of these tests, and the generator rejects one that does not.
+
+// The six sinks that identify a row by no key. sink.flush.idempotent_on_key
+// is exempt for each, and these are the proof: nothing names a key to
+// replace on, so a second delivery is a second row.
+func TestSinkClickhouse_IsNotKeyed(t *testing.T) {
+	coverage.Covers(t, "sink.clickhouse")
+	built, err := NewClickhouseSink(config.ClickhouseSink{DSN: "clickhouse://localhost:8123/db", Table: "t"})
+	assert.NoError(t, err)
+	var s core.Sink = built
+	_, ok := s.(core.KeyedSink)
+	assert.That(t, !ok)
+}
+
+func TestSinkIceberg_IsNotKeyed(t *testing.T) {
+	coverage.Covers(t, "sink.iceberg")
+	catalogName, tableName := newLocalIcebergTable(t)
+	built, err := NewIcebergSink(context.Background(), catalogName, tableName)
+	assert.NoError(t, err)
+	var s core.Sink = built
+	_, ok := s.(core.KeyedSink)
+	assert.That(t, !ok)
+}
+
+func TestSinkKafka_IsNotKeyed(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	var s core.Sink = newUnreachableKafkaSink(t)
+	_, ok := s.(core.KeyedSink)
+	assert.That(t, !ok)
+}
+
+func TestSinkConsole_IsNotKeyed(t *testing.T) {
+	coverage.Covers(t, "sink.console")
+	var s core.Sink = NewConsoleSink()
+	_, ok := s.(core.KeyedSink)
+	assert.That(t, !ok)
+}
+
+func TestSinkNoop_IsNotKeyed(t *testing.T) {
+	coverage.Covers(t, "sink.noop")
+	var s core.Sink = &NoopSink{}
+	_, ok := s.(core.KeyedSink)
+	assert.That(t, !ok)
+}
+
+func TestSinkSqlcommand_IsNotKeyed(t *testing.T) {
+	coverage.Covers(t, "sink.sqlcommand")
+	built, err := NewSQLCommandSink(newSinkTestConn(t), "SELECT 1", nil)
+	assert.NoError(t, err)
+	var s core.Sink = built
+	_, ok := s.(core.KeyedSink)
+	assert.That(t, !ok)
+}
+
+// The postgres sink claims the invariant, so the harness judges it rather
+// than skipping it. An upsert sink names its key; an append sink names none
+// and is judged as appending.
+func TestSinkPostgres_IsKeyedOnlyForUpsert(t *testing.T) {
+	coverage.Covers(t, "sink.postgres")
+	up, err := NewPostgresSink(config.PostgresSink{DSN: "postgres://u:p@localhost:5432/db", Table: "t", Mode: PostgresModeUpsert, Key: []string{"id"}})
+	assert.NoError(t, err)
+	var s core.Sink = up
+	k, ok := s.(core.KeyedSink)
+	assert.That(t, ok)
+	assert.DeepEqual(t, []string{"id"}, k.Key())
+
+	ap, err := NewPostgresSink(config.PostgresSink{DSN: "postgres://u:p@localhost:5432/db", Table: "t", Mode: PostgresModeAppend})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(ap.Key()))
+}
 
 func TestSinkConsole_ImplementsNoProber(t *testing.T) {
 	coverage.Covers(t, "sink.console")

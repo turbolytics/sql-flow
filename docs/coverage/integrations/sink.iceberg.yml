@@ -7,6 +7,9 @@ kind: sink
 implements: [Sink]
 feature: sink.iceberg
 exempt:
+  - invariant: sink.flush.idempotent_on_key
+    reason: appends by design; a second delivery is a second row the reader deduplicates
+    proven_by: TestSinkIceberg_IsNotKeyed
   - invariant: sink.probe.fails_start
     reason: implements no Prober, so there is no start-time check to fail
     proven_by: TestSinkIceberg_ImplementsNoProber

@@ -55,6 +55,13 @@ COPY --from=builder /out/duckdb/libduckdb.so /usr/local/lib/libduckdb.so
 
 ENV SQLFLOW_DUCKDB_LIB=/usr/local/lib/libduckdb.so
 
+# glibc opens a malloc arena per thread that allocates, up to eight per core,
+# and each arena keeps its own free pages. A cgo process on a small container
+# pays for that: the Bluesky demo's Postgres upsert grew native memory 55 KB
+# a flush with the default and 20 KB with two arenas, over 3,600 flushes on
+# DuckDB v1.5.2 (#290). Two is the usual setting for a Go and cgo container.
+ENV MALLOC_ARENA_MAX=2
+
 WORKDIR /app
 
 ENTRYPOINT ["/usr/local/bin/sqlflow"]

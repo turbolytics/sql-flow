@@ -1,0 +1,98 @@
+# demo-10x.yml with the window's sink set to noop.
+#
+# Paced ten times faster than live: replay the capture with
+# `go run ./dev/bench/replay -speed 10`. The stream clock then advances ten
+# seconds per second, so every timer that paces work against wall clock
+# shrinks by the same factor, and the ratios between messages, batches,
+# polls and flushes stay what they are live:
+#
+#   poll_interval_seconds   10 -> 1
+#   flush_interval_seconds  30 (the default) -> 3
+#
+# grace_seconds is stream time and stays. idle_close_seconds only fires when
+# the stream stops, and a replay does not stop. Run it with
+# dev/bench/replay-soak.sh; bluesky/postgres.sql creates the target table.
+commands:
+  - name: declare the post schema
+    sql: |
+      CREATE TABLE IF NOT EXISTS posts (
+        time_us BIGINT,
+        commit STRUCT(
+          operation TEXT,
+          record STRUCT(langs TEXT[])
+        )
+      );
+
+tables:
+  sql:
+    - name: posts_per_minute_by_lang
+      # No UNIQUE INDEX, on purpose. DuckDB never frees rows deleted from an
+      # indexed table, and the engine deletes every closed window, so an index
+      # grows memory without bound. Each batch appends its own counts and
+      # emit_sql sums them per minute and language. See #268.
+      #
+      # bucket is TIMESTAMPTZ, an instant, so the write into a Postgres
+      # TIMESTAMPTZ column needs no interpretation and the watermark compares
+      # instants.
+      sql: |
+        CREATE TABLE IF NOT EXISTS posts_per_minute_by_lang (
+          bucket TIMESTAMPTZ,
+          lang TEXT,
+          posts INTEGER
+        );
+
+      # The engine closes the window against a watermark in event time: the
+      # newest bucket the data has reached, less the grace. The grace outlives
+      # the batch wait on purpose. A batch flushes when it fills or after
+      # flush_interval_seconds, so an event from the last seconds of a window
+      # can reach DuckDB up to that long after the window ended. A grace
+      # shorter than the batch wait publishes the window before those events
+      # land. After idle_close_seconds with nothing arriving, every open
+      # bucket closes.
+      #
+      # late_rows: drop, because the sink replaces. A row for a bucket that
+      # already closed is discarded and counted in window_late_rows_total.
+      # reemit would run emit_sql over the late rows alone, because the
+      # bucket's other rows were deleted when it closed, and the upsert would
+      # replace the bucket's count with theirs. validate refuses that pairing.
+      window:
+        time_column: bucket
+        size_seconds: 60
+        grace_seconds: 60
+        idle_close_seconds: 60
+        late_rows: drop
+        poll_interval_seconds: 1
+        emit_sql: |
+          SELECT bucket, lang, sum(posts)::INTEGER AS posts
+          FROM closed
+          GROUP BY ALL
+        sink:
+          # Nothing leaves the process: the control that separates the
+          # engine's own memory from the write's.
+          type: noop
+
+pipeline:
+  name: bluesky-posts-per-minute-by-lang
+  batch_size: 500
+  flush_interval_seconds: 3
+
+  source:
+    type: websocket
+    websocket:
+      uri: "{{ SQLFLOW_JETSTREAM_URI|default('wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post') }}"
+
+  handler:
+    type: handlers.StructuredBatch
+    table: posts
+    sql: |
+      INSERT INTO posts_per_minute_by_lang
+      SELECT
+        time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000)) AS bucket,
+        coalesce(commit.record.langs[1], 'unknown') AS lang,
+        count(*) AS posts
+      FROM posts
+      WHERE commit.operation = 'create'
+      GROUP BY bucket, lang
+
+  sink:
+    type: noop

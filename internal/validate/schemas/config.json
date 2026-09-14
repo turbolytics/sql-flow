@@ -235,6 +235,7 @@
                 "iceberg",
                 "kafka",
                 "noop",
+                "postgres",
                 "sqlcommand"
               ],
               "description": "Sink identifier."
@@ -402,6 +403,41 @@
               ],
               "description": "ClickHouse-specific sink configuration."
             },
+            "postgres": {
+              "properties": {
+                "dsn": {
+                  "type": "string",
+                  "description": "A libpq connection URI or key-value string. Connect directly, or through\na pooler in session mode: the staging table lives for the session, and\ntransaction pooling hands each transaction whichever server connection\nis free."
+                },
+                "table": {
+                  "type": "string",
+                  "description": "The target table, optionally schema-qualified. The sink never creates\nit."
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "upsert",
+                    "append"
+                  ],
+                  "description": "upsert replaces the row a key already identifies; append inserts every\nrow. Required: the two are different promises to the reader."
+                },
+                "key": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "description": "The columns a row is identified by. Required for upsert, refused for\nappend. A unique index or constraint must cover exactly these columns."
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "dsn",
+                "table",
+                "mode"
+              ],
+              "description": "Postgres-specific sink configuration."
+            },
             "retry": {
               "properties": {
                 "max_attempts": {
@@ -418,7 +454,7 @@
                 },
                 "deadline_seconds": {
                   "type": "integer",
-                  "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
+                  "description": "Bounds the whole ladder. The postgres sink also bounds each attempt by\nit, so raise it for a batch whose write takes longer. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
                 }
               },
               "additionalProperties": false,
@@ -480,6 +516,7 @@
                     "iceberg",
                     "kafka",
                     "noop",
+                    "postgres",
                     "sqlcommand"
                   ],
                   "description": "Sink identifier."
@@ -647,6 +684,41 @@
                   ],
                   "description": "ClickHouse-specific sink configuration."
                 },
+                "postgres": {
+                  "properties": {
+                    "dsn": {
+                      "type": "string",
+                      "description": "A libpq connection URI or key-value string. Connect directly, or through\na pooler in session mode: the staging table lives for the session, and\ntransaction pooling hands each transaction whichever server connection\nis free."
+                    },
+                    "table": {
+                      "type": "string",
+                      "description": "The target table, optionally schema-qualified. The sink never creates\nit."
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "upsert",
+                        "append"
+                      ],
+                      "description": "upsert replaces the row a key already identifies; append inserts every\nrow. Required: the two are different promises to the reader."
+                    },
+                    "key": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array",
+                      "description": "The columns a row is identified by. Required for upsert, refused for\nappend. A unique index or constraint must cover exactly these columns."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "dsn",
+                    "table",
+                    "mode"
+                  ],
+                  "description": "Postgres-specific sink configuration."
+                },
                 "retry": {
                   "properties": {
                     "max_attempts": {
@@ -663,7 +735,7 @@
                     },
                     "deadline_seconds": {
                       "type": "integer",
-                      "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
+                      "description": "Bounds the whole ladder. The postgres sink also bounds each attempt by\nit, so raise it for a batch whose write takes longer. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
                     }
                   },
                   "additionalProperties": false,
@@ -755,6 +827,7 @@
                           "iceberg",
                           "kafka",
                           "noop",
+                          "postgres",
                           "sqlcommand"
                         ],
                         "description": "Sink identifier."
@@ -922,6 +995,41 @@
                         ],
                         "description": "ClickHouse-specific sink configuration."
                       },
+                      "postgres": {
+                        "properties": {
+                          "dsn": {
+                            "type": "string",
+                            "description": "A libpq connection URI or key-value string. Connect directly, or through\na pooler in session mode: the staging table lives for the session, and\ntransaction pooling hands each transaction whichever server connection\nis free."
+                          },
+                          "table": {
+                            "type": "string",
+                            "description": "The target table, optionally schema-qualified. The sink never creates\nit."
+                          },
+                          "mode": {
+                            "type": "string",
+                            "enum": [
+                              "upsert",
+                              "append"
+                            ],
+                            "description": "upsert replaces the row a key already identifies; append inserts every\nrow. Required: the two are different promises to the reader."
+                          },
+                          "key": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array",
+                            "description": "The columns a row is identified by. Required for upsert, refused for\nappend. A unique index or constraint must cover exactly these columns."
+                          }
+                        },
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "dsn",
+                          "table",
+                          "mode"
+                        ],
+                        "description": "Postgres-specific sink configuration."
+                      },
                       "retry": {
                         "properties": {
                           "max_attempts": {
@@ -938,7 +1046,7 @@
                           },
                           "deadline_seconds": {
                             "type": "integer",
-                            "description": "Bounds the whole ladder, not one attempt. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
+                            "description": "Bounds the whole ladder. The postgres sink also bounds each attempt by\nit, so raise it for a batch whose write takes longer. Keep it below\npipeline.flush_interval_seconds: the retry runs inside the open state\ntransaction, whose clock the window depends on."
                           }
                         },
                         "additionalProperties": false,

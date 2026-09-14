@@ -2,7 +2,10 @@ id: sink.clickhouse
 kind: sink
 implements: [Sink, Prober]
 feature: sink.clickhouse
-exempt: []
+exempt:
+  - invariant: sink.flush.idempotent_on_key
+    reason: identifies rows by no key; the table engine decides what a second delivery means, and ReplacingMergeTree is a later mode with the same key and mode shape
+    proven_by: TestSinkClickhouse_IsNotKeyed
 # Arrow key -> what the sink does with it. Keys come from lattice.yml and
 # are conformance.CanonicalKey's output.
 #

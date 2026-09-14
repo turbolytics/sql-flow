@@ -5,6 +5,7 @@ sink.buffer.reports_depth: {unit: missing, integration: covered, release: missin
 sink.error.classifies: {unit: missing, integration: missing, release: missing}
 sink.flush.empty_is_noop: {unit: missing, integration: covered, release: missing}
 sink.flush.honours_context: {unit: missing, integration: covered, release: missing}
+sink.flush.idempotent_on_key: {unit: exempt, integration: exempt, release: exempt}
 sink.flush.keeps_batch: {unit: missing, integration: covered, release: missing}
 sink.flush.no_hollow_success: {unit: missing, integration: covered, release: missing}
 sink.flush.preserves_order: {unit: missing, integration: covered, release: missing}

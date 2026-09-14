@@ -15,7 +15,7 @@ func TestToolingCoverageRegistry_ListsSinksByBareName(t *testing.T) {
 	// The registry's ids are prefixed by kind; a constructor switch's cases
 	// are not. The bare name is the form both sides can compare.
 	assert.DeepEqual(t, []string{
-		"clickhouse", "console", "iceberg", "kafka", "noop", "sqlcommand",
+		"clickhouse", "console", "iceberg", "kafka", "noop", "postgres", "sqlcommand",
 	}, got)
 }
 

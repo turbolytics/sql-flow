@@ -25,10 +25,12 @@ const (
 // produce with its own backoff, and a second ladder on top of that one delays
 // the report without improving delivery. Console, noop and sqlcommand reach
 // nothing that can be temporarily unavailable -- sqlcommand writes through the
-// pipeline's own DuckDB connection, and a failure there is not a blip.
+// pipeline's own DuckDB connection, and a failure there is not a blip. The
+// Postgres sink writes over pgx to a server of its own, so a refused
+// connection there is a blip like any other.
 func SinkRetries(sinkType string) bool {
 	switch sinkType {
-	case "clickhouse", "iceberg":
+	case "clickhouse", "iceberg", "postgres":
 		return true
 	default:
 		return false

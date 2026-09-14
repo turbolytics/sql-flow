@@ -59,6 +59,10 @@ features:
     description: Inserts result batches into a ClickHouse table.
     requires: [unit, release]
 
+  - id: sink.postgres
+    description: Upserts or appends result batches into a Postgres table over a native client.
+    requires: [unit, integration]
+
   - id: sink.iceberg
     description: Appends result batches to an Iceberg table through a catalog.
     requires: [unit, release]

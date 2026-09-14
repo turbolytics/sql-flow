@@ -27,6 +27,7 @@ added, and this page changes only when a status does.
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ |
 | `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ |
+| `sink.postgres` | Upserts or appends result batches into a Postgres table over a native client. | ✅ | ✅ | — |
 | `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ |
 | `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ |
 | `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — |
@@ -62,7 +63,7 @@ added, and this page changes only when a status does.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**39 features declared. 39 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**40 features declared. 40 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -70,7 +71,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**42 invariants declared: 35 safety and 7 liveness. Of 147 (invariant, integration) cells: 70 proven, 49 missing, 0 skipped, 0 failing, 28 exempt. 0 gap(s).**
+**43 invariants declared: 36 safety and 7 liveness. Of 171 (invariant, integration) cells: 87 proven, 50 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -100,18 +101,19 @@ until an invariant's `requires` is filled in, and none is yet.
 
 ## Safety invariants: resilience
 
-| Invariant | Claim | `sink.clickhouse` | `sink.console` | `sink.iceberg` | `sink.kafka` | `sink.noop` | `sink.sqlcommand` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
-| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. Delivery is at-least-once, so a row that arrives twice holds the claim and a row that never arrives breaks it. *(violated once: #221)* | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
-| `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. *(violated once: #221)* | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
-| `sink.rows.counted_on_delivery` | sink_rows_written counts a row once, when a Flush acknowledged it. A failed flush counts nothing; the retry that delivers those rows counts them. | ✅ i | ✅ u | ✅ u | ✅ i | ❌ missing | ✅ u |
-| `sink.flush.preserves_order` | Rows reach the destination in WriteTable order, across a retry. Repeats are permitted, because delivery is at-least-once; a row that overtakes one written before it is not. | ✅ i | ✅ u | ❌ missing | ✅ i | — exempt | ✅ u |
-| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt |
-| `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
-| `sink.buffer.reports_depth` | A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ u |
-| `sink.error.classifies` | The sink's errors classify as unreachable, rejected, or a user fault, so the retry ladder retries only the first. A value the sink's client cannot encode is a user fault: it never reaches the network and fails the same way every attempt. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt | ❌ missing |
-| `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt |
+| Invariant | Claim | `sink.clickhouse` | `sink.console` | `sink.iceberg` | `sink.kafka` | `sink.noop` | `sink.postgres` | `sink.sqlcommand` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `sink.write.buffers_only` | WriteTable does not reach the destination. Only Flush does. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ i | ✅ u |
+| `sink.flush.keeps_batch` | A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. Delivery is at-least-once, so a row that arrives twice holds the claim and a row that never arrives breaks it. *(violated once: #221)* | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ i | ✅ u |
+| `sink.flush.no_hollow_success` | Flush returns nil only when every row since the last success was acknowledged by the destination. *(violated once: #221)* | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ i | ✅ u |
+| `sink.rows.counted_on_delivery` | sink_rows_written counts a row once, when a Flush acknowledged it. A failed flush counts nothing; the retry that delivers those rows counts them. | ✅ i | ✅ u | ✅ u | ✅ i | ❌ missing | ✅ i | ✅ u |
+| `sink.flush.preserves_order` | Rows reach the destination in WriteTable order, across a retry. Repeats are permitted, because delivery is at-least-once; a row that overtakes one written before it is not. | ✅ i | ✅ u | ❌ missing | ✅ i | — exempt | ✅ i | ✅ u |
+| `sink.flush.honours_context` | Flush returns ctx.Err() when the context ends. Rows stay buffered. *(violated once: #219)* | ✅ i | — exempt | — exempt | ✅ i | — exempt | ✅ i | — exempt |
+| `sink.flush.empty_is_noop` | Flush with nothing buffered returns nil and touches nothing. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ i | ✅ u |
+| `sink.buffer.reports_depth` | A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds. | ✅ i | ✅ u | ✅ u | ✅ i | — exempt | ✅ i | ✅ u |
+| `sink.error.classifies` | The sink's errors classify as unreachable, rejected, or a user fault, so the retry ladder retries only the first. A value the sink's client cannot encode is a user fault: it never reaches the network and fails the same way every attempt. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt | ❌ missing | ❌ missing |
+| `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ✅ i | — exempt | — exempt | ✅ i | — exempt | ✅ i | — exempt |
+| `sink.flush.idempotent_on_key` | Delivering the same batch twice leaves the destination holding it once. The engine promises at-least-once; a sink that identifies rows by key is what turns that into exactly-once for the reader. A sink that declares no key is exempt, with a proof that it declares none. | — exempt | — exempt | — exempt | — exempt | — exempt | ✅ i | — exempt |
 
 ## Safety invariants: checkpoint
 
@@ -144,21 +146,21 @@ drains. An invariant holds only if it holds on all four.
 
 ## Safety invariants: types
 
-| Invariant | Claim | `sink.clickhouse` | `sink.console` | `sink.iceberg` | `sink.kafka` | `sink.noop` | `sink.sqlcommand` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `type.roundtrip` | Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error. *(violated once: #147, #150, #151)* | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `type.null` | A null in every declared type reads back as declared. | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `type.timestamp.instant` | A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type. *(violated once: #153)* | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `type.nested` | list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened. | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `type.string.fidelity` | Unicode, escapes and the empty string round-trip byte for byte. *(violated once: #149)* | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
-| `type.undeclared.fails_loud` | An Arrow type absent from the table fails the batch with a coded error. Never coerced silently. | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ❌ missing |
+| Invariant | Claim | `sink.clickhouse` | `sink.console` | `sink.iceberg` | `sink.kafka` | `sink.noop` | `sink.postgres` | `sink.sqlcommand` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `type.roundtrip` | Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error. *(violated once: #147, #150, #151)* | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ✅ i | ❌ missing |
+| `type.null` | A null in every declared type reads back as declared. | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ✅ i | ❌ missing |
+| `type.timestamp.instant` | A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type. *(violated once: #153)* | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ✅ i | ❌ missing |
+| `type.nested` | list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened. | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ✅ i | ❌ missing |
+| `type.string.fidelity` | Unicode, escapes and the empty string round-trip byte for byte. *(violated once: #149)* | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ✅ i | ❌ missing |
+| `type.undeclared.fails_loud` | An Arrow type absent from the table fails the batch with a coded error. Never coerced silently. | ✅ i | ❌ missing | ❌ missing | ❌ missing | ❌ missing | ✅ i | ❌ missing |
 
 ## Safety invariants: lifecycle
 
-| Invariant | Claim | `sink.clickhouse` | `sink.console` | `sink.iceberg` | `sink.kafka` | `sink.noop` | `sink.sqlcommand` | `manager.watermark` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `lifecycle.close.idempotent` | Close twice is safe. | ✅ i | — exempt | — exempt | ✅ i | — exempt | — exempt | · |
-| `pipeline.batch.independent_of_window_io` | A window's sink write or close, however long, never fails the consume loop. A batch that runs while the window's flush has not returned, or while its close has written the delete and the watermark and not committed them, succeeds, and the close still lands once released. | · | · | · | · | · | · | ✅ u |
+| Invariant | Claim | `sink.clickhouse` | `sink.console` | `sink.iceberg` | `sink.kafka` | `sink.noop` | `sink.postgres` | `sink.sqlcommand` | `manager.watermark` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `lifecycle.close.idempotent` | Close twice is safe. | ✅ i | — exempt | — exempt | ✅ i | — exempt | ✅ i | — exempt | · |
+| `pipeline.batch.independent_of_window_io` | A window's sink write or close, however long, never fails the consume loop. A batch that runs while the window's flush has not returned, or while its close has written the delete and the watermark and not committed them, succeeds, and the close still lands once released. | · | · | · | · | · | · | · | ✅ u |
 
 These lifecycle invariants are properties of the consume loop
 rather than of anything a config file names. The columns are

@@ -130,9 +130,9 @@ func TestPipelineSharedConnection_EveryPartyHoldsTheLock(t *testing.T) {
 	assert.NoError(t, initWindowStores(ctx, conf, conn))
 	lock.Unlock()
 
-	sink, err := newPipelineSink(ctx, conf, conn, lock, mp, sinks.RetryEvents{})
+	sink, err := newPipelineSink(ctx, conf, conn, lock, mp, sinks.RetryEvents{}, zap.NewNop())
 	assert.NoError(t, err)
-	policies, err := newErrorPolicies(ctx, conf, conn, lock, mp, sinks.RetryEvents{})
+	policies, err := newErrorPolicies(ctx, conf, conn, lock, mp, sinks.RetryEvents{}, zap.NewNop())
 	assert.NoError(t, err)
 	handler, err := handlers.New(conn, conf.Pipeline.Handler, zap.NewNop())
 	assert.NoError(t, err)

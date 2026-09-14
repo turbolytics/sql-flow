@@ -42,6 +42,14 @@ func probe(ctx context.Context, s core.Sink) error {
 		return nil
 	}
 
+	// A probe that already coded its failure said what it found, and the
+	// code decides the exit: a missing table is the user's to fix, a refused
+	// host may come back. Rewriting it would replace "table t does not exist"
+	// with "the destination refused the connection".
+	if errs.ClassOf(err) == errs.ClassUser || errs.HasCode(err, errs.CodeSinkUnreachable) {
+		return err
+	}
+
 	// A server that answered and refused is the user's to fix: a wrong
 	// password or a missing database does not resolve on a restart. Reporting
 	// it as unreachable would have a supervisor retry a pipeline that cannot

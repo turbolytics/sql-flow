@@ -20,6 +20,11 @@
   its batch table. A batch that re-initialised during either failed, and the
   process exited. The handler skips a refused checkpoint, and the next batch
   reclaims what it left.
+- The reference-table check at startup parsed memory DuckDB had already
+  freed. It read the handler SQL's AST as a string that pointed into the
+  query result, and released the result before parsing it. When DuckDB
+  reused that memory, the check warned `parse serialized sql: invalid
+  character` or counted another query's tables. It copies the AST first.
 
 ### Added
 
@@ -29,6 +34,33 @@
   window's sink write or close, however long, never fails the consume loop.
   The watermark manager's conformance subject proves it with the structured
   handler.
+- A `postgres` sink. `type: postgres` with `dsn`, `table`, `mode: upsert |
+  append` and, for upsert, `key`. Each batch is a `COPY` into a session
+  staging table and a server-side `INSERT ... ON CONFLICT`, in its own
+  transaction, so a flush costs the batch rather than the table. Two rows
+  with one key in a batch: the last one wins. A column the batch omits takes
+  its default on insert and keeps its value on update. The probe checks the
+  table exists and that a unique index or constraint covers exactly the key;
+  a partial index does not count. Failures classify from SQLSTATE: a refused
+  or lost connection exits 12 and retries, and a refused value, a missing
+  column or a constraint violation exits 10. It writes over pgx and touches
+  no DuckDB connection.
+- `sqlflow validate` refuses `late_rows: reemit` with a postgres sink in
+  upsert mode, warns on it in append mode, and warns on any `sqlcommand` sink
+  whose SQL carries `ON CONFLICT` while a command attaches a Postgres. The
+  DuckDB postgres extension runs that upsert by copying every row's key from
+  the target table into DuckDB on every flush.
+- The invariant `sink.flush.idempotent_on_key`: delivering the same batch
+  twice leaves a keyed sink's destination holding it once. The postgres sink
+  proves it; every other sink is exempt with a proof that it names no key.
+- The image sets `MALLOC_ARENA_MAX=2`. In a loop of 3,600 upserts through the
+  DuckDB postgres extension it cut native memory growth from 55 KB to 20 KB a
+  flush.
+
+### Changed
+
+- `bluesky.postgres.windowed.yml` and `kafka.postgres.sink.yml` write through
+  the `postgres` sink, and neither attaches Postgres through DuckDB.
 
 ## v2026.09.14
 

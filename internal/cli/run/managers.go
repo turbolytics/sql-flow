@@ -85,6 +85,10 @@ func buildManagedTables(
 		if table.Window == nil {
 			continue
 		}
+		if table.Window.ReemitOverwrites() {
+			return nil, closeConns, errs.New(errs.CodeConfigInvalid,
+				"table %q window: %s", table.Name, config.ReemitOverwritesMessage)
+		}
 
 		conn, err := db.Connect(ctx)
 		if err != nil {
@@ -119,7 +123,8 @@ func buildManagedTables(
 			sinks.WithMeterProvider(mp),
 			sinks.WithSinkRole("manager"),
 			sinks.WithRetryEvents(events),
-			sinks.WithConnLock(&sync.Mutex{}))
+			sinks.WithConnLock(&sync.Mutex{}),
+			sinks.WithLogger(l))
 		if err != nil {
 			return nil, closeConns, fmt.Errorf("table %q window sink: %w", table.Name, err)
 		}

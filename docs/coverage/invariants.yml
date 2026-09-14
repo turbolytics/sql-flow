@@ -137,6 +137,18 @@ invariants:
     verified_by: harness
     requires: []
 
+  - id: sink.flush.idempotent_on_key
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      Delivering the same batch twice leaves the destination holding it once.
+      The engine promises at-least-once; a sink that identifies rows by key is
+      what turns that into exactly-once for the reader. A sink that declares
+      no key is exempt, with a proof that it declares none.
+    verified_by: harness
+    requires: []
+
   # --- Checkpoint: the pipeline and source contract ------------------------
   - id: pipeline.commit.after_flush
     family: checkpoint

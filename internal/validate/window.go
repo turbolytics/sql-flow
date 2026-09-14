@@ -90,7 +90,7 @@ func checkWindows(rendered []byte, rep *Report) {
 			// reemit publishes emit_sql over the late rows alone, for a bucket
 			// the sink already holds. A sink that appends keeps both rows, and
 			// its reader has to add them rather than keep the newest.
-			if w.LateRows == "reemit" && appendsOnly(w.Sink.Type) {
+			if w.LateRows == "reemit" && appendsOnly(w.Sink) {
 				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
 					"tables.sql[%d] window: late_rows is reemit and the %s sink appends, so a "+
 						"late row publishes a second row for a bucket the sink already holds, "+
@@ -120,12 +120,18 @@ var indexDecl = regexp.MustCompile(`(?is)\b(?:CREATE\s+(?:UNIQUE\s+)?INDEX|PRIMA
 
 func declaresIndex(createSQL string) bool { return indexDecl.MatchString(createSQL) }
 
-// appendsOnly reports a sink type that cannot replace a row it already
-// holds. Iceberg appends by design, and a Kafka topic is a log. The
-// sqlcommand and ClickHouse sinks depend on the SQL or the table engine, so
-// they are the user's call.
-func appendsOnly(sinkType string) bool {
-	return sinkType == "iceberg" || sinkType == "kafka"
+// appendsOnly reports a sink that cannot replace a row it already holds.
+// Iceberg appends by design, a Kafka topic is a log, and the postgres sink
+// in append mode inserts every row. The sqlcommand and ClickHouse sinks
+// depend on the SQL or the table engine, so they are the user's call.
+func appendsOnly(s config.Sink) bool {
+	switch s.Type {
+	case "iceberg", "kafka":
+		return true
+	case "postgres":
+		return s.Postgres != nil && s.Postgres.Mode == "append"
+	}
+	return false
 }
 
 func mentionsClosed(sql string) bool { return closedRef.MatchString(sql) }

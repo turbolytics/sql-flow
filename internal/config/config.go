@@ -77,6 +77,31 @@ type ClickhouseSink struct {
 	Table string `yaml:"table"`
 }
 
+// PostgresSink writes result rows to a Postgres table over a native client,
+// at the cost of the batch: a COPY into a staging table and a server-side
+// merge, in one transaction per batch.
+//
+// A batch is one transaction, so one value Postgres refuses, a NUL byte in
+// text or a number too wide for its column, fails the whole batch with exit
+// 10, and a source that replays on restart replays it. Clean such values in
+// the handler's SQL.
+type PostgresSink struct {
+	// A libpq connection URI or key-value string. Connect directly, or through
+	// a pooler in session mode: the staging table lives for the session, and
+	// transaction pooling hands each transaction whichever server connection
+	// is free.
+	DSN string `yaml:"dsn"`
+	// The target table, optionally schema-qualified. The sink never creates
+	// it.
+	Table string `yaml:"table"`
+	// upsert replaces the row a key already identifies; append inserts every
+	// row. Required: the two are different promises to the reader.
+	Mode string `yaml:"mode" jsonschema:"enum=upsert,enum=append"`
+	// The columns a row is identified by. Required for upsert, refused for
+	// append. A unique index or constraint must cover exactly these columns.
+	Key []string `yaml:"key,omitempty"`
+}
+
 // Sink is where result rows go. One block per destination, and the type field
 // selects which one the pipeline builds.
 //
@@ -97,6 +122,8 @@ type Sink struct {
 	Iceberg *IcebergSink `yaml:"iceberg,omitempty"`
 	// ClickHouse-specific sink configuration.
 	Clickhouse *ClickhouseSink `yaml:"clickhouse,omitempty"`
+	// Postgres-specific sink configuration.
+	Postgres *PostgresSink `yaml:"postgres,omitempty"`
 	// Bounds how long this sink keeps trying a destination that is not
 	// answering. Omit to accept the defaults; set max_attempts to 1 to turn
 	// retrying off. The kafka sink ignores this: franz-go already retries a
@@ -117,7 +144,8 @@ type SinkRetry struct {
 	InitialBackoffMS int `yaml:"initial_backoff_ms,omitempty"`
 	// Ceiling on the backoff.
 	MaxBackoffMS int `yaml:"max_backoff_ms,omitempty"`
-	// Bounds the whole ladder, not one attempt. Keep it below
+	// Bounds the whole ladder. The postgres sink also bounds each attempt by
+	// it, so raise it for a batch whose write takes longer. Keep it below
 	// pipeline.flush_interval_seconds: the retry runs inside the open state
 	// transaction, whose clock the window depends on.
 	DeadlineSeconds int `yaml:"deadline_seconds,omitempty"`
@@ -154,6 +182,21 @@ type Window struct {
 	// Where closed windows go.
 	Sink Sink `yaml:"sink"`
 }
+
+// ReemitOverwrites reports the one pairing of late_rows and sink no pipeline
+// may run: a postgres sink that upserts by key, handed a reemit. A reemit
+// publishes emit_sql over the late rows alone, because the bucket's other
+// rows were deleted when it closed, and the upsert replaces the bucket's
+// published row with that. validate refuses it, and so does run, for a config
+// that never went through validate.
+func (w Window) ReemitOverwrites() bool {
+	return w.LateRows == "reemit" && w.Sink.Type == "postgres" &&
+		w.Sink.Postgres != nil && w.Sink.Postgres.Mode == "upsert"
+}
+
+// ReemitOverwritesMessage says why, for validate and run alike.
+const ReemitOverwritesMessage = "late_rows is reemit and the postgres sink upserts. A reemit publishes " +
+	"emit_sql over the late rows alone, and the sink replaces the bucket's row with that. Use drop"
 
 // SQL Tables
 type TableSQL struct {

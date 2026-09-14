@@ -1,13 +1,3 @@
-commands:
-  - name: load extensions
-    sql: |
-      INSTALL postgres;
-      LOAD postgres;
-
-  - name: attach usersdb
-    sql: |
-      ATTACH '{{ SQLFLOW_POSTGRES_USERS_URI|default('postgresql://postgres:postgres@localhost:5432/testdb') }}' AS pgusersdb (TYPE POSTGRES);
-
 pipeline:
   name: kafka-postgres-sink-example
   description: "Inserts a kafka stream into a postgres table"
@@ -32,9 +22,15 @@ pipeline:
         browser
       FROM batch
 
+  # Every consumed row is inserted; a redelivery after a crash inserts it
+  # again, so append is at-least-once for the reader.
+  #
+  # A batch is one transaction. One value Postgres refuses, a browser string
+  # carrying a NUL byte say, fails the whole batch with exit 10, and Kafka
+  # replays it on restart. Clean raw event strings in the handler's SQL.
   sink:
-    type: sqlcommand
-    sqlcommand:
-      sql: |
-        INSERT INTO pgusersdb.user_action (timestamp, user_id, action, browser)
-        (SELECT  * FROM sqlflow_sink_batch);
+    type: postgres
+    postgres:
+      dsn: "{{ SQLFLOW_POSTGRES_USERS_URI|default('postgresql://postgres:postgres@localhost:5432/testdb') }}"
+      table: user_action
+      mode: append

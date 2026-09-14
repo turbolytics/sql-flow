@@ -3,6 +3,9 @@ kind: sink
 implements: [Sink]
 feature: sink.sqlcommand
 exempt:
+  - invariant: sink.flush.idempotent_on_key
+    reason: the user's SQL decides what a second delivery means; the sink names no key
+    proven_by: TestSinkSqlcommand_IsNotKeyed
   - invariant: sink.probe.fails_start
     reason: implements no Prober, so there is no start-time check to fail
     proven_by: TestSinkSqlcommand_ImplementsNoProber
