@@ -151,18 +151,24 @@ types:
       # The instant's UTC wall clock, into a column with no zone.
       - type: timestamp
         expect: "2026-09-08 12:00:00.123456"
+  # DuckDB's TIME and INTERVAL. Postgres keeps microseconds.
   month_day_nano_interval:
-    outcome: unsupported
-    code: user.sink.type_unsupported
-    columns: []
+    outcome: coerced
+    rule: months and days kept; nanoseconds below a microsecond are truncated
+    columns:
+      - type: interval
+        expect: "1 mon 2 days"
   "time64[us]":
-    outcome: unsupported
-    code: user.sink.type_unsupported
-    columns: []
+    outcome: exact
+    columns:
+      - type: time
+        expect: "12:00:00.123456"
   "time64[ns]":
-    outcome: unsupported
-    code: user.sink.type_unsupported
-    columns: []
+    outcome: coerced
+    rule: nanoseconds below a microsecond are truncated
+    columns:
+      - type: time
+        expect: "00:00:43.200123"
 
   # Containers go as JSON text rendered from the Arrow array, into a json
   # column, which stores the text as sent. Element renderings follow
@@ -319,17 +325,21 @@ types:
     code: user.sink.type_unsupported
     columns: []
   "list<time64[us]>":
-    outcome: unsupported
-    code: user.sink.type_unsupported
-    columns: []
+    outcome: coerced
+    rule: rendered as JSON text
+    columns:
+      - type: json
+        expect: '["12:00:00.123456","12:00:00.123456","12:00:00.123456"]'
   sparse_union:
     outcome: unsupported
     code: user.sink.type_unsupported
     columns: []
+  # DuckDB's ENUM. The column holds the decoded value.
   dictionary:
-    outcome: unsupported
-    code: user.sink.type_unsupported
-    columns: []
+    outcome: exact
+    columns:
+      - type: text
+        expect: "a"
 # A null is sent as NULL. The test columns are nullable, so it is stored as
 # NULL; a NOT NULL column refuses it at the merge with 23502.
 nulls:

@@ -96,8 +96,13 @@ func postgresConvertible(dt arrow.DataType) error {
 		*arrow.Uint8Type, *arrow.Uint16Type, *arrow.Uint32Type, *arrow.Uint64Type,
 		*arrow.Float32Type, *arrow.Float64Type, *arrow.StringType, *arrow.LargeStringType,
 		*arrow.BinaryType, *arrow.LargeBinaryType, *arrow.Date32Type, *arrow.Date64Type,
-		*arrow.TimestampType, *arrow.Decimal128Type, *arrow.Decimal256Type:
+		*arrow.TimestampType, *arrow.Decimal128Type, *arrow.Decimal256Type,
+		*arrow.Time32Type, *arrow.Time64Type, *arrow.MonthDayNanoIntervalType, *arrow.DurationType:
 		return nil
+	case *arrow.DictionaryType:
+		// DuckDB's ENUM. The column holds the decoded value, so it converts
+		// when its values do.
+		return postgresConvertible(dt.(*arrow.DictionaryType).ValueType)
 	default:
 		return errs.New(errs.CodeSinkTypeUnsupported, "no conversion for arrow type %s", dt)
 	}
@@ -126,14 +131,13 @@ func postgresValue(arr arrow.Array, i int) (any, error) {
 		return string(b), nil
 	}
 
-	v, err := postgresScalar(arr, i)
-	if err != nil {
+	if err := postgresConvertible(arr.DataType()); err != nil {
 		return nil, err
 	}
 	if arr.IsNull(i) {
 		return nil, nil
 	}
-	return v, nil
+	return postgresScalar(arr, i)
 }
 
 // jsonRenderable refuses a container holding a type the sink has no
@@ -161,8 +165,11 @@ func jsonRenderable(dt arrow.DataType) error {
 	case *arrow.BooleanType, *arrow.Int8Type, *arrow.Int16Type, *arrow.Int32Type, *arrow.Int64Type,
 		*arrow.Uint8Type, *arrow.Uint16Type, *arrow.Uint32Type, *arrow.Uint64Type,
 		*arrow.Float32Type, *arrow.Float64Type, *arrow.StringType, *arrow.LargeStringType,
-		*arrow.BinaryType, *arrow.LargeBinaryType, *arrow.Date32Type, *arrow.Date64Type, *arrow.TimestampType:
+		*arrow.BinaryType, *arrow.LargeBinaryType, *arrow.Date32Type, *arrow.Date64Type, *arrow.TimestampType,
+		*arrow.Time32Type, *arrow.Time64Type, *arrow.MonthDayNanoIntervalType, *arrow.DurationType:
 		return nil
+	case *arrow.DictionaryType:
+		return jsonRenderable(t.ValueType)
 	default:
 		return errs.New(errs.CodeSinkTypeUnsupported, "no conversion for arrow type %s inside a container", dt)
 	}
@@ -218,9 +225,43 @@ func postgresScalar(arr arrow.Array, i int) (any, error) {
 		return numericFromString(a.Value(i).ToString(a.DataType().(*arrow.Decimal128Type).Scale))
 	case *array.Decimal256:
 		return numericFromString(a.Value(i).ToString(a.DataType().(*arrow.Decimal256Type).Scale))
+	case *array.Time32:
+		return pgtype.Time{Microseconds: int64(a.Value(i)) * microsPer(a.DataType().(*arrow.Time32Type).Unit), Valid: true}, nil
+	case *array.Time64:
+		return pgtype.Time{Microseconds: toMicros(int64(a.Value(i)), a.DataType().(*arrow.Time64Type).Unit), Valid: true}, nil
+	case *array.MonthDayNanoInterval:
+		// Postgres keeps microseconds; nanoseconds below one are truncated.
+		v := a.Value(i)
+		return pgtype.Interval{Months: v.Months, Days: v.Days, Microseconds: v.Nanoseconds / 1000, Valid: true}, nil
+	case *array.Duration:
+		return pgtype.Interval{Microseconds: toMicros(int64(a.Value(i)), a.DataType().(*arrow.DurationType).Unit), Valid: true}, nil
+	case *array.Dictionary:
+		return postgresScalar(a.Dictionary(), a.GetValueIndex(i))
 	default:
 		return nil, errs.New(errs.CodeSinkTypeUnsupported, "no conversion for arrow type %s", arr.DataType())
 	}
+}
+
+// microsPer is how many microseconds one tick of unit is, for units of a
+// microsecond or coarser.
+func microsPer(unit arrow.TimeUnit) int64 {
+	switch unit {
+	case arrow.Second:
+		return 1_000_000
+	case arrow.Millisecond:
+		return 1_000
+	default:
+		return 1
+	}
+}
+
+// toMicros converts ticks of unit to microseconds, truncating nanoseconds:
+// Postgres time and interval keep microseconds.
+func toMicros(v int64, unit arrow.TimeUnit) int64 {
+	if unit == arrow.Nanosecond {
+		return v / 1000
+	}
+	return v * microsPer(unit)
 }
 
 func numericFromString(s string) (any, error) {

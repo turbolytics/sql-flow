@@ -130,7 +130,9 @@ func TestSinkPostgres_ScalarsConvert(t *testing.T) {
 
 func TestSinkPostgres_UnsupportedTypeCarriesACode(t *testing.T) {
 	coverage.Covers(t, "sink.postgres")
-	b := array.NewTime64Builder(memory.NewGoAllocator(), &arrow.Time64Type{Unit: arrow.Microsecond})
+	// float16: a type DuckDB never produces, and one the sink has no
+	// conversion for.
+	b := array.NewFloat16Builder(memory.NewGoAllocator())
 	b.AppendNull()
 	arr := b.NewArray()
 	defer arr.Release()
@@ -212,10 +214,10 @@ func TestSinkPostgres_RowsCarryTheSequence(t *testing.T) {
 	assert.NoError(t, src.Err())
 	assert.DeepEqual(t, [][]any{{int64(10), int64(0)}, {int64(20), int64(1)}, {int64(30), int64(2)}}, rows)
 
-	bad := arrow.NewSchema([]arrow.Field{{Name: "when", Type: &arrow.Time64Type{Unit: arrow.Microsecond}}}, nil)
+	bad := arrow.NewSchema([]arrow.Field{{Name: "when", Type: arrow.FixedWidthTypes.Float16}}, nil)
 	bb := array.NewRecordBuilder(mem, bad)
 	defer bb.Release()
-	bb.Field(0).(*array.Time64Builder).Append(1)
+	bb.Field(0).(*array.Float16Builder).AppendNull()
 	brec := bb.NewRecord()
 	defer brec.Release()
 	btbl := array.NewTableFromRecords(bad, []arrow.Record{brec})
@@ -391,4 +393,68 @@ func TestSinkPostgres_CloseReleasesBufferedTables(t *testing.T) {
 	assert.Equal(t, 0, mem.CurrentAlloc())
 	assert.Equal(t, 0, s.BufferedRows())
 	assert.NoError(t, s.Close())
+}
+
+// DuckDB's TIME, INTERVAL and ENUM arrive as time64, month_day_nano_interval
+// and dictionary arrays, and each maps to a basic Postgres type. They used to
+// fail the first flush with type_unsupported, minutes after a deploy.
+func TestSinkPostgres_TimeIntervalAndEnumConvert(t *testing.T) {
+	coverage.Covers(t, "sink.postgres")
+	mem := memory.NewGoAllocator()
+
+	t64 := array.NewTime64Builder(mem, &arrow.Time64Type{Unit: arrow.Microsecond})
+	t64.Append(arrow.Time64(12*3600*1e6 + 34*60*1e6 + 56*1e6 + 789))
+	tarr := t64.NewArray()
+	defer tarr.Release()
+	v, err := postgresValue(tarr, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, pgtype.Time{Microseconds: 45296000789, Valid: true}, v)
+
+	t64ns := array.NewTime64Builder(mem, &arrow.Time64Type{Unit: arrow.Nanosecond})
+	t64ns.Append(arrow.Time64(1_000_001_999))
+	tnarr := t64ns.NewArray()
+	defer tnarr.Release()
+	v, err = postgresValue(tnarr, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, pgtype.Time{Microseconds: 1_000_001, Valid: true}, v)
+
+	t32 := array.NewTime32Builder(mem, &arrow.Time32Type{Unit: arrow.Second})
+	t32.Append(arrow.Time32(90))
+	t32arr := t32.NewArray()
+	defer t32arr.Release()
+	v, err = postgresValue(t32arr, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, pgtype.Time{Microseconds: 90_000_000, Valid: true}, v)
+
+	iv := array.NewMonthDayNanoIntervalBuilder(mem)
+	iv.Append(arrow.MonthDayNanoInterval{Months: 1, Days: 2, Nanoseconds: 5_400_000_000_123})
+	ivarr := iv.NewArray()
+	defer ivarr.Release()
+	v, err = postgresValue(ivarr, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, pgtype.Interval{Months: 1, Days: 2, Microseconds: 5_400_000_000, Valid: true}, v)
+
+	du := array.NewDurationBuilder(mem, &arrow.DurationType{Unit: arrow.Millisecond})
+	du.Append(arrow.Duration(1500))
+	duarr := du.NewArray()
+	defer duarr.Release()
+	v, err = postgresValue(duarr, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, pgtype.Interval{Microseconds: 1_500_000, Valid: true}, v)
+
+	db := array.NewDictionaryBuilder(mem, &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Uint8, ValueType: arrow.BinaryTypes.String}).(*array.BinaryDictionaryBuilder)
+	assert.NoError(t, db.AppendString("ja"))
+	db.AppendNull()
+	assert.NoError(t, db.AppendString("en"))
+	darr := db.NewArray()
+	defer darr.Release()
+	for i, want := range []any{"ja", nil, "en"} {
+		v, err = postgresValue(darr, i)
+		assert.NoError(t, err)
+		assert.Equal(t, want, v)
+	}
+	assert.NoError(t, postgresCheckSchema(arrow.NewSchema([]arrow.Field{
+		{Name: "t", Type: tarr.DataType()}, {Name: "i", Type: ivarr.DataType()},
+		{Name: "d", Type: darr.DataType()}, {Name: "l", Type: arrow.ListOf(tarr.DataType())},
+	}, nil)))
 }
