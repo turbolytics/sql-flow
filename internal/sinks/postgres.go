@@ -197,10 +197,11 @@ func (s *PostgresSink) send(ctx context.Context, tbl arrow.Table) error {
 				k, strings.Join(cols, ", "))
 		}
 	}
-	rows, err := postgresRows(tbl)
-	if err != nil {
+	if err := postgresCheckSchema(tbl.Schema()); err != nil {
 		return err
 	}
+	src := newPostgresCopySource(tbl)
+	defer src.Release()
 
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
@@ -223,7 +224,12 @@ func (s *PostgresSink) send(ctx context.Context, tbl arrow.Table) error {
 	// fail; WithoutCancel lets it run.
 	defer tx.Rollback(context.WithoutCancel(ctx))
 
-	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"pg_temp", "sqlflow_staging"}, append(cols, postgresSeq), pgx.CopyFromRows(rows)); err != nil {
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"pg_temp", "sqlflow_staging"}, append(cols, postgresSeq), src); err != nil {
+		// A value the source could not convert keeps its own code; pgx
+		// abandoned the COPY because of it, and the server's 57014 says less.
+		if srcErr := src.Err(); srcErr != nil {
+			return s.failed(conn, srcErr)
+		}
 		return s.failed(conn, postgresCopyError(err))
 	}
 	if _, err := tx.Exec(ctx, postgresMergeSQL(s.table, s.mode, s.key, cols)); err != nil {

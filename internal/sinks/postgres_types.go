@@ -17,32 +17,90 @@ import (
 // hand it a Go value it can encode, and to refuse a type it cannot, with a
 // code the operator can act on.
 
-// postgresRows converts a whole batch before anything is sent. Memory is the
-// batch, and a value the sink cannot convert fails before a transaction is
-// opened. Each row ends with its position in the batch.
-func postgresRows(tbl arrow.Table) ([][]any, error) {
-	reader := array.NewTableReader(tbl, 0)
-	defer reader.Release()
+// postgresCopySource streams a batch into pgx's COPY one row at a time.
+//
+// It used to convert the whole batch into [][]any before the COPY started,
+// which boxed every cell: a 1M-row, 4-column batch held 177 MiB of Go heap
+// on top of its Arrow buffers while it was sent (#290 review). pgx encodes
+// each row as soon as Values returns it, so one reused row is all this holds.
+// Each row ends with its position in the batch, which the merge orders by.
+type postgresCopySource struct {
+	reader *array.TableReader
+	rec    arrow.Record
+	row    int
+	seq    int64
+	values []any
+	err    error
+}
 
-	rows := make([][]any, 0, tbl.NumRows())
-	seq := int64(0)
-	for reader.Next() {
-		rec := reader.Record()
-		for i := 0; i < int(rec.NumRows()); i++ {
-			row := make([]any, rec.NumCols()+1)
-			for c := 0; c < int(rec.NumCols()); c++ {
-				v, err := postgresValue(rec.Column(c), i)
-				if err != nil {
-					return nil, errs.Wrap(errs.CodeOf(err), err, "postgres sink: column %q", rec.ColumnName(c))
-				}
-				row[c] = v
-			}
-			row[rec.NumCols()] = seq
-			seq++
-			rows = append(rows, row)
+func newPostgresCopySource(tbl arrow.Table) *postgresCopySource {
+	return &postgresCopySource{
+		reader: array.NewTableReader(tbl, 0),
+		values: make([]any, tbl.NumCols()+1),
+	}
+}
+
+func (s *postgresCopySource) Next() bool {
+	if s.err != nil {
+		return false
+	}
+	for s.rec == nil || s.row >= int(s.rec.NumRows()) {
+		if !s.reader.Next() {
+			s.err = s.reader.Err()
+			return false
+		}
+		s.rec, s.row = s.reader.Record(), 0
+	}
+	for c := 0; c < int(s.rec.NumCols()); c++ {
+		v, err := postgresValue(s.rec.Column(c), s.row)
+		if err != nil {
+			s.err = errs.Wrap(errs.CodeOf(err), err, "postgres sink: column %q", s.rec.ColumnName(c))
+			return false
+		}
+		s.values[c] = v
+	}
+	s.values[len(s.values)-1] = s.seq
+	s.seq++
+	s.row++
+	return true
+}
+
+func (s *postgresCopySource) Values() ([]any, error) { return s.values, nil }
+
+func (s *postgresCopySource) Err() error { return s.err }
+
+func (s *postgresCopySource) Release() { s.reader.Release() }
+
+// postgresCheckSchema refuses a batch with a column the sink has no
+// conversion for, before a transaction is opened. Streaming converts a cell
+// only when pgx asks for its row, so without this an unsupported column
+// would fail mid-COPY, where the server reports the abandoned COPY as 57014
+// and the column's own code is lost.
+func postgresCheckSchema(schema *arrow.Schema) error {
+	for _, f := range schema.Fields() {
+		if err := postgresConvertible(f.Type); err != nil {
+			return errs.Wrap(errs.CodeOf(err), err, "postgres sink: column %q", f.Name)
 		}
 	}
-	return rows, reader.Err()
+	return nil
+}
+
+// postgresConvertible reports whether a column of dt converts. It must hold
+// the same type set as postgresValue: a type one accepts and the other does
+// not is a column that passes the check and fails mid-COPY, or the reverse.
+func postgresConvertible(dt arrow.DataType) error {
+	switch dt.(type) {
+	case *arrow.ListType, *arrow.LargeListType, *arrow.FixedSizeListType, *arrow.StructType, *arrow.MapType:
+		return jsonRenderable(dt)
+	case *arrow.BooleanType, *arrow.Int8Type, *arrow.Int16Type, *arrow.Int32Type, *arrow.Int64Type,
+		*arrow.Uint8Type, *arrow.Uint16Type, *arrow.Uint32Type, *arrow.Uint64Type,
+		*arrow.Float32Type, *arrow.Float64Type, *arrow.StringType, *arrow.LargeStringType,
+		*arrow.BinaryType, *arrow.LargeBinaryType, *arrow.Date32Type, *arrow.Date64Type,
+		*arrow.TimestampType, *arrow.Decimal128Type, *arrow.Decimal256Type:
+		return nil
+	default:
+		return errs.New(errs.CodeSinkTypeUnsupported, "no conversion for arrow type %s", dt)
+	}
 }
 
 // postgresValue converts one cell. A null is nil, and Postgres stores it as

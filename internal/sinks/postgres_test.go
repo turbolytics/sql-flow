@@ -176,8 +176,9 @@ func TestSinkPostgres_ContainersRenderAsJSON(t *testing.T) {
 	assert.Equal(t, errs.CodeSinkTypeUnsupported, errs.CodeOf(err))
 }
 
-// postgresRows appends the row's position in the batch, which the merge
-// orders by, and names the column in a conversion failure.
+// The copy source appends the row's position in the batch, which the merge
+// orders by, streams across record boundaries, and the schema check names
+// the column it refuses.
 func TestSinkPostgres_RowsCarryTheSequence(t *testing.T) {
 	coverage.Covers(t, "sink.postgres")
 	mem := memory.NewGoAllocator()
@@ -190,9 +191,26 @@ func TestSinkPostgres_RowsCarryTheSequence(t *testing.T) {
 	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
 	defer tbl.Release()
 
-	rows, err := postgresRows(tbl)
-	assert.NoError(t, err)
-	assert.DeepEqual(t, [][]any{{int64(10), int64(0)}, {int64(20), int64(1)}}, rows)
+	rec2 := func() arrow.Record {
+		b := array.NewRecordBuilder(mem, schema)
+		defer b.Release()
+		b.Field(0).(*array.Int64Builder).Append(30)
+		return b.NewRecord()
+	}()
+	defer rec2.Release()
+	two := array.NewTableFromRecords(schema, []arrow.Record{rec, rec2})
+	defer two.Release()
+
+	src := newPostgresCopySource(two)
+	defer src.Release()
+	var rows [][]any
+	for src.Next() {
+		values, err := src.Values()
+		assert.NoError(t, err)
+		rows = append(rows, append([]any(nil), values...))
+	}
+	assert.NoError(t, src.Err())
+	assert.DeepEqual(t, [][]any{{int64(10), int64(0)}, {int64(20), int64(1)}, {int64(30), int64(2)}}, rows)
 
 	bad := arrow.NewSchema([]arrow.Field{{Name: "when", Type: &arrow.Time64Type{Unit: arrow.Microsecond}}}, nil)
 	bb := array.NewRecordBuilder(mem, bad)
@@ -202,8 +220,9 @@ func TestSinkPostgres_RowsCarryTheSequence(t *testing.T) {
 	defer brec.Release()
 	btbl := array.NewTableFromRecords(bad, []arrow.Record{brec})
 	defer btbl.Release()
-	_, err = postgresRows(btbl)
+	err := postgresCheckSchema(btbl.Schema())
 	assert.Error(t, err)
+	assert.Equal(t, errs.CodeSinkTypeUnsupported, errs.CodeOf(err))
 	assert.That(t, strings.Contains(err.Error(), `column "when"`))
 }
 
