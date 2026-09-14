@@ -911,7 +911,7 @@ See [`tumbling.window.yml`](dev/config/examples/tumbling.window.yml) and
 
 ## Metrics
 
-`--metrics prometheus` serves `/metrics` on `:8000`. Twenty-two instruments
+`--metrics prometheus` serves `/metrics` on `:8000`. Twenty-four instruments
 are exported, all under the meter name `sqlflow` except the two webhook ones.
 
 The instrument name and the Prometheus series name differ: the exporter appends
@@ -944,6 +944,7 @@ asserts this table against the running exporter.
 | `batch_processing_latency` | `batch_processing_latency_seconds` | histogram | — |
 | `error_count` | `error_count_total` | counter | `class`, `domain`, `code`, `phase` |
 | `phase_duration` | `phase_duration_seconds` | histogram | `phase` |
+| `handler_checkpoints_skipped` | `handler_checkpoints_skipped_total` | counter | — |
 
 `phase_duration` decomposes batch time. It carries the same six phases
 `error_count` does — `handler.write`, `handler.invoke`, `sink.write`,
@@ -967,6 +968,13 @@ Every latency histogram shares one set of bucket boundaries, from 100
 microseconds to 60 seconds. The OTel SDK's defaults are millisecond-shaped and
 these instruments record seconds, so before this every `histogram_quantile`
 over them returned a number under five seconds and meant nothing.
+
+`handler_checkpoints_skipped` counts batches whose checkpoint the structured
+handler skipped. That handler checkpoints after each batch to reclaim the rows
+it truncated. DuckDB refuses while another connection holds an uncommitted
+update or DDL, such as a window saving its watermark, and the next batch
+reclaims them instead. A count that rises with every batch means a write stays
+open for longer than a batch, and memory grows until it closes.
 
 **Source:**
 

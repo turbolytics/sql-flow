@@ -2,11 +2,12 @@ package managers
 
 // The watermark manager under the conformance harness.
 //
-// The subject supplies five things: build the manager on the sink the
+// The subject supplies seven things: build the manager on the sink the
 // harness hands it, put closed buckets in the table, put late rows in a
-// bucket that closed, count what is left, and hold rows open in the
-// pipeline's transaction. The harness owns the sink, the faults and the
-// verdicts.
+// bucket that closed, count what is left, hold rows open in the pipeline's
+// transaction, run a batch through the structured handler on the pipeline's
+// connection, and build a manager whose commit waits. The harness owns the
+// sink, the faults and the verdicts.
 
 import (
 	"context"
@@ -14,10 +15,28 @@ import (
 	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/conformance"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/handlers"
 )
+
+// heldConn is a manager's connection whose commit calls hold first, so a
+// test can stop a close with its writes made and not committed.
+type heldConn struct {
+	adbc.Connection
+	hold func()
+}
+
+func (c heldConn) Commit(ctx context.Context) error {
+	c.hold()
+	return c.Connection.(transaction).Commit(ctx)
+}
+
+func (c heldConn) Rollback(ctx context.Context) error {
+	return c.Connection.(transaction).Rollback(ctx)
+}
 
 func TestManagerWatermark_Conformance(t *testing.T) {
 	coverage.Covers(t, "manager.window")
@@ -28,6 +47,23 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 	// The idle rule closes everything: the stream went quiet an hour ago.
 	now := func() time.Time { return t0.Add(time.Hour) }
 	arrivedAt(t, d.pipeline, t0)
+
+	// The handler the bluesky demo runs, on the pipeline's connection. It
+	// checkpoints each time it re-initialises, which is the statement a
+	// window's uncommitted write refused.
+	exec(t, d.pipeline, `CREATE TABLE posts (id BIGINT, lang VARCHAR)`)
+	handler, err := handlers.NewStructuredBatchHandler(d.pipeline,
+		`SELECT lang, count(*) AS n FROM posts GROUP BY lang`, "posts",
+		arrow.NewSchema([]arrow.Field{
+			{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "lang", Type: arrow.BinaryTypes.String},
+		}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	// Each New builds on a fresh connection, so a manager whose connection
 	// holds an open transaction from a failed poll does not block the next.
@@ -79,6 +115,38 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 				_ = conn.(interface{ Rollback(context.Context) error }).Rollback(context.Background())
 				conn.Close()
 			}
+		},
+
+		// One batch the way the consume loop runs it: write, invoke,
+		// release, re-initialise.
+		Batch: func(t *testing.T) error {
+			ctx := context.Background()
+			for i := 0; i < 100; i++ {
+				if err := handler.Write([]byte(`{"id":1,"lang":"en"}`)); err != nil {
+					return err
+				}
+			}
+			table, err := handler.Invoke(ctx)
+			if err != nil {
+				return err
+			}
+			if table != nil {
+				table.Release()
+			}
+			return handler.Init(ctx)
+		},
+
+		HoldCommit: func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, hold func()) conformance.Manager {
+			conn := managerConn(t, d.db)
+			t.Cleanup(func() { conn.Close() })
+			decl := testDecl()
+			decl.Late = LatePolicy(late)
+			w, err := NewWatermark(heldConn{Connection: conn, hold: hold}, decl, time.Hour, sink,
+				WithDrainBudget(budget), WithClock(now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return w
 		},
 	}
 	conformance.Managers(t, subject)

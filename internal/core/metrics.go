@@ -10,15 +10,19 @@ import (
 // Metrics holds the instruments the pipeline records, mirroring the names,
 // descriptions and units the Python engine exports.
 type Metrics struct {
-	MessageCount           metric.Int64Counter
-	HandlerRowsRead        metric.Int64Counter
-	ErrorCount             metric.Int64Counter
-	SourceReadLatency      metric.Float64Histogram
-	SinkFlushLatency       metric.Float64Histogram
-	SinkFlushNumRows       metric.Int64Gauge
-	SinkFlushCount         metric.Int64Counter
-	BatchProcessingLatency metric.Float64Histogram
-	StateCommitLatency     metric.Float64Histogram
+	MessageCount    metric.Int64Counter
+	HandlerRowsRead metric.Int64Counter
+	// HandlerCheckpointsSkipped counts re-initialisations whose checkpoint
+	// another connection's write refused. Only the structured handler
+	// checkpoints.
+	HandlerCheckpointsSkipped metric.Int64Counter
+	ErrorCount                metric.Int64Counter
+	SourceReadLatency         metric.Float64Histogram
+	SinkFlushLatency          metric.Float64Histogram
+	SinkFlushNumRows          metric.Int64Gauge
+	SinkFlushCount            metric.Int64Counter
+	BatchProcessingLatency    metric.Float64Histogram
+	StateCommitLatency        metric.Float64Histogram
 	// PhaseDuration is how long each stage of a batch took, labelled with the
 	// same phase the error taxonomy uses. It is the only instrument that
 	// decomposes batch time, and the only latency that counts failures.
@@ -105,6 +109,15 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("rows"),
 	); err != nil {
 		return nil, fmt.Errorf("handler_rows_read: %w", err)
+	}
+
+	// No unit: the exporter appends a unit it does not know to the series
+	// name, the way window_closed avoids.
+	if m.HandlerCheckpointsSkipped, err = meter.Int64Counter(
+		"handler_checkpoints_skipped",
+		metric.WithDescription("Batches whose post-truncate checkpoint was skipped because another connection held a write transaction"),
+	); err != nil {
+		return nil, fmt.Errorf("handler_checkpoints_skipped: %w", err)
 	}
 
 	// The unit stays "count", which the exporter drops as unitless, so this

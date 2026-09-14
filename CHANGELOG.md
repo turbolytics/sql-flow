@@ -11,6 +11,24 @@
   comments and `validate`'s warning said `reemit` publishes the bucket again
   for a sink that upserts. They now say it publishes the late rows, for a
   sink that adds them to the bucket it holds.
+- A windowed pipeline on `handlers.StructuredBatch` stopped with `checkpoint
+  after truncate: Cannot CHECKPOINT: there are other write transactions
+  active`. The handler checkpoints after every batch, and DuckDB refuses
+  while another connection holds an uncommitted update or DDL. Since
+  v2026.09.14 a window closes and publishes on connections of its own: its
+  watermark save is an update, and the `sqlcommand` sink drops and creates
+  its batch table. A batch that re-initialised during either failed, and the
+  process exited. The handler skips a refused checkpoint, and the next batch
+  reclaims what it left.
+
+### Added
+
+- `handler_checkpoints_skipped_total` counts those skips. A count that rises
+  with every batch means a write stays open longer than a batch.
+- The enforced invariant `pipeline.batch.independent_of_window_io`: a
+  window's sink write or close, however long, never fails the consume loop.
+  The watermark manager's conformance subject proves it with the structured
+  handler.
 
 ## v2026.09.14
 
