@@ -19,7 +19,7 @@
 - Prose in comments, commits, the CHANGELOG, and YAML follows Google Technical Writing One. No em dashes. No attribution lines in commits.
 - `gofmt` and `go vet ./...` clean after every task. `go test -short -race ./...` green at every commit.
 - Commit after every task with the message given. Do not push until the last task says so.
-- Do not run `make release-image`, do not tag, and do not edit files under `docs/coverage/status/`; CI regenerates those.
+- Do not run `make release-image` and do not tag. Never hand-edit `docs/coverage/status/`. The Coverage job regenerates it from the suite reports and fails when the committed files differ, so after the first CI run on the branch, download that run's reports (`gh run download <run> --pattern 'report-*'`, flattened into `.coverage/`), run `make coverage-check`, and commit `docs/coverage/status/` and `matrix.md`. Corrected after the first push: this line said CI regenerates them.
 
 ## Deviations from the spec, decided here
 
@@ -3088,7 +3088,7 @@ uv run --locked pytest tests/tooling -q
 make coverage-page && git status --short docs/coverage
 ```
 
-Expected: `gofmt` prints nothing, vet clean, every package ok, 205 or more tooling tests pass, and `docs/coverage` shows only `matrix.md` and the new page content changed by the registry additions, if anything. Do not edit `docs/coverage/status/`.
+Expected: `gofmt` prints nothing, vet clean, every package ok, 205 or more tooling tests pass, and `docs/coverage` shows only `matrix.md` and the new page content changed by the registry additions, if anything. `docs/coverage/status/` is regenerated from CI's reports after the first push, as the global constraints say.
 
 - [ ] **Step 2: The integration pass**
 
