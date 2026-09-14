@@ -32,6 +32,28 @@ func TestReferenceTablesFindsNestedJoin(t *testing.T) {
 	assert.Equal(t, "locations", got[0].Qualified())
 }
 
+// The AST is read out of a record reader, whose backing buffer is freed when
+// the reader is released. A string that aliased it parsed as garbage once
+// DuckDB reused the memory: CI failed with "invalid character ''
+// looking for beginning of value".
+func TestReferenceTablesASTSurvivesReaderRelease(t *testing.T) {
+	conn := refConn(t)
+	ctx := context.Background()
+	want, err := serializeSQL(ctx, conn, "SELECT * FROM batch JOIN locations USING (city)")
+	assert.NoError(t, err)
+
+	got, err := serializeSQL(ctx, conn, "SELECT * FROM batch JOIN locations USING (city)")
+	assert.NoError(t, err)
+	// Churn the allocator with ASTs of about the same size: if got aliased
+	// the reader's buffer, this is where it would be overwritten.
+	for i := 0; i < 200; i++ {
+		_, err := serializeSQL(ctx, conn, "SELECT * FROM other JOIN elsewhere USING (town)")
+		assert.NoError(t, err)
+	}
+
+	assert.Equal(t, want, got)
+}
+
 // TestReferenceTablesExcludesCTEs is the false-positive case. DuckDB emits a
 // CTE reference as a BASE_TABLE node, so a naive walk would try to count a
 // name that does not exist outside its own query and warn on every start of

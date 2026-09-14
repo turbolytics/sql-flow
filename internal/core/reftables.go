@@ -291,7 +291,9 @@ func serializeSQL(ctx context.Context, conn adbc.Connection, sql string) (string
 		if !ok {
 			return "", fmt.Errorf("json_serialize_sql returned %T", rec.Column(0))
 		}
-		return col.Value(0), nil
+		// Clone: the value aliases the record's backing buffer, which the
+		// deferred Release frees before the caller parses it.
+		return strings.Clone(col.Value(0)), nil
 	}
 	return "", fmt.Errorf("json_serialize_sql returned no rows")
 }
