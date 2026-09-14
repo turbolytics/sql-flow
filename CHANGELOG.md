@@ -26,6 +26,11 @@
 - `sqlflow validate` and `sqlflow config validate` check a serve config
   against its own schema, `serve.json`, and report every rule with its line.
 - `sqlflow config example --serve` prints the serve config skeleton.
+- A `sqlflow serve` dataset can declare `range: {since, until, default}`
+  and a `max_range` per grain. A request without `grain` gets the finest
+  grain whose `max_range` covers its range, the server binds the resolved
+  `since` and `until`, and the response echoes the grain and range. A range
+  no grain serves is `400 range_too_wide`.
 - Error codes `user.config.serve_reserved` and `user.config.serve_dataset`.
 
 ### Fixed
