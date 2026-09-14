@@ -1,7 +1,11 @@
 package sinks
 
 import (
+	"context"
+	"errors"
+	"net"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -10,6 +14,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -199,4 +204,47 @@ func TestSinkPostgres_RowsCarryTheSequence(t *testing.T) {
 	_, err = postgresRows(btbl)
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), `column "when"`))
+}
+
+// The SQLSTATE class is the whole retry policy: connection, shutdown,
+// resource and serialization classes retry as unreachable; data, constraint,
+// syntax, auth and missing-object classes are the user's and never retry.
+func TestSinkPostgres_SQLStateClassifies(t *testing.T) {
+	coverage.Covers(t, "sink.postgres")
+	cases := []struct {
+		state string
+		code  errs.Code
+		exit  int
+	}{
+		{"08006", errs.CodeSinkUnreachable, errs.ExitSinkUnreachable},
+		{"57P01", errs.CodeSinkUnreachable, errs.ExitSinkUnreachable},
+		{"53300", errs.CodeSinkUnreachable, errs.ExitSinkUnreachable},
+		{"40001", errs.CodeSinkUnreachable, errs.ExitSinkUnreachable},
+		{"22003", errs.CodeSinkEncodeFailed, errs.ExitUserError},
+		{"23502", errs.CodeSinkInvalid, errs.ExitUserError},
+		{"21000", errs.CodeSinkInvalid, errs.ExitUserError},
+		{"42703", errs.CodeSinkInvalid, errs.ExitUserError},
+		{"28P01", errs.CodeSinkInvalid, errs.ExitUserError},
+		{"3D000", errs.CodeSinkInvalid, errs.ExitUserError},
+		{"XX000", errs.CodeSinkWriteFailed, errs.ExitInternal},
+	}
+	for _, c := range cases {
+		err := postgresError(&pgconn.PgError{Code: c.state, Message: "m"}, "merge")
+		assert.Equal(t, c.code, errs.CodeOf(err))
+		assert.Equal(t, c.exit, errs.ExitCode(err))
+		assert.That(t, strings.Contains(err.Error(), c.state))
+	}
+
+	// A dial failure is unreachable, and a context that ran out stays
+	// visible through the wrap so the harness can see the deadline.
+	err := postgresError(&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, "connect")
+	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
+	err = postgresError(context.DeadlineExceeded, "copy")
+	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
+	assert.That(t, errors.Is(err, context.DeadlineExceeded))
+
+	// pgx refusing to encode a Go value is the client's, and permanent.
+	err = postgresCopyError(errors.New("unable to encode 1.5 into binary format for int8"))
+	assert.Equal(t, errs.CodeSinkEncodeFailed, errs.CodeOf(err))
+	assert.That(t, !retryable(err))
 }
