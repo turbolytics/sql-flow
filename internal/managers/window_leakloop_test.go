@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/jackc/pgx/v5"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/handlers"
@@ -170,6 +171,40 @@ func TestWindowDemo__PostgresUpsertPerMessage(t *testing.T) {
 		}
 		sink = s
 	})
+}
+
+// TestWindowDemo__PostgresSinkPerMessage publishes every closed minute
+// through the keyed postgres sink into SQLFLOW_LEAK_POSTGRES: the write the
+// demo moves to. The expectation is the counting sink's rate.
+func TestWindowDemo__PostgresSinkPerMessage(t *testing.T) {
+	dsn := os.Getenv("SQLFLOW_LEAK_POSTGRES")
+	if dsn == "" {
+		t.Fatal("SQLFLOW_LEAK_POSTGRES is required: a Postgres connection string as this process sees it")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{
+		`DROP TABLE IF EXISTS leakloop_sink`,
+		`CREATE TABLE leakloop_sink (bucket TIMESTAMPTZ NOT NULL, lang TEXT NOT NULL, posts INTEGER NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (bucket, lang))`,
+	} {
+		if _, err := conn.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.Close(ctx)
+
+	s, err := sinks.NewPostgresSink(config.PostgresSink{
+		DSN: dsn, Table: "leakloop_sink", Mode: sinks.PostgresModeUpsert, Key: []string{"bucket", "lang"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	runDemoWindow(t, "demo window, postgres sink", s, nil)
 }
 
 // sinkProxy lets the sink be built inside setup, after the database exists.

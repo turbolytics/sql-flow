@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/leakloop"
 )
 
@@ -50,14 +52,14 @@ func closedMinute(i int) arrow.Table {
 
 // runSinkLoop flushes one closed minute per flush. minute picks which minute
 // flush i writes, so a loop can write new keys every time or the same ones.
-func runSinkLoop(t *testing.T, name string, s *SQLCommandSink, minute func(i int) int, after func()) {
+func runSinkLoop(t *testing.T, name string, s core.Sink, conn adbc.Connection, minute func(i int) int, after func()) {
 	flushes := leakloop.Count(t, 300)
 	step := flushes / 20
 	if step == 0 {
 		step = 1
 	}
 	ctx := context.Background()
-	loop := leakloop.New(t, name, "flush", s.conn)
+	loop := leakloop.New(t, name, "flush", conn)
 	loop.Sample(0)
 	for i := 1; i <= flushes; i++ {
 		tbl := closedMinute(minute(i))
@@ -88,7 +90,7 @@ func TestSinkSQLCommand__LocalTablePerFlush(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runSinkLoop(t, "sqlcommand, local table", s, newMinute, func() { exec(t, conn, `DELETE FROM w_local`) })
+	runSinkLoop(t, "sqlcommand, local table", s, conn, newMinute, func() { exec(t, conn, `DELETE FROM w_local`) })
 }
 
 func newMinute(i int) int { return i }
@@ -138,7 +140,7 @@ func (sc pgSinkLoop) run(t *testing.T) {
 	if sc.truncate {
 		after = func() { exec(t, conn, fmt.Sprintf(`CALL postgres_execute('pg', 'TRUNCATE %s')`, sc.table)) }
 	}
-	runSinkLoop(t, sc.name, s, sc.minute, after)
+	runSinkLoop(t, sc.name, s, conn, sc.minute, after)
 }
 
 // TestSinkSQLCommand__PostgresUpsertPerFlush is the demo's sink statement,
