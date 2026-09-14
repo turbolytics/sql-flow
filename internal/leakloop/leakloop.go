@@ -20,10 +20,16 @@
 // RssAnon is exact on Linux only. On macOS turbostats falls back to peak
 // resident size, which only rises, so run the loops in a Linux container when
 // the native number matters.
+//
+// The loops report a rate and assert nothing, so they are benchmarks, not
+// tests. They build only with -tags leakloop, never run in the suite, and
+// carry no coverage.Covers: a test that cannot fail proves nothing in the
+// matrix. dev/bench/leakloops.sh runs them.
 package leakloop
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -41,8 +47,8 @@ import (
 )
 
 // Count scales a loop's default event count by SQLFLOW_LEAK_SCALE. The
-// defaults finish in seconds so the -short pass runs every loop; a scale of
-// 100 is a few million messages and tens of thousands of flushes.
+// defaults finish in seconds; a scale of 100 is a few million messages and
+// tens of thousands of flushes.
 func Count(tb testing.TB, base int) int {
 	tb.Helper()
 	v := os.Getenv("SQLFLOW_LEAK_SCALE")
@@ -292,4 +298,70 @@ func generatedPosts(n int) [][]byte {
 			i, startUS+int64(i)*20_000, i, op, i, lang, text, i))
 	}
 	return out
+}
+
+// Replay hands out posts in a cycle for as long as a loop runs. Every pass
+// after the first moves each post's time_us forward by the capture's span, so
+// the stream clock keeps advancing and a window closes on the hundredth pass
+// as it did on the first. Without that, the second pass is all late rows.
+//
+// A post returned by Next is rewritten in place one full pass later, so a
+// caller may hold it for fewer than len(posts) calls: a batch, not longer.
+type Replay struct {
+	posts [][]byte
+	bufs  [][]byte
+	// at is where each post's time_us digits start and end, us their value.
+	at   [][2]int
+	us   []int64
+	span int64
+	i    int
+	pass int64
+}
+
+var timeUSKey = []byte(`"time_us":`)
+
+// NewReplay indexes posts for Next. Every post must carry time_us.
+func NewReplay(tb testing.TB, posts [][]byte) *Replay {
+	tb.Helper()
+	r := &Replay{posts: posts, bufs: make([][]byte, len(posts)), at: make([][2]int, len(posts)), us: make([]int64, len(posts))}
+	lo, hi := int64(1<<62), int64(0)
+	for i, p := range posts {
+		k := bytes.Index(p, timeUSKey)
+		if k < 0 {
+			tb.Fatalf("post %d has no time_us", i)
+		}
+		start := k + len(timeUSKey)
+		end := start
+		for end < len(p) && p[end] >= '0' && p[end] <= '9' {
+			end++
+		}
+		v, err := strconv.ParseInt(string(p[start:end]), 10, 64)
+		if err != nil {
+			tb.Fatalf("post %d: time_us: %v", i, err)
+		}
+		r.at[i], r.us[i] = [2]int{start, end}, v
+		lo, hi = min(lo, v), max(hi, v)
+	}
+	// One second past the newest post, so passes never overlap.
+	r.span = hi - lo + 1_000_000
+	return r
+}
+
+// Next returns the next post, shifted forward on every pass after the first.
+func (r *Replay) Next() []byte {
+	i := r.i
+	r.i++
+	if r.i == len(r.posts) {
+		r.i = 0
+		defer func() { r.pass++ }()
+	}
+	if r.pass == 0 {
+		return r.posts[i]
+	}
+	p, at := r.posts[i], r.at[i]
+	b := append(r.bufs[i][:0], p[:at[0]]...)
+	b = strconv.AppendInt(b, r.us[i]+r.pass*r.span, 10)
+	b = append(b, p[at[1]:]...)
+	r.bufs[i] = b
+	return b
 }

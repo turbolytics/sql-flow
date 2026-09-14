@@ -1,3 +1,5 @@
+//go:build leakloop
+
 package sinks
 
 import (
@@ -10,7 +12,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/leakloop"
 )
 
@@ -81,7 +82,6 @@ func runSinkLoop(t *testing.T, name string, s *SQLCommandSink, minute func(i int
 // Postgres: the drop, the ingest, and an insert into a DuckDB table that is
 // emptied after every flush.
 func TestSinkSQLCommand__LocalTablePerFlush(t *testing.T) {
-	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	exec(t, conn, `CREATE TABLE w_local (bucket TIMESTAMPTZ, lang TEXT, posts INTEGER)`)
 	s, err := NewSQLCommandSink(conn, `INSERT INTO w_local SELECT bucket, lang, posts FROM sqlflow_sink_batch`, nil)
@@ -118,7 +118,7 @@ ON CONFLICT (bucket, lang) DO UPDATE
 func (sc pgSinkLoop) run(t *testing.T) {
 	dsn := os.Getenv("SQLFLOW_LEAK_POSTGRES")
 	if dsn == "" {
-		t.Skip("SQLFLOW_LEAK_POSTGRES is not set")
+		t.Fatal("SQLFLOW_LEAK_POSTGRES is required: a Postgres connection string as this process sees it")
 	}
 	conn := newSinkTestConn(t)
 	exec(t, conn, `INSTALL postgres`)
@@ -146,7 +146,6 @@ func (sc pgSinkLoop) run(t *testing.T) {
 // writes a new minute, so the table grows by one minute's rows per flush, as
 // the demo's does.
 func TestSinkSQLCommand__PostgresUpsertPerFlush(t *testing.T) {
-	coverage.Covers(t, "sink.sqlcommand")
 	pgSinkLoop{name: "sqlcommand, postgres upsert, growing table", table: "leakloop_upsert",
 		sql: demoUpsert, minute: newMinute}.run(t)
 }
@@ -154,7 +153,6 @@ func TestSinkSQLCommand__PostgresUpsertPerFlush(t *testing.T) {
 // TestSinkSQLCommand__PostgresUpsertSameKeysPerFlush writes the same minute
 // every flush: the table holds one minute's rows and every row conflicts.
 func TestSinkSQLCommand__PostgresUpsertSameKeysPerFlush(t *testing.T) {
-	coverage.Covers(t, "sink.sqlcommand")
 	pgSinkLoop{name: "sqlcommand, postgres upsert, same keys", table: "leakloop_upsert_same",
 		sql: demoUpsert, minute: sameMinute}.run(t)
 }
@@ -163,7 +161,6 @@ func TestSinkSQLCommand__PostgresUpsertSameKeysPerFlush(t *testing.T) {
 // every flush and empties the table after it: nothing conflicts, and the
 // table never holds more than one minute.
 func TestSinkSQLCommand__PostgresUpsertTruncatedPerFlush(t *testing.T) {
-	coverage.Covers(t, "sink.sqlcommand")
 	pgSinkLoop{name: "sqlcommand, postgres upsert, truncated table", table: "leakloop_upsert_trunc",
 		sql: demoUpsert, minute: newMinute, truncate: true}.run(t)
 }
@@ -171,7 +168,6 @@ func TestSinkSQLCommand__PostgresUpsertTruncatedPerFlush(t *testing.T) {
 // TestSinkSQLCommand__PostgresInsertPerFlush drops the ON CONFLICT. Every
 // flush writes new keys, so the insert never conflicts.
 func TestSinkSQLCommand__PostgresInsertPerFlush(t *testing.T) {
-	coverage.Covers(t, "sink.sqlcommand")
 	pgSinkLoop{name: "sqlcommand, postgres plain insert, growing table", table: "leakloop_insert",
 		sql: `INSERT INTO pg.%[1]s (bucket, lang, posts, updated_at)
 SELECT bucket, lang, posts, now() FROM sqlflow_sink_batch`, minute: newMinute}.run(t)
@@ -181,7 +177,6 @@ SELECT bucket, lang, posts, now() FROM sqlflow_sink_batch`, minute: newMinute}.r
 // flush reads one row from the attached table into DuckDB: a round trip
 // through the extension without a COPY.
 func TestSinkSQLCommand__PostgresReadPerFlush(t *testing.T) {
-	coverage.Covers(t, "sink.sqlcommand")
 	pgSinkLoop{name: "sqlcommand, postgres read", table: "leakloop_read",
 		sql: `CREATE OR REPLACE TABLE leakloop_read AS
 SELECT count(*) AS n, (SELECT count(*) FROM sqlflow_sink_batch) AS batch FROM pg.%[1]s`, minute: newMinute}.run(t)

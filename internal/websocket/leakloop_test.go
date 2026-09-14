@@ -1,3 +1,5 @@
+//go:build leakloop
+
 package websocket
 
 import (
@@ -7,14 +9,14 @@ import (
 	"time"
 
 	ws "github.com/coder/websocket"
-	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/leakloop"
 )
 
 // The websocket leak loops. The Bluesky demo reads Jetstream through this
 // source on a 512 MB worker, so it is one of the components its memory could
 // be growing in. Each loop runs the source against a local server and reports
-// growth per event; see internal/leakloop for what the numbers mean.
+// growth per event; see internal/leakloop for what the numbers mean, and
+// dev/bench/leakloops.sh to run them.
 
 // serveLoop starts a server that writes posts in a cycle, perConn frames per
 // connection, then drops the connection without a close handshake, the way a
@@ -40,7 +42,6 @@ func serveLoop(t *testing.T, posts [][]byte, perConn int) *httptest.Server {
 // TestSourceWebsocket__SteadyStreamPerMessage reads frames from one
 // connection that never drops.
 func TestSourceWebsocket__SteadyStreamPerMessage(t *testing.T) {
-	coverage.Covers(t, "source.websocket")
 	total := leakloop.Count(t, 50_000)
 	posts := leakloop.Posts(t, 20_000)
 	srv := serveLoop(t, posts, 0)
@@ -74,7 +75,6 @@ func TestSourceWebsocket__SteadyStreamPerMessage(t *testing.T) {
 // TestSourceWebsocket__ReconnectPerReconnect drops the connection every 50
 // frames, so the source tears down and redials thousands of times.
 func TestSourceWebsocket__ReconnectPerReconnect(t *testing.T) {
-	coverage.Covers(t, "source.websocket")
 	const perConn = 50
 	reconnects := leakloop.Count(t, 400)
 	posts := leakloop.Posts(t, 1_000)

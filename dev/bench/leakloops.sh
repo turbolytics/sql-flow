@@ -5,9 +5,11 @@
 #
 #   dev/bench/leakloops.sh leak-out 'TestSinkSQLCommand__Postgres' ./internal/sinks
 #
-# One process per test because a loop inherits the allocator state of every
-# loop that ran before it in the same binary: the third StructuredBatch loop
-# started 78 MiB above the first. Writes <out-dir>/<Test>.txt.
+# The loops build only with -tags leakloop: they report a rate and assert
+# nothing, so they are not part of the test suite. One process per test
+# because a loop inherits the allocator state of every loop that ran before it
+# in the same binary: the third StructuredBatch loop started 78 MiB above the
+# first. Writes <out-dir>/<Test>.txt.
 #
 # Environment, passed to every loop:
 #   SQLFLOW_LEAK_SCALE        multiplies every loop's event count (default 1)
@@ -45,7 +47,7 @@ docker run "${args[@]}" "$image" bash -c '
   cd /src
   for pkg in "$@"; do
     name=$(basename "$pkg")
-    go test -c -o "/tmp/$name.test" "$pkg" || exit 1
+    go test -tags leakloop -c -o "/tmp/$name.test" "$pkg" || exit 1
     for t in $(cd "/src/$pkg" && "/tmp/$name.test" -test.list "$pattern"); do
       (cd "/src/$pkg" && "/tmp/$name.test" -test.run "^$t\$" -test.v -test.count=1 -test.timeout 120m) > "/out/$t.txt" 2>&1
       printf "%-60s %s\n" "$t" "$(grep -E "^\s+per [a-z]+ after warm-up" "/out/$t.txt" | sed "s/^ *//" || grep -E "^--- " "/out/$t.txt")"
