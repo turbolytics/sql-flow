@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -112,7 +113,7 @@ func TestDLQRowsCarryTheDLQRole(t *testing.T) {
 		DLQ:    &config.Sink{Type: "console"},
 	}
 
-	policies, err := newErrorPolicies(context.Background(), conf, nil, mp, sinks.RetryEvents{})
+	policies, err := newErrorPolicies(context.Background(), conf, nil, &sync.Mutex{}, mp, sinks.RetryEvents{})
 	assert.NoError(t, err)
 	assert.That(t, policies.DLQSink != nil)
 

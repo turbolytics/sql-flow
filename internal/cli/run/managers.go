@@ -110,10 +110,16 @@ func buildManagedTables(
 				"table %q: opening the window sink's connection", table.Name)
 		}
 		conns = append(conns, sinkConn)
+		// The sink's connection is the window's alone, and the manager runs
+		// the sink from one goroutine, so the lock a sqlcommand sink needs
+		// has no other party. It is a lock of its own rather than the
+		// pipeline's: taking the pipeline's here would stall the consume
+		// loop for the length of every window write.
 		sink, err := sinks.New(ctx, table.Window.Sink, sinkConn,
 			sinks.WithMeterProvider(mp),
 			sinks.WithSinkRole("manager"),
-			sinks.WithRetryEvents(events))
+			sinks.WithRetryEvents(events),
+			sinks.WithConnLock(&sync.Mutex{}))
 		if err != nil {
 			return nil, closeConns, fmt.Errorf("table %q window sink: %w", table.Name, err)
 		}

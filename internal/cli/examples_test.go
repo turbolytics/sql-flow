@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,7 +167,10 @@ func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
 			// nothing the commands above may have failed to create. Building
 			// it second meant a handler that skipped for a missing ATTACHed
 			// table took the sink check down with it.
-			_, err = sinks.New(ctx, conf.Pipeline.Sink, conn)
+			// The run command hands every sink the connection's lock, and a
+			// sqlcommand sink refuses to build without one.
+			lock := &sync.Mutex{}
+			_, err = sinks.New(ctx, conf.Pipeline.Sink, conn, sinks.WithConnLock(lock))
 			checkBuildError(t, "sink", err)
 
 			if conf.Tables != nil {
@@ -174,7 +178,7 @@ func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
 					if table.Window == nil {
 						continue
 					}
-					_, err := sinks.New(ctx, table.Window.Sink, conn)
+					_, err := sinks.New(ctx, table.Window.Sink, conn, sinks.WithConnLock(lock))
 					checkBuildError(t, "window sink for "+table.Name, err)
 				}
 			}
