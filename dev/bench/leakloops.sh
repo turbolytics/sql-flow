@@ -37,8 +37,10 @@ for v in SQLFLOW_LEAK_SCALE SQLFLOW_LEAK_POSTGRES SQLFLOW_LEAK_MALLOC_TRIM MALLO
   [ -n "${!v:-}" ] && args+=(-e "$v=${!v}")
 done
 if [ -n "${SQLFLOW_LEAK_JETSTREAM:-}" ]; then
-  args+=(-v "$(cd "$(dirname "$SQLFLOW_LEAK_JETSTREAM")" && pwd)/$(basename "$SQLFLOW_LEAK_JETSTREAM")":/capture:ro
-    -e SQLFLOW_LEAK_JETSTREAM=/capture)
+  # Mounted under its own name: Posts reads the .gz suffix to know it is gzipped.
+  capture=$(basename "$SQLFLOW_LEAK_JETSTREAM")
+  args+=(-v "$(cd "$(dirname "$SQLFLOW_LEAK_JETSTREAM")" && pwd)/$capture":"/capture/$capture":ro
+    -e "SQLFLOW_LEAK_JETSTREAM=/capture/$capture")
 fi
 
 docker run "${args[@]}" "$image" bash -c '
