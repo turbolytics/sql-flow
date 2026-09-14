@@ -197,6 +197,32 @@ func TestManagerWindow_LateRowsFollowThePolicy(t *testing.T) {
 	}
 }
 
+// reemit runs emit_sql over the late rows alone. The bucket's earlier rows
+// were deleted when it closed, so a sum over the bucket after a late row is
+// the late rows' sum, not the bucket's total. A sink that replaces the
+// bucket's value with it loses everything published before.
+func TestManagerWindow_ReemitPublishesTheLateRowsAlone(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	now := live(d, t)
+	sink := &recordingSink{}
+	decl := testDecl()
+	decl.Late = LateReemit
+	decl.EmitSQL = "SELECT sum(count)::INT AS total, bucket, city FROM closed GROUP BY ALL"
+	w := newTestWatermark(t, d, decl, sink, now)
+
+	insertBucket(t, d.pipeline, 0, "NYC", 5)
+	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assert.NoError(t, w.Poll(ctx))
+
+	insertBucket(t, d.pipeline, 0, "NYC", 1)
+	assert.NoError(t, w.Poll(ctx))
+
+	assert.DeepEqual(t, sink.published(), [][]string{{"5"}, {"1"}})
+}
+
 // A close reads committed rows only. Rows an open transaction on another
 // connection has written are not in the bucket the sink receives.
 func TestManagerWindow_UncommittedRowsAreNotPublished(t *testing.T) {

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `bluesky.postgres.windowed.yml` paired `late_rows: reemit` with an upsert
+  that replaces `posts`. `reemit` publishes `emit_sql` over the late rows
+  alone, so one late post replaced a closed minute's count with its own. The
+  example declares `drop`. The README, the config schema, the example
+  comments and `validate`'s warning said `reemit` publishes the bucket again
+  for a sink that upserts. They now say it publishes the late rows, for a
+  sink that adds them to the bucket it holds.
+
 ## v2026.09.14
 
 The first date-tagged release. Upgrade from v1.2.0. The pipeline file

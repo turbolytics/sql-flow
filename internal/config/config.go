@@ -140,8 +140,9 @@ type Window struct {
 	// Absent means never: a stream that stops leaves its last bucket open.
 	IdleCloseSeconds int `yaml:"idle_close_seconds,omitempty" jsonschema:"minimum=0"`
 	// What happens to a row for a bucket that already closed. drop discards
-	// it and counts it. reemit publishes the bucket again, for a sink that
-	// merges on the bucket's key; a sink that appends holds both rows.
+	// it and counts it. reemit publishes emit_sql over the late rows alone,
+	// for a sink that adds them to the bucket it holds; a sink that replaces
+	// the bucket's value loses the rows published before.
 	// Required: the two are different promises to the sink.
 	LateRows string `yaml:"late_rows" jsonschema:"enum=drop,enum=reemit"`
 	// How often the engine looks for closed buckets. Absent means 10.

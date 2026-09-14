@@ -863,12 +863,15 @@ bucket and every open bucket closes. Wall clock appears nowhere in the close.
 **Late rows.** A row for a bucket below the watermark arrived after that
 bucket was published. `late_rows` is required, because the two policies are
 different promises to the sink. `drop` deletes the row and counts it in
-`window_late_rows_total`, so a sink that appends sees each bucket once.
-`reemit` publishes the bucket again: a sink that upserts on the bucket's key
-replaces the value, and a sink that appends holds both rows, so its reader
-has to treat the later one as a correction. `sqlflow validate` warns when
-`reemit` is paired with the Iceberg or Kafka sink. A rising drop count means
-the grace is too short for the stream.
+`window_late_rows_total`, so the sink sees each bucket once, as it closed.
+`reemit` runs `emit_sql` over the late rows alone and publishes the result,
+because the bucket's other rows were deleted when it closed. The sink has to
+add that result to the bucket it holds. An upsert that replaces on the
+bucket's key overwrites the bucket's count with the late rows' count, so pair
+a replacing upsert with `drop`. An upsert that adds counts a republished close
+twice; see **Guarantees**. `sqlflow validate` warns when `reemit` is paired
+with the Iceberg or Kafka sink. A rising drop count means the grace is too
+short for the stream.
 
 The watermark is one value for the whole table, which makes it the fastest
 partition's clock. A topic whose partitions run at uneven rates has a slow

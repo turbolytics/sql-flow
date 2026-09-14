@@ -28,9 +28,12 @@ const defaultPollInterval = 10 * time.Second
 type LatePolicy string
 
 const (
-	// LateReemit publishes the bucket again. For a sink that merges.
+	// LateReemit publishes emit_sql over the late rows alone: the bucket's
+	// other rows were deleted when it closed. For a sink that adds them to
+	// the bucket it holds.
 	LateReemit LatePolicy = "reemit"
-	// LateDrop discards the row and counts it. For a sink that appends.
+	// LateDrop discards the row and counts it. For a sink that appends or
+	// replaces.
 	LateDrop LatePolicy = "drop"
 )
 
@@ -43,7 +46,7 @@ func ParseLatePolicy(s string) (LatePolicy, error) {
 	case LateDrop:
 		return LateDrop, nil
 	case "":
-		return "", errs.New(errs.CodeConfigInvalid, "late_rows is required: drop, or reemit for a sink that upserts")
+		return "", errs.New(errs.CodeConfigInvalid, "late_rows is required: drop, or reemit for a sink that adds late rows to the bucket it holds")
 	default:
 		return "", errs.New(errs.CodeConfigInvalid, "late_rows must be drop or reemit, not %q", s)
 	}

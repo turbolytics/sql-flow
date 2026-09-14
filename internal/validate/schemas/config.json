@@ -734,7 +734,7 @@
                       "drop",
                       "reemit"
                     ],
-                    "description": "What happens to a row for a bucket that already closed. drop discards\nit and counts it. reemit publishes the bucket again, for a sink that\nmerges on the bucket's key; a sink that appends holds both rows.\nRequired: the two are different promises to the sink."
+                    "description": "What happens to a row for a bucket that already closed. drop discards\nit and counts it. reemit publishes emit_sql over the late rows alone,\nfor a sink that adds them to the bucket it holds; a sink that replaces\nthe bucket's value loses the rows published before.\nRequired: the two are different promises to the sink."
                   },
                   "poll_interval_seconds": {
                     "type": "integer",

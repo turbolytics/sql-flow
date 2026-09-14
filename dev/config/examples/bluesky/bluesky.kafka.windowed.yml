@@ -22,8 +22,8 @@ tables:
       #
       # late_rows: drop discards a row for a bucket that already closed and
       # counts it in window_late_rows_total, so each bucket reaches the topic
-      # once. reemit would publish the bucket again for a consumer that
-      # merges.
+      # once. reemit would publish a second message for the bucket, counted
+      # over the late rows alone, for a consumer that adds it to the first.
       window:
         time_column: bucket
         size_seconds: 60
