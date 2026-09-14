@@ -23,6 +23,20 @@ func newBenchADBCConn(b *testing.B) (adbc.Connection, func()) {
 
 func newADBCConn(tb testing.TB) (adbc.Connection, func()) {
 	tb.Helper()
+	db := openTestDatabase(tb)
+	conn, err := db.Open(context.Background())
+	if err != nil {
+		tb.Fatal(err)
+	}
+
+	return conn, func() { conn.Close() }
+}
+
+// openTestDatabase opens an in-memory DuckDB through the ADBC driver
+// manager, from SQLFLOW_DUCKDB_LIB or the Homebrew install. A test that
+// needs a second connection to the same database opens it from here.
+func openTestDatabase(tb testing.TB) adbc.Database {
+	tb.Helper()
 	lib := os.Getenv("SQLFLOW_DUCKDB_LIB")
 	if lib == "" {
 		lib = "/opt/homebrew/lib/libduckdb.dylib"
@@ -35,13 +49,7 @@ func newADBCConn(tb testing.TB) (adbc.Connection, func()) {
 	if err != nil {
 		tb.Fatal(err)
 	}
-
-	conn, err := db.Open(context.Background())
-	if err != nil {
-		tb.Fatal(err)
-	}
-
-	return conn, func() { conn.Close() }
+	return db
 }
 
 func createTable(t *testing.T, conn adbc.Connection, ddl string) {

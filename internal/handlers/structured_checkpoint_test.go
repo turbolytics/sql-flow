@@ -2,11 +2,9 @@ package handlers
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/apache/arrow-adbc/go/adbc"
-	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
@@ -23,13 +21,7 @@ func TestStructuredInit_SkipsACheckpointAnotherWriterHolds(t *testing.T) {
 	coverage.Covers(t, "handler.structured")
 	ctx := context.Background()
 
-	lib := os.Getenv("SQLFLOW_DUCKDB_LIB")
-	if lib == "" {
-		lib = "/opt/homebrew/lib/libduckdb.dylib"
-	}
-	var drv drivermgr.Driver
-	db, err := drv.NewDatabase(map[string]string{"driver": lib, "entrypoint": "duckdb_adbc_init"})
-	assert.NoError(t, err)
+	db := openTestDatabase(t)
 	defer db.Close()
 	conn, err := db.Open(ctx)
 	assert.NoError(t, err)

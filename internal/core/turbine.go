@@ -1047,12 +1047,16 @@ func (t *Turbine) commitSource() error {
 // once per batch at batch size 1 (#280).
 func (t *Turbine) initHandler(ctx context.Context) error {
 	t.lock.Lock()
-	err := t.handler.Init(ctx)
-	t.lock.Unlock()
-	if r, ok := t.handler.(CheckpointSkipReporter); ok && err == nil && r.CheckpointSkipped() {
+	defer t.lock.Unlock()
+	if err := t.handler.Init(ctx); err != nil {
+		return err
+	}
+	// Read under the lock, so a panic in Init still releases it and the flag
+	// is the one this Init set.
+	if r, ok := t.handler.(CheckpointSkipReporter); ok && r.CheckpointSkipped() {
 		t.metrics.HandlerCheckpointsSkipped.Add(ctx, 1)
 	}
-	return err
+	return nil
 }
 
 // CheckpointSkipReporter is a handler that checkpoints as it re-initialises
