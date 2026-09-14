@@ -119,7 +119,8 @@ func buildManagedTables(
 			sinks.WithMeterProvider(mp),
 			sinks.WithSinkRole("manager"),
 			sinks.WithRetryEvents(events),
-			sinks.WithConnLock(&sync.Mutex{}))
+			sinks.WithConnLock(&sync.Mutex{}),
+			sinks.WithLogger(l))
 		if err != nil {
 			return nil, closeConns, fmt.Errorf("table %q window sink: %w", table.Name, err)
 		}

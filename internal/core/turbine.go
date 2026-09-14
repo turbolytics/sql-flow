@@ -96,6 +96,16 @@ type BufferedRowReporter interface {
 	BufferedRows() int
 }
 
+// KeyedSink is implemented by a sink that identifies a row by declared key
+// columns, so delivering the same batch twice leaves the destination holding
+// it once. Key returns those columns, or nothing for a sink that appends.
+//
+// Optional, like BufferedRowReporter. The conformance harness reads it to
+// decide whether sink.flush.idempotent_on_key applies.
+type KeyedSink interface {
+	Key() []string
+}
+
 type Handler interface {
 	Init(ctx context.Context) error
 	Write(msg []byte) error

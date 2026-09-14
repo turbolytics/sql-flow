@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
@@ -247,4 +248,90 @@ func TestSinkPostgres_SQLStateClassifies(t *testing.T) {
 	err = postgresCopyError(errors.New("unable to encode 1.5 into binary format for int8"))
 	assert.Equal(t, errs.CodeSinkEncodeFailed, errs.CodeOf(err))
 	assert.That(t, !retryable(err))
+}
+
+func TestSinkPostgres_NewChecksTheBlock(t *testing.T) {
+	coverage.Covers(t, "sink.postgres")
+	good := config.PostgresSink{DSN: "postgres://u:p@localhost:5432/db", Table: "t", Mode: "upsert", Key: []string{"id"}}
+	s, err := NewPostgresSink(good)
+	assert.NoError(t, err)
+	assert.DeepEqual(t, []string{"id"}, s.Key())
+
+	for name, bad := range map[string]config.PostgresSink{
+		"no dsn":           {Table: "t", Mode: "upsert", Key: []string{"id"}},
+		"no table":         {DSN: good.DSN, Mode: "upsert", Key: []string{"id"}},
+		"no mode":          {DSN: good.DSN, Table: "t", Key: []string{"id"}},
+		"bad mode":         {DSN: good.DSN, Table: "t", Mode: "merge", Key: []string{"id"}},
+		"upsert no key":    {DSN: good.DSN, Table: "t", Mode: "upsert"},
+		"append with key":  {DSN: good.DSN, Table: "t", Mode: "append", Key: []string{"id"}},
+		"duplicate key":    {DSN: good.DSN, Table: "t", Mode: "upsert", Key: []string{"id", "id"}},
+		"bad dsn":          {DSN: "postgres://[::1", Table: "t", Mode: "append"},
+		"three-part table": {DSN: good.DSN, Table: "a.b.c", Mode: "append"},
+	} {
+		_, err := NewPostgresSink(bad)
+		if err == nil {
+			t.Fatalf("%s: built", name)
+		}
+		assert.Equal(t, errs.CodeSinkInvalid, errs.CodeOf(err))
+		// The examples test reads these substrings as a parity failure.
+		assert.That(t, !strings.Contains(err.Error(), "not supported"))
+		assert.That(t, !strings.Contains(err.Error(), "requires a"))
+	}
+
+	a, err := NewPostgresSink(config.PostgresSink{DSN: good.DSN, Table: "t", Mode: "append"})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(a.Key()))
+}
+
+// New dials nothing: a sink pointed at a host that does not resolve builds,
+// and Probe is where the pipeline learns the destination is not there.
+func TestSinkPostgres_NewDoesNotDial(t *testing.T) {
+	coverage.Covers(t, "sink.postgres")
+	s, err := NewPostgresSink(config.PostgresSink{DSN: "postgres://u:p@no-such-host.invalid:5432/db", Table: "t", Mode: "append"})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, s.BufferedRows())
+	assert.NoError(t, s.Close())
+	assert.NoError(t, s.Close())
+}
+
+// WriteTable buffers and Flush of nothing is a noop, without a server.
+func TestSinkPostgres_WriteTableBuffersOnly(t *testing.T) {
+	coverage.Covers(t, "sink.postgres")
+	s, err := NewPostgresSink(config.PostgresSink{DSN: "postgres://u:p@no-such-host.invalid:5432/db", Table: "t", Mode: "append"})
+	assert.NoError(t, err)
+	assert.NoError(t, s.Flush(context.Background()))
+
+	schema := arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	defer b.Release()
+	b.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2}, nil)
+	rec := b.NewRecord()
+	defer rec.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer tbl.Release()
+
+	assert.NoError(t, s.WriteTable(context.Background(), tbl))
+	assert.Equal(t, 2, s.BufferedRows())
+}
+
+// A dead-end host fails a flush with the retryable code, and the batch stays
+// buffered for the retry.
+func TestSinkPostgres_FlushAgainstNoServerIsUnreachableAndKeepsTheBatch(t *testing.T) {
+	coverage.Covers(t, "sink.postgres")
+	s, err := NewPostgresSink(config.PostgresSink{DSN: "postgres://u:p@127.0.0.1:1/db?connect_timeout=2", Table: "t", Mode: "append"})
+	assert.NoError(t, err)
+	schema := arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	defer b.Release()
+	b.Field(0).(*array.Int64Builder).Append(1)
+	rec := b.NewRecord()
+	defer rec.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer tbl.Release()
+	assert.NoError(t, s.WriteTable(context.Background(), tbl))
+
+	err = s.Flush(context.Background())
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
+	assert.Equal(t, 1, s.BufferedRows())
 }

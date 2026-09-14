@@ -175,5 +175,7 @@ func TestWindowDemo__PostgresUpsertPerMessage(t *testing.T) {
 // sinkProxy lets the sink be built inside setup, after the database exists.
 type sinkProxy struct{ s *core.Sink }
 
-func (p sinkProxy) WriteTable(ctx context.Context, b arrow.Table) error { return (*p.s).WriteTable(ctx, b) }
-func (p sinkProxy) Flush(ctx context.Context) error                     { return (*p.s).Flush(ctx) }
+func (p sinkProxy) WriteTable(ctx context.Context, b arrow.Table) error {
+	return (*p.s).WriteTable(ctx, b)
+}
+func (p sinkProxy) Flush(ctx context.Context) error { return (*p.s).Flush(ctx) }

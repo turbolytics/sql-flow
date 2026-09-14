@@ -52,7 +52,7 @@ pipeline:
     table: <string>
   sink:
     # Sink identifier.
-    type: clickhouse | console | iceberg | kafka | noop | sqlcommand
+    type: clickhouse | console | iceberg | kafka | noop | postgres | sqlcommand
     # Format settings (e.g., for Parquet).
     format:
       type: parquet
@@ -91,6 +91,20 @@ pipeline:
     clickhouse:
       dsn: <string>
       table: <string>
+    # Postgres-specific sink configuration.
+    postgres:
+      # A libpq connection URI or key-value string.
+      dsn: <string>
+      # The target table, optionally schema-qualified. The sink never creates
+      # it.
+      table: <string>
+      # upsert replaces the row a key already identifies; append inserts every
+      # row. Required: the two are different promises to the reader.
+      mode: upsert | append
+      # The columns a row is identified by. Required for upsert, refused for
+      # append. A unique index or constraint must cover exactly these columns.
+      key:
+        - <array>
     # Bounds how long this sink keeps trying a destination that is not
     # answering. Omit to accept the defaults; set max_attempts to 1 to turn
     # retrying off. The kafka sink ignores this: franz-go already retries a
@@ -130,7 +144,7 @@ pipeline:
     # sink.
     dlq:
       # Sink identifier.
-      type: clickhouse | console | iceberg | kafka | noop | sqlcommand
+      type: clickhouse | console | iceberg | kafka | noop | postgres | sqlcommand
       # Format settings (e.g., for Parquet).
       format:
         type: parquet
@@ -169,6 +183,20 @@ pipeline:
       clickhouse:
         dsn: <string>
         table: <string>
+      # Postgres-specific sink configuration.
+      postgres:
+        # A libpq connection URI or key-value string.
+        dsn: <string>
+        # The target table, optionally schema-qualified. The sink never creates
+        # it.
+        table: <string>
+        # upsert replaces the row a key already identifies; append inserts every
+        # row. Required: the two are different promises to the reader.
+        mode: upsert | append
+        # The columns a row is identified by. Required for upsert, refused for
+        # append. A unique index or constraint must cover exactly these columns.
+        key:
+          - <array>
       # Bounds how long this sink keeps trying a destination that is not
       # answering. Omit to accept the defaults; set max_attempts to 1 to turn
       # retrying off. The kafka sink ignores this: franz-go already retries a
@@ -218,7 +246,7 @@ tables:
         # Where closed windows go.
         sink:
           # Sink identifier.
-          type: clickhouse | console | iceberg | kafka | noop | sqlcommand
+          type: clickhouse | console | iceberg | kafka | noop | postgres | sqlcommand
           # Format settings (e.g., for Parquet).
           format:
             type: parquet
@@ -257,6 +285,20 @@ tables:
           clickhouse:
             dsn: <string>
             table: <string>
+          # Postgres-specific sink configuration.
+          postgres:
+            # A libpq connection URI or key-value string.
+            dsn: <string>
+            # The target table, optionally schema-qualified. The sink never creates
+            # it.
+            table: <string>
+            # upsert replaces the row a key already identifies; append inserts every
+            # row. Required: the two are different promises to the reader.
+            mode: upsert | append
+            # The columns a row is identified by. Required for upsert, refused for
+            # append. A unique index or constraint must cover exactly these columns.
+            key:
+              - <array>
           # Bounds how long this sink keeps trying a destination that is not
           # answering. Omit to accept the defaults; set max_attempts to 1 to turn
           # retrying off. The kafka sink ignores this: franz-go already retries a

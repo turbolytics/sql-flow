@@ -11,6 +11,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"go.opentelemetry.io/otel/metric"
+	"go.uber.org/zap"
 )
 
 type NoopSink struct{}
@@ -33,6 +34,7 @@ type options struct {
 	role          string
 	retryEvents   RetryEvents
 	connLock      *sync.Mutex
+	logger        *zap.Logger
 }
 
 // WithConnLock supplies the lock that serializes the pipeline's DuckDB
@@ -40,6 +42,19 @@ type options struct {
 // New refuses to build one without it. See SQLCommandSink.connLock.
 func WithConnLock(lock *sync.Mutex) Option {
 	return func(o *options) { o.connLock = lock }
+}
+
+// WithLogger supplies the logger New reports a sink's startup warnings
+// through. Without one they are dropped.
+func WithLogger(l *zap.Logger) Option {
+	return func(o *options) { o.logger = l }
+}
+
+// Warner is implemented by a sink whose probe can find something worth
+// saying that is not an error: a target shape that works today and fails on
+// a redelivery, say.
+type Warner interface {
+	Warnings() []string
 }
 
 // RetryEvents is told when a sink's retry ladder runs. Retry fires per failed
@@ -120,6 +135,11 @@ func New(ctx context.Context, sink config.Sink, conn adbc.Connection, opts ...Op
 	if err := probe(ctx, built); err != nil {
 		return nil, err
 	}
+	if w, ok := built.(Warner); ok && o.logger != nil {
+		for _, msg := range w.Warnings() {
+			o.logger.Warn(msg)
+		}
+	}
 
 	role := o.role
 	if role == "" {
@@ -192,6 +212,13 @@ var builders = map[string]func(ctx context.Context, sink config.Sink, conn adbc.
 			return nil, errs.New(errs.CodeSinkInvalid, "sink: clickhouse sink requires a clickhouse block")
 		}
 		return NewClickhouseSink(*sink.Clickhouse)
+	},
+
+	"postgres": func(_ context.Context, sink config.Sink, _ adbc.Connection) (core.Sink, error) {
+		if sink.Postgres == nil {
+			return nil, errs.New(errs.CodeSinkInvalid, "sink: postgres sink needs a postgres block with dsn, table and mode")
+		}
+		return NewPostgresSink(*sink.Postgres)
 	},
 
 	"iceberg": func(ctx context.Context, sink config.Sink, _ adbc.Connection) (core.Sink, error) {

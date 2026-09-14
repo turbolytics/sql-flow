@@ -113,7 +113,7 @@ func TestDLQRowsCarryTheDLQRole(t *testing.T) {
 		DLQ:    &config.Sink{Type: "console"},
 	}
 
-	policies, err := newErrorPolicies(context.Background(), conf, nil, &sync.Mutex{}, mp, sinks.RetryEvents{})
+	policies, err := newErrorPolicies(context.Background(), conf, nil, &sync.Mutex{}, mp, sinks.RetryEvents{}, zap.NewNop())
 	assert.NoError(t, err)
 	assert.That(t, policies.DLQSink != nil)
 
