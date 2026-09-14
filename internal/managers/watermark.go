@@ -366,11 +366,13 @@ func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPr
 // publish runs emit_sql over the closed rows and hands the result to the
 // sink. Flushed before the delete, so a failure leaves the rows in the table
 // to be retried rather than dropping them.
+//
+// The sink runs on a connection of its own, not this one. This connection
+// holds the close's transaction, and a transaction may write to one database
+// only: a sink that writes into an attached Postgres, or stages a batch
+// table, would fail it.
 func (w *Watermark) publish(ctx context.Context, watermark time.Time) error {
-	if _, err := execRows(ctx, w.conn, w.decl.closedViewSQL(watermark)); err != nil {
-		return fmt.Errorf("defining %s: %w", closedView, err)
-	}
-	table, err := w.collect(ctx)
+	table, err := w.collect(ctx, watermark)
 	if err != nil {
 		return err
 	}
@@ -391,13 +393,13 @@ func (w *Watermark) publish(ctx context.Context, watermark time.Time) error {
 	return nil
 }
 
-func (w *Watermark) collect(ctx context.Context) (arrow.Table, error) {
+func (w *Watermark) collect(ctx context.Context, watermark time.Time) (arrow.Table, error) {
 	stmt, err := w.conn.NewStatement()
 	if err != nil {
 		return nil, err
 	}
 	defer stmt.Close()
-	if err := stmt.SetSqlQuery(w.decl.emitSQL()); err != nil {
+	if err := stmt.SetSqlQuery(w.decl.collectSQL(watermark)); err != nil {
 		return nil, err
 	}
 	reader, _, err := stmt.ExecuteQuery(ctx)
@@ -436,8 +438,7 @@ func isConflict(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "TransactionContext Error") ||
-		strings.Contains(msg, "Conflict on")
+	return strings.Contains(msg, "Conflict on") || strings.Contains(msg, "write-write conflict")
 }
 
 // WindowMetrics is the three instruments a window records. Exported so the

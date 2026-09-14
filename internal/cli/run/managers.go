@@ -48,10 +48,12 @@ func initWindowStores(ctx context.Context, conf *config.Conf, conn adbc.Connecti
 }
 
 // buildManagedTables constructs a watermark manager per table that declares
-// a window. Each manager gets its own sink and its own connection to the
-// pipeline's DuckDB, with autocommit off, so it reads committed rows only
-// and its delete commits with its watermark. The returned close func closes
-// those connections; call it after the managers have returned.
+// a window. Each manager gets two connections of its own to the pipeline's
+// DuckDB: one with autocommit off for the close, so it reads committed rows
+// only and its delete commits with its watermark, and one for its sink,
+// because a transaction may write to one database only and a sink stages a
+// batch table or writes into an attached database. The returned close func
+// closes those connections; call it after the managers have returned.
 func buildManagedTables(
 	ctx context.Context,
 	conf *config.Conf,
@@ -100,12 +102,15 @@ func buildManagedTables(
 				"table %q: disabling autocommit on the window's connection", table.Name)
 		}
 
-		// The sink runs on the window's connection too: a sqlcommand sink
-		// reads sqlflow_sink_batch, which the sink stages on the connection
-		// it is given. A windowed pipeline's entire output comes through
-		// here, so the counters on this sink are what sink_rows_written
-		// reports for it.
-		sink, err := sinks.New(ctx, table.Window.Sink, conn,
+		// A windowed pipeline's entire output comes through this sink, so
+		// its counters are what sink_rows_written reports for it.
+		sinkConn, err := db.Connect(ctx)
+		if err != nil {
+			return nil, closeConns, errs.Wrap(errs.CodeStateInternal, err,
+				"table %q: opening the window sink's connection", table.Name)
+		}
+		conns = append(conns, sinkConn)
+		sink, err := sinks.New(ctx, table.Window.Sink, sinkConn,
 			sinks.WithMeterProvider(mp),
 			sinks.WithSinkRole("manager"),
 			sinks.WithRetryEvents(events))

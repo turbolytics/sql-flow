@@ -15,8 +15,10 @@ import (
 // fixed and the reason the user's predicates were hard to get right.
 
 // closedView is the relation emit_sql reads: the rows of every bucket that
-// has just closed. A temporary view on the manager's own connection, so
-// emit_sql can be any SELECT, including one that starts with WITH.
+// has just closed. It is spliced into emit_sql as a common table expression
+// rather than created as a view, because a CREATE, even of a temporary
+// view, is a write to a catalog, and the close's transaction may write to
+// one database only.
 const closedView = "closed"
 
 // defaultEmitSQL publishes the closed rows as they are.
@@ -57,17 +59,20 @@ func (d Declaration) deleteClosedSQL(instant time.Time) string {
 	return fmt.Sprintf("DELETE FROM %s WHERE %s", quoteIdent(d.Table), d.closedBefore(instant))
 }
 
-// closedViewSQL defines the relation emit_sql reads for a close at the
-// instant.
-func (d Declaration) closedViewSQL(instant time.Time) string {
-	return fmt.Sprintf("CREATE OR REPLACE TEMP VIEW %s AS SELECT * FROM %s WHERE %s",
+// collectSQL is what the sink receives: emit_sql with the closed relation
+// spliced in front of it as a CTE. An emit_sql that starts with its own WITH
+// keeps it; the closed CTE is added to its list.
+func (d Declaration) collectSQL(instant time.Time) string {
+	closed := fmt.Sprintf("%s AS (SELECT * FROM %s WHERE %s)",
 		closedView, quoteIdent(d.Table), d.closedBefore(instant))
+	emit := strings.TrimSpace(d.EmitSQL)
+	if emit == "" {
+		emit = defaultEmitSQL
+	}
+	if len(emit) >= 5 && strings.EqualFold(emit[:4], "WITH") && isSpace(emit[4]) {
+		return "WITH " + closed + ", " + strings.TrimSpace(emit[5:])
+	}
+	return "WITH " + closed + " " + emit
 }
 
-// emitSQL is what the sink receives, over the closed view.
-func (d Declaration) emitSQL() string {
-	if strings.TrimSpace(d.EmitSQL) == "" {
-		return defaultEmitSQL
-	}
-	return d.EmitSQL
-}
+func isSpace(b byte) bool { return b == ' ' || b == '\n' || b == '\t' || b == '\r' }

@@ -150,14 +150,21 @@ and it is the same one every sink already handles. For an append-only
 Iceberg writer, #205 can make its append idempotent on the window name and
 watermark it carries, which closes that gap without touching the window.
 
-### Its own connection
+### Its own connections
 
-The window runs on a second connection to the same DuckDB, the way `/stats`
-already does. It sees committed rows only, so a batch that rolls back was
-never counted. Its delete and its watermark commit together, on their own,
-so the idle tick has one job again: moving the pipeline's commit clock.
-Nothing it does runs under the pipeline's lock, and #280's race has no
-connection to happen on.
+The window runs on two connections of its own to the same DuckDB, the way
+`/stats` already has one. The close runs on the first, with autocommit off:
+it sees committed rows only, so a batch that rolls back was never counted,
+and its delete and its watermark commit together. The sink runs on the
+second, under autocommit, because DuckDB lets one transaction write to one
+database only, and a sink stages a batch table or writes into an attached
+Postgres. The idle tick has one job again: moving the pipeline's commit
+clock. Nothing the window does runs under the pipeline's lock, and #280's
+race has no connection to happen on.
+
+`closed` is spliced into `emit_sql` as a common table expression rather than
+created as a view, for the same one-database rule: a `CREATE`, even of a
+temporary view, is a catalog write.
 
 DuckDB resolves a write conflict between the two connections by failing the
 later transaction. The window's transaction touches rows whose buckets have

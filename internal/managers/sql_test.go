@@ -36,13 +36,18 @@ func TestManagerWindow_GeneratedSQL(t *testing.T) {
 	assert.Equal(t,
 		`DELETE FROM "posts_per_minute" WHERE "bucket" + INTERVAL '60' SECOND <= TIMESTAMPTZ '2026-09-13 10:05:00+00:00'`,
 		d.deleteClosedSQL(at))
-	assert.Equal(t,
-		`CREATE OR REPLACE TEMP VIEW closed AS SELECT * FROM "posts_per_minute" WHERE "bucket" + INTERVAL '60' SECOND <= TIMESTAMPTZ '2026-09-13 10:05:00+00:00'`,
-		d.closedViewSQL(at))
-	assert.Equal(t, `SELECT * FROM closed`, d.emitSQL())
+	closed := `WITH closed AS (SELECT * FROM "posts_per_minute" WHERE "bucket" + INTERVAL '60' SECOND <= TIMESTAMPTZ '2026-09-13 10:05:00+00:00')`
+	assert.Equal(t, closed+` SELECT * FROM closed`, d.collectSQL(at))
 
 	d.EmitSQL = "  SELECT bucket, sum(n) FROM closed GROUP BY ALL  "
-	assert.Equal(t, d.EmitSQL, d.emitSQL())
+	assert.Equal(t, closed+` SELECT bucket, sum(n) FROM closed GROUP BY ALL`, d.collectSQL(at))
+
+	// An emit_sql with its own WITH keeps it: closed joins its list.
+	d.EmitSQL = "WITH totals AS (SELECT sum(n) AS n FROM closed)\nSELECT n FROM totals"
+	assert.Equal(t, closed+`, totals AS (SELECT sum(n) AS n FROM closed)
+SELECT n FROM totals`, d.collectSQL(at))
+	d.EmitSQL = "with t as (select 1) select * from t, closed"
+	assert.Equal(t, closed+`, t as (select 1) select * from t, closed`, d.collectSQL(at))
 }
 
 // An identifier with a quote in it is quoted, not injected.
