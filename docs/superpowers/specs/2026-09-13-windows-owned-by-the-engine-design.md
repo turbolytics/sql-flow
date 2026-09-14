@@ -85,7 +85,7 @@ only SQL, it is optional, and it reads one relation the engine supplies:
 | `size_seconds` | The bucket length. A bucket ends at `time_column + size`. | required |
 | `grace_seconds` | How far past a bucket's end the stream must reach before it closes. | 0 |
 | `idle_close_seconds` | How long the stream may be quiet before every open bucket closes. | 0, never |
-| `late_rows` | What to do with a row for a bucket that already closed: `drop` or `reemit`. | `reemit` |
+| `late_rows` | What to do with a row for a bucket that already closed: `drop` or `reemit`. | required |
 | `poll_interval_seconds` | How often the engine looks for closed buckets. | 10 |
 | `emit_sql` | Shapes the closed rows before the sink. Reads `closed`. | `SELECT * FROM closed` |
 | `sink` | Where closed windows go. Unchanged. | required |
@@ -106,9 +106,25 @@ watermark = max(previous, newest + size)                   after idle_close of s
 the persisted value. The first rule is #234's stream clock, stated once: a
 bucket closes when the stream has moved past its end by the grace. The second
 is the idleness bound every example carries today, restated in event time: a
-stream that stops closes everything it has. Both rules produce an event-time
-value, so the watermark never mixes clocks, and `now()` appears nowhere in
-anything that decides a close.
+stream that stops closes everything it has.
+
+The idle rule is triggered by wall clock and produces event time. Nothing
+else can trigger it: an idle stream delivers no event time. The engine
+compares its own clock with `last_arrival` from `sqlflow_progress`, in Go,
+and when the silence has lasted `idle_close_seconds` it moves the watermark
+to the newest bucket's end. So the claim is narrower than "no wall clock":
+wall clock decides when the idle rule fires, the watermark's value is always
+event time, and `now()` appears in no SQL the manager runs. That last part
+is what removes the frozen-transaction clock from the close.
+
+`newest` is one value for the whole table, so it is the fastest partition's
+clock. A topic whose partitions run at uneven rates has a slow partition
+whose rows arrive late through no fault of their own, and the grace is the
+only allowance for them. A per-partition watermark, the minimum across
+partitions, needs event time per partition, and the handler aggregates that
+away before the table sees it. It is a follow-up with its own issue, below,
+and `window_late_rows_total` is how an operator sees whether the grace
+covers the skew until then.
 
 The watermark lives in a new engine table beside `sqlflow_offsets` and
 `sqlflow_progress`:
@@ -178,9 +194,18 @@ retry.
 
 `drop` is for sinks that cannot merge: append-only Iceberg, a Kafka topic
 read by something that counts. `reemit` is today's behaviour, for sinks that
-upsert. Both are explicit, and the metric says how often the choice matters:
-a `drop` count that keeps rising means the grace is too short for the
-stream.
+upsert. `late_rows` has no default: the two policies are different promises
+to the sink, and a config that does not say which one it makes is refused.
+
+`reemit` publishes a second row for a bucket the sink already holds. A sink
+that upserts on the bucket's key, Postgres through `sqlcommand` with
+`ON CONFLICT`, replaces the value. A sink that appends holds both rows, and
+its reader cannot tell which is current. `sqlflow validate` warns when
+`reemit` is paired with the Iceberg or Kafka sink, and the docs say plainly
+that `reemit` produces corrections the downstream has to apply.
+
+The metric says how often the choice matters: a `drop` count that keeps
+rising means the grace is too short for the stream.
 
 ### The watermark manager
 
@@ -220,6 +245,34 @@ one.
   tutorials and the demo all move in the same release, so nothing published
   carries the old block.
 
+## Compatibility
+
+This is a breaking change to the pipeline file. A config with a `manager`
+block stops validating and stops running, and there is no translation: the
+declaration cannot be derived from two arbitrary predicates. The release
+that ships it is a major version, with a migration note that maps the old
+keys to the new ones:
+
+| Was | Is |
+| --- | --- |
+| `manager.tumbling_window.collect_closed_windows_sql` | `window.emit_sql` over `closed`, with the predicate dropped |
+| `manager.tumbling_window.delete_closed_windows_sql` | gone |
+| `manager.tumbling_window.poll_interval_seconds` | `window.poll_interval_seconds` |
+| `manager.sink` | `window.sink` |
+| the predicate's grace | `window.grace_seconds` |
+| the predicate's idleness clause | `window.idle_close_seconds` |
+| the bucket length the predicate assumed | `window.size_seconds` |
+| the bucket column the predicate named | `window.time_column` |
+| nothing | `window.late_rows`, required |
+
+Versioning the pipeline schema itself, so a file says which format it is,
+is the pending item that this change makes due. It is its own issue, and
+this design does not wait for it.
+
+Durations stay `_seconds` integers because every other duration in the file
+is one. A duration type that accepts `5m` as well as `300` belongs to all of
+them at once, and is a separate change.
+
 ## What this removes
 
 - Both predicates, from every config and every tutorial.
@@ -233,7 +286,12 @@ one.
 
 - Hopping and session windows. The declaration extends to them with a `hop`
   key and a gap, and nothing here prevents that. Tumbling only.
+- A per-partition watermark. The watermark is the fastest partition's clock,
+  and the grace covers the skew. The follow-up needs event time per
+  partition from the batch table, before the handler aggregates it.
 - An exactly-once close. See the crash between steps 4 and 5.
+- Bounding the idle rule without wall clock. An idle stream has no event
+  time to offer, so the trigger is the engine's clock.
 - Retention for `reemit`. A late row under `reemit` republishes its bucket
   forever, once per arrival, which is what today's configs do.
 

@@ -734,7 +734,7 @@
                       "drop",
                       "reemit"
                     ],
-                    "description": "What happens to a row for a bucket that already closed. drop discards\nit and counts it. reemit publishes the bucket again, for a sink that\nmerges. Absent means reemit."
+                    "description": "What happens to a row for a bucket that already closed. drop discards\nit and counts it. reemit publishes the bucket again, for a sink that\nmerges on the bucket's key; a sink that appends holds both rows.\nRequired: the two are different promises to the sink."
                   },
                   "poll_interval_seconds": {
                     "type": "integer",
@@ -959,6 +959,7 @@
                 "required": [
                   "time_column",
                   "size_seconds",
+                  "late_rows",
                   "sink"
                 ],
                 "description": "A tumbling window over this table, closed by the engine."

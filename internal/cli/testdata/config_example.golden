@@ -205,7 +205,8 @@ tables:
         idle_close_seconds: <integer>
         # What happens to a row for a bucket that already closed. drop discards
         # it and counts it. reemit publishes the bucket again, for a sink that
-        # merges. Absent means reemit.
+        # merges on the bucket's key; a sink that appends holds both rows.
+        # Required: the two are different promises to the sink.
         late_rows: drop | reemit
         # How often the engine looks for closed buckets. Absent means 10.
         poll_interval_seconds: <integer>

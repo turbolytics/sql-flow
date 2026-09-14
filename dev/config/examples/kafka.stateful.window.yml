@@ -34,6 +34,7 @@ tables:
         size_seconds: 3600
         grace_seconds: 3600
         idle_close_seconds: 3600
+        late_rows: drop
         poll_interval_seconds: 3600
         # GROUP BY ALL groups by the output columns. GROUP BY bucket would
         # group by the table's bucket column, which the output renames.

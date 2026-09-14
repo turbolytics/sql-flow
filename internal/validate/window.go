@@ -74,6 +74,16 @@ func checkWindows(rendered []byte, rep *Report) {
 					"relation holding the rows of every bucket that just closed", i),
 					position(mappingKey(node, "emit_sql")))
 			}
+			// reemit publishes a bucket the sink already holds. A sink that
+			// upserts replaces it; a sink that appends keeps both rows, and
+			// its reader cannot tell which is current.
+			if w.LateRows == "reemit" && appendsOnly(w.Sink.Type) {
+				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
+					"tables.sql[%d] window: late_rows is reemit and the %s sink appends, so a "+
+						"late row publishes a second row for a bucket the sink already holds. "+
+						"Use drop, or a sink that upserts on the bucket's key",
+					i, w.Sink.Type), position(mappingKey(node, "late_rows"))))
+			}
 		}
 	}
 
@@ -89,6 +99,14 @@ func declaresTimestamptz(createSQL, column string) bool {
 }
 
 var closedRef = regexp.MustCompile(`(?i)\bclosed\b`)
+
+// appendsOnly reports a sink type that cannot replace a row it already
+// holds. Iceberg appends by design, and a Kafka topic is a log. The
+// sqlcommand and ClickHouse sinks depend on the SQL or the table engine, so
+// they are the user's call.
+func appendsOnly(sinkType string) bool {
+	return sinkType == "iceberg" || sinkType == "kafka"
+}
 
 func mentionsClosed(sql string) bool { return closedRef.MatchString(sql) }
 

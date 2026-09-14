@@ -30,6 +30,10 @@ tables:
         # first row arrives. Zero says that plainly.
         grace_seconds: 0
         idle_close_seconds: 60
+        # The sink is a topic, which appends. drop keeps each bucket to one
+        # message; reemit would publish a correction the consumer has to
+        # apply itself.
+        late_rows: drop
         # emit_sql shapes the closed rows. closed is every row of every bucket
         # that just closed. GROUP BY ALL groups by the output columns, which
         # is what the renamed bucket needs.

@@ -177,6 +177,7 @@ func testDecl() Declaration {
 		Size:       time.Minute,
 		Grace:      time.Minute,
 		IdleClose:  5 * time.Minute,
+		Late:       LateReemit,
 	}
 }
 

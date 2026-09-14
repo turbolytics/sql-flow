@@ -34,14 +34,16 @@ const (
 	LateDrop LatePolicy = "drop"
 )
 
-// ParseLatePolicy resolves the configured name. Empty means reemit, which is
-// what every window did before the policy existed.
+// ParseLatePolicy resolves the configured name. There is no default: the
+// two policies are different promises to the sink.
 func ParseLatePolicy(s string) (LatePolicy, error) {
 	switch LatePolicy(s) {
-	case "", LateReemit:
+	case LateReemit:
 		return LateReemit, nil
 	case LateDrop:
 		return LateDrop, nil
+	case "":
+		return "", errs.New(errs.CodeConfigInvalid, "late_rows is required: drop, or reemit for a sink that upserts")
 	default:
 		return "", errs.New(errs.CodeConfigInvalid, "late_rows must be drop or reemit, not %q", s)
 	}
@@ -146,9 +148,6 @@ func WithClock(now func() time.Time) Option {
 func NewWatermark(conn adbc.Connection, d Declaration, poll time.Duration, sink core.Sink, opts ...Option) (*Watermark, error) {
 	if err := d.validate(); err != nil {
 		return nil, err
-	}
-	if d.Late == "" {
-		d.Late = LateReemit
 	}
 	tx, ok := conn.(transaction)
 	if !ok {

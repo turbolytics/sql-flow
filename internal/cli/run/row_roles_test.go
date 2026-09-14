@@ -159,6 +159,7 @@ func TestWindowManagerRowsAreCounted(t *testing.T) {
 				Window: &config.Window{
 					TimeColumn:       "bucket",
 					SizeSeconds:      60,
+					LateRows:         "drop",
 					PollIntervalSecs: 3600,
 					Sink:             config.Sink{Type: "console"},
 				},

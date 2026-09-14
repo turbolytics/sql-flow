@@ -17,6 +17,7 @@ const windowedConfig = `tables:
       window:
         time_column: bucket
         size_seconds: 60
+        late_rows: drop
         %s
         sink:
           type: console
@@ -92,6 +93,65 @@ func TestValidateSchema_WindowEmitSQLMustReadClosed(t *testing.T) {
 	diags := windowDiagnostics(rep)
 	assert.Equal(t, 1, len(diags))
 	assert.That(t, strings.Contains(diags[0].Message, "emit_sql does not read closed"))
+}
+
+// reemit against a sink that appends is a warning: the config runs, and the
+// operator is told the downstream will see corrections.
+func TestValidateSchema_ReemitOnAnAppendOnlySinkWarns(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: `tables:
+  sql:
+    - name: agg
+      sql: CREATE TABLE agg (bucket TIMESTAMPTZ, count INT)
+      window:
+        time_column: bucket
+        size_seconds: 60
+        late_rows: reemit
+        sink:
+          type: kafka
+          kafka:
+            brokers: ["localhost:9092"]
+            topic: out
+pipeline:
+  batch_size: 1
+  source:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: ["t"]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1
+  sink:
+    type: noop
+`})
+	assert.NoError(t, err)
+	assert.That(t, rep.OK)
+	diags := windowDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.That(t, strings.Contains(diags[0].Message, "the kafka sink appends"))
+	assert.Equal(t, 8, diags[0].Position.Line)
+}
+
+// A window with no late_rows does not pass the schema: the two policies are
+// different promises to the sink, and a config has to say which it makes.
+func TestValidateSchema_LateRowsIsRequired(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: strings.Replace(
+		strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1),
+		"        late_rows: drop\n", "", 1)})
+	assert.NoError(t, err)
+	assert.That(t, !rep.OK)
+	var found bool
+	for _, d := range rep.Diagnostics {
+		if strings.Contains(d.Message, "late_rows") {
+			found = true
+		}
+	}
+	assert.That(t, found)
 }
 
 // The old block is refused with its replacement named, on the line it sits

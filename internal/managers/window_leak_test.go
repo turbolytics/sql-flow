@@ -103,6 +103,7 @@ func (s leakScenario) declaration() Declaration {
 		TimeColumn: "bucket",
 		Size:       time.Minute,
 		Grace:      time.Duration(leakCloseAfter-1) * time.Minute,
+		Late:       LateReemit,
 	}
 	if !s.upsert {
 		d.EmitSQL = "SELECT bucket, lang, sum(posts) AS posts FROM closed GROUP BY bucket, lang"

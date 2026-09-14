@@ -18,6 +18,7 @@ func TestManagerWindow_GeneratedSQL(t *testing.T) {
 		TimeColumn: "bucket",
 		Size:       time.Minute,
 		Grace:      30 * time.Second,
+		Late:       LateDrop,
 	}
 	at := time.Date(2026, 9, 13, 10, 5, 0, 0, time.UTC)
 
@@ -53,7 +54,7 @@ SELECT n FROM totals`, d.collectSQL(at))
 // An identifier with a quote in it is quoted, not injected.
 func TestManagerWindow_IdentifiersAreQuoted(t *testing.T) {
 	coverage.Covers(t, "manager.window")
-	d := Declaration{Table: `odd"name`, TimeColumn: "when", Size: time.Second}
+	d := Declaration{Table: `odd"name`, TimeColumn: "when", Size: time.Second, Late: LateDrop}
 	assert.Equal(t, `SELECT epoch_us(max("when")) FROM "odd""name"`, d.newestSQL())
 }
 
@@ -62,13 +63,14 @@ func TestManagerWindow_IdentifiersAreQuoted(t *testing.T) {
 func TestManagerWindow_DeclarationIsValidated(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	cases := map[string]Declaration{
-		"no table":        {TimeColumn: "b", Size: time.Second},
-		"no time column":  {Table: "t", Size: time.Second},
-		"zero size":       {Table: "t", TimeColumn: "b"},
-		"negative grace":  {Table: "t", TimeColumn: "b", Size: time.Second, Grace: -1},
-		"negative idle":   {Table: "t", TimeColumn: "b", Size: time.Second, IdleClose: -1},
+		"no table":        {TimeColumn: "b", Size: time.Second, Late: LateDrop},
+		"no time column":  {Table: "t", Size: time.Second, Late: LateDrop},
+		"zero size":       {Table: "t", TimeColumn: "b", Late: LateDrop},
+		"negative grace":  {Table: "t", TimeColumn: "b", Size: time.Second, Grace: -1, Late: LateDrop},
+		"negative idle":   {Table: "t", TimeColumn: "b", Size: time.Second, IdleClose: -1, Late: LateDrop},
 		"bad late policy": {Table: "t", TimeColumn: "b", Size: time.Second, Late: "keep"},
-		"engine table":    {Table: "sqlflow_offsets", TimeColumn: "b", Size: time.Second},
+		"no late policy":  {Table: "t", TimeColumn: "b", Size: time.Second},
+		"engine table":    {Table: "sqlflow_offsets", TimeColumn: "b", Size: time.Second, Late: LateDrop},
 	}
 	for name, d := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -76,5 +78,5 @@ func TestManagerWindow_DeclarationIsValidated(t *testing.T) {
 			assert.Error(t, d.validate())
 		})
 	}
-	assert.NoError(t, Declaration{Table: "t", TimeColumn: "b", Size: time.Second}.validate())
+	assert.NoError(t, Declaration{Table: "t", TimeColumn: "b", Size: time.Second, Late: LateReemit}.validate())
 }

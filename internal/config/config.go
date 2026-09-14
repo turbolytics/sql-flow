@@ -141,8 +141,9 @@ type Window struct {
 	IdleCloseSeconds int `yaml:"idle_close_seconds,omitempty" jsonschema:"minimum=0"`
 	// What happens to a row for a bucket that already closed. drop discards
 	// it and counts it. reemit publishes the bucket again, for a sink that
-	// merges. Absent means reemit.
-	LateRows string `yaml:"late_rows,omitempty" jsonschema:"enum=drop,enum=reemit"`
+	// merges on the bucket's key; a sink that appends holds both rows.
+	// Required: the two are different promises to the sink.
+	LateRows string `yaml:"late_rows" jsonschema:"enum=drop,enum=reemit"`
 	// How often the engine looks for closed buckets. Absent means 10.
 	PollIntervalSecs int `yaml:"poll_interval_seconds,omitempty" jsonschema:"minimum=1"`
 	// Shapes the closed rows before the sink. It reads one relation, closed,

@@ -92,7 +92,7 @@ func newTestWindow(t *testing.T, db *duckdb.DB, sink core.Sink, opts ...managers
 	assert.NoError(t, po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled))
 
 	m, err := managers.NewWatermark(conn, managers.Declaration{
-		Table: "agg", TimeColumn: "bucket", Size: time.Minute,
+		Table: "agg", TimeColumn: "bucket", Size: time.Minute, Late: managers.LateDrop,
 	}, time.Hour, sink, opts...)
 	assert.NoError(t, err)
 	return m

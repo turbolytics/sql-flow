@@ -33,6 +33,7 @@ tables:
         size_seconds: 60
         grace_seconds: 60
         idle_close_seconds: 60
+        late_rows: drop
         poll_interval_seconds: 10
         emit_sql: |
           SELECT bucket, sum(count)::BIGINT AS count, max(max_latency_s) AS max_latency_s

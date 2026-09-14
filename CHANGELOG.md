@@ -11,8 +11,10 @@
   watermark in `sqlflow_windows`, publishes every bucket the watermark has
   passed, and deletes it. `now()` appears nowhere in a close, so an
   in-memory and a stateful pipeline behave the same.
-- `late_rows: drop | reemit`. A row for a bucket that already closed is
-  discarded and counted, or published again for a sink that upserts.
+- `late_rows: drop | reemit`, required. A row for a bucket that already
+  closed is discarded and counted, or published again for a sink that
+  upserts on the bucket's key. `validate` warns when `reemit` is paired with
+  a sink that appends.
 - Each window runs on a DuckDB connection of its own. It reads committed
   rows only, its delete and watermark commit together, and it takes no part
   in the pipeline's lock or transaction.
@@ -27,8 +29,16 @@
 ### Removed
 
 - The `manager` block, `collect_closed_windows_sql` and
-  `delete_closed_windows_sql`. Every shipped example carries a `window`
-  declaration instead.
+  `delete_closed_windows_sql`. This is a breaking change to the pipeline
+  file: a config that carries them stops validating and stops running, and
+  there is no translation, because the declaration cannot be derived from
+  two arbitrary predicates. Every shipped example carries a `window`
+  declaration instead. To migrate: `collect_closed_windows_sql` becomes
+  `emit_sql` over `closed` with its WHERE dropped; `delete_closed_windows_sql`
+  goes; the predicate's grace, idleness clause and bucket length become
+  `grace_seconds`, `idle_close_seconds` and `size_seconds`; the bucket column
+  becomes `time_column`; `poll_interval_seconds` and `sink` keep their names;
+  and `late_rows` is new and required.
 
 - `pipeline.drain_deadline_seconds` bounds the whole shutdown after SIGTERM.
   The final batch, the managers' final poll and the state syncs share one

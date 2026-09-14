@@ -825,7 +825,7 @@ tables:
         size_seconds: 3600
         grace_seconds: 0
         idle_close_seconds: 60
-        late_rows: drop              # or reemit, the default
+        late_rows: drop              # or reemit; required
         poll_interval_seconds: 10    # optional
         emit_sql: |                  # optional; default SELECT * FROM closed
           SELECT bucket, city, sum(count)::INT AS count
@@ -861,10 +861,19 @@ the table holds, so a grace shorter than one bucket rounds up to one. After
 bucket and every open bucket closes. Wall clock appears nowhere in the close.
 
 **Late rows.** A row for a bucket below the watermark arrived after that
-bucket was published. `late_rows: drop` deletes it and counts it in
+bucket was published. `late_rows` is required, because the two policies are
+different promises to the sink. `drop` deletes the row and counts it in
 `window_late_rows_total`, so a sink that appends sees each bucket once.
-`reemit` publishes the bucket again, for a sink that upserts. A rising drop
-count means the grace is too short for the stream.
+`reemit` publishes the bucket again: a sink that upserts on the bucket's key
+replaces the value, and a sink that appends holds both rows, so its reader
+has to treat the later one as a correction. `sqlflow validate` warns when
+`reemit` is paired with the Iceberg or Kafka sink. A rising drop count means
+the grace is too short for the stream.
+
+The watermark is one value for the whole table, which makes it the fastest
+partition's clock. A topic whose partitions run at uneven rates has a slow
+partition whose rows arrive late, and the grace is the allowance for them.
+Size it from `window_late_rows_total`.
 
 **emit_sql** shapes the rows before the sink. It reads one relation, `closed`,
 holding every row of every bucket that just closed. Cast a `sum` back to the
@@ -889,7 +898,10 @@ window table and its watermark are lost together.
 
 `sqlflow validate` checks the declaration: the time column must be declared
 `TIMESTAMPTZ` in the table's `CREATE`, `emit_sql` must read `closed`, and the
-old `manager` block is refused with the keys that replace it.
+old `manager` block is refused with the keys that replace it. That block and
+its two predicates are gone, and a file that carries them does not run; the
+declaration cannot be derived from two arbitrary predicates, so the change
+is a major version with the migration in the changelog.
 
 See [`tumbling.window.yml`](dev/config/examples/tumbling.window.yml) and
 [`kafka.stateful.window.yml`](dev/config/examples/kafka.stateful.window.yml).
