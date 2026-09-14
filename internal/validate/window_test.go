@@ -95,6 +95,36 @@ func TestValidateSchema_WindowEmitSQLMustReadClosed(t *testing.T) {
 	assert.That(t, strings.Contains(diags[0].Message, "emit_sql does not read closed"))
 }
 
+// An indexed window table with no state path leaks every deleted bucket.
+// A warning, with the two ways out named.
+func TestValidateSchema_IndexedWindowTableWithoutStateWarns(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	for _, ddl := range []string{
+		"CREATE TABLE agg (bucket TIMESTAMPTZ, city VARCHAR, count INT); CREATE UNIQUE INDEX agg_idx ON agg (bucket, city);",
+		"CREATE TABLE agg (bucket TIMESTAMPTZ, city VARCHAR, count INT, PRIMARY KEY (bucket, city))",
+	} {
+		rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: strings.Replace(
+			strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1),
+			"CREATE TABLE agg (bucket TIMESTAMPTZ, city VARCHAR, count INT)", ddl, 1)})
+		assert.NoError(t, err)
+		assert.That(t, rep.OK)
+		diags := windowDiagnostics(rep)
+		assert.Equal(t, 1, len(diags))
+		assert.Equal(t, SeverityWarning, diags[0].Severity)
+		assert.That(t, strings.Contains(diags[0].Message, "no state.path"))
+	}
+
+	// With a state path the checkpoint reclaims, and nothing is said.
+	stateful := strings.Replace(windowedConfig, "pipeline:\n  batch_size: 1\n",
+		"pipeline:\n  batch_size: 1\n  state:\n    path: /tmp/s.db\n", 1)
+	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: strings.Replace(
+		strings.Replace(strings.Replace(stateful, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1),
+		"CREATE TABLE agg (bucket TIMESTAMPTZ, city VARCHAR, count INT)",
+		"CREATE TABLE agg (bucket TIMESTAMPTZ, city VARCHAR, count INT, PRIMARY KEY (bucket, city))", 1)})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
+}
+
 // reemit against a sink that appends is a warning: the config runs, and the
 // operator is told the downstream will see corrections.
 func TestValidateSchema_ReemitOnAnAppendOnlySinkWarns(t *testing.T) {

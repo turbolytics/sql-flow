@@ -22,6 +22,11 @@ import (
 //     compares instants, so it closes windows early or never.
 //   - An emit_sql that does not read `closed`, which is the only relation a
 //     close supplies.
+//   - A window table with an index and no state path. DuckDB never reclaims
+//     rows deleted from an indexed in-memory table, and the engine deletes
+//     every bucket it publishes, so memory grows without bound. #268's
+//     fifth footgun, as a warning: the pipeline runs, and the operator is
+//     told what it costs.
 //
 // The column check is textual: validate links no DuckDB, so it reads the
 // CREATE statement rather than parsing it.
@@ -74,6 +79,14 @@ func checkWindows(rendered []byte, rep *Report) {
 					"relation holding the rows of every bucket that just closed", i),
 					position(mappingKey(node, "emit_sql")))
 			}
+			if declaresIndex(table.SQL) && (conf.Pipeline.State == nil || conf.Pipeline.State.Path == "") {
+				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
+					"tables.sql[%d] window: the table has an index and the pipeline has no "+
+						"state.path. DuckDB never reclaims rows deleted from an indexed in-memory "+
+						"table, and every closed bucket is deleted, so memory grows without bound. "+
+						"Drop the index and sum the appended rows in emit_sql, or set "+
+						"pipeline.state.path", i), position(node)))
+			}
 			// reemit publishes a bucket the sink already holds. A sink that
 			// upserts replaces it; a sink that appends keeps both rows, and
 			// its reader cannot tell which is current.
@@ -99,6 +112,12 @@ func declaresTimestamptz(createSQL, column string) bool {
 }
 
 var closedRef = regexp.MustCompile(`(?i)\bclosed\b`)
+
+// indexDecl matches a CREATE INDEX, a UNIQUE INDEX, or a PRIMARY KEY in a
+// table's DDL.
+var indexDecl = regexp.MustCompile(`(?is)\b(?:CREATE\s+(?:UNIQUE\s+)?INDEX|PRIMARY\s+KEY|UNIQUE\s*\()`)
+
+func declaresIndex(createSQL string) bool { return indexDecl.MatchString(createSQL) }
 
 // appendsOnly reports a sink type that cannot replace a row it already
 // holds. Iceberg appends by design, and a Kafka topic is a log. The
