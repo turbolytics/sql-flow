@@ -218,7 +218,9 @@ var builders = map[string]func(ctx context.Context, sink config.Sink, conn adbc.
 		if sink.Postgres == nil {
 			return nil, errs.New(errs.CodeSinkInvalid, "sink: postgres sink needs a postgres block with dsn, table and mode")
 		}
-		return NewPostgresSink(*sink.Postgres)
+		// Each attempt is bounded by the retry deadline, so one attempt
+		// cannot outlive the ladder that is waiting on it.
+		return NewPostgresSink(*sink.Postgres, WithPostgresTimeout(RetryPolicyFrom(sink.Retry).Deadline))
 	},
 
 	"iceberg": func(ctx context.Context, sink config.Sink, _ adbc.Connection) (core.Sink, error) {

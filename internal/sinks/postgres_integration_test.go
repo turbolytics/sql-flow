@@ -191,7 +191,7 @@ func TestIntegrationSinkPostgres_ProbeChecksTheTarget(t *testing.T) {
 	userError(err)
 	assert.That(t, strings.Contains(err.Error(), "does not exist"))
 
-	pk := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint PRIMARY KEY, v bigint)")
+	pk := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint PRIMARY KEY, v bigint NOT NULL)")
 	_, err = probe(PostgresModeUpsert, pk, "k")
 	assert.NoError(t, err)
 	_, err = probe(PostgresModeUpsert, pk, "nope")
@@ -200,11 +200,11 @@ func TestIntegrationSinkPostgres_ProbeChecksTheTarget(t *testing.T) {
 	userError(err)
 	assert.That(t, strings.Contains(err.Error(), "no unique index or constraint covers exactly (v)"))
 
-	uix := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint, v bigint, w bigint); CREATE UNIQUE INDEX ON %[1]s (w, k)")
+	uix := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint NOT NULL, v bigint, w bigint NOT NULL); CREATE UNIQUE INDEX ON %[1]s (w, k)")
 	_, err = probe(PostgresModeUpsert, uix, "k", "w")
 	assert.NoError(t, err)
 
-	partial := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint, v bigint); CREATE UNIQUE INDEX ON %[1]s (k) WHERE v > 0")
+	partial := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint NOT NULL, v bigint); CREATE UNIQUE INDEX ON %[1]s (k) WHERE v > 0")
 	_, err = probe(PostgresModeUpsert, partial, "k")
 	userError(err)
 

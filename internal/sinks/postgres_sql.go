@@ -18,7 +18,11 @@ const (
 	// postgresStaging is the session temp table every flush copies into.
 	// Temp tables live in a per-session schema, so two sinks on two
 	// connections never collide, and the table dies with the connection.
-	postgresStaging = "sqlflow_staging"
+	//
+	// Always written pg_temp-qualified. Unqualified, a DROP TABLE IF EXISTS
+	// on a session with no temp schema yet resolves the name on search_path,
+	// and dropped a user's public.sqlflow_staging (#290 review).
+	postgresStaging = "pg_temp.sqlflow_staging"
 	// postgresSeq is the row's position in the batch, which is what "last
 	// row wins" orders by.
 	postgresSeq = "__seq"
@@ -108,15 +112,19 @@ func containsString(list []string, s string) bool {
 const (
 	postgresTableExistsSQL = `SELECT to_regclass($1::text) IS NOT NULL`
 
-	postgresColumnsSQL = `SELECT attname::text FROM pg_attribute
+	postgresColumnsSQL = `SELECT attname::text, attnotnull FROM pg_attribute
 WHERE attrelid = $1::text::regclass AND attnum > 0 AND NOT attisdropped ORDER BY attnum`
 
 	// A unique index or constraint whose columns are exactly $2, in any
-	// order. A partial index (indpred) or an expression index (indexprs) is
-	// not a conflict target for ON CONFLICT (<columns>), so neither counts.
+	// order, that ON CONFLICT (<columns>) can use. A partial index (indpred)
+	// or an expression index (indexprs) is not inferred. A deferrable
+	// constraint (not indimmediate) is refused with 55000, and an index a
+	// failed CREATE INDEX CONCURRENTLY left behind (not indisvalid) with
+	// 42P10, so none of these counts.
 	postgresUniqueIndexSQL = `SELECT EXISTS (
   SELECT 1 FROM pg_index i
   WHERE i.indrelid = $1::text::regclass AND i.indisunique
+    AND i.indimmediate AND i.indisvalid
     AND i.indpred IS NULL AND i.indexprs IS NULL
     AND (SELECT array_agg(a.attname::text ORDER BY a.attname)
          FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)

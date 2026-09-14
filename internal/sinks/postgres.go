@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,9 @@ type PostgresSink struct {
 	table      pgx.Identifier
 	mode       string
 	key        []string
+	// timeout bounds one attempt: a probe, or one batch's transaction from
+	// connect to commit. See WithPostgresTimeout.
+	timeout time.Duration
 
 	// mu guards the buffer.
 	mu     sync.Mutex
@@ -40,7 +44,23 @@ type PostgresSink struct {
 	warnings []string
 }
 
-func NewPostgresSink(conf config.PostgresSink) (*PostgresSink, error) {
+// PostgresOption configures a PostgresSink.
+type PostgresOption func(*PostgresSink)
+
+// WithPostgresTimeout bounds each attempt. New passes the retry deadline, so
+// a Postgres that holds packets and keeps the socket open fails an attempt
+// inside the deadline instead of blocking the ladder, which checks its
+// deadline only between attempts. Without it a window's poll never returned,
+// and the window table grew until the container was killed (#290 review).
+func WithPostgresTimeout(d time.Duration) PostgresOption {
+	return func(s *PostgresSink) {
+		if d > 0 {
+			s.timeout = d
+		}
+	}
+}
+
+func NewPostgresSink(conf config.PostgresSink, opts ...PostgresOption) (*PostgresSink, error) {
 	if strings.TrimSpace(conf.DSN) == "" {
 		return nil, errs.New(errs.CodeSinkInvalid, "postgres sink: dsn is required")
 	}
@@ -78,12 +98,17 @@ func NewPostgresSink(conf config.PostgresSink) (*PostgresSink, error) {
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeSinkInvalid, err, "postgres sink: dsn")
 	}
-	return &PostgresSink{
+	s := &PostgresSink{
 		connConfig: cc,
 		table:      table,
 		mode:       conf.Mode,
 		key:        append([]string(nil), conf.Key...),
-	}, nil
+		timeout:    config.DefaultSinkRetryDeadlineSeconds * time.Second,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // Key reports the columns a row is identified by, or nothing for append.
@@ -179,6 +204,8 @@ func (s *PostgresSink) send(ctx context.Context, tbl arrow.Table) error {
 
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
 	conn, err := s.connect(ctx)
 	if err != nil {
 		return err
@@ -196,7 +223,7 @@ func (s *PostgresSink) send(ctx context.Context, tbl arrow.Table) error {
 	// fail; WithoutCancel lets it run.
 	defer tx.Rollback(context.WithoutCancel(ctx))
 
-	if _, err := tx.CopyFrom(ctx, pgx.Identifier{postgresStaging}, append(cols, postgresSeq), pgx.CopyFromRows(rows)); err != nil {
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"pg_temp", "sqlflow_staging"}, append(cols, postgresSeq), pgx.CopyFromRows(rows)); err != nil {
 		return s.failed(conn, postgresCopyError(err))
 	}
 	if _, err := tx.Exec(ctx, postgresMergeSQL(s.table, s.mode, s.key, cols)); err != nil {
@@ -240,10 +267,22 @@ func (s *PostgresSink) ensureStaging(ctx context.Context, conn *pgx.Conn, cols [
 	return nil
 }
 
-// failed forgets a connection the failure closed.
+// failed forgets a connection the failure closed, and codes the failure
+// retryable when it did.
+//
+// A pooler or load balancer that closes an idle connection with a FIN sends
+// no Postgres error, and pgx reports "conn closed", which classified as
+// write_failed and stopped the pipeline with nothing written. A lost
+// connection means the batch's transaction did not commit, or committed and
+// lost its reply, and one transaction per batch makes the retry safe either
+// way: an upsert replaces what it wrote, and append is at-least-once.
 func (s *PostgresSink) failed(conn *pgx.Conn, err error) error {
-	if conn.IsClosed() {
-		s.conn, s.staging = nil, nil
+	if !conn.IsClosed() {
+		return err
+	}
+	s.conn, s.staging = nil, nil
+	if errs.HasCode(err, errs.CodeSinkWriteFailed) {
+		return errs.Wrap(errs.CodeSinkUnreachable, err, "postgres sink: the connection closed")
 	}
 	return err
 }
@@ -268,6 +307,8 @@ func sameStrings(a, b []string) bool {
 func (s *PostgresSink) Probe(ctx context.Context) error {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
 	conn, err := s.connect(ctx)
 	if err != nil {
 		return err
@@ -287,13 +328,16 @@ func (s *PostgresSink) Probe(ctx context.Context) error {
 		return s.failed(conn, postgresError(err, "postgres sink: reading the columns of %s", name))
 	}
 	var columns []string
+	notNull := map[string]bool{}
 	for rows.Next() {
 		var c string
-		if err := rows.Scan(&c); err != nil {
+		var nn bool
+		if err := rows.Scan(&c, &nn); err != nil {
 			rows.Close()
 			return postgresError(err, "postgres sink: reading the columns of %s", name)
 		}
 		columns = append(columns, c)
+		notNull[c] = nn
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -303,6 +347,13 @@ func (s *PostgresSink) Probe(ctx context.Context) error {
 		if !containsString(columns, k) {
 			return errs.New(errs.CodeSinkInvalid, "postgres sink: key column %q is not a column of %s, which has %s",
 				k, name, strings.Join(columns, ", "))
+		}
+		// A unique index treats NULLs as distinct, so ON CONFLICT never
+		// matches a null key, and a redelivery inserts the row again.
+		if !notNull[k] {
+			return errs.New(errs.CodeSinkInvalid,
+				"postgres sink: key column %q is nullable on %s; a unique index never matches a null key, so a redelivered row would be inserted twice. Declare it NOT NULL",
+				k, name)
 		}
 	}
 

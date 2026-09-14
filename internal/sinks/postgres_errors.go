@@ -27,6 +27,11 @@ import (
 //	3D  3F  database, schema missing     sink invalid  exit 10
 //	else                                 write_failed  exit 1
 func postgresError(err error, format string, args ...any) error {
+	// Nothing reached the server, so another attempt on a new connection is
+	// safe: a closed connection pgx discovered before sending, say.
+	if pgconn.SafeToRetry(err) {
+		return errs.Wrap(errs.CodeSinkUnreachable, err, format, args...)
+	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		args = append(args, pgErr.Code)

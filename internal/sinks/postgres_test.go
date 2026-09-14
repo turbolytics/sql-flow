@@ -44,9 +44,9 @@ func TestSinkPostgres_StagingDDLTakesTheTargetsTypes(t *testing.T) {
 	coverage.Covers(t, "sink.postgres")
 	got := postgresStagingSQL(pgx.Identifier{"public", "t"}, []string{"bucket", "lang", "posts"})
 	assert.DeepEqual(t, []string{
-		`DROP TABLE IF EXISTS sqlflow_staging`,
-		`CREATE TEMP TABLE sqlflow_staging ON COMMIT DELETE ROWS AS SELECT "bucket", "lang", "posts" FROM "public"."t" WITH NO DATA`,
-		`ALTER TABLE sqlflow_staging ADD COLUMN __seq bigint`,
+		`DROP TABLE IF EXISTS pg_temp.sqlflow_staging`,
+		`CREATE TEMP TABLE pg_temp.sqlflow_staging ON COMMIT DELETE ROWS AS SELECT "bucket", "lang", "posts" FROM "public"."t" WITH NO DATA`,
+		`ALTER TABLE pg_temp.sqlflow_staging ADD COLUMN __seq bigint`,
 	}, got)
 }
 
@@ -57,7 +57,7 @@ func TestSinkPostgres_UpsertMergeIsLastRowWins(t *testing.T) {
 	got := postgresMergeSQL(pgx.Identifier{"t"}, PostgresModeUpsert,
 		[]string{"bucket", "lang"}, []string{"bucket", "lang", "posts", "updated_at"})
 	assert.Equal(t, `INSERT INTO "t" ("bucket", "lang", "posts", "updated_at") `+
-		`SELECT DISTINCT ON ("bucket", "lang") "bucket", "lang", "posts", "updated_at" FROM sqlflow_staging `+
+		`SELECT DISTINCT ON ("bucket", "lang") "bucket", "lang", "posts", "updated_at" FROM pg_temp.sqlflow_staging `+
 		`ORDER BY "bucket", "lang", __seq DESC `+
 		`ON CONFLICT ("bucket", "lang") DO UPDATE SET "posts" = EXCLUDED."posts", "updated_at" = EXCLUDED."updated_at"`, got)
 }
@@ -72,7 +72,7 @@ func TestSinkPostgres_UpsertOfKeyOnlyDoesNothingOnConflict(t *testing.T) {
 func TestSinkPostgres_AppendMergeKeepsBatchOrder(t *testing.T) {
 	coverage.Covers(t, "sink.postgres")
 	got := postgresMergeSQL(pgx.Identifier{"s", "t"}, PostgresModeAppend, nil, []string{"a", "b"})
-	assert.Equal(t, `INSERT INTO "s"."t" ("a", "b") SELECT "a", "b" FROM sqlflow_staging ORDER BY __seq`, got)
+	assert.Equal(t, `INSERT INTO "s"."t" ("a", "b") SELECT "a", "b" FROM pg_temp.sqlflow_staging ORDER BY __seq`, got)
 }
 
 // Every scalar the lattice names has a pgx value, nulls are nil, and a type
