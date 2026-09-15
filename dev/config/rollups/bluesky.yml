@@ -1,0 +1,49 @@
+# The demo's rollups: posts per minute per language, kept at five coarser
+# grains in Postgres, and served as one dataset.
+#
+#   sqlflow rollup ddl   -c dev/config/rollups/bluesky.yml
+#   sqlflow rollup serve -c dev/config/rollups/bluesky.yml
+rollups:
+  - name: posts
+    source:
+      table: posts_per_minute_by_lang
+      time_column: bucket
+      grain: 1m
+      dimensions: [lang]
+
+    # Each grain a few times the one below it, so a re-merge reads few rows
+    # and a chart that crosses to the next grain keeps its shape.
+    grains:
+      5m: {from: 1m}
+      15m: {from: 5m}
+      1h: {from: 15m}
+      6h: {from: 1h}
+      1d: {from: 6h}
+
+    dimension_sets:
+      - name: posts_by_lang
+        dimensions: [lang]
+        measures:
+          posts: {type: sum, column: posts}
+      # One row per bucket, for totals and minutes observed.
+      - name: posts_total
+        dimensions: []
+        measures:
+          posts: {type: sum, column: posts}
+          minutes: {type: count_buckets}
+
+    serve:
+      catalog: pg
+      # About 300 points per chart. 365 buckets × 21 series stays under
+      # max_rows 10000.
+      max_buckets: 365
+      datasets:
+        - name: posts_by_lang
+          dimension_set: posts_by_lang
+          description: >-
+            Posts per bucket per language. The top languages by posts over the
+            range keep their own series and the rest sum into lang "other".
+          default_range: 24h
+          max_range: {1m: 6h, 5m: 1d, 15m: 3d, 1h: 14d, 6h: 90d, 1d: 365d}
+          fold: {dimension: lang, top: {default: 10, max: 20}}
+          filters: {lang: lang}

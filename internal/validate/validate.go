@@ -44,9 +44,12 @@ func Validate(ctx context.Context, req Request) (Report, error) {
 	// The serve rules run before the demotion, so an empty token rendered
 	// from an unset variable is a warning here, as any other unsupplied value
 	// is. serve itself does not demote it.
-	if config.IsServe(rendered) {
+	switch {
+	case config.IsRollups(rendered):
+		checkRollupRules(rendered, &rep)
+	case config.IsServe(rendered):
 		checkServeRules(rendered, &rep)
-	} else {
+	default:
 		checkDrainDeadline(rendered, &rep)
 		checkWindows(rendered, &rep)
 		checkSinks(rendered, &rep)
