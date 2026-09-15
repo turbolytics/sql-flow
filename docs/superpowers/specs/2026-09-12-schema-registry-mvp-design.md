@@ -17,6 +17,13 @@ In:
   by a Confluent-compatible schema registry.
 - Kafka sink: the same three, with the sink registering or looking up its
   output schema.
+- Type tables for five directions, declared per format and judged by tests:
+  Avro to Arrow, Arrow to Avro, JSON Schema to Arrow, Arrow to JSON Schema,
+  and Arrow to JSON. A loop table covers a value read in a format and written
+  back out in it.
+- A schema compatibility matrix. The read side covers writer and reader
+  schema changes. The write side covers registry compatibility levels,
+  measured against Confluent Schema Registry.
 - The dev stack gains a schema registry.
 - One example config per direction, a framed-record producer, README docs.
 - The memory soak runs once per format, raw JSON included.
@@ -39,6 +46,8 @@ Out, each a follow-up issue:
   The config surface below is shaped so this drops in.
 - AWS Glue Schema Registry. Different header, different client.
 - Subject naming strategies other than `<topic>-value`.
+- Compatibility columns for registries other than Confluent's own, such as
+  Redpanda, Apicurio and Karapace. Each is another column with its own image.
 
 ## Design
 
@@ -243,6 +252,10 @@ JSON Schema to Arrow, draft 7 and 2020-12 vocabulary that the MVP reads:
 `format: date-time` stays `utf8` in the MVP; a `CAST` in the handler SQL is
 the workaround, and it is the same workaround the JSON path needs today.
 
+These two tables are the first draft of the `decode:` declarations in Type
+tables below. Once the runner judges the declarations, they are the
+authority.
+
 ### The typed handler
 
 `handlers.New` takes no options today, and it has two callers: `run` and
@@ -304,11 +317,325 @@ Arrow to JSON Schema: an `object` with one property per column, `required`
 listing the non-nullable ones, and the type mapping inverted. The row bytes
 are the JSON `tableRowsAsJSON` already produces, with the header prepended.
 
+Both rule sets are the first draft of the `types:` declarations in Type tables
+below.
+
 The Kafka sink already implements `Prober`: `Probe` pings the seed brokers.
 With a registry format, `Probe` also calls `Registry.Probe`, which lists
 subjects with a short timeout. `sinks.New` classifies the probe's error, so a
 registry that is down fails the start once with `system.sink.unreachable`,
 exit 12, the way a ClickHouse that is down does.
+
+### Type tables
+
+Every type conversion a format makes is a declared table that a test judges.
+The declaration is the published contract, the way `sink.clickhouse`'s type
+table is (2026-09-07 ClickHouse type table design).
+
+| Direction | Keys | Declared in | Judged by |
+| --- | --- | --- | --- |
+| Avro to Arrow | `lattice.avro.yml`, new | `serde.avro.yml`, `decode:` | `conformance.DecodeTypes`, new |
+| JSON Schema to Arrow | `lattice.json_schema.yml`, new | `serde.json_schema.yml`, `decode:` | `conformance.DecodeTypes` |
+| Arrow to Avro | `lattice.yml` | `serde.avro.yml`, `types:` | `conformance.Types` |
+| Arrow to JSON Schema | `lattice.yml` | `serde.json_schema.yml`, `types:` | `conformance.Types` |
+| Arrow to JSON | `lattice.yml` | `serde.json.yml`, `types:` | `conformance.Types` |
+
+The lattices live in `docs/coverage/` and the declarations in
+`docs/coverage/integrations/`.
+
+The source's format and the sink's format are independent. Avro in with JSON
+out is a valid pipeline, and so is JSON in with Avro out. The Arrow to JSON
+table is what makes Avro in with JSON out safe to publish.
+`tableRowsAsJSON` has never declared what it writes for a decimal, a
+timestamp, a map or bytes, and a typed source now hands it all four. The same
+table covers today's `json` Kafka sink and the console sink.
+
+#### The `serde` integration kind
+
+`serde` joins `sink`, `source`, `handler`, `pipeline` and `manager` in
+`KINDS` and `INTEGRATION_KINDS` (`scripts/coverage_matrix/registries.py`).
+Each format gets one file: `serde.avro.yml`, `serde.json_schema.yml` and
+`serde.json.yml`. `serde.Formats()` lists the formats the engine builds. A
+test holds that list equal to the `serde` ids, the agreement `handlers.Kinds()`
+already has.
+
+The integration is the format, not the Kafka source or sink. The encoder and
+the decoder convert types. The Kafka client moves bytes, and `source.kafka`
+and `sink.kafka` already cover that. The MQTT sink (#195) reuses the same
+formats.
+
+An invariant's `applies_to` accepts a list. The six existing type invariants
+apply to `[sink, serde]`, unchanged.
+
+A format exempts an invariant it cannot exercise, with a reason and a test,
+as the integration rules require. `serde.json` has no decoder of its own: the
+JSON path's decoder is `InferredMemBatch`'s inference, which
+`handler.inferred_mem` covers. So `serde.json` exempts the decoding
+invariants, `type.loop` and both compatibility invariants.
+`serde.json_schema` exempts `type.decode.timestamp.instant` while
+`format: date-time` stays `utf8`.
+
+#### Encoding tables
+
+The encoding tables are keyed by `lattice.yml`, so every Arrow type DuckDB can
+hand an encoder has an answer. `conformance.Types` runs them unchanged.
+`serdetest.EncoderSink` adapts an `Encoder` to `core.Sink`:
+
+- `WriteTable` encodes the batch and keeps the framed bytes. `Flush` does
+  nothing.
+- `Prepare(key, columnType)` registers a record with one field, `v`, of type
+  `columnType` in the fake registry. It returns an `EncoderSink` that encodes
+  against that record.
+- `ReadBack` decodes the kept bytes with hamba against the registered schema,
+  and renders `v`.
+
+A row's `columns` are the target types a specified schema can give that key.
+`int64` lists `long` and `["null", "long"]`. `utf8` lists `string`, a
+`uuid` string with a UUID `value`, and an `enum` with a symbol as its `value`.
+The row is covered only when every listed target passes, as with a ClickHouse
+column list.
+
+Each row also declares `emits`: the type the generated schema gives the key.
+The runner checks the registered field against it.
+
+Nulls need two additions to the runner. An Avro `long` has no way to hold a
+null, and `["null", "long"]` holds one exactly. So a column entry may carry
+its own `null:` rule, overriding the integration's `nulls.default`. `NullRule`
+also gains a third outcome, `refused`, with a `code`. A null bound for a field
+that is not a union with null is refused with `user.sink.encode_failed`.
+
+#### Decoding tables
+
+A decoder's input is not Arrow, so `lattice.yml` cannot key it. Two new
+lattices close the input sets, under the same rules as `lattice.yml`:
+
+- The set is closed.
+- A declared key outside the set is a typo.
+- A key a format does not answer for is a gap.
+
+The ClickHouse type table design deferred this boundary as "a separate
+column". These lattices are those columns.
+
+`lattice.avro.yml` spells a key the way Avro spells the type. A logical type
+is `<underlying>:<logicalType>`.
+
+| Tier | Keys |
+| --- | --- |
+| Primitives | `null`, `boolean`, `int`, `long`, `float`, `double`, `bytes`, `string` |
+| Logical types | `int:date`, `int:time-millis`, `long:time-micros`, `long:timestamp-millis`, `long:timestamp-micros`, `long:timestamp-nanos`, `long:local-timestamp-millis`, `long:local-timestamp-micros`, `long:local-timestamp-nanos`, `bytes:decimal`, `fixed:decimal`, `bytes:big-decimal`, `string:uuid`, `fixed:uuid`, `fixed:duration`, `long:unknown` |
+| Named types | `enum`, `fixed`, `record` |
+| Unions | `["null", T]`, `[T, "null"]`, `[A, B]`, `["null", A, B]` |
+| Containers | `array<T>` for every depth-1 key the decoder maps; `array<fixed:duration>` and `array<[A, B]>` as unsupported-element witnesses; `map<long>`, `map<string>` |
+| Depth 3 | `array<array<long>>`, `array<record>`, `record<record>` |
+| References | a recursive `record`; a named type imported through the registry's `references` |
+
+hamba v2.31.0 knows ten logical types. The Avro 1.12 specification adds
+`timestamp-nanos`, `local-timestamp-nanos`, `big-decimal` and `uuid` on a
+16-byte `fixed`. A producer can write all four, so each is a key.
+The specification also says: "Language implementations must ignore unknown
+logical types when reading, and should use the underlying Avro type."
+`long:unknown` pins that rule.
+
+`lattice.json_schema.yml`:
+
+| Tier | Keys |
+| --- | --- |
+| Scalars | `string`, `integer`, `number`, `boolean`, `null` |
+| Formats and encodings | `string:date-time`, `string:date`, `string:time`, `string:uuid`, `string:base64` |
+| Enumerations | `enum`, `const` |
+| Nullability | `type: [T, "null"]`, `oneOf: [T, null]`, `anyOf: [T, null]` |
+| Containers | `array<T>` for every depth-1 key the decoder maps, plus two unsupported-element witnesses; `object` with `properties`; `object` with only `additionalProperties`; `object` with neither; `array` with no `items`; tuple `prefixItems` |
+| Composition | local `$ref`, `$ref` through the registry's `references`, `allOf`, `anyOf`, `oneOf`, `not`, `if`/`then`/`else`, `patternProperties` |
+| Depth 3 | `array<array<integer>>`, `array<object>`, `object<object>` |
+
+`oneOf: [T, null]` and `anyOf: [T, null]` are their own keys because schema
+generators write a nullable field in either form, not only as `type: [T,
+"null"]`.
+
+Each `decode:` row declares four things:
+
+- `outcome`: `exact`, `coerced` with a `rule`, or `unsupported` with a `code`.
+- `arrow`: the Arrow key the decoder builds, as `conformance.CanonicalKey`
+  spells it. The key does not have to be in `lattice.yml`, which lists what
+  DuckDB emits. `int:time-millis` builds `time32[ms]`, which DuckDB reads and
+  never writes.
+- `duckdb`: the type of column `v` in `batch`, as `typeof(v)` reports it.
+- `expect`: `v::VARCHAR`.
+
+`conformance.DecodeTypes` runs each row in four steps:
+
+1. It registers a record with one field of the key's type in the fake
+   registry.
+2. It frames one record holding the key's canonical value.
+3. It writes the record through `TypedBatchHandler`.
+4. It reads `typeof(v)` and `v::VARCHAR` from `batch`.
+
+The canonical values live in a Go table beside `latticeType`. A test holds
+that table's keys equal to the lattice file, as `LatticeKeys` does. The runner
+goes through DuckDB and does not stop at the Arrow builder, because handler
+SQL binds against DuckDB's type.
+
+The decoding invariants are in family `types` and apply to `serde`:
+
+| Invariant | Claim |
+| --- | --- |
+| `type.decode.roundtrip` | Every declared input type reaches `batch` with the declared Arrow key, DuckDB type and value. |
+| `type.decode.null` | A null in every declared nullable form reaches `batch` as NULL. |
+| `type.decode.nested` | Arrays, maps, records and their nesting reach `batch` intact, or are declared unsupported. An unsupported element fails from inside a supported container. |
+| `type.decode.timestamp.instant` | A timestamp reaches `batch` as the same instant while both the host clock and the DuckDB session zone are off UTC. |
+| `type.decode.string.fidelity` | The fidelity corpus reaches `batch` byte for byte. |
+| `type.decode.unsupported.fails_at_start` | Every key declared unsupported fails at pipeline start, with the declared code and the field path, before any record is read. |
+
+The last invariant replaces the Arrow side's undeclared-type probe. The input
+schema is known at start, so the failure moves from the batch to the start.
+
+#### The loop
+
+A pipeline that reads Avro and writes Avro takes each value through four
+conversions: decode, ingest into DuckDB, the query result, and encode. Each
+conversion has its own table, and a value exact in every table can still
+arrive changed.
+
+Measured on DuckDB v1.5.2, the engine's pinned version, on 2026-09-15:
+
+| Avro in | Decoder builds | `batch` column | Query returns | Generated schema writes |
+| --- | --- | --- | --- | --- |
+| `long:timestamp-millis` | `timestamp[ms, tz=UTC]` | `TIMESTAMP WITH TIME ZONE` | `timestamp[us, tz=<session>]` | `long:timestamp-micros` |
+| `long:local-timestamp-millis` | `timestamp[ms]` | `TIMESTAMP_MS` | `timestamp[ms]` | `long:local-timestamp-millis` |
+| `int:time-millis` | `time32[ms]` | `TIME` | `time64[us]` | `long:time-micros` |
+
+`serde.avro.yml` and `serde.json_schema.yml` each declare a `loop:` block,
+keyed by their input lattice. Each row declares two outcomes:
+
+- through the generated schema;
+- through a specified schema equal to the input schema.
+
+`TestSerdeAvro_Loop` runs every key end to end:
+
+1. Frame a record.
+2. Decode it and ingest it.
+3. Run `SELECT v FROM batch`.
+4. Encode the result.
+5. Decode the output with hamba and compare it to the input.
+
+A key whose decoding and encoding rows are both `exact` must come back
+`exact` through the specified schema. A key that does not is a finding.
+Invariant `type.loop` applies to `serde`: "Every declared input type written
+back out reads as declared."
+
+#### Rendered pages
+
+`scripts/coverage_matrix/page.py` renders `serde-avro-types.mdx` and
+`serde-json-schema-types.mdx` from the declarations, as it renders
+`clickhouse-types.mdx`. A decoding table is keyed by input type and shows the
+DuckDB type a user's SQL sees. An encoding table is keyed by DuckDB SQL type,
+through `lattice.yml`'s `duckdb` field, and shows the type written. The docs
+site's schema registry page includes both pages, so the published table and
+the tested table cannot disagree.
+
+### Schema compatibility matrix
+
+The type tables fix one schema. The compatibility matrix declares what happens
+when a schema changes under a running pipeline, on both sides, and tests prove
+each cell.
+
+The change cases are a closed set per format, in
+`docs/coverage/compat.avro.yml` and `docs/coverage/compat.json_schema.yml`.
+The YAML carries the case ids. The before and after schemas live in Go, in
+`internal/serde/serdetest`, and a test holds the two equal. That is the
+lattice's arrangement.
+
+The two invariants are in a new family, `compat`, added to `FAMILIES`. They
+apply to `serde` and are verified by a new verifier, `compattable`, added to
+`VERIFIERS`:
+
+- `compat.read`: every declared schema change reads as declared.
+- `compat.write`: every declared change to the output registers or is refused
+  as declared.
+
+#### Read side
+
+Each case runs in two directions:
+
+- **Writer newer.** A producer registers a new version mid-run. Records
+  arrive under it, and the reader is still the version fixed at start.
+- **Reader newer.** The pipeline restarts after the upgrade and replays a
+  backlog written under the old version.
+
+Avro cases:
+
+- `field.add.default`, `field.add.no_default`
+- `field.remove.default`, `field.remove.no_default`
+- `promote.int_long`, `promote.int_float`, `promote.int_double`,
+  `promote.long_float`, `promote.long_double`, `promote.float_double`,
+  `promote.string_bytes`, `promote.bytes_string`
+- `narrow.long_int`, `narrow.double_float`
+- `field.rename.alias`, `field.rename.no_alias`
+- `enum.symbol.add`, `enum.symbol.remove`, `enum.default`
+- `union.branch.add`, `nullable.add`, `nullable.remove`
+- `logical.change`, from `timestamp-millis` to `timestamp-micros`
+- `logical.drop`
+- `record.nested.field.add`, `record.rename`
+
+JSON Schema cases:
+
+- `property.add`, `property.remove`, `property.retype`
+- `required.add`, `required.remove`
+- `additional_properties.close`, `additional_properties.open`
+
+Each cell declares one outcome:
+
+- `resolved`, with the `rule` a reader sees and the `expect` value of the
+  changed field in `batch`.
+- `record_error`, with the `code` each record fails with. The error policy then
+  applies to that record.
+
+The read side runs at unit level. hamba's `SchemaCompatibility.Resolve`
+decides Avro resolution. The JSON Schema extraction is ours. No registry
+decides a read-side cell. `TestSerdeAvro_Compat` and
+`TestSerdeJsonSchema_Compat` run the cells through `TypedBatchHandler` with the
+fake registry.
+
+#### Write side
+
+The write side covers what the registry does when the handler SQL's output
+changes, at each compatibility level: `BACKWARD`, `BACKWARD_TRANSITIVE`,
+`FORWARD`, `FORWARD_TRANSITIVE`, `FULL`, `FULL_TRANSITIVE` and `NONE`.
+
+The output changes to the generated schema:
+
+- `column.add`, `column.drop`, `column.rename`, `column.reorder`
+- `column.widen` (`int32` to `int64`), `column.narrow`, `column.retype`
+- `inferred.all_null`: a JSON source's batch in which one field is null in
+  every row. Inference types that field from nulls alone, so the generated
+  schema changes between two batches with no SQL edit.
+
+Each cell declares `registered`, or `refused` with
+`user.sink.schema_incompatible`.
+
+A specified schema is a separate column. The pipeline registers nothing in
+that mode, so no compatibility level applies. Its cases are the same output
+changes, judged against the named schema: `exact`, `coerced` with a rule, or
+`refused` with a code.
+
+The write side runs at integration level against Confluent Schema Registry,
+`confluentinc/cp-schema-registry:8.3.1`, the current release on 2026-09-15.
+The registry's own compatibility checker decides these cells, so a fake
+cannot stand in for it. Confluent's registry is the reference
+implementation. Every other Confluent-compatible registry is another column
+with its own image, and none is in the MVP. `TestIntegrationSerdeAvro_Compat`
+and `TestIntegrationSerdeJsonSchema_Compat` set each level on a fresh subject,
+register the before schema, and attempt the after schema through the sink's
+encoder.
+
+The JSON Schema write cells also depend on the generated schema's content
+model. Confluent checks an open content model differently from a closed one,
+one with `additionalProperties: false`. The generator's choice decides
+whether `column.add` registers under `BACKWARD`. The matrix measures the
+generator as it is written.
+
+`page.py` renders `serde-avro-compat.mdx` and `serde-json-schema-compat.mdx`
+beside the type pages.
 
 ### Error policy and the error class
 
@@ -350,7 +677,7 @@ Appended to the registry, each with a summary and an action:
 
 ```yaml
   schema-registry:
-    image: confluentinc/cp-schema-registry:7.3.2
+    image: confluentinc/cp-schema-registry:8.3.1
     hostname: schema-registry
     container_name: schema-registry
     ports:
@@ -363,7 +690,10 @@ Appended to the registry, each with a summary and an action:
       - kafka1
 ```
 
-Same image line as the broker, so the two upgrade together.
+This is the image the compatibility matrix is measured against, so the
+walkthrough runs on the implementation the matrix describes. The registry's
+Kafka client talks to the stack's `cp-kafka:7.3.2` broker over the Kafka
+protocol, so the two need not share a release.
 
 ### The framed-record producer
 
@@ -422,7 +752,21 @@ Coverage features, in `docs/coverage/features.yml`:
   - id: serde.json_schema
     description: Decodes Confluent-framed JSON Schema records to typed Arrow and encodes Arrow batches back.
     requires: [unit, integration]
+  - id: serde.json
+    description: Encodes Arrow batches as one JSON object per row, the default format.
+    requires: [unit]
 ```
+
+Invariants, in `docs/coverage/invariants.yml`: the six decoding invariants,
+`type.loop`, `compat.read` and `compat.write`, from Type tables and Schema
+compatibility matrix above. The six existing type invariants change
+`applies_to` from `sink` to `[sink, serde]`. `make coverage-check` gains
+three checks:
+
+- Every `decode:` key is in its format's input lattice.
+- Every `compat:` case is in its format's case file.
+- Every lattice key and every case is declared by every `serde` integration
+  it applies to, or reported as a gap.
 
 The gate attributes a test to a feature by its marker alone
 (`scripts/coverage_matrix/features.py`). Every test calls
@@ -442,18 +786,20 @@ subjects. It records calls so a test can assert the cache.
 - Header: a record without the magic byte is `user.data.malformed`; a record
   with an unknown ID is `user.data.schema_unknown`; the same ID is fetched
   once across a thousand records.
-- Avro to Arrow: one test per row of the mapping table, plus the two
-  unsupported cases with their code and field path.
-- Avro decode: a record with every supported type round-trips values; a
-  writer schema with an added defaulted field and one with a removed field
-  both decode against the reader; an incompatible type change is
-  `user.data.malformed` naming both schemas.
-- JSON Schema to Arrow: one test per row, plus the unsupported cases.
+- Decoding tables: `TestSerdeAvro_DecodeTypes` and
+  `TestSerdeJsonSchema_DecodeTypes` run `conformance.DecodeTypes` over each
+  format's `decode:` table.
+- Encoding tables: `TestSerdeAvro_Types`, `TestSerdeJsonSchema_Types` and
+  `TestSerdeJson_Types` run `conformance.Types` over each format's `types:`
+  table.
+- The loop: `TestSerdeAvro_Loop` and `TestSerdeJsonSchema_Loop`.
+- Read side of the compatibility matrix: `TestSerdeAvro_Compat` and
+  `TestSerdeJsonSchema_Compat`. An incompatible change names both schemas
+  in its error.
 - Typed handler: `Write` of a bad record fails with the decoder's code and
   the batch still ingests the good ones; metadata columns are present and
   correct; `RowsRead` matches.
-- Encoder: Arrow to Avro schema for every supported type and each
-  unsupported one; `auto_register: true` calls create once per distinct
+- Encoder: `auto_register: true` calls create once per distinct
   schema; `auto_register: false` on an unregistered schema is
   `user.sink.schema_unregistered`; a 409 is `user.sink.schema_incompatible`;
   a framed record decodes back to the same values.
@@ -464,12 +810,15 @@ subjects. It records calls so a test can assert the cache.
 - Registry: the append-only golden gains three lines; every new code exits
   10 and is not retryable.
 
-Integration, one Redpanda container through
-`testcontainers-go/modules/redpanda` v0.44.0, which ships a
-Confluent-compatible registry in the same process as the broker. The module
-is new to `go.mod`, at the version of the four testcontainers modules already
-there. Its `Run` takes the image as an argument, so the test pins one. The test
-fails rather than skips when it cannot start one, per the coverage rules.
+Integration tests run against one broker and one registry. The broker is
+`confluentinc/confluent-local:7.5.0` through `testcontainers-go/modules/kafka`,
+the way the Kafka conformance test runs it: on a test network, under the alias
+`kafka`. The registry is `confluentinc/cp-schema-registry:8.3.1`, a generic
+container on the same network. The write side of the compatibility matrix is
+measured against this registry, so the round-trip tests and the matrix
+always run against the same implementation. No new testcontainers module is
+needed. A test fails rather than skips when it cannot start either
+container, per the coverage rules.
 
 - `TestIntegrationSerdeAvro_RoundTrip`: register a schema, produce framed
   records, run a pipeline with an Avro source and an Avro sink, consume the
@@ -479,6 +828,13 @@ fails rather than skips when it cannot start one, per the coverage rules.
   1, register version 2 with an added field, produce under it, and assert the
   pipeline keeps running and the added field reads as its default.
 - `TestIntegrationSerdeJsonSchema_RoundTrip`: the same shape for JSON Schema.
+- `TestIntegrationSerdeAvro_GeneratedSchemasRegister` and
+  `TestIntegrationSerdeJsonSchema_GeneratedSchemasRegister`: every schema the
+  generator emits for a `types:` row registers against the real registry. The
+  registry parses a schema and validates its names when the schema is
+  registered, and the fake registry does neither.
+- `TestIntegrationSerdeAvro_Compat` and `TestIntegrationSerdeJsonSchema_Compat`:
+  the write side of the compatibility matrix.
 - `TestIntegrationSerdeRegistry_DownAtStartFailsOnce`: a wrong port fails the
   start once, with no retry ladder. `run` probes the sink before it builds
   the handler. A pipeline with a registry-backed sink reports
@@ -577,9 +933,10 @@ before it builds the handler, and this example's sink is registry-backed.
 ### Docs
 
 README gains a "Schema registry" section under Sources: the config block, the
-three formats, the two mapping tables, the sink modes, the error codes, and a
-"Not yet" list that is the Out section of this spec. The `kafka` source and
-sink examples reference it.
+three formats, the sink modes, the error codes, and a "Not yet" list that is
+the Out section of this spec. The `kafka` source and sink examples reference
+it. The type tables and the compatibility matrix are not copied into the
+README. It links to the rendered pages, which the docs site publishes.
 
 ## What breaks if this is wrong
 
@@ -594,25 +951,45 @@ carry no code, so they report as class `system`. Under `IGNORE` or `DLQ`,
 each would stop the pipeline instead of dropping the record or the batch.
 
 If the type mapping is wrong, a column reaches DuckDB with a type the SQL did
-not expect. Every mapped type is in the unit tests, and every unmapped one
-fails at start rather than at the first record.
+not expect. Every input type is a lattice row that the decoding runner judges
+through DuckDB. Every row declared unsupported fails at start, which
+`type.decode.unsupported.fails_at_start` proves.
+
+If the compatibility matrix is wrong, a schema change that the published page
+calls safe stops a pipeline or diverts its records. The read-side cells run
+the decoder the pipeline runs. The write-side cells run Confluent's own
+compatibility checker. A Confluent-compatible registry that checks
+differently is outside what the matrix measured.
 
 ## Build order
 
 1. Config structs, rules, schema regeneration, error codes.
 2. `serde.Registry` with the fake registry and its tests.
-3. Avro to Arrow mapping and the Avro decoder, with `BenchmarkDecode/avro`.
-4. `TypedBatchHandler`, the `WithDecoder` wiring through `run`, and
-   `BenchmarkTypedBatch`.
-5. Error policy class guard.
-6. JSON Schema to Arrow mapping and decoder, with its benchmark.
-7. Encoders and the Kafka sink wiring, Avro then JSON Schema, with
-   `BenchmarkEncode`.
-8. `serdetest` and `cmd/publish-framed`, the dev stack, examples, README.
-9. Integration tests on Redpanda.
-10. `scripts/bench-ab.sh`, the soak and benchmark configs and the format
+3. The declarations, with nothing judged yet:
+   - the `serde` integration kind and `applies_to` lists;
+   - `lattice.avro.yml`, `lattice.json_schema.yml` and the two compatibility
+     case files, with their Go value tables;
+   - the new invariants and the generator checks.
+   The matrix reports every row as missing.
+4. Avro to Arrow mapping and the Avro decoder, with `BenchmarkDecode/avro`.
+5. `TypedBatchHandler`, the `WithDecoder` wiring through `run`,
+   `BenchmarkTypedBatch`, `conformance.DecodeTypes`, and the `serde.avro`
+   `decode:` table.
+6. Error policy class guard.
+7. JSON Schema to Arrow mapping and decoder, its `decode:` table, and its
+   benchmark.
+8. Read side of the compatibility matrix, both formats.
+9. Encoders and the Kafka sink wiring, Avro then JSON Schema, with
+   `serdetest.EncoderSink`, the runner's null additions, the three `types:`
+   tables, and `BenchmarkEncode`.
+10. The loop tables.
+11. `serdetest` fixtures and `cmd/publish-framed`, the dev stack, examples,
+    README, and the rendered pages.
+12. Integration tests on Kafka and Confluent Schema Registry, including the
+    write side of the compatibility matrix.
+13. `scripts/bench-ab.sh`, the soak and benchmark configs and the format
     switches in `scripts/soak.sh` and `scripts/benchmark-container.sh`.
-11. Run the gates: three soaks, the `benchstat` A/B, three container runs.
+14. Run the gates: three soaks, the `benchstat` A/B, three container runs.
     Their output is the PR body.
 
-Each step lands green on its own. The pipeline reads Avro after step 4.
+Each step lands green on its own. The pipeline reads Avro after step 5.
