@@ -95,9 +95,9 @@ coverage-matrix: sqlflow-image
 # Run this after changing a config struct, its yaml tags, or its doc comments.
 .PHONY: schema
 schema:
-	UPDATE_GOLDEN=1 go test ./internal/schema/ -run 'TestConfigSchema_CommittedFileMatchesTheTypes|TestServeSchema_CommittedFileMatchesTheTypes'
+	UPDATE_GOLDEN=1 go test ./internal/schema/ -run 'TestConfigSchema_CommittedFileMatchesTheTypes|TestServeSchema_CommittedFileMatchesTheTypes|TestRollupsSchema_CommittedFileMatchesTheTypes'
 	UPDATE_GOLDEN=1 go test ./internal/cli/ -run 'TestConfigValidation_ExampleMatchesPythonOutput|TestCliServe_ConfigExamplePrintsTheServeSkeleton'
-	@echo "regenerated internal/validate/schemas/config.json and serve.json"
+	@echo "regenerated internal/validate/schemas/config.json, serve.json and rollups.json"
 	@echo "regenerated internal/cli/testdata/config_example.golden and serve_example.golden"
 
 # Renders everything from reports that already exist. Runs no tests.

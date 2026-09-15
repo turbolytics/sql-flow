@@ -367,9 +367,10 @@ What to know before you deploy it:
   it runs too, unless the attachment refuses.
 - **Aggregate in the backend.** DuckDB pushes filters and projections into an
   attached Postgres and runs `GROUP BY` itself, so a rollup over raw rows
-  copies every row to DuckDB first. Put the `GROUP BY` in a Postgres view and
-  select from the view: the filter pushes into it. `postgres_query('pg', '…')`
-  runs a whole query in Postgres when a view does not fit.
+  copies every row to DuckDB first. `sqlflow rollup` keeps pre-aggregated
+  tables in Postgres and generates the datasets that read them. A Postgres
+  view with the `GROUP BY` also pushes the filter in, but re-aggregates the
+  range on every request.
 - **Bound Postgres connections.** One scan opens up to `pg_connection_limit`
   connections, 64 by default. Set it low for a small database, as a command.
 - **A timeout does not stop the query.** DuckDB cannot be cancelled through
@@ -377,6 +378,57 @@ What to know before you deploy it:
   completion. `max_rows` does stop it early.
 - **One connection serves every request.** Requests run one at a time. A slow
   query makes the ones behind it wait, and `/healthz` waits with them.
+
+### `sqlflow rollup`
+
+Generates rollup tables in Postgres, the triggers that keep them current, and
+the `serve` datasets that read them, from one declaration. The pipeline keeps
+writing its finest grain; the database keeps every coarser grain as each write
+commits, and `serve` reads pre-aggregated rows.
+
+```
+sqlflow rollup ddl   -c rollups.yml [--backend postgres]
+sqlflow rollup serve -c rollups.yml [--dataset NAME]
+sqlflow rollup check -c rollups.yml --migration FILE --serve FILE
+```
+
+| Command | Does |
+|---|---|
+| `ddl` | Prints a migration: one table per dimension set and grain, the functions and triggers that keep them current, and a backfill. Connects to nothing. |
+| `serve` | Prints the `serve` datasets, to paste into a serve file's `datasets`. |
+| `check` | Exits `10` when the migration or the serve file differs from what the declaration generates, or when a dataset could answer more rows than its `max_rows`. |
+
+`sqlflow rollup` writes and checks the files; applying the migration is your
+migration runner's job. [`dev/config/rollups/bluesky.yml`](dev/config/rollups/bluesky.yml)
+is a complete declaration, and `sqlflow validate` checks a rollups file
+against its schema and rules.
+
+Each grain is re-merged from the grain below it. When a statement writes the
+finer table, a statement-level trigger locks the coarse buckets it touched and
+recomputes them, in the writer's transaction. A minute written twice replaces
+its count at every grain instead of adding to it.
+
+Measures are `sum`, `min`, `max` and `count_buckets`, which counts the source
+buckets present, such as minutes observed. `avg`, `gauge` and `histogram` are
+reserved.
+
+What to know before you deploy it:
+
+- **Postgres 15 or later**, and a writer in `READ COMMITTED`, the default. The
+  trigger refuses any other isolation level, because its lock only works when
+  each statement reads a new snapshot.
+- **The migration blocks the source's writers** until it commits, so no write
+  lands between the triggers existing and the backfill reading. The backfill
+  reads the whole source table.
+- **A trigger error fails the writer's transaction.** A pipeline writing the
+  source stops with it.
+- **Deletes do not propagate.** Rollups outlive a retention job on the source.
+- **Changes are additive.** Adding a grain or a dimension set is a new
+  migration holding the regenerated script. Removing, renaming, or changing a
+  measure's type needs a migration written by hand.
+- **A served dataset has at most one dimension**, and folds it to its top
+  values. `check` proves `max_buckets × (top.max + 1) <= max_rows`, so
+  `truncated` never happens.
 
 ### `sqlflow validate`
 

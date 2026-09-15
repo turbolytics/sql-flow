@@ -13,6 +13,8 @@ system.state.internal
 user.config.invalid
 user.config.not_found
 user.config.parse_failed
+user.config.rollup
+user.config.rollup_drift
 user.config.serve_dataset
 user.config.serve_reserved
 user.config.template_undefined

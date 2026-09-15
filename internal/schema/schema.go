@@ -30,6 +30,9 @@ const ID = "https://turbolytics.io/schemas/config.json"
 // ServeID is the serve schema's published identifier.
 const ServeID = "https://turbolytics.io/schemas/serve.json"
 
+// RollupsID is the rollups schema's published identifier.
+const RollupsID = "https://turbolytics.io/schemas/rollups.json"
+
 // configPkg is the import path of the package Generate reflects. It is the key
 // prefix the reflector builds doc-comment lookups from.
 const configPkg = "github.com/turbolytics/sql-flow/internal/config"
@@ -59,6 +62,16 @@ func Generate(configDir string) ([]byte, error) {
 // the file's top-level keys.
 func GenerateServe(configDir string) ([]byte, error) {
 	s, err := reflectConfig(configDir, &config.ServeConf{}, ServeID)
+	if err != nil {
+		return nil, err
+	}
+	return encode(s)
+}
+
+// GenerateRollups reflects config.RollupsConf into the rollups file's schema.
+// validate picks it for a file whose top-level key is rollups.
+func GenerateRollups(configDir string) ([]byte, error) {
+	s, err := reflectConfig(configDir, &config.RollupsConf{}, RollupsID)
 	if err != nil {
 		return nil, err
 	}

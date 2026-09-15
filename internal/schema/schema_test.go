@@ -26,6 +26,9 @@ const goldenPath = "../validate/schemas/config.json"
 // serveGoldenPath is the serve file's schema, embedded beside it.
 const serveGoldenPath = "../validate/schemas/serve.json"
 
+// rollupsGoldenPath is the rollups file's schema, embedded beside it.
+const rollupsGoldenPath = "../validate/schemas/rollups.json"
+
 // The schema is generated, so the committed file is a build artifact and this
 // is the golden test that keeps it current. Regenerate with `make schema`.
 func TestConfigSchema_CommittedFileMatchesTheTypes(t *testing.T) {
@@ -197,6 +200,58 @@ func TestServeSchema_AcceptsEveryShippedServeExample(t *testing.T) {
 
 			if err := compiled.Validate(norm); err != nil {
 				t.Fatalf("serve schema rejects a shipped example:\n%v", err)
+			}
+		})
+	}
+}
+
+// The rollups schema is generated from config.RollupsConf and held to it the
+// same way. Regenerate with `make schema`.
+func TestRollupsSchema_CommittedFileMatchesTheTypes(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	generated, err := GenerateRollups(commentsDir)
+	assert.NoError(t, err)
+
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		assert.NoError(t, os.WriteFile(rollupsGoldenPath, generated, 0o644))
+		t.Log("rollups schema updated")
+		return
+	}
+
+	committed, err := os.ReadFile(rollupsGoldenPath)
+	assert.NoError(t, err)
+	if !bytes.Equal(committed, generated) {
+		t.Fatalf("%s is stale. Run `make schema`.", rollupsGoldenPath)
+	}
+}
+
+func TestRollupsSchema_AcceptsEveryShippedRollupsExample(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	generated, err := GenerateRollups(commentsDir)
+	assert.NoError(t, err)
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(generated))
+	assert.NoError(t, err)
+	c := jsonschema.NewCompiler()
+	assert.NoError(t, c.AddResource(RollupsID, doc))
+	compiled, err := c.Compile(RollupsID)
+	assert.NoError(t, err)
+
+	paths, err := filepath.Glob("../../dev/config/rollups/*.yml")
+	assert.NoError(t, err)
+	assert.That(t, len(paths) > 0)
+
+	for _, p := range paths {
+		t.Run(filepath.Base(p), func(t *testing.T) {
+			rendered, err := config.RenderTemplate(p, nil)
+			assert.NoError(t, err)
+			var v any
+			assert.NoError(t, yaml.Unmarshal(rendered, &v))
+			norm, err := jsonRoundTrip(v)
+			assert.NoError(t, err)
+			if err := compiled.Validate(norm); err != nil {
+				t.Fatalf("rollups schema rejects a shipped example:\n%v", err)
 			}
 		})
 	}

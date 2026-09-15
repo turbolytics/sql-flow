@@ -198,6 +198,10 @@ features:
     description: Serves a config's named SQL datasets over HTTP, with bearer tokens, typed params, grains and limits.
     requires: [unit, release]
 
+  - id: cli.rollup
+    description: Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted.
+    requires: [unit, integration]
+
   # Release only. The defect this catches -- build args that never reached the
   # -ldflags symbol path, so the binary reports "dev" -- exists only in a built
   # image, and no unit test can see it.

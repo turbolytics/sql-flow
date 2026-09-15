@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://turbolytics.io/schemas/rollups.json",
+  "properties": {
+    "rollups": {
+      "items": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Names the rollup in messages. Lowercase letters, digits and\nunderscores, starting with a letter."
+          },
+          "source": {
+            "properties": {
+              "table": {
+                "type": "string",
+                "description": "The source table. The generator never creates it."
+              },
+              "time_column": {
+                "type": "string",
+                "description": "The timestamptz column holding each row's bucket."
+              },
+              "grain": {
+                "type": "string",
+                "description": "The source's bucket width, such as 1m."
+              },
+              "dimensions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "description": "The source's key besides time. A dimension set with exactly these\ndimensions can serve the source grain directly."
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "table",
+              "time_column",
+              "grain"
+            ],
+            "description": "The table the pipeline writes at the finest grain."
+          },
+          "grains": {
+            "additionalProperties": {
+              "properties": {
+                "from": {
+                  "type": "string",
+                  "description": "The grain this one is re-merged from: the source grain or a narrower\ndeclared grain whose width divides this one's."
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "from"
+              ],
+              "description": "RollupGrain is one coarser grain."
+            },
+            "type": "object",
+            "description": "Each coarser grain, keyed by its width such as 5m, 1h or 1d, and the\ngrain it is built from."
+          },
+          "dimension_sets": {
+            "items": {
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Names the set and prefixes its tables."
+                },
+                "dimensions": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "description": "Source dimensions the set keeps. Empty keeps one row per bucket."
+                },
+                "measures": {
+                  "additionalProperties": {
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "sum",
+                          "min",
+                          "max",
+                          "count_buckets",
+                          "avg",
+                          "gauge",
+                          "histogram"
+                        ],
+                        "description": "sum, min, max or count_buckets. avg, gauge and histogram are reserved\nand refused until a later version generates them."
+                      },
+                      "column": {
+                        "type": "string",
+                        "description": "The source column the measure reads. Required for sum, min and max;\nrefused for count_buckets, which counts source buckets."
+                      }
+                    },
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "description": "RollupMeasure is one kept value and how it merges."
+                  },
+                  "type": "object",
+                  "description": "Measures keyed by the column name they get in every table of the set."
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "name",
+                "dimensions",
+                "measures"
+              ],
+              "description": "RollupDimensionSet is one table per grain: a time bucket, some dimensions, and the measures kept for each."
+            },
+            "type": "array",
+            "description": "The dimensions and measures kept at every grain. Each set gets one\ntable per grain, named \u003cset\u003e_\u003cgrain\u003e."
+          },
+          "serve": {
+            "properties": {
+              "catalog": {
+                "type": "string",
+                "description": "The catalog serve.yml's commands attach the database as, such as pg."
+              },
+              "max_buckets": {
+                "type": "integer",
+                "description": "The most buckets one response may carry at any grain. Each grain's\nmax_range divided by its width must not exceed it."
+              },
+              "datasets": {
+                "items": {
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "The serve dataset's name."
+                    },
+                    "dimension_set": {
+                      "type": "string",
+                      "description": "The dimension set the dataset reads. At most one dimension."
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "Shown in /v1/datasets."
+                    },
+                    "default_range": {
+                      "type": "string",
+                      "description": "The width a request gets without since, such as 24h."
+                    },
+                    "max_range": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": "object",
+                      "description": "The grains served, each with the widest range it serves."
+                    },
+                    "fold": {
+                      "properties": {
+                        "dimension": {
+                          "type": "string",
+                          "description": "The dimension folded. It must be the dimension set's dimension."
+                        },
+                        "rank_by": {
+                          "type": "string",
+                          "description": "The sum measure that ranks the dimension's values. Optional when the\nset has exactly one sum measure."
+                        },
+                        "top": {
+                          "properties": {
+                            "default": {
+                              "type": "integer",
+                              "description": "The series a request gets without top."
+                            },
+                            "max": {
+                              "type": "integer",
+                              "description": "The most series a request may ask for. A larger top is refused."
+                            }
+                          },
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "default",
+                            "max"
+                          ],
+                          "description": "How many values keep their own series."
+                        }
+                      },
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": [
+                        "dimension",
+                        "top"
+                      ],
+                      "description": "Keeps the top values of the dimension as their own series and sums the\nrest into \"other\". Required when the set has a dimension."
+                    },
+                    "filters": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": "object",
+                      "description": "Params that filter the dimension to one value, never folded, keyed by\nparam name."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "dimension_set",
+                    "default_range",
+                    "max_range"
+                  ],
+                  "description": "RollupDataset is one generated serve dataset."
+                },
+                "type": "array",
+                "description": "The datasets to generate."
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "catalog",
+              "max_buckets",
+              "datasets"
+            ],
+            "description": "The serve datasets to generate. Omit to generate tables only."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "source",
+          "grains",
+          "dimension_sets"
+        ],
+        "description": "Rollup is one source table and the coarser tables kept from it."
+      },
+      "type": "array",
+      "description": "The rollups this file declares."
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "rollups"
+  ],
+  "description": "RollupsConf is a whole rollups file."
+}

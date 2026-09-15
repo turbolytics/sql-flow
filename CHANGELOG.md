@@ -7,6 +7,12 @@
 - `sqlflow serve`: an `integer` param may declare `min` and `max`. A request
   outside them is `400 invalid_param` naming the bounds, and `/v1/datasets`
   lists them.
+- `sqlflow rollup ddl | serve | check`: generate rollup tables in Postgres,
+  the triggers that keep them current as the pipeline writes, and the `serve`
+  datasets that read them, from one `rollups.yml`. `check` fails CI when a
+  committed migration or serve file drifts from the declaration, or a dataset
+  could answer more rows than `max_rows`. `sqlflow validate` checks rollups
+  files. Error codes `user.config.rollup` and `user.config.rollup_drift`.
 
 ### Fixed
 

@@ -28,9 +28,16 @@ var configSchemaJSON []byte
 //go:embed schemas/serve.json
 var serveSchemaJSON []byte
 
+// rollupsSchemaJSON is the schema for a rollups file, generated from
+// config.RollupsConf.
+//
+//go:embed schemas/rollups.json
+var rollupsSchemaJSON []byte
+
 const (
-	schemaURL      = "https://turbolytics.io/schemas/config.json"
-	serveSchemaURL = "https://turbolytics.io/schemas/serve.json"
+	schemaURL        = "https://turbolytics.io/schemas/config.json"
+	serveSchemaURL   = "https://turbolytics.io/schemas/serve.json"
+	rollupsSchemaURL = "https://turbolytics.io/schemas/rollups.json"
 )
 
 // SchemaJSON returns the embedded config schema. `config example` renders it
@@ -73,7 +80,10 @@ func checkSchema(rendered []byte, rep *Report) {
 	}
 
 	schemaJSON, url := configSchemaJSON, schemaURL
-	if config.IsServe(rendered) {
+	switch {
+	case config.IsRollups(rendered):
+		schemaJSON, url = rollupsSchemaJSON, rollupsSchemaURL
+	case config.IsServe(rendered):
 		schemaJSON, url = serveSchemaJSON, serveSchemaURL
 	}
 	schema, err := compileSchema(schemaJSON, url)
