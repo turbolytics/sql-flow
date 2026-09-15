@@ -241,3 +241,114 @@ func TestCliServe_CheckErrorListsEveryViolation(t *testing.T) {
 	assert.That(t, strings.Contains(err.Error(), "serve.limits.rate_limit"))
 	assert.That(t, strings.Contains(err.Error(), "serve.datasets.0.name"))
 }
+
+// rangedServe declares a range and a max_range per grain, and breaks no rule.
+const rangedServe = `
+serve:
+  auth:
+    tokens: [{name: page, token: page-token}]
+  datasets:
+    - name: posts
+      params:
+        - {name: since, type: timestamp}
+        - {name: until, type: timestamp}
+        - {name: lang, type: string}
+      range: {since: since, until: until, default: 24h}
+      grains:
+        5m:
+          max_range: 1d
+          sql: SELECT * FROM t WHERE bucket >= $since AND bucket < $until AND lang = coalesce($lang, lang)
+        1h:
+          max_range: 14d
+          sql: SELECT * FROM t WHERE bucket >= $since AND bucket < $until AND lang = coalesce($lang, lang)
+        1d:
+          max_range: 365d
+          sql: SELECT * FROM t WHERE bucket >= $since AND bucket < $until AND lang = coalesce($lang, lang)
+`
+
+func TestCliServe_RangeDurationsParseInWholeUnits(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	for in, want := range map[string]time.Duration{
+		"30s": 30 * time.Second, "5m": 5 * time.Minute, "12h": 12 * time.Hour, "14d": 14 * 24 * time.Hour,
+	} {
+		got, err := ParseServeDuration(in)
+		assert.NoError(t, err)
+		assert.Equal(t, want, got)
+		assert.Equal(t, in, FormatServeDuration(got))
+	}
+	for _, bad := range []string{"", "0d", "1w", "1.5h", "-1h", "1h30m", "h", "99999999999999999999d"} {
+		_, err := ParseServeDuration(bad)
+		assert.Error(t, err)
+	}
+	assert.Equal(t, "1d", FormatServeDuration(24*time.Hour))
+	assert.Equal(t, "2d", FormatServeDuration(48*time.Hour))
+	assert.Equal(t, "90m", FormatServeDuration(90*time.Minute))
+}
+
+// The server tries grains from the narrowest max_range to the widest. Name
+// order would try 1d before 1h and 5m.
+func TestCliServe_GrainsByRangeOrdersNarrowestFirst(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	conf := parseServe(t, rangedServe)
+	assert.Equal(t, 0, len(conf.Check()))
+	assert.DeepEqual(t, []string{"1d", "1h", "5m"}, conf.Serve.Datasets[0].GrainNames())
+	assert.DeepEqual(t, []string{"5m", "1h", "1d"}, conf.Serve.Datasets[0].GrainsByRange())
+}
+
+func TestCliServe_CheckReportsEachRangeRuleAtItsPath(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	for _, tt := range []struct {
+		name, from, to, path, message string
+	}{
+		{"since names no param", "range: {since: since,", "range: {since: from,",
+			"serve.datasets.0.range.since", `"from", which is not a declared param`},
+		{"until is not a timestamp", "range: {since: since, until: until,", "range: {since: since, until: lang,",
+			"serve.datasets.0.range.until", "param lang, which is a string"},
+		{"since and until are one param", "until: until, default", "until: since, default",
+			"serve.datasets.0.range.until", "both name since"},
+		{"bad default", "default: 24h}", "default: 1w}",
+			"serve.datasets.0.range.default", `"1w" is not a duration`},
+		{"default wider than every grain", "default: 24h}", "default: 400d}",
+			"serve.datasets.0.range.default", "400d is wider than the widest grain's max_range 365d"},
+		{"a grain without max_range", "          max_range: 14d\n", "",
+			"serve.datasets.0.grains.1h.max_range", "needs max_range on every grain"},
+		{"bad max_range", "max_range: 14d", "max_range: two weeks",
+			"serve.datasets.0.grains.1h.max_range", `"two weeks" is not a duration`},
+		{"two grains with one max_range", "max_range: 14d", "max_range: 1d",
+			"serve.datasets.0.grains.5m.max_range", "grains 1h and 5m both have max_range 1d"},
+		{"max_range without a range", "      range: {since: since, until: until, default: 24h}\n", "",
+			"serve.datasets.0.grains.1d.max_range", "max_range needs a range on the dataset"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.That(t, strings.Contains(rangedServe, tt.from))
+			conf := parseServe(t, strings.Replace(rangedServe, tt.from, tt.to, 1))
+
+			violations := conf.Check()
+			assert.That(t, len(violations) >= 1)
+			assert.Equal(t, errs.CodeConfigServeDataset, violations[0].Code)
+			assert.Equal(t, tt.path, strings.Join(violations[0].Path, "."))
+			if !strings.Contains(violations[0].Message, tt.message) {
+				t.Fatalf("message %q does not contain %q", violations[0].Message, tt.message)
+			}
+		})
+	}
+
+	t.Run("a range without grains", func(t *testing.T) {
+		conf := parseServe(t, `
+serve:
+  auth:
+    tokens: [{name: page, token: page-token}]
+  datasets:
+    - name: posts
+      params: [{name: since, type: timestamp}, {name: until, type: timestamp}]
+      range: {since: since, until: until, default: 24h}
+      sql: SELECT * FROM t WHERE bucket >= $since AND bucket < $until
+`)
+		violations := conf.Check()
+		assert.Equal(t, 1, len(violations))
+		assert.Equal(t, "serve.datasets.0.range", strings.Join(violations[0].Path, "."))
+	})
+}

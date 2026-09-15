@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"regexp"
@@ -115,6 +116,24 @@ type ServeDataset struct {
 	SQL string `yaml:"sql,omitempty"`
 	// One statement per grain, selected by ?grain=<name>. Set sql or grains.
 	Grains map[string]ServeGrain `yaml:"grains,omitempty"`
+	// Names the params that bound a time range. With a range, a request may
+	// omit grain: the server picks the finest grain whose max_range covers
+	// the requested range. Requires grains.
+	Range *ServeRange `yaml:"range,omitempty"`
+}
+
+// ServeRange names a dataset's time range params and the width a request
+// gets when it does not give since.
+type ServeRange struct {
+	// The timestamp param that starts the range. Absent from a request, it
+	// binds until minus default.
+	Since string `yaml:"since"`
+	// The timestamp param that ends the range. Absent from a request, it
+	// binds the time the request arrived.
+	Until string `yaml:"until"`
+	// The width of a range a request does not bound with since, such as 24h.
+	// Units: s, m, h, d.
+	Default string `yaml:"default"`
 }
 
 // ServeParam declares one query parameter.
@@ -134,6 +153,9 @@ type ServeParam struct {
 
 // ServeGrain is one grain's statement.
 type ServeGrain struct {
+	// The widest range this grain serves, such as 14d. Required when the
+	// dataset declares a range, and refused otherwise. Units: s, m, h, d.
+	MaxRange string `yaml:"max_range,omitempty"`
 	// The statement for this grain.
 	SQL string `yaml:"sql"`
 }
@@ -193,6 +215,60 @@ func (ds ServeDataset) GrainNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// GrainsByRange returns the grain names from the narrowest max_range to the
+// widest: the order the server tries them in. A grain whose max_range does
+// not parse sorts last; Check reports it.
+func (ds ServeDataset) GrainsByRange() []string {
+	names := ds.GrainNames()
+	width := func(name string) time.Duration {
+		d, err := ParseServeDuration(ds.Grains[name].MaxRange)
+		if err != nil {
+			return time.Duration(math.MaxInt64)
+		}
+		return d
+	}
+	sort.SliceStable(names, func(i, j int) bool { return width(names[i]) < width(names[j]) })
+	return names
+}
+
+var serveDurationPattern = regexp.MustCompile(`^([1-9][0-9]*)(s|m|h|d)$`)
+
+// ParseServeDuration reads a range width: a positive whole number and one
+// unit, s, m, h or d. Go's own durations have no d, and a range is most
+// naturally written in days.
+func ParseServeDuration(s string) (time.Duration, error) {
+	m := serveDurationPattern.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("%q is not a duration such as 30m, 24h or 14d", s)
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q is too large", s)
+	}
+	unit := map[string]time.Duration{"s": time.Second, "m": time.Minute, "h": time.Hour, "d": 24 * time.Hour}[m[2]]
+	if n > int64(math.MaxInt64/unit) {
+		return 0, fmt.Errorf("%q is too large", s)
+	}
+	return time.Duration(n) * unit, nil
+}
+
+// FormatServeDuration writes a duration in the largest whole unit, the form
+// ParseServeDuration reads, so a message quotes a width the way a config
+// author wrote it.
+func FormatServeDuration(d time.Duration) string {
+	switch {
+	case d > 0 && d%(24*time.Hour) == 0:
+		return strconv.FormatInt(int64(d/(24*time.Hour)), 10) + "d"
+	case d > 0 && d%time.Hour == 0:
+		return strconv.FormatInt(int64(d/time.Hour), 10) + "h"
+	case d > 0 && d%time.Minute == 0:
+		return strconv.FormatInt(int64(d/time.Minute), 10) + "m"
+	case d > 0 && d%time.Second == 0:
+		return strconv.FormatInt(int64(d/time.Second), 10) + "s"
+	}
+	return d.String()
 }
 
 // ServeStatement is one statement of a dataset. Grain is empty for a dataset
@@ -422,6 +498,8 @@ func checkDataset(ds ServeDataset, path []string, seen map[string]bool, add addF
 		}
 	}
 
+	checkRange(ds, path, declaredTypes(ds.Params), add)
+
 	for _, st := range ds.Statements() {
 		spath, where := child("sql"), "dataset "+ds.Name
 		if st.Grain != "" {
@@ -455,6 +533,87 @@ func checkDataset(ds ServeDataset, path []string, seen map[string]bool, add addF
 // would let a later sibling overwrite an earlier violation's stored path.
 func at(path []string, keys ...string) []string {
 	return slices.Concat(path, keys)
+}
+
+func declaredTypes(params []ServeParam) map[string]string {
+	out := map[string]string{}
+	for _, p := range params {
+		out[p.Name] = p.Type
+	}
+	return out
+}
+
+// checkRange holds a dataset's range and its grains' max_range to the rules
+// grain selection depends on: two timestamp params, a width for each grain
+// with no two alike, and a default some grain can serve.
+func checkRange(ds ServeDataset, path []string, types map[string]string, add addFunc) {
+	code := errs.CodeConfigServeDataset
+
+	if ds.Range == nil {
+		for _, grain := range ds.GrainNames() {
+			if ds.Grains[grain].MaxRange != "" {
+				add(code, at(path, "grains", grain, "max_range"),
+					"dataset %s grain %s: max_range needs a range on the dataset naming its since and until params",
+					ds.Name, grain)
+			}
+		}
+		return
+	}
+
+	rpath := at(path, "range")
+	for _, ref := range []struct{ key, name string }{{"since", ds.Range.Since}, {"until", ds.Range.Until}} {
+		switch typ, ok := types[ref.name]; {
+		case !ok:
+			add(code, at(rpath, ref.key), "dataset %s: range.%s names %q, which is not a declared param",
+				ds.Name, ref.key, ref.name)
+		case typ != "timestamp":
+			add(code, at(rpath, ref.key), "dataset %s: range.%s names param %s, which is a %s; it must be a timestamp",
+				ds.Name, ref.key, ref.name, typ)
+		}
+	}
+	if ds.Range.Since != "" && ds.Range.Since == ds.Range.Until {
+		add(code, at(rpath, "until"), "dataset %s: range.since and range.until both name %s", ds.Name, ds.Range.Since)
+	}
+
+	def, defErr := ParseServeDuration(ds.Range.Default)
+	if defErr != nil {
+		add(code, at(rpath, "default"), "dataset %s: range.default %v", ds.Name, defErr)
+	}
+
+	if len(ds.Grains) == 0 {
+		add(code, rpath, "dataset %s: a range selects among grains, and the dataset has none", ds.Name)
+		return
+	}
+
+	widest := time.Duration(0)
+	seen := map[time.Duration]string{}
+	for _, grain := range ds.GrainNames() {
+		gpath := at(path, "grains", grain, "max_range")
+		raw := ds.Grains[grain].MaxRange
+		if raw == "" {
+			add(code, gpath, "dataset %s grain %s: a dataset with a range needs max_range on every grain", ds.Name, grain)
+			continue
+		}
+		d, err := ParseServeDuration(raw)
+		if err != nil {
+			add(code, gpath, "dataset %s grain %s: max_range %v", ds.Name, grain, err)
+			continue
+		}
+		if other, dup := seen[d]; dup {
+			add(code, gpath, "dataset %s: grains %s and %s both have max_range %s, so neither is the finer choice",
+				ds.Name, other, grain, FormatServeDuration(d))
+			continue
+		}
+		seen[d] = grain
+		if d > widest {
+			widest = d
+		}
+	}
+
+	if defErr == nil && widest > 0 && def > widest {
+		add(code, at(rpath, "default"), "dataset %s: range.default %s is wider than the widest grain's max_range %s",
+			ds.Name, FormatServeDuration(def), FormatServeDuration(widest))
+	}
 }
 
 func validAddr(addr string) bool {

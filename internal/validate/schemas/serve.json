@@ -206,6 +206,10 @@
               "grains": {
                 "additionalProperties": {
                   "properties": {
+                    "max_range": {
+                      "type": "string",
+                      "description": "The widest range this grain serves, such as 14d. Required when the\ndataset declares a range, and refused otherwise. Units: s, m, h, d."
+                    },
                     "sql": {
                       "type": "string",
                       "description": "The statement for this grain."
@@ -220,6 +224,30 @@
                 },
                 "type": "object",
                 "description": "One statement per grain, selected by ?grain=\u003cname\u003e. Set sql or grains."
+              },
+              "range": {
+                "properties": {
+                  "since": {
+                    "type": "string",
+                    "description": "The timestamp param that starts the range. Absent from a request, it\nbinds until minus default."
+                  },
+                  "until": {
+                    "type": "string",
+                    "description": "The timestamp param that ends the range. Absent from a request, it\nbinds the time the request arrived."
+                  },
+                  "default": {
+                    "type": "string",
+                    "description": "The width of a range a request does not bound with since, such as 24h.\nUnits: s, m, h, d."
+                  }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "since",
+                  "until",
+                  "default"
+                ],
+                "description": "Names the params that bound a time range. With a range, a request may\nomit grain: the server picks the finest grain whose max_range covers\nthe requested range. Requires grains."
               }
             },
             "additionalProperties": false,

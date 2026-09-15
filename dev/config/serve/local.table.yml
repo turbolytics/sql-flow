@@ -2,7 +2,10 @@
 #
 #   SQLFLOW_SERVE_TOKEN=local-dev-token sqlflow serve dev/config/serve/local.table.yml
 #   curl -H 'Authorization: Bearer local-dev-token' \
-#     'http://localhost:8080/v1/datasets/city_events?grain=1d&city=Baltimore'
+#     'http://localhost:8080/v1/datasets/city_events?city=Baltimore&since=2026-09-10T00:00:00Z&until=2026-09-12T00:00:00Z'
+#
+# The events are fixed in September 2026, so give since and until: the
+# default range ends now.
 commands:
   - name: pin the session timezone
     sql: SET TimeZone='UTC';
@@ -38,24 +41,30 @@ serve:
       sql: SELECT count(*) AS events, min(event_at) AS first_event_at FROM events
 
     - name: city_events
-      description: Events per bucket per city.
+      description: Events per bucket per city. Without grain, the finest grain that serves the range.
       params:
         - {name: city, type: string}
         - {name: since, type: timestamp}
+        - {name: until, type: timestamp}
+      range: {since: since, until: until, default: 1d}
       grains:
         1h:
+          max_range: 2d
           sql: |
             SELECT time_bucket(INTERVAL '1 hour', event_at) AS bucket, city, count(*) AS events
             FROM events
             WHERE city = coalesce($city, city)
-              AND event_at >= coalesce($since, TIMESTAMPTZ '1970-01-01 00:00:00+00')
+              AND event_at >= $since
+              AND event_at <  $until
             GROUP BY ALL
             ORDER BY bucket, city
         1d:
+          max_range: 30d
           sql: |
             SELECT time_bucket(INTERVAL '1 day', event_at) AS bucket, city, count(*) AS events
             FROM events
             WHERE city = coalesce($city, city)
-              AND event_at >= coalesce($since, TIMESTAMPTZ '1970-01-01 00:00:00+00')
+              AND event_at >= $since
+              AND event_at <  $until
             GROUP BY ALL
             ORDER BY bucket, city

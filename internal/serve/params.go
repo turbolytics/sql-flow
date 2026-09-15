@@ -49,6 +49,98 @@ func (ds *dataset) resolveStatement(query url.Values) (*statement, *apiError) {
 	return st, nil
 }
 
+// window is the range a ranged request resolved to, echoed in the response
+// so a caller can draw its axis.
+type window struct {
+	Since string `json:"since"`
+	Until string `json:"until"`
+}
+
+// resolveRange fills in a ranged request's since and until, then picks its
+// grain: the one named, if it serves the range, or else the finest one that
+// does.
+//
+// values already holds the parsed params. The resolved since and until are
+// written back into it, so the statement binds timestamps, never NULL, and
+// needs no defaults of its own.
+func (ds *dataset) resolveRange(query url.Values, values map[string]any, now time.Time) (*statement, *window, *apiError) {
+	sp := ds.span
+
+	// Microseconds, because that is what binds. The echoed range then says
+	// exactly what the statement saw.
+	until, ok := values[sp.until].(time.Time)
+	if !ok {
+		until = now
+	}
+	until = until.UTC().Truncate(time.Microsecond)
+	since, ok := values[sp.since].(time.Time)
+	if !ok {
+		since = until.Add(-sp.def)
+	}
+	since = since.UTC().Truncate(time.Microsecond)
+
+	if !since.Before(until) {
+		return nil, nil, &apiError{http.StatusBadRequest, "invalid_param",
+			sp.since + " must be before " + sp.until + "; got " + sp.since + " " + since.Format(time.RFC3339Nano) +
+				" and " + sp.until + " " + until.Format(time.RFC3339Nano)}
+	}
+	values[sp.since], values[sp.until] = since, until
+	win := &window{Since: since.Format(time.RFC3339Nano), Until: until.Format(time.RFC3339Nano)}
+	width := until.Sub(since)
+
+	grains, given := query["grain"]
+	if !given {
+		for _, g := range sp.grains {
+			if width <= g.max {
+				return ds.grains[g.name], win, nil
+			}
+		}
+		widest := sp.grains[len(sp.grains)-1]
+		return nil, nil, &apiError{http.StatusBadRequest, "range_too_wide",
+			"the range is " + describeWidth(width) + " and the widest grain, " + widest.name +
+				", serves at most " + config.FormatServeDuration(widest.max)}
+	}
+
+	if len(grains) > 1 {
+		return nil, nil, &apiError{http.StatusBadRequest, "invalid_param",
+			"grain is given " + strconv.Itoa(len(grains)) + " times"}
+	}
+	st, ok := ds.grains[grains[0]]
+	if !ok {
+		return nil, nil, &apiError{http.StatusBadRequest, "unknown_grain",
+			"dataset " + ds.conf.Name + " has no grain " + grains[0] + "; grains: " + strings.Join(ds.conf.GrainNames(), ", ")}
+	}
+
+	var fits []string
+	var max time.Duration
+	for _, g := range sp.grains {
+		if g.name == grains[0] {
+			max = g.max
+		}
+		if width <= g.max {
+			fits = append(fits, g.name)
+		}
+	}
+	if width > max {
+		msg := "grain " + grains[0] + " serves at most " + config.FormatServeDuration(max) +
+			" and the range is " + describeWidth(width)
+		if len(fits) > 0 {
+			msg += "; grains that serve it: " + strings.Join(fits, ", ")
+		}
+		return nil, nil, &apiError{http.StatusBadRequest, "range_too_wide", msg}
+	}
+	return st, win, nil
+}
+
+// describeWidth writes a requested width in whole units when it has them,
+// and to the second when it does not: 3d, or 72h0m1s.
+func describeWidth(d time.Duration) string {
+	if d%time.Second == 0 {
+		return config.FormatServeDuration(d)
+	}
+	return d.Round(time.Second).String()
+}
+
 // parseParams parses every query parameter but grain against its declared
 // type. An unknown name is refused rather than ignored, so a misspelled
 // filter fails instead of silently binding NULL and returning every row.

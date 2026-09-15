@@ -9,6 +9,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -29,6 +30,9 @@ type Server struct {
 	origins map[string]bool
 	// healthTimeout bounds /healthz, which waits on the same lock as a query.
 	healthTimeout time.Duration
+	// now is when a request arrived: the until a ranged request does not
+	// give. A test fixes it.
+	now func() time.Time
 }
 
 // dataset is one config dataset with its statements prepared.
@@ -40,6 +44,21 @@ type dataset struct {
 	grains  map[string]*statement
 	maxRows int
 	timeout time.Duration
+	// span is nil for a dataset without a range.
+	span *span
+}
+
+// span is a dataset's range: the params that bound it, the width a request
+// gets without since, and each grain's widest range, narrowest first.
+type span struct {
+	since, until string
+	def          time.Duration
+	grains       []spanGrain
+}
+
+type spanGrain struct {
+	name string
+	max  time.Duration
 }
 
 // Option configures a Server.
@@ -67,6 +86,7 @@ func New(ctx context.Context, conf *config.ServeConf, conn adbc.Connection, opts
 		exec:          &executor{conn: conn},
 		datasets:      map[string]*dataset{},
 		healthTimeout: conf.Serve.Timeout(config.ServeDataset{}),
+		now:           time.Now,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -109,6 +129,20 @@ func New(ctx context.Context, conf *config.ServeConf, conn adbc.Connection, opts
 			doc.Grains[sc.Grain] = grainDoc{SQL: sc.SQL}
 		}
 
+		if dc.Range != nil {
+			sp, err := newSpan(dc)
+			if err != nil {
+				return nil, err
+			}
+			ds.span = sp
+			doc.Range = &rangeDoc{Since: dc.Range.Since, Until: dc.Range.Until, Default: dc.Range.Default}
+			for _, g := range sp.grains {
+				gd := doc.Grains[g.name]
+				gd.MaxRange = config.FormatServeDuration(g.max)
+				doc.Grains[g.name] = gd
+			}
+		}
+
 		s.datasets[dc.Name] = ds
 		listing.Datasets = append(listing.Datasets, doc)
 	}
@@ -140,6 +174,13 @@ type datasetDoc struct {
 	Params      []paramDoc          `json:"params"`
 	SQL         string              `json:"sql,omitempty"`
 	Grains      map[string]grainDoc `json:"grains,omitempty"`
+	Range       *rangeDoc           `json:"range,omitempty"`
+}
+
+type rangeDoc struct {
+	Since   string `json:"since"`
+	Until   string `json:"until"`
+	Default string `json:"default"`
 }
 
 type paramDoc struct {
@@ -150,5 +191,24 @@ type paramDoc struct {
 }
 
 type grainDoc struct {
-	SQL string `json:"sql"`
+	MaxRange string `json:"max_range,omitempty"`
+	SQL      string `json:"sql"`
+}
+
+// newSpan reads a dataset's range. Check has already held it to the rules,
+// so an error here is a config New was handed without checking.
+func newSpan(dc config.ServeDataset) (*span, error) {
+	def, err := config.ParseServeDuration(dc.Range.Default)
+	if err != nil {
+		return nil, fmt.Errorf("dataset %s: range.default: %w", dc.Name, err)
+	}
+	sp := &span{since: dc.Range.Since, until: dc.Range.Until, def: def}
+	for _, name := range dc.GrainsByRange() {
+		max, err := config.ParseServeDuration(dc.Grains[name].MaxRange)
+		if err != nil {
+			return nil, fmt.Errorf("dataset %s grain %s: max_range: %w", dc.Name, name, err)
+		}
+		sp.grains = append(sp.grains, spanGrain{name: name, max: max})
+	}
+	return sp, nil
 }
