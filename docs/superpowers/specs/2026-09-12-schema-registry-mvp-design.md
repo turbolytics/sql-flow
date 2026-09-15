@@ -190,11 +190,19 @@ func (r *Registry) Latest(ctx context.Context, subject string) (sr.SubjectSchema
 func (r *Registry) Register(ctx context.Context, subject string, s sr.Schema) (int, error)
 func (r *Registry) Version(ctx context.Context, subject string, version int) (sr.SubjectSchema, error)
 
-// Decoder turns one framed record into one row of the reader schema.
+// Decoder turns one framed record into one row of the reader schema, in two
+// phases. Decode makes every conversion and every check, and touches no
+// builder. Append cannot fail. A record reaches the batch whole or not at all.
 type Decoder interface {
 	Schema() *arrow.Schema
-	Append(b *array.RecordBuilder, value []byte) error
+	Decode(value []byte) (Row, error)
+	Append(b *array.RecordBuilder, row Row)
 }
+
+// Row holds one value per field of Schema(), in field order. Each value is
+// the Go type that field's builder appends, or nil for a null. A struct is a
+// nested Row, a list is a []any, and a map is a []MapEntry.
+type Row []any
 func NewDecoder(ctx context.Context, format string, topic string, reg *Registry) (Decoder, error)
 
 // Encoder turns a batch into framed records, one per row.
@@ -240,14 +248,76 @@ Each record:
    resolution as the specification defines it: added fields take their
    defaults, removed fields are dropped, and a change the reader cannot
    resolve is `user.data.malformed` naming both schemas. A payload that does
-   not decode against its own writer schema is `user.data.malformed`.
-4. JSON Schema: the payload after the header is JSON. It is extracted against
-   the Arrow schema with the `appendJSONValue` machinery `StructuredBatch`
-   already has. No inference runs. The schema is not validated against the
-   payload in the MVP; a field the schema declares and the payload lacks is
-   null.
-5. The row is appended to the record builder. Kafka metadata columns are
-   appended by the handler, as today.
+   not decode against its own writer schema is `user.data.malformed`. `Decode`
+   then converts each value to its column's Arrow value. A value that decodes
+   and does not convert is `user.data.invalid`, which Value failures below
+   lists.
+4. JSON Schema: the payload after the header is JSON. `Decode` reads each
+   property the Arrow schema names and converts it. No inference runs. A
+   value that does not convert is `user.data.invalid`. A property the payload
+   lacks is null, unless the schema lists it in `required`.
+5. `Append` writes the converted row. Every check has already passed, so it
+   has no error to return. Kafka metadata columns are appended by the
+   handler, as today.
+
+#### Value failures
+
+A record can decode and still hold a value its column cannot take. Each such
+value is `user.data.invalid`. That code exists and nothing returns it today.
+Its summary is "A message is unusable for a reason the specific codes do not
+cover." The message names the field path, the type the column wants, and what
+the record held.
+
+Avro's binary encoding follows the writer schema, so an Avro value always has
+its declared type. What can still fail:
+
+- A `decimal` whose unscaled value has more digits than the declared
+  precision. Avro does not enforce precision on the wire.
+- A timestamp outside the range of its Arrow unit.
+- A `string` that is not valid UTF-8.
+
+JSON Schema's payload is text the producer wrote, and nothing checked it
+against the schema. What fails:
+
+- A JSON type the column cannot take: a string for `integer`, an object for a
+  scalar, a scalar for an `object` or an `array`.
+- A number an `integer` column cannot hold: one with a fraction, or one
+  outside `int64`.
+- An explicit `null` in a property whose `type` does not include `null`.
+- A missing property the schema lists in `required`.
+- A string that is not valid UTF-8.
+
+The JSON Schema checks stop there. `enum`, `const`, `pattern`, `minimum`,
+`maximum` and `format` are not checked. A record the SQL can read is not
+refused over a rule the SQL never uses.
+
+`StructuredBatch` appends null for a value that does not parse as its
+column's type, and it raises no error. The JSON Schema decoder does not reuse
+that code. It has its own converter and refuses the value. `StructuredBatch`
+keeps its behavior. `InferredMemBatch` already follows this rule: "a value
+that cannot be promoted fails the batch rather than being silently nulled."
+
+The UTF-8 check turns a batch failure into a record failure. On 2026-09-15,
+through DuckDB 1.5.2's Python binding, one invalid UTF-8 string in an Arrow
+batch failed the whole ingest:
+
+```
+CREATE TABLE batch AS SELECT * FROM src
+Invalid Input Error: Invalid unicode (byte sequence mismatch) detected in segment statistics update
+```
+
+Without the check, one bad string fails `Invoke`. `IGNORE` or `DLQ` would then
+drop or divert every good record in the batch, and the dead-letter row would
+say only `Handler invocation failed`. The decoding runner confirms the failure
+through ADBC.
+
+Two phases, not an undo. A partial append leaves some column builders one
+value longer than others, and undoing it means truncating every builder,
+nested and variable-length ones included. Decoding the batch at `Invoke`
+instead, as `StructuredBatch` does, fails the whole batch for one bad value.
+Decoding at `Write` and again at `Invoke` doubles the decode cost. The two
+phases cost one intermediate `Row` per record. `BenchmarkDecode` and the Avro
+and JSON Schema soaks measure that cost.
 
 Avro to Arrow:
 
@@ -307,10 +377,12 @@ or the config schema.
 
 `TypedBatchHandler` mirrors `InferredMemBatchHandler` in everything but the
 decode. It holds one `array.RecordBuilder` over the decoder's schema plus the
-metadata columns from `withMetadataFields`. `Write` calls `decoder.Append`, so
-a record that does not decode fails at write time, which is the phase the
-error policies key off and the reason `InferredMemBatch` validates JSON at
-`Write` rather than `Invoke`. `Invoke` takes the record, binds it to the same
+metadata columns from `withMetadataFields`. `Write` calls `decoder.Decode`,
+and then `decoder.Append` only if `Decode` succeeded. A record that does not
+decode fails at write time and appends nothing. Write is the phase the error
+policies key off, and the reason `InferredMemBatch` validates JSON at `Write`
+rather than `Invoke`. The metadata columns are appended after the decoded row,
+and they cannot fail either. `Invoke` takes the record, binds it to the same
 create-mode ingest statement into `batch`, runs the SQL, and reports
 `RowsRead`. `Init` drops `batch`, as today.
 
@@ -695,6 +767,12 @@ Each cell declares one outcome:
 - `record_error`, with the `code` each record fails with. The error policy then
   applies to that record.
 
+Under Value failures, `property.retype` is a `record_error` with
+`user.data.invalid` whenever an old record's value does not convert to the
+new type. It is `resolved` when the value does convert, as an integer does to
+`number`. `required.add` is a `record_error` for a reader-newer backlog whose
+records lack the property.
+
 The read side runs at unit level. hamba's `SchemaCompatibility.Resolve`
 decides Avro resolution. The JSON Schema extraction is ours. No registry
 decides a read-side cell. `TestSerdeAvro_Compat` and
@@ -885,7 +963,7 @@ Appended to the registry, each with a summary and an action:
 | `user.sink.schema_mismatch` | The handler SQL's output columns do not match the specified schema's fields | Rename, add or remove columns in the handler SQL to match the schema, or name a version that matches |
 
 `codes.golden` gains four lines. Everything else reuses `user.data.malformed`,
-`user.sql.type_unsupported`, `user.sink.type_unsupported`,
+`user.data.invalid`, `user.sql.type_unsupported`, `user.sink.type_unsupported`,
 `user.sink.encode_failed`, `user.config.invalid`,
 `user.source.security_invalid`, `system.source.unreachable` and
 `system.sink.unreachable`. `user.source.security_invalid` keeps its code, and
@@ -1016,6 +1094,13 @@ subjects. It records calls so a test can assert the cache.
 - Read side of the compatibility matrix: `TestSerdeAvro_Compat` and
   `TestSerdeJsonSchema_Compat`. An incompatible change names both schemas
   in its error.
+- Row atomicity:
+  - A record whose last field fails `Decode` appends nothing.
+  - The next record's values land in their own row.
+  - A batch holding one invalid UTF-8 string ingests every other record.
+- Value failures: each case in Value failures, for both formats, is
+  `user.data.invalid` naming its field path. A missing optional property is
+  null. A `pattern` mismatch is not refused.
 - Typed handler: `Write` of a bad record fails with the decoder's code and
   the batch still ingests the good ones; metadata columns are present and
   correct; `RowsRead` matches.
@@ -1126,7 +1211,7 @@ handler benchmarks, each with `ReportAllocs` and `SetBytes` on the payload:
 
 | Benchmark | Measures |
 | --- | --- |
-| `BenchmarkDecode/json`, `/json_schema`, `/avro` | One `Decoder.Append` per record over a 1,000-record fixture, registry pre-warmed |
+| `BenchmarkDecode/json`, `/json_schema`, `/avro` | One `Decode` and one `Append` per record over a 1,000-record fixture, registry pre-warmed |
 | `BenchmarkEncode/json`, `/json_schema`, `/avro` | One `Encoder.Encode` over a 1,000-row batch, schema ID cached |
 | `BenchmarkTypedBatch/json_schema`, `/avro` | Write plus Invoke through `TypedBatchHandler`, beside `BenchmarkInferredMemBatch` and `BenchmarkStructuredBatch` on the same fixture |
 
@@ -1216,6 +1301,12 @@ If the dead-letter columns are wrong, an existing ClickHouse or Postgres
 dead-letter table refuses the new row and the pipeline stops. The upgrade
 note tells operators to add the columns first, and a table without them fails
 the first bad record, not silently.
+
+If refusing a value is wrong, a producer whose records break their own schema
+sees them fail instead of reading as null. The error policy decides what
+happens next. Under `DLQ` the record's bytes are kept, and the error names the
+field. Before this change, such a record reached SQL with a null that nothing
+reported.
 
 If the type mapping is wrong, a column reaches DuckDB with a type the SQL did
 not expect. Every input type is a lattice row that the decoding runner judges
