@@ -1,0 +1,126 @@
+- name: posts_by_lang
+  description: Posts per bucket per language. The top languages by posts over the range keep their own series and the rest sum into lang "other".
+  params:
+    - name: since
+      type: timestamp
+    - name: until
+      type: timestamp
+    - name: lang
+      type: string
+    - name: top
+      type: integer
+      min: 1
+      max: 20
+  grains:
+    1d:
+      max_range: 365d
+      sql: |
+        SELECT bucket,
+               CASE WHEN lang_rank <= coalesce($top, 10) THEN lang ELSE 'other' END AS lang,
+               sum(posts)::BIGINT AS posts
+        FROM (
+          SELECT bucket, lang, posts,
+                 dense_rank() OVER (ORDER BY lang_total DESC, lang) AS lang_rank
+          FROM (
+            SELECT bucket, lang, posts, sum(posts) OVER (PARTITION BY lang) AS lang_total
+            FROM pg.posts_by_lang_1d
+            WHERE bucket >= $since AND bucket < $until
+              AND lang = coalesce($lang, lang)
+          )
+        )
+        GROUP BY ALL
+        ORDER BY bucket, lang
+    1h:
+      max_range: 14d
+      sql: |
+        SELECT bucket,
+               CASE WHEN lang_rank <= coalesce($top, 10) THEN lang ELSE 'other' END AS lang,
+               sum(posts)::BIGINT AS posts
+        FROM (
+          SELECT bucket, lang, posts,
+                 dense_rank() OVER (ORDER BY lang_total DESC, lang) AS lang_rank
+          FROM (
+            SELECT bucket, lang, posts, sum(posts) OVER (PARTITION BY lang) AS lang_total
+            FROM pg.posts_by_lang_1h
+            WHERE bucket >= $since AND bucket < $until
+              AND lang = coalesce($lang, lang)
+          )
+        )
+        GROUP BY ALL
+        ORDER BY bucket, lang
+    1m:
+      max_range: 6h
+      sql: |
+        SELECT bucket,
+               CASE WHEN lang_rank <= coalesce($top, 10) THEN lang ELSE 'other' END AS lang,
+               sum(posts)::BIGINT AS posts
+        FROM (
+          SELECT bucket, lang, posts,
+                 dense_rank() OVER (ORDER BY lang_total DESC, lang) AS lang_rank
+          FROM (
+            SELECT bucket, lang, posts, sum(posts) OVER (PARTITION BY lang) AS lang_total
+            FROM pg.posts_per_minute_by_lang
+            WHERE bucket >= $since AND bucket < $until
+              AND lang = coalesce($lang, lang)
+          )
+        )
+        GROUP BY ALL
+        ORDER BY bucket, lang
+    5m:
+      max_range: 1d
+      sql: |
+        SELECT bucket,
+               CASE WHEN lang_rank <= coalesce($top, 10) THEN lang ELSE 'other' END AS lang,
+               sum(posts)::BIGINT AS posts
+        FROM (
+          SELECT bucket, lang, posts,
+                 dense_rank() OVER (ORDER BY lang_total DESC, lang) AS lang_rank
+          FROM (
+            SELECT bucket, lang, posts, sum(posts) OVER (PARTITION BY lang) AS lang_total
+            FROM pg.posts_by_lang_5m
+            WHERE bucket >= $since AND bucket < $until
+              AND lang = coalesce($lang, lang)
+          )
+        )
+        GROUP BY ALL
+        ORDER BY bucket, lang
+    6h:
+      max_range: 90d
+      sql: |
+        SELECT bucket,
+               CASE WHEN lang_rank <= coalesce($top, 10) THEN lang ELSE 'other' END AS lang,
+               sum(posts)::BIGINT AS posts
+        FROM (
+          SELECT bucket, lang, posts,
+                 dense_rank() OVER (ORDER BY lang_total DESC, lang) AS lang_rank
+          FROM (
+            SELECT bucket, lang, posts, sum(posts) OVER (PARTITION BY lang) AS lang_total
+            FROM pg.posts_by_lang_6h
+            WHERE bucket >= $since AND bucket < $until
+              AND lang = coalesce($lang, lang)
+          )
+        )
+        GROUP BY ALL
+        ORDER BY bucket, lang
+    15m:
+      max_range: 3d
+      sql: |
+        SELECT bucket,
+               CASE WHEN lang_rank <= coalesce($top, 10) THEN lang ELSE 'other' END AS lang,
+               sum(posts)::BIGINT AS posts
+        FROM (
+          SELECT bucket, lang, posts,
+                 dense_rank() OVER (ORDER BY lang_total DESC, lang) AS lang_rank
+          FROM (
+            SELECT bucket, lang, posts, sum(posts) OVER (PARTITION BY lang) AS lang_total
+            FROM pg.posts_by_lang_15m
+            WHERE bucket >= $since AND bucket < $until
+              AND lang = coalesce($lang, lang)
+          )
+        )
+        GROUP BY ALL
+        ORDER BY bucket, lang
+  range:
+    since: since
+    until: until
+    default: 24h
