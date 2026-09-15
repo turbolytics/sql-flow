@@ -148,10 +148,10 @@ func describeWidth(d time.Duration) string {
 // Names are checked in sorted order, so a request with two faults reports
 // the same one every time.
 func parseParams(declared []config.ServeParam, query url.Values) (map[string]any, *apiError) {
-	types := map[string]string{}
+	params := map[string]config.ServeParam{}
 	var names []string
 	for _, p := range declared {
-		types[p.Name] = p.Type
+		params[p.Name] = p
 		names = append(names, p.Name)
 	}
 
@@ -166,7 +166,7 @@ func parseParams(declared []config.ServeParam, query url.Values) (map[string]any
 		if key == "grain" {
 			continue
 		}
-		typ, ok := types[key]
+		p, ok := params[key]
 		if !ok {
 			msg := "no param named " + key
 			if len(names) > 0 {
@@ -180,14 +180,35 @@ func parseParams(declared []config.ServeParam, query url.Values) (map[string]any
 				"param " + key + " is given " + strconv.Itoa(len(raw)) + " times"}
 		}
 
-		v, err := parseValue(typ, raw[0])
+		v, err := parseValue(p.Type, raw[0])
 		if err != nil {
 			return nil, &apiError{http.StatusBadRequest, "invalid_param",
-				"param " + key + " is " + describe(typ) + "; got " + strconv.Quote(raw[0])}
+				"param " + key + " is " + describe(p.Type) + "; got " + strconv.Quote(raw[0])}
+		}
+		if n, isInteger := v.(int64); isInteger {
+			if msg := boundsProblem(p, n); msg != "" {
+				return nil, &apiError{http.StatusBadRequest, "invalid_param", msg}
+			}
 		}
 		values[key] = v
 	}
 	return values, nil
+}
+
+// boundsProblem says why an integer lies outside its param's bounds, or ""
+// when it does not.
+func boundsProblem(p config.ServeParam, n int64) string {
+	format := strconv.FormatInt
+	got := "; got " + format(n, 10)
+	switch {
+	case p.Min != nil && p.Max != nil && (n < *p.Min || n > *p.Max):
+		return "param " + p.Name + " must be between " + format(*p.Min, 10) + " and " + format(*p.Max, 10) + got
+	case p.Min != nil && n < *p.Min:
+		return "param " + p.Name + " must be at least " + format(*p.Min, 10) + got
+	case p.Max != nil && n > *p.Max:
+		return "param " + p.Name + " must be at most " + format(*p.Max, 10) + got
+	}
+	return ""
 }
 
 func parseValue(typ, raw string) (any, error) {

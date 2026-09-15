@@ -148,6 +148,14 @@
                         "timestamp"
                       ],
                       "description": "How the value parses and binds: string as VARCHAR, integer as BIGINT,\ntimestamp (RFC 3339 with an offset) as TIMESTAMP WITH TIME ZONE."
+                    },
+                    "min": {
+                      "type": "integer",
+                      "description": "The smallest value an integer param accepts. A request below it is\nrefused with 400 invalid_param, never clamped: a clamp answers with less\nthan the caller asked for and does not say so."
+                    },
+                    "max": {
+                      "type": "integer",
+                      "description": "The largest value an integer param accepts, refused the same way."
                     }
                   },
                   "additionalProperties": false,

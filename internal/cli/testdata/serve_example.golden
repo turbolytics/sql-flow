@@ -62,6 +62,12 @@ serve:
           # How the value parses and binds: string as VARCHAR, integer as BIGINT,
           # timestamp (RFC 3339 with an offset) as TIMESTAMP WITH TIME ZONE.
           type: string | integer | timestamp
+          # The smallest value an integer param accepts. A request below it is
+          # refused with 400 invalid_param, never clamped: a clamp answers with less
+          # than the caller asked for and does not say so.
+          min: <integer>
+          # The largest value an integer param accepts, refused the same way.
+          max: <integer>
       # Overrides the top-level limits for this dataset.
       limits:
         # Most rows one response carries. 0 means 10000. A cut result says

@@ -266,6 +266,16 @@ with an offset; encode a `+` as `%2B` in a URL. An absent parameter binds
 declared parameter. A dataset has either `sql` or `grains`, and a request
 names a grain with `?grain=`.
 
+An `integer` param may declare `min`, `max`, or both. A request outside them
+is `400 invalid_param`, and the message names the bounds. Nothing is clamped:
+a clamp would answer `200` with less than the caller asked for. `/v1/datasets`
+lists the bounds with the param.
+
+```yaml
+      params:
+        - {name: top, type: integer, min: 1, max: 20}
+```
+
 A dataset with grains can declare a time range instead, and let the server
 choose the grain:
 
