@@ -15,9 +15,11 @@ pipeline:
   handler:
     type: 'handlers.InferredMemBatch'
     sql: |
-      SELECT 
+      SELECT
         CAST(timestamp as TIMESTAMP) as timestamp,
-        user_id,
+        -- user_action.user_id is text, and the sink does not cast. A
+        -- BIGINT into a text column fails the batch with exit 10.
+        CAST(user_id AS TEXT) AS user_id,
         action,
         browser
       FROM batch
