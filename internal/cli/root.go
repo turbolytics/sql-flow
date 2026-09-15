@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"github.com/spf13/cobra"
+	"github.com/turbolytics/sql-flow/internal/cli/rollup"
 	"github.com/turbolytics/sql-flow/internal/cli/run"
 	"github.com/turbolytics/sql-flow/internal/cli/serve"
 	"github.com/turbolytics/sql-flow/internal/cli/tail"
@@ -36,6 +37,7 @@ func NewRootCommand() *cobra.Command {
 
 	cmd.AddCommand(run.NewCommand())
 	cmd.AddCommand(serve.NewCommand())
+	cmd.AddCommand(rollup.NewCommand())
 	cmd.AddCommand(tail.NewCommand())
 	cmd.AddCommand(newConfigCommand())
 	cmd.AddCommand(newValidateCommand())
