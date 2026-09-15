@@ -266,6 +266,51 @@ with an offset; encode a `+` as `%2B` in a URL. An absent parameter binds
 declared parameter. A dataset has either `sql` or `grains`, and a request
 names a grain with `?grain=`.
 
+A dataset with grains can declare a time range instead, and let the server
+choose the grain:
+
+```yaml
+    - name: posts_by_lang
+      params:
+        - {name: since, type: timestamp}
+        - {name: until, type: timestamp}
+        - {name: lang, type: string}
+      range: {since: since, until: until, default: 24h}
+      grains:
+        5m:
+          max_range: 1d
+          sql: |
+            SELECT bucket, lang, posts FROM pg.posts_per_5m_by_lang
+            WHERE bucket >= $since AND bucket < $until
+              AND lang = coalesce($lang, lang)
+        1h:
+          max_range: 14d
+          sql: ...
+        1d:
+          max_range: 365d
+          sql: ...
+```
+
+`range` names the two `timestamp` params that bound the range, and `default`
+is the width a request gets without `since`. Each grain's `max_range` is the
+widest range it serves. For each request:
+
+1. `until` defaults to the time the request arrived, and `since` to `until`
+   minus `default`.
+2. Without `grain`, the server picks the grain with the narrowest
+   `max_range` that covers `until − since`. Six hours gets `5m`, three days
+   `1h`, ninety days `1d`. A named grain answers when its `max_range` covers
+   the range.
+3. The server binds the resolved `since` and `until`, never `NULL`, so the
+   SQL filters on them directly with no `coalesce`.
+4. The response carries the grain it chose and the range it resolved:
+   `"grain": "1h", "range": {"since": "…", "until": "…"}`.
+
+A range wider than the named grain's `max_range`, or wider than every
+grain's, is `400 range_too_wide`, and the message names the grains that fit.
+Nothing is cut from the left of a chart without saying so. Durations are a
+whole number and one unit: `s`, `m`, `h` or `d`.
+
 Routes, all `GET`:
 
 | Route | Auth | Returns |
@@ -294,7 +339,7 @@ Every refusal is `{"error": {"code", "message"}}`:
 
 | Status | Code |
 |---|---|
-| `400` | `unknown_param`, `invalid_param`, `missing_grain`, `unknown_grain` |
+| `400` | `unknown_param`, `invalid_param`, `missing_grain`, `unknown_grain`, `range_too_wide` |
 | `401` | `unauthorized` |
 | `404` | `unknown_dataset`, `not_found` |
 | `405` | `method_not_allowed` |

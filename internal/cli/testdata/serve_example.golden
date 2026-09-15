@@ -82,5 +82,21 @@ serve:
       # One statement per grain, selected by ?grain=<name>. Set sql or grains.
       grains:
         <name>:
+          # The widest range this grain serves, such as 14d. Required when the
+          # dataset declares a range, and refused otherwise. Units: s, m, h, d.
+          max_range: <string>
           # The statement for this grain.
           sql: <string>
+      # Names the params that bound a time range. With a range, a request may
+      # omit grain: the server picks the finest grain whose max_range covers
+      # the requested range. Requires grains.
+      range:
+        # The timestamp param that starts the range. Absent from a request, it
+        # binds until minus default.
+        since: <string>
+        # The timestamp param that ends the range. Absent from a request, it
+        # binds the time the request arrived.
+        until: <string>
+        # The width of a range a request does not bound with since, such as 24h.
+        # Units: s, m, h, d.
+        default: <string>

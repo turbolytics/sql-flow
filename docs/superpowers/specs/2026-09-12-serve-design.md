@@ -267,6 +267,69 @@ A token value rendered from an unset template variable is empty, and
 secrets still passes. `serve` does not demote it: an empty token at start is
 `user.config.invalid`.
 
+### Choosing the grain from the range
+
+Added after the first release of `serve`, in #282, from turbolytics/sql-flow#284.
+
+A dataset with grains may declare the params that bound its time range, and
+each grain the widest range it serves:
+
+```yaml
+range: {since: since, until: until, default: 24h}
+grains:
+  5m: {max_range: 1d,   sql: "... WHERE bucket >= $since AND bucket < $until"}
+  1h: {max_range: 14d,  sql: ...}
+  1d: {max_range: 365d, sql: ...}
+```
+
+```go
+type ServeRange struct {
+    Since   string `yaml:"since"`
+    Until   string `yaml:"until"`
+    Default string `yaml:"default"`
+}
+// ServeDataset gains Range *ServeRange `yaml:"range,omitempty"`.
+// ServeGrain gains MaxRange string `yaml:"max_range,omitempty"`.
+```
+
+Per request, after the params parse:
+
+1. `until` is the request's value or the time the request arrived. `since`
+   is the request's value or `until` minus `default`. Both truncate to
+   microseconds, which is what binds, and resolve to UTC.
+2. `since` at or after `until` is `400 invalid_param`.
+3. Without `grain`, the grain is the first, in `max_range` order, whose
+   `max_range` is at least `until − since`. Grains are tried by width, never
+   by name: `1d` sorts before `1h` and `5m` by name. None fits is
+   `400 range_too_wide`, naming the widest grain and its `max_range`.
+4. A named grain that is too narrow is `400 range_too_wide`, naming the
+   grains that fit.
+5. The resolved `since` and `until` bind in place of the request's values, so
+   a statement never sees them `NULL`.
+6. The response adds `"range": {"since", "until"}`. The listing adds `range`
+   and each grain's `max_range`.
+
+A dataset without `range` behaves exactly as before, so the change is
+additive.
+
+Durations are a positive whole number and one unit, `s`, `m`, `h` or `d`,
+because a range reads naturally in days and Go's durations have no `d`.
+Messages format a width in its largest whole unit.
+
+Rules, each `user.config.serve_dataset` at its path:
+
+- `range.since` and `range.until` name two different declared `timestamp`
+  params.
+- `range.default` parses, and is not wider than the widest `max_range`.
+- A dataset with `range` has grains, and every grain has a `max_range` that
+  parses.
+- No two grains share a `max_range`, because neither would be the finer
+  choice.
+- A `max_range` on a dataset without `range` is refused.
+
+Clamping `since` to the widest grain was rejected: a chart would lose its left
+edge with a `200`. Refusing names the problem.
+
 ## HTTP contract
 
 All routes are `GET`. Any other method is `405`.
@@ -397,6 +460,7 @@ One shape:
 | `400` | `invalid_param` | A value that does not parse as its type. The message names the param and the type. |
 | `400` | `missing_grain` | The dataset has grains and the request has no `grain`. |
 | `400` | `unknown_grain` | The dataset has no grain by that name. The message lists the grains. |
+| `400` | `range_too_wide` | The dataset has a range, and the requested range is wider than the named grain's `max_range`, or than every grain's. The message names the grains that fit. |
 | `401` | `unauthorized` | No token or an unknown one. |
 | `404` | `unknown_dataset` | No dataset by that name. |
 | `404` | `not_found` | A path that is not a route. |

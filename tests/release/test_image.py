@@ -319,10 +319,14 @@ def test_cli_serve_answers_requests_from_the_image(image):
 
         health = requests.get(f"{base}/healthz", timeout=10)
         listing = requests.get(f"{base}/v1/datasets", headers=auth, timeout=10)
+        window = {"city": "Baltimore",
+                  "since": "2026-09-10T00:00:00Z", "until": "2026-09-12T00:00:00Z"}
         rows = requests.get(
             f"{base}/v1/datasets/city_events",
-            params={"grain": "1d", "city": "Baltimore"},
-            headers=auth, timeout=10)
+            params={"grain": "1d", **window}, headers=auth, timeout=10)
+        chosen = requests.get(
+            f"{base}/v1/datasets/city_events",
+            params=window, headers=auth, timeout=10)
         refused = requests.get(f"{base}/v1/datasets", timeout=10)
     finally:
         container.stop()
@@ -341,6 +345,14 @@ def test_cli_serve_answers_requests_from_the_image(image):
         {"bucket": "2026-09-10T00:00:00Z", "city": "Baltimore", "events": 1},
         {"bucket": "2026-09-11T00:00:00Z", "city": "Baltimore", "events": 1},
     ]
+
+    # Two days without a grain: the finest grain that serves them is 1h.
+    assert chosen.status_code == 200, chosen.text
+    body = chosen.json()
+    assert body["grain"] == "1h"
+    assert body["range"] == {"since": "2026-09-10T00:00:00Z", "until": "2026-09-12T00:00:00Z"}
+    assert [r["bucket"] for r in body["rows"]] == [
+        "2026-09-10T01:00:00Z", "2026-09-11T09:00:00Z"]
 
     assert refused.status_code == 401
     assert refused.json()["error"]["code"] == "unauthorized"

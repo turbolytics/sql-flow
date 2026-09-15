@@ -97,6 +97,7 @@ func (s *Server) listDatasets(w http.ResponseWriter, r *http.Request) {
 type rowsResponse struct {
 	Dataset   string          `json:"dataset"`
 	Grain     string          `json:"grain,omitempty"`
+	Range     *window         `json:"range,omitempty"`
 	Columns   []column        `json:"columns"`
 	Rows      json.RawMessage `json:"rows"`
 	RowCount  int             `json:"row_count"`
@@ -122,18 +123,28 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	st, apiErr := ds.resolveStatement(query)
-	if apiErr != nil {
-		writeError(w, r, apiErr)
-		return
-	}
-	entry.grain = st.grain
-
 	values, apiErr := parseParams(ds.conf.Params, query)
 	if apiErr != nil {
 		writeError(w, r, apiErr)
 		return
 	}
+
+	// A ranged dataset needs the parsed since and until to choose a grain;
+	// any other dataset takes the grain as named.
+	var (
+		st  *statement
+		win *window
+	)
+	if ds.span != nil {
+		st, win, apiErr = ds.resolveRange(query, values, s.now())
+	} else {
+		st, apiErr = ds.resolveStatement(query)
+	}
+	if apiErr != nil {
+		writeError(w, r, apiErr)
+		return
+	}
+	entry.grain = st.grain
 
 	start := time.Now()
 	res, err := s.exec.run(r.Context(), ds.timeout,
@@ -163,6 +174,7 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 	body, err := json.Marshal(rowsResponse{
 		Dataset:   name,
 		Grain:     st.grain,
+		Range:     win,
 		Columns:   res.Columns,
 		Rows:      res.Rows,
 		RowCount:  res.RowCount,
