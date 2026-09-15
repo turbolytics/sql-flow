@@ -36,6 +36,15 @@ const (
 	// param, a grain, or a placeholder its SQL uses.
 	CodeConfigServeDataset Code = "user.config.serve_dataset"
 
+	// A rollups file breaks a rule the schema cannot state: a grain, a
+	// dimension set, a measure, or a served dataset's bounds.
+	CodeConfigRollup Code = "user.config.rollup"
+
+	// A file generated from a rollups file differs from what the file
+	// generates now: the migration or a serve dataset was edited by hand, or
+	// the declaration changed without regenerating them.
+	CodeConfigRollupDrift Code = "user.config.rollup_drift"
+
 	// Data: the messages themselves, as opposed to the pipeline definition.
 	// A malformed record is the producer's problem, never ours.
 	CodeDataMalformed Code = "user.data.malformed"
@@ -124,6 +133,16 @@ var registry = map[Code]Definition{
 		CodeConfigServeDataset,
 		"A serve dataset breaks a rule: its name, its params, its grains, or the placeholders its SQL uses.",
 		"Read the message for the dataset, grain and rule, then correct the dataset.",
+	},
+	CodeConfigRollup: {
+		CodeConfigRollup,
+		"A rollups file breaks a rule: a grain, a dimension set, a measure, or a served dataset's bounds.",
+		"Read the message for the rollup and the rule, then correct the declaration.",
+	},
+	CodeConfigRollupDrift: {
+		CodeConfigRollupDrift,
+		"A migration or serve dataset generated from a rollups file differs from what the file generates now.",
+		"Regenerate it with `sqlflow rollup ddl` or `sqlflow rollup serve` instead of editing it by hand.",
 	},
 	CodeDataMalformed: {
 		CodeDataMalformed,

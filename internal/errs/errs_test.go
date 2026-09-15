@@ -282,6 +282,24 @@ func TestErrorTaxonomy_ServeCodesAreTerminalUserErrors(t *testing.T) {
 	}
 }
 
+// A rollups file that breaks a rule, or a generated file that drifted from
+// one, fails the same way on every run. CI reads the exit code.
+func TestErrorTaxonomy_RollupCodesAreTerminalUserErrors(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy", "cli.rollup")
+
+	for _, code := range []Code{CodeConfigRollup, CodeConfigRollupDrift} {
+		err := New(code, "rollup posts")
+
+		assert.Equal(t, ClassUser, ClassOf(err))
+		assert.Equal(t, "config", code.Domain())
+		assert.Equal(t, ExitUserError, ExitCode(err))
+		assert.False(t, Retryable(ExitCode(err)))
+
+		_, ok := Lookup(code)
+		assert.True(t, ok)
+	}
+}
+
 // A drain that ran out of time is its own exit code. It is retryable, because
 // nothing unwritten was committed and the next start replays it; the code
 // exists so an operator can see the tail was replayed rather than written.
