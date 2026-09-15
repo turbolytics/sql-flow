@@ -270,8 +270,12 @@ is a month.
 Every interval is written in hours, minutes or seconds, never days: `1d` is
 `INTERVAL '24 hours'`. Adding `INTERVAL '1 day'` to a `timestamptz` steps a
 calendar day in the session's zone, which is 23 or 25 hours across a daylight
-saving change, and a re-merge range built that way would miss or double an
-hour.
+saving change. A 25-hour range reads an extra child, which the `GROUP BY`
+puts in its own bucket, so that direction is harmless. A 23-hour range on a
+spring-forward day drops the day's last child when a day is built from
+hours, and the day undercounts. The demo's ladder builds days from 6-hour
+buckets, whose last child starts at 18:00, so it would not show the defect;
+the test builds days from hours for that reason.
 
 ### Triggers
 
@@ -515,10 +519,12 @@ script for the demo declaration:
 - `TestIntegrationRollup_BackfillPastTheLockTable`: a backfill over more
   buckets than `max_locks_per_transaction × max_connections` succeeds.
 - `TestIntegrationRollup_DeletesDoNotPropagate`.
-- `TestIntegrationRollup_BucketsAreUTC`: minutes written from an
-  `Asia/Kolkata` session and from an `America/New_York` session across the
-  2026-11-01 daylight saving change land in 6h and 1d buckets on UTC
-  boundaries, and every grain still equals its source.
+- `TestIntegrationRollup_BucketsAreUTC`: with 1d built from 1h, minutes
+  written from an `Asia/Kolkata` session and from an `America/New_York`
+  session across the 2026-03-08 spring-forward and the 2026-11-01 fall-back
+  land in 6h and 1d buckets on UTC boundaries, and every grain still equals
+  its source. Checked on 2026-09-15: generating the day re-merge with
+  `INTERVAL '1 day'` makes 2026-03-08 read 64 where 96 is right.
 - `TestIntegrationRollup_CountBuckets`: `posts_total_1d.minutes` equals the
   distinct minutes of the day.
 
