@@ -88,7 +88,7 @@ func New(ctx context.Context, conf *config.ServeConf, conn adbc.Connection, opts
 		}
 		doc := datasetDoc{Name: dc.Name, Description: dc.Description, Params: []paramDoc{}}
 		for _, p := range dc.Params {
-			doc.Params = append(doc.Params, paramDoc{Name: p.Name, Type: p.Type})
+			doc.Params = append(doc.Params, paramDoc{Name: p.Name, Type: p.Type, Min: p.Min, Max: p.Max})
 		}
 
 		for _, sc := range dc.Statements() {
@@ -145,6 +145,8 @@ type datasetDoc struct {
 type paramDoc struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+	Min  *int64 `json:"min,omitempty"`
+	Max  *int64 `json:"max,omitempty"`
 }
 
 type grainDoc struct {

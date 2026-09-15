@@ -124,6 +124,12 @@ type ServeParam struct {
 	// How the value parses and binds: string as VARCHAR, integer as BIGINT,
 	// timestamp (RFC 3339 with an offset) as TIMESTAMP WITH TIME ZONE.
 	Type string `yaml:"type" jsonschema:"enum=string,enum=integer,enum=timestamp"`
+	// The smallest value an integer param accepts. A request below it is
+	// refused with 400 invalid_param, never clamped: a clamp answers with less
+	// than the caller asked for and does not say so.
+	Min *int64 `yaml:"min,omitempty"`
+	// The largest value an integer param accepts, refused the same way.
+	Max *int64 `yaml:"max,omitempty"`
 }
 
 // ServeGrain is one grain's statement.
@@ -385,6 +391,18 @@ func checkDataset(ds ServeDataset, path []string, seen map[string]bool, add addF
 		if !serveParamTypes[p.Type] {
 			add(code, at(ppath, "type"),
 				"dataset %s: param %s has type %q; use string, integer or timestamp", ds.Name, p.Name, p.Type)
+		}
+		switch {
+		case (p.Min != nil || p.Max != nil) && p.Type != "integer":
+			key := "min"
+			if p.Min == nil {
+				key = "max"
+			}
+			add(code, at(ppath, key),
+				"dataset %s: param %s is a %s; min and max bound integer params only", ds.Name, p.Name, p.Type)
+		case p.Min != nil && p.Max != nil && *p.Min > *p.Max:
+			add(code, at(ppath, "max"),
+				"dataset %s: param %s has min %d above max %d, so no value is accepted", ds.Name, p.Name, *p.Min, *p.Max)
 		}
 	}
 

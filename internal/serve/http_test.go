@@ -225,6 +225,63 @@ func TestCliServe_ParamsBindByDeclaredType(t *testing.T) {
 	assert.Equal(t, float64(1), count("/v1/datasets/posts_by_lang?grain=1h&since=2026-09-11T00:00:00%2B00:00"))
 }
 
+const boundedServe = `
+serve:
+  auth:
+    tokens:
+      - {name: page, token: page-token}
+  datasets:
+    - name: bounded
+      params:
+        - {name: top, type: integer, min: 1, max: 20}
+        - {name: floor, type: integer, min: 0}
+        - {name: ceiling, type: integer, max: 100}
+      sql: |
+        SELECT count(*) AS n FROM posts
+        WHERE coalesce($top, 1) >= 1 AND coalesce($floor, 0) >= 0 AND coalesce($ceiling, 0) <= 100
+`
+
+// An integer outside its bounds is refused, not clamped, and the message
+// names the bounds. The listing publishes them so a page can respect them.
+func TestCliServe_AnIntegerOutsideItsBoundsIsRefused(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, boundedServe)
+
+	for _, tt := range []struct {
+		query   string
+		status  int
+		message string
+	}{
+		{"top=1", 200, ""},
+		{"top=20", 200, ""},
+		{"top=0", 400, "param top must be between 1 and 20; got 0"},
+		{"top=21", 400, "param top must be between 1 and 20; got 21"},
+		{"floor=-1", 400, "param floor must be at least 0; got -1"},
+		{"ceiling=101", 400, "param ceiling must be at most 100; got 101"},
+		{"floor=0&ceiling=100", 200, ""},
+	} {
+		t.Run(tt.query, func(t *testing.T) {
+			r := ts.get(t, "/v1/datasets/bounded?"+tt.query)
+			assert.Equal(t, tt.status, r.status)
+			if tt.status == http.StatusOK {
+				return
+			}
+			code, message := errorOf(t, r)
+			assert.Equal(t, "invalid_param", code)
+			assert.Equal(t, tt.message, message)
+		})
+	}
+
+	r := ts.get(t, "/v1/datasets")
+	assert.Equal(t, http.StatusOK, r.status)
+	params := r.body["datasets"].([]any)[0].(map[string]any)["params"].([]any)
+	top := params[0].(map[string]any)
+	assert.Equal(t, float64(1), top["min"])
+	assert.Equal(t, float64(20), top["max"])
+	_, floorHasMax := params[1].(map[string]any)["max"]
+	assert.False(t, floorHasMax)
+}
+
 // Every error code the contract lists, with a message that names the thing.
 func TestCliServe_ErrorsCarryTheirCodeAndNameTheCause(t *testing.T) {
 	coverage.Covers(t, "cli.serve")

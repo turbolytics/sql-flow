@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- `sqlflow serve`: an `integer` param may declare `min` and `max`. A request
+  outside them is `400 invalid_param` naming the bounds, and `/v1/datasets`
+  lists them.
+
 ### Fixed
 
 - `bluesky.postgres.windowed.yml` paired `late_rows: reemit` with an upsert
