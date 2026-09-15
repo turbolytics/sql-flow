@@ -1,6 +1,7 @@
 # Schema registry MVP: Avro and JSON Schema through Kafka, both directions
 
-Issue #272. Verified against `main` at ae8fd28 on 2026-09-12.
+Issue #272. Written against `main` at ae8fd28 on 2026-09-12. Re-verified
+against `main` at dd51502 on 2026-09-15.
 
 ## The problem
 
@@ -127,6 +128,9 @@ type KafkaValue struct {
 `AutoRegister` is a pointer so an absent key means true. `make schema`
 regenerates the JSON Schema from these tags.
 
+`config.Sink` is the shape of three sinks: the pipeline's sink, the DLQ, and
+a window's sink. `KafkaSink.Value` reaches all three.
+
 ### The `serde` package
 
 A new package, `internal/serde`, owns everything between raw bytes and Arrow
@@ -160,7 +164,7 @@ func NewEncoder(format string, subject string, autoRegister bool, reg *Registry)
 The franz-go module `github.com/twmb/franz-go/pkg/sr` v1.8.0 supplies the
 client and `ConfluentHeader`, whose `DecodeID` and `AppendEncode` are the
 header. `github.com/hamba/avro/v2` v2.31.0 supplies Avro. Both are new
-dependencies. arrow-go's `arrow/avro` package was considered and not used: it
+dependencies, and both versions are the latest release on 2026-09-15. arrow-go's `arrow/avro` package was considered and not used: it
 maps Avro enums to Arrow dictionaries, which a SQL user reads as a string, and
 its type mapping panics into a recovered generic error where this engine wants
 a coded one. The mapping below is about a hundred lines and is ours.
@@ -241,7 +245,8 @@ the workaround, and it is the same workaround the JSON path needs today.
 
 ### The typed handler
 
-`handlers.New` gains a functional option, `WithDecoder(serde.Decoder)`. When
+`handlers.New` takes no options today, and it has two callers: `run` and
+`dev invoke`. It gains a functional option, `WithDecoder(serde.Decoder)`. When
 the option is set and the config names `handlers.InferredMemBatch`, the
 builder returns a new `TypedBatchHandler` instead. From the outside it is the
 same kind, `inferred_mem`, so no new handler type reaches the coverage registry
@@ -275,8 +280,10 @@ result costs one registry call per run:
   `user.sink.schema_unregistered`. This is the mode for a production registry
   where pipelines are not allowed to register.
 
-Both codes are class `user`, so the retry ladder from #269 makes one attempt
-and the process exits 10. That is the point: a SQL edit that changes the
+Both codes are class `user`. The Kafka sink is not wrapped in the #269 retry
+ladder, because franz-go retries a produce itself. A `WriteTable` error
+returns from the batch on the first attempt, and the process exits 10. That
+is the point: a SQL edit that changes the
 output shape is stopped by the registry before any consumer sees it.
 
 Arrow to Avro, the inverse of the table above with these rules: the record is
@@ -284,31 +291,42 @@ named from the subject with characters outside `[A-Za-z0-9_]` replaced by
 `_`, in namespace `io.turbolytics.sqlflow`; a nullable field is
 `["null", T]` with default `null`; `int8` and `int16` widen to `int`;
 `uint8` through `uint32` widen to `long`; `uint64`, `large_utf8`,
-`large_binary` and `dictionary` are `user.sink.type_unsupported`, which
-already exists for the ClickHouse sink. Cell values come from the `arrowValue`
-extractor the ClickHouse sink already has, which returns `time.Time` for
-timestamps and dates, the types hamba expects for those logical types.
+`large_binary` and `dictionary` are `user.sink.type_unsupported`, which the
+ClickHouse and Postgres sinks already return. Cell values come from the
+`arrowValue` extractor the ClickHouse sink already has, which returns
+`time.Time` for timestamps and dates, the types hamba expects for those
+logical types. `arrowValue` covers booleans, integers, floats, strings,
+binary, timestamps, dates and lists. It returns `user.sink.type_unsupported`
+for decimal, struct, map and time columns, so the mapping above needs those
+cases added.
 
 Arrow to JSON Schema: an `object` with one property per column, `required`
 listing the non-nullable ones, and the type mapping inverted. The row bytes
 are the JSON `tableRowsAsJSON` already produces, with the header prepended.
 
-The sink implements `Prober`. `Probe` calls `Registry.Probe`, which lists
-subjects with a short timeout, so a registry that is down fails the start once
-with `system.sink.unreachable`, the way a ClickHouse that is down does.
+The Kafka sink already implements `Prober`: `Probe` pings the seed brokers.
+With a registry format, `Probe` also calls `Registry.Probe`, which lists
+subjects with a short timeout. `sinks.New` classifies the probe's error, so a
+registry that is down fails the start once with `system.sink.unreachable`,
+exit 12, the way a ClickHouse that is down does.
 
 ### Error policy and the error class
 
-`applyErrorPolicy` applies `IGNORE` and `DLQ` to every write error. Today that
-is safe because handlers return only `user.data.malformed` from `Write`. The
-decoder introduces the first system-class write error, a registry that stops
-answering mid-run. Under `DLQ` policy that would divert good records to the
-dead-letter queue and commit their offsets.
+`applyErrorPolicy` applies `IGNORE` and `DLQ` to every handler error, from
+`Write` and from `Invoke` (`turbine.go:735` and `turbine.go:1194`).
+`InferredMemBatch` returns `user.data.malformed` from `Write`.
+`InferredDiskBatch` returns the same failure with no code, and no `Invoke`
+failure carries a code. `errs.CodeOf` reports an error with no code as
+`system.internal.unexpected`, which is class `system`.
+
+The decoder adds a system-class write error that is not a bug: a registry
+that stops answering mid-run. Under `DLQ` policy that would divert good
+records to the dead-letter queue and commit their offsets.
 
 The fix is one guard: `IGNORE` and `DLQ` apply to class `user` only. A
 system-class write error stops the pipeline whatever the policy, and the
 process exits by the code's class, 11 for `system.source.unreachable`, which a
-supervisor reads as retryable. `TestErrorDLQ_SystemClassWriteErrorIsNotDiverted`
+supervisor reads as retryable. `TestErrorDlq_SystemClassWriteErrorIsNotDiverted`
 pins it.
 
 ### New error codes
@@ -384,7 +402,8 @@ the example test renders them:
   under a new subject with `auto_register: true`.
 - `kafka.json-schema.yml`: JSON Schema in, JSON Schema out.
 
-The example test builds the sink and the handler. The sink's `Probe` reaches
+The example test builds the pipeline's sink, each window's sink, and the
+handler. It calls `handlers.New` with no options. The sink's `Probe` reaches
 `localhost:8081`, and the test's `checkBuildError` skips on a connection error
 and fails on "not supported" or "requires a". Messages from this change use
 neither phrase for a resource that is merely absent.
@@ -405,7 +424,13 @@ Coverage features, in `docs/coverage/features.yml`:
     requires: [unit, integration]
 ```
 
-Test names follow the registry's rule: `TestSerdeAvro_*`,
+The gate attributes a test to a feature by its marker alone
+(`scripts/coverage_matrix/features.py`). Every test calls
+`coverage.Covers(t, "serde.avro")`, or its feature's id, first in its body,
+before any skip. A test without the marker is reported as unattributed, and a
+skipped test covers nothing. The comments in `features.yml` and
+`internal/coverage/coverage.go` still describe attribution by name, which the
+gate no longer does. Names keep the existing shape: `TestSerdeAvro_*`,
 `TestSerdeJsonSchema_*`, `TestSerdeRegistry_*`, and
 `TestIntegrationSerdeAvro_*` for the container pass. Release level is not
 required for the MVP.
@@ -441,7 +466,9 @@ subjects. It records calls so a test can assert the cache.
 
 Integration, one Redpanda container through
 `testcontainers-go/modules/redpanda` v0.44.0, which ships a
-Confluent-compatible registry in the same process as the broker. The test
+Confluent-compatible registry in the same process as the broker. The module
+is new to `go.mod`, at the version of the four testcontainers modules already
+there. Its `Run` takes the image as an argument, so the test pins one. The test
 fails rather than skips when it cannot start one, per the coverage rules.
 
 - `TestIntegrationSerdeAvro_RoundTrip`: register a schema, produce framed
@@ -453,7 +480,10 @@ fails rather than skips when it cannot start one, per the coverage rules.
   pipeline keeps running and the added field reads as its default.
 - `TestIntegrationSerdeJsonSchema_RoundTrip`: the same shape for JSON Schema.
 - `TestIntegrationSerdeRegistry_DownAtStartFailsOnce`: a wrong port fails the
-  start with `system.source.unreachable` and no retry ladder.
+  start once, with no retry ladder. `run` probes the sink before it builds
+  the handler. A pipeline with a registry-backed sink reports
+  `system.sink.unreachable`, exit 12. A pipeline whose only registry format
+  is on the source reports `system.source.unreachable`, exit 11.
 
 ### Soak, one per format
 
@@ -466,8 +496,10 @@ carries three verdict blocks:
 | JSON Schema | `dev/config/soak/json_schema.noop.yml` | `publish-framed --format json_schema --rate --until` |
 | Avro | `dev/config/soak/avro.noop.yml` | `publish-framed --format avro --rate --until` |
 
-`make soak SOAK_FORMAT=json|json_schema|avro`, default `json`.
-`scripts/soak.sh` picks the config and the producer from the format and
+`make soak SOAK_FORMAT=json|json_schema|avro`, default `json`, beside the
+`SOAK_MINUTES` and `SOAK_LABEL` it takes today. `scripts/soak.sh` names
+`inferred.noop.yml` and runs `kafka-producer-perf-test` today. It picks the
+config and the producer from the format and
 passes `SQLFLOW_SCHEMA_REGISTRY_URL=http://schema-registry:8081` through
 `SOAK_ENV` for the framed ones. Everything else is the existing script: the
 same topic retention, the same deadline-driven producer loop, the same
@@ -515,10 +547,13 @@ marked slowdown on the raw JSON path fails the PR. The typed formats have no
 `BenchmarkDecode/json` on the branch, so the cost of the typed path is a
 number in the PR rather than a guess.
 
-Container throughput, one run per format, `make benchmark-container
-FORMAT=json|json_schema|avro`, with `benchmark.json-schema.mem.yml` and
-`benchmark.avro.mem.yml` beside the existing benchmark configs and the
-producer chosen by format. Two rounds each, same machine, in the PR as a
+Container throughput, one run per format. `make benchmark-container` already
+selects the pipeline with `CONFIG`, and the benchmark configs live in
+`dev/config/examples/`. `benchmark.json-schema.mem.yml` and
+`benchmark.avro.mem.yml` go beside them. The script produces with
+`cmd/publish-test-data.py` today; a new `FORMAT` picks the producer, as in
+`make benchmark-container CONFIG=dev/config/examples/benchmark.avro.mem.yml
+FORMAT=avro`. Two rounds each, same machine, in the PR as a
 table with `main` as the first row, the shape #260 used.
 
 ### Acceptance
@@ -536,7 +571,8 @@ The pipeline exits 0. The output topic holds framed Avro records, and
 aggregate with typed columns, a `timestamp` not a string. Removing
 `pipeline.schema_registry` from the config fails the start with
 `user.config.invalid` naming the key. Stopping the registry container fails
-the start with exit 11.
+the start with `system.sink.unreachable`, exit 12: `run` probes the sink
+before it builds the handler, and this example's sink is registry-backed.
 
 ### Docs
 
@@ -552,9 +588,10 @@ mid-run does not surface it until the pipeline restarts. That is documented
 and it is the Avro specification's own resolution behavior. A pipeline that
 needs the new field restarts.
 
-If the class guard on the error policy is wrong, a system-class write error
-that used to be silently ignored under `IGNORE` now stops the pipeline. No
-handler emits one today, so nothing in the wild changes behavior.
+The class guard on the error policy, as written, changes behavior on `main`.
+`InferredDiskBatch`'s invalid-JSON write error and every `Invoke` failure
+carry no code, so they report as class `system`. Under `IGNORE` or `DLQ`,
+each would stop the pipeline instead of dropping the record or the batch.
 
 If the type mapping is wrong, a column reaches DuckDB with a type the SQL did
 not expect. Every mapped type is in the unit tests, and every unmapped one
