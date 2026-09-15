@@ -25,6 +25,9 @@ In:
 - A schema compatibility matrix. The read side covers writer and reader
   schema changes. The write side covers registry compatibility levels,
   measured against Confluent Schema Registry.
+- A dead-letter row carries the failed record's bytes, its schema ID and its
+  position. A registry failure stops the pipeline under any error policy
+  instead of diverting good records.
 - The dev stack gains a schema registry.
 - One example config per direction, a framed-record producer, README docs.
 - The memory soak runs once per format, raw JSON included.
@@ -47,6 +50,18 @@ Out, each a follow-up issue:
   The config surface below is shaped so this drops in.
 - AWS Glue Schema Registry. Different header, different client.
 - Subject naming strategies other than `<topic>-value`.
+- The schema GUID in a record header. As of Confluent Platform 8.1.1, a
+  producer set with `value.schema.id.serializer=HeaderSchemaIdSerializer`
+  writes a 16-byte schema GUID into a header and leaves the ID prefix out of
+  the value. Confluent's deserializers check the header first and then fall
+  back to the prefix. The sink writes the prefix, which consumers read either
+  way. The source reads only the prefix, and `core.Message` carries no
+  headers. So a header-GUID producer's records fail as `user.data.malformed`,
+  and the error message names this as a possible cause.
+- A Kafka dead-letter queue that republishes a failed record's original bytes
+  as its value, with the error in Kafka headers, the way Kafka Connect's does.
+  Dead-letter records below carry the bytes in a column instead, which works
+  for every sink.
 - Compatibility columns for registries other than Confluent's own, such as
   Redpanda, Apicurio and Karapace. Each is another column with its own image.
 
@@ -210,12 +225,15 @@ the handler SQL binds against and what `validate` will fetch later.
 Each record:
 
 1. `ConfluentHeader.DecodeID` strips the header. A record without the magic
-   byte is `user.data.malformed`.
+   byte is `user.data.malformed`. Its message says the value has no schema ID
+   prefix, and that a producer writing the schema GUID into a header sends
+   records this way.
 2. The writer schema is fetched by ID from the registry, through the cache.
    An ID the registry does not know is `user.data.schema_unknown`. A registry
    that does not answer is `system.source.unreachable`, and the fetch is
    retried three times over about a second before it is reported, because the
-   alternative is a good record in the DLQ.
+   alternative is a good record in the DLQ. A registry that answers 401 or
+   403 is `user.source.security_invalid`, at start or mid-run.
 3. Avro: hamba's `SchemaCompatibility.Resolve(reader, writer)` produces the
    resolved schema, cached per writer ID, and `avro.Unmarshal` decodes the
    payload into a `map[string]any` shaped like the reader. This is Avro schema
@@ -748,15 +766,112 @@ beside the type pages.
 failure carries a code. `errs.CodeOf` reports an error with no code as
 `system.internal.unexpected`, which is class `system`.
 
-The decoder adds a system-class write error that is not a bug: a registry
-that stops answering mid-run. Under `DLQ` policy that would divert good
-records to the dead-letter queue and commit their offsets.
+The decoder adds write errors that say nothing about the record: a registry
+that stops answering, or one that refuses the pipeline's credentials. The
+record is intact. `IGNORE` would drop it, `DLQ` would divert it, and both
+commit the offset past it. A brief registry outage would become permanent
+loss.
 
-The fix is one guard: `IGNORE` and `DLQ` apply to class `user` only. A
-system-class write error stops the pipeline whatever the policy, and the
-process exits by the code's class, 11 for `system.source.unreachable`, which a
-supervisor reads as retryable. `TestErrorDlq_SystemClassWriteErrorIsNotDiverted`
-pins it.
+The guard decides by the error code's domain, not its class. The class cannot
+draw the line. An error with no code is class `system`, and on `main`
+`InferredDiskBatch`'s invalid JSON and every `Invoke` failure carry no code.
+A guard keyed on class would stop pipelines that ignore or divert those
+failures today. `errs.Retryable` cannot draw it either. It takes an exit code,
+and it returns true for exit 1, where an error with no code exits.
+
+The rule: a handler error in domain `source` stops the pipeline whatever the
+policy. That domain means something the source depends on failed. The
+decoder returns two such codes:
+
+- `system.source.unreachable`, a registry that does not answer after its
+  retries. Exit 11, which a supervisor reads as retryable.
+- `user.source.security_invalid`, a registry that refuses the credentials.
+  Exit 10. That code's summary covers TLS and SASL today. Its summary and
+  action gain "or the schema registry refused its credentials".
+
+A record's own faults stay in domain `data`: `user.data.malformed` and
+`user.data.schema_unknown`. The policy applies to them as it does today.
+
+No handler on `main` returns a `source` code, so every failure that `IGNORE`
+or `DLQ` handles today is still handled the same way.
+`TestErrorDlq_SourceDomainWriteErrorIsNotDiverted` pins the guard under
+`DLQ`, and `TestErrorIgnore_SourceDomainWriteErrorStops` pins it under
+`IGNORE`. `TestErrorIgnore_UncodedInvokeErrorStillIgnored` pins today's
+behavior.
+
+### Dead-letter records
+
+A dead-letter row today has four text columns: `error`, `message`, `phase`
+and `timestamp`. The README documents that shape. On a write failure,
+`message` holds the record's value as a string (`turbine.go:735`).
+
+A framed record is not text. On 2026-09-15 a framed Avro record went through
+`array.RecordToJSON` on arrow-go v18.6.0, which `tableRowsAsJSON` uses for the
+Kafka and console sinks:
+
+```
+record:            00 00 00 00 07 02 04 61 ff
+as a utf8 column:  "    a�"
+as a binary column: "AAAAAAcCBGH/"
+```
+
+As text, `ff` became U+FFFD, and the record cannot be recovered. As binary,
+the JSON writer emits base64, which decodes to the same bytes. A Postgres
+dead-letter queue fails outright. Every framed record starts with `0x00`, and
+a Postgres text column refuses a NUL byte. The DLQ write fails and
+`applyErrorPolicy` returns the failure, so the pipeline stops at the first bad
+record.
+
+The dead-letter row keeps its four columns and gains five:
+
+| Column | Arrow type | Holds |
+| --- | --- | --- |
+| `value` | `binary` | The record's value, byte for byte as consumed |
+| `schema_id` | `int32` | The ID in the value's header, for a registry format |
+| `topic` | `utf8` | The record's topic |
+| `partition` | `int32` | The record's partition |
+| `offset` | `int64` | The record's offset |
+
+Each new column is null where it has no answer:
+
+- A `handler.invoke` row describes a batch, not a record, so all five are
+  null, as today's `message` is a fixed string.
+- A source with no positions, such as a webhook or a websocket, has no topic,
+  partition or offset.
+- `schema_id` is null for format `json`, and when the value has no header to
+  read.
+
+`message` keeps today's content for format `json`. For `avro` and
+`json_schema` it is null, and the bytes are in `value` alone. A string copy
+would be the lossy one above, and it would carry a NUL byte into Postgres.
+
+`applyErrorPolicy` takes the `core.Message` instead of its value as a string,
+so `writeDLQ` can fill the new columns. `core` does not parse a
+Confluent header itself. `run` passes `core.WithDLQSchemaID(serde.SchemaID)`
+when the source's format is a registry format. Without that option,
+`schema_id` stays null. A malformed JSON record that happens to start with
+`0x00` is never read as a schema ID.
+
+Every sink that can hold a dead-letter row already declares the new types.
+Postgres declares `binary` as `bytea` and ClickHouse declares it as `String`,
+both `exact`. `int32`, `int64` and `utf8` are exact in both. Kafka and
+console render `binary` as base64, which `serde.json`'s type table will
+declare.
+
+A dead-letter table in ClickHouse or Postgres needs the five columns before
+the upgrade. Both sinks insert by the batch's column names. ClickHouse builds
+its column list from the Arrow schema. Postgres copies into a staging table
+built from the batch's columns and merges from there. A table without the new
+columns refuses the row, and a refused DLQ write stops the pipeline. The
+README's four-column description, the `kafka.dlq.yml` example and the release
+notes all state the new shape. A Kafka dead-letter topic's JSON rows gain five
+keys, and a consumer that ignores unknown keys is unaffected.
+
+`TestErrorDlq_FramedRecordKeepsItsBytes` writes an undecodable framed record
+under `DLQ` and asserts that the row's `value` equals the input and that
+`schema_id` is the header's ID. `TestIntegrationSerdeAvro_PostgresDlqKeepsTheRecord`
+does the same through a Postgres dead-letter table and reads the `bytea`
+back. The pipeline keeps consuming after the bad record.
 
 ### New error codes
 
@@ -771,8 +886,10 @@ Appended to the registry, each with a summary and an action:
 
 `codes.golden` gains four lines. Everything else reuses `user.data.malformed`,
 `user.sql.type_unsupported`, `user.sink.type_unsupported`,
-`user.sink.encode_failed`, `user.config.invalid`, `system.source.unreachable` and
-`system.sink.unreachable`.
+`user.sink.encode_failed`, `user.config.invalid`,
+`user.source.security_invalid`, `system.source.unreachable` and
+`system.sink.unreachable`. `user.source.security_invalid` keeps its code, and
+its summary and action gain the schema registry's credentials.
 
 ### Dev stack
 
@@ -917,8 +1034,14 @@ subjects. It records calls so a test can assert the cache.
   a framed record decodes back to the same values.
 - Config: each rule in the Config section fails the build with
   `user.config.invalid` and a message naming the key.
-- Error policy: a system-class write error under `DLQ` stops the pipeline
-  and writes nothing to the DLQ.
+- Error policy: a `source`-domain write error stops the pipeline under
+  `DLQ` and under `IGNORE`, and writes nothing to the DLQ. An uncoded
+  `Invoke` error under `IGNORE` is still ignored.
+- Dead-letter rows:
+  - A framed record's `value` equals its bytes, and `schema_id` equals its
+    header's ID.
+  - `message` is null for a registry format, and today's string for `json`.
+  - A `handler.invoke` row has null in all five new columns.
 - Registry: the append-only golden gains four lines; every new code exits
   10 and is not retryable.
 
@@ -1058,6 +1181,15 @@ the Out section of this spec. The `kafka` source and sink examples reference
 it. The type tables and the compatibility matrix are not copied into the
 README. It links to the rendered pages, which the docs site publishes.
 
+The README's Error policies section changes in two ways:
+- It states the dead-letter row's nine columns, and the upgrade step for an
+  existing ClickHouse or Postgres dead-letter table.
+- It states that an error from the source's registry stops the pipeline
+  whatever the policy.
+
+`kafka.dlq.yml` stays as it is. Its Kafka dead-letter topic takes the new
+keys with no configuration change.
+
 ## What breaks if this is wrong
 
 If the reader-schema-at-start rule is wrong, a producer that adds a field
@@ -1074,10 +1206,16 @@ If refusing an extra column is wrong, a pipeline whose SQL selects a helper
 column stops at its first batch instead of dropping the column quietly. The
 error names the column, and removing it from the SELECT is the fix.
 
-The class guard on the error policy, as written, changes behavior on `main`.
-`InferredDiskBatch`'s invalid-JSON write error and every `Invoke` failure
-carry no code, so they report as class `system`. Under `IGNORE` or `DLQ`,
-each would stop the pipeline instead of dropping the record or the batch.
+If the domain guard is wrong, a handler error in domain `source` that
+describes the record would stop a pipeline that should have diverted it. The
+decoder returns two `source` codes, and neither describes a record. A future
+handler that returns a `source` code for a bad record breaks this rule, and
+the guard's tests name the rule it breaks.
+
+If the dead-letter columns are wrong, an existing ClickHouse or Postgres
+dead-letter table refuses the new row and the pipeline stops. The upgrade
+note tells operators to add the columns first, and a table without them fails
+the first bad record, not silently.
 
 If the type mapping is wrong, a column reaches DuckDB with a type the SQL did
 not expect. Every input type is a lattice row that the decoding runner judges
@@ -1104,7 +1242,8 @@ differently is outside what the matrix measured.
 5. `TypedBatchHandler`, the `WithDecoder` wiring through `run`,
    `BenchmarkTypedBatch`, `conformance.DecodeTypes`, and the `serde.avro`
    `decode:` table.
-6. Error policy class guard.
+6. The error policy's domain guard, the five dead-letter columns, and
+   `core.WithDLQSchemaID`.
 7. JSON Schema to Arrow mapping and decoder, its `decode:` table, and its
    benchmark.
 8. Read side of the compatibility matrix, both formats.
