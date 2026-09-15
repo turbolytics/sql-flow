@@ -65,6 +65,7 @@ Out:
 
 - turbolytics/sql-flow#282: a dataset `range`, each grain's `max_range`, and
   grain selection from the range. The generated dataset uses all three.
+- Postgres 15 or later, for `NULLS NOT DISTINCT`. The demo runs 18.
 - Integer param bounds in serve: `{name: top, type: integer, min: 1, max: 20}`,
   answered with `400 invalid_param` outside the bounds. A separate, small serve
   PR. The generated dataset declares them, and `check` reads `max` to prove the
@@ -162,6 +163,17 @@ as `user.config.rollup` with a YAML path:
     dimension set equals `source.dimensions`.
 12. `max_range / width <= max_buckets` for every grain.
 13. `fold.top.default` lies within 1 and `fold.top.max`.
+14. `serve.catalog` is set, and `serve.max_buckets` is positive.
+15. A filter maps a param name, which follows serve's name rule and is not
+    `since`, `until`, `top` or `grain`, to the dataset's dimension.
+16. `fold.rank_by` names a `sum` measure of the dataset's dimension set. It
+    may be omitted when the set has exactly one `sum` measure.
+17. No two served grains share a `max_range`, since serve could then not pick
+    the finer one.
+
+Every table, column, dimension, dimension set and dataset name matches
+`^[a-z][a-z0-9_]*$`. A grain name is a duration such as `5m`, `1h` or `1d`,
+read by the same parser as #282.
 
 ## Measures
 
@@ -216,16 +228,36 @@ transaction; the demo's `bin/migrate.sh` does.
 ### Tables
 
 ```sql
-CREATE TABLE IF NOT EXISTS posts_by_lang_15m (
-  bucket TIMESTAMPTZ NOT NULL,
-  lang   TEXT        NOT NULL,
-  posts  BIGINT      NOT NULL,
-  PRIMARY KEY (bucket, lang)
-);
+CREATE TABLE IF NOT EXISTS "posts_by_lang_15m" AS
+SELECT date_bin('15 minutes', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS "bucket",
+       "lang",
+       sum("posts")::bigint AS "posts"
+FROM "posts_per_minute_by_lang"
+GROUP BY 1, 2
+WITH NO DATA;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "posts_by_lang_15m_key"
+  ON "posts_by_lang_15m" ("bucket", "lang") NULLS NOT DISTINCT;
 ```
 
-The key leads with `bucket`, so a range read and a re-merge both use it. A
-dimension column copies its source column's type.
+The generator never connects, so it cannot read the source's column types.
+`CREATE TABLE … AS … WITH NO DATA` takes them from the source query instead:
+a dimension keeps its source column's type, `min` and `max` keep their
+column's, and `sum` and `count_buckets` are `bigint`. The unique index leads
+with the time column, so a range read and a re-merge both use it, and it is
+the conflict target of every upsert. `NULLS NOT DISTINCT` makes a `NULL`
+dimension value one key rather than a new row on every write, which needs
+Postgres 15.
+
+Every identifier is double-quoted. Names are held to `^[a-z][a-z0-9_]*$`,
+and quoting keeps a name that is also a keyword, such as `user`, working. A
+generated name longer than Postgres's 63-byte limit is an error rather than a
+silent truncation.
+
+Checked on Postgres 18.6 on 2026-09-15: the column types came from the query
+(`timestamp with time zone`, `text`, `bigint`), a second run of the whole
+script changed nothing, and an upsert of a `NULL` dimension twice left one
+row.
 
 ### Buckets
 
@@ -234,6 +266,12 @@ The origin is midnight UTC, so hours, 6-hour buckets and days fall on UTC
 boundaries whatever the session's `TimeZone`. A `7d` grain starts on
 Saturdays, because 2000-01-01 was one. `date_bin` takes no months, so no grain
 is a month.
+
+Every interval is written in hours, minutes or seconds, never days: `1d` is
+`INTERVAL '24 hours'`. Adding `INTERVAL '1 day'` to a `timestamptz` steps a
+calendar day in the session's zone, which is 23 or 25 hours across a daylight
+saving change, and a re-merge range built that way would miss or double an
+hour.
 
 ### Triggers
 
@@ -477,8 +515,10 @@ script for the demo declaration:
 - `TestIntegrationRollup_BackfillPastTheLockTable`: a backfill over more
   buckets than `max_locks_per_transaction × max_connections` succeeds.
 - `TestIntegrationRollup_DeletesDoNotPropagate`.
-- `TestIntegrationRollup_BucketsAreUTC`: 6h and 1d buckets read back from an
-  `Asia/Kolkata` session sit on UTC boundaries.
+- `TestIntegrationRollup_BucketsAreUTC`: minutes written from an
+  `Asia/Kolkata` session and from an `America/New_York` session across the
+  2026-11-01 daylight saving change land in 6h and 1d buckets on UTC
+  boundaries, and every grain still equals its source.
 - `TestIntegrationRollup_CountBuckets`: `posts_total_1d.minutes` equals the
   distinct minutes of the day.
 
