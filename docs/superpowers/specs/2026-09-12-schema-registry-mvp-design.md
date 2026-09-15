@@ -15,8 +15,9 @@ In:
 
 - Kafka source: `json` (today), `json_schema`, `avro`. The last two are framed
   by a Confluent-compatible schema registry.
-- Kafka sink: the same three, with the sink registering or looking up its
-  output schema.
+- Kafka sink: the same three, in two modes. The sink either generates its
+  output schema from the handler SQL and registers it, or writes against a
+  registered version the config names.
 - Type tables for five directions, declared per format and judged by tests:
   Avro to Arrow, Arrow to Avro, JSON Schema to Arrow, Arrow to JSON Schema,
   and Arrow to JSON. A loop table covers a value read in a format and written
@@ -85,7 +86,8 @@ pipeline:
       value:                             # new, optional block
         format: avro                     # json | json_schema | avro; json is the default
         subject: orders-enriched-value   # default <topic>-value
-        auto_register: true              # default true
+        schema:                          # optional; absent means generate and register
+          version: latest                # latest | a version number
 ```
 
 Why `value` and not `format`: `sink.format.type: parquet` already exists,
@@ -103,7 +105,9 @@ Config rules, checked when the pipeline is built, each failing with
 - `format` other than `json` requires `pipeline.schema_registry`.
 - A registry-backed source requires exactly one topic and a handler of type
   `handlers.InferredMemBatch`.
-- `subject` and `auto_register` are sink-only keys.
+- `subject` and `schema` are sink-only keys, and both require a `format`
+  other than `json`.
+- `schema.version` is `latest` or an integer of at least 1.
 - `auth` carries either `username` and `password` or `bearer_token`, not both.
 
 The three struct changes:
@@ -130,12 +134,27 @@ Value *KafkaValue `yaml:"value,omitempty"`
 type KafkaValue struct {
 	Format       string `yaml:"format,omitempty" jsonschema:"enum=json,enum=json_schema,enum=avro"`
 	Subject      string `yaml:"subject,omitempty"`
-	AutoRegister *bool  `yaml:"auto_register,omitempty"`
+	Schema       *KafkaValueSchema `yaml:"schema,omitempty"`
+}
+
+// KafkaValueSchema names the registered version a sink writes against.
+type KafkaValueSchema struct {
+	Version string `yaml:"version" jsonschema:"oneof_type=string;integer,pattern=^latest$,minimum=1"`
 }
 ```
 
-`AutoRegister` is a pointer so an absent key means true. `make schema`
-regenerates the JSON Schema from these tags.
+`Version` is a string because `yaml.v3` decodes both `version: latest` and
+`version: 3` into one, which was checked on 2026-09-15. The generated JSON
+Schema has to accept both a string and an integer. `oneof_type` gives it both
+types. `pattern` constrains only a string and `minimum` only an integer. `make
+schema` regenerates the JSON Schema from these tags, and its golden file shows
+the result.
+
+`schema` replaces the draft's `auto_register`. The draft's `auto_register:
+false` looked up the generated schema. A lookup only matches a schema byte for
+byte after canonicalization, and no schema a team owns will match the one
+sqlflow generates. With `schema` present, the sink registers nothing. Without
+it, the sink registers what it generates. That is two modes and one key.
 
 `config.Sink` is the shape of three sinks: the pipeline's sink, the DLQ, and
 a window's sink. `KafkaSink.Value` reaches all three.
@@ -154,7 +173,7 @@ func (r *Registry) Probe(ctx context.Context) error
 func (r *Registry) SchemaByID(ctx context.Context, id int) (sr.Schema, error)
 func (r *Registry) Latest(ctx context.Context, subject string) (sr.SubjectSchema, error)
 func (r *Registry) Register(ctx context.Context, subject string, s sr.Schema) (int, error)
-func (r *Registry) Lookup(ctx context.Context, subject string, s sr.Schema) (int, error)
+func (r *Registry) Version(ctx context.Context, subject string, version int) (sr.SubjectSchema, error)
 
 // Decoder turns one framed record into one row of the reader schema.
 type Decoder interface {
@@ -167,8 +186,11 @@ func NewDecoder(ctx context.Context, format string, topic string, reg *Registry)
 type Encoder interface {
 	Encode(ctx context.Context, rec arrow.Record) ([][]byte, error)
 }
-func NewEncoder(format string, subject string, autoRegister bool, reg *Registry) (Encoder, error)
+func NewEncoder(ctx context.Context, format string, subject string, schema *config.KafkaValueSchema, reg *Registry) (Encoder, error)
 ```
+
+`Version` calls `SchemaByVersion`, whose `-1` is the latest version, so
+`latest` needs no second route. `Latest` stays for the source's reader schema.
 
 The franz-go module `github.com/twmb/franz-go/pkg/sr` v1.8.0 supplies the
 client and `ConfluentHeader`, whose `DecodeID` and `AppendEncode` are the
@@ -280,26 +302,89 @@ The Kafka sink gains an `Encoder`. `WriteTable` calls `encoder.Encode` in
 place of `tableRowsAsJSON`, and the `json` encoder is `tableRowsAsJSON`, so
 the default path does not move.
 
-The Avro and JSON Schema encoders derive an output schema from the batch's
-Arrow schema, obtain a schema ID, and frame each row.
+The Avro and JSON Schema encoders have two modes. The `schema` key picks one.
 
-Obtaining the ID, cached by the Arrow schema's fingerprint so a stable SQL
-result costs one registry call per run:
+**Generated**, with no `schema` block. The encoder derives an output schema
+from the batch's Arrow schema, registers it with `CreateSchema` on the
+subject, and frames each row with the returned ID. The ID is cached by the
+Arrow schema's fingerprint, so a stable SQL result costs one registry call per
+run. The registry returns the existing ID for a schema it already holds. It
+returns 409 for a schema that breaks the subject's compatibility rule, and 409
+is `user.sink.schema_incompatible`. The registry's credentials need write
+access.
 
-- `auto_register: true`: `CreateSchema` on the subject. The registry returns
-  the existing ID for a schema it already holds, and 409 for one that breaks
-  the subject's compatibility rule. 409 is `user.sink.schema_incompatible`.
-- `auto_register: false`: `LookupSchema` on the subject. 404 is
-  `user.sink.schema_unregistered`. This is the mode for a production registry
-  where pipelines are not allowed to register.
+**Specified**, with a `schema` block. At start, the encoder fetches the named
+version with `Registry.Version`. It parses the schema and frames every row
+with that version's ID. The pipeline registers nothing, so read-only
+credentials are enough. This is Confluent's own serializer with
+`auto.register.schemas=false` and `use.latest.version=true`, the setting
+Confluent documents for producers that must not register.
 
-Both codes are class `user`. The Kafka sink is not wrapped in the #269 retry
-ladder, because franz-go retries a produce itself. A `WriteTable` error
-returns from the batch on the first attempt, and the process exits 10. That
-is the point: a SQL edit that changes the
-output shape is stopped by the registry before any consumer sees it.
+`latest` resolves once, at start, and stays fixed for the run. A version
+registered mid-run is used after the next restart. This is the rule the source
+already follows for its reader schema. A pinned version gives a repeatable
+deploy.
 
-Arrow to Avro, the inverse of the table above with these rules: the record is
+The fetch runs in `Probe`, so each failure is reported at start:
+
+- A registry that does not answer is `system.sink.unreachable`, exit 12.
+- A subject or version the registry does not hold is
+  `user.sink.schema_unregistered`, exit 10. `Probe` codes it, so `sinks.New`
+  passes it through.
+- A field whose type the encoding table declares unsupported for every Arrow
+  key is `user.sink.type_unsupported`, naming the field path. A union with two
+  or more non-null branches and a recursive record are two such fields.
+
+Every user-class code here fails on the first attempt. The Kafka sink is not
+wrapped in the #269 retry ladder, because franz-go retries a produce itself. A
+`WriteTable` error returns from the batch, and the process exits 10. That is
+the point: a SQL edit that changes the output shape is stopped before any
+consumer sees it. #279 keeps the refused batch's offsets uncommitted, so a
+restart replays it.
+
+#### Matching the output to a specified schema
+
+The handler SQL's output columns match the schema's top-level fields by name.
+Names are compared exactly, including case, because Avro field names and
+JSON Schema property names are case-sensitive. Field `aliases` play no part:
+Avro defines them for a reader resolving an old writer, not for a writer.
+
+| Output column vs schema field | Result |
+| --- | --- |
+| Column and field share a name | The value is encoded into the field's type, as the encoding table declares for that Arrow key and target type |
+| Column with no field of its name | `user.sink.schema_mismatch`, naming the column |
+| Field with no column, and the field declares a `default` | The default is written |
+| Field with no column, and no `default` | `user.sink.schema_mismatch`, naming the field |
+| Null into a field that is not a union with null | `user.sink.encode_failed`, naming the field |
+| Columns in a different order from the fields | Written in the schema's order, with no effect on the record |
+
+An extra column is refused, not dropped. A column the SQL computes and the
+topic never receives is data loss, and nothing downstream reports it. To keep
+the column out of the record, remove it from the SELECT.
+
+A field with no column takes its `default` because Avro's own record builders
+fill a missing field from its default and refuse a missing field that has
+none. `["null", T]` with no `default` is refused like any other field without
+one. JSON Schema has no record builder, so a JSON Schema property the output
+lacks is left out of the object when it is not listed in `required`. It is
+`user.sink.schema_mismatch` when it is.
+
+A struct column matches a record field by the same rules, one level down. A
+map's values and an array's elements are judged by the encoding table. A utf8
+column bound for an `enum` field must hold one of the enum's symbols. Any
+other value is `user.sink.encode_failed`. The enum's `default` is for readers,
+so a writer does not apply it.
+
+The match runs once per distinct output Arrow schema, before the first row of
+that schema is encoded. It is cached by the Arrow schema's fingerprint, as the
+generated mode caches its ID. A handler's output is not known before its first
+batch, so the check cannot run at start. A batch that does not match writes
+nothing. The check is a function of the Arrow schema and the registry schema
+alone, so `validate` can run it once it binds the handler SQL against a
+fetched schema, which is the follow-up in Out.
+
+Arrow to Avro in the generated mode is the inverse of the Avro to Arrow table
+in Decoding, with these rules: the record is
 named from the subject with characters outside `[A-Za-z0-9_]` replaced by
 `_`, in namespace `io.turbolytics.sqlflow`; a nullable field is
 `["null", T]` with default `null`; `int8` and `int16` widen to `int`;
@@ -313,9 +398,11 @@ binary, timestamps, dates and lists. It returns `user.sink.type_unsupported`
 for decimal, struct, map and time columns, so the mapping above needs those
 cases added.
 
-Arrow to JSON Schema: an `object` with one property per column, `required`
-listing the non-nullable ones, and the type mapping inverted. The row bytes
-are the JSON `tableRowsAsJSON` already produces, with the header prepended.
+Arrow to JSON Schema in the generated mode: an `object` with one property per
+column, `required` listing the non-nullable ones, and the type mapping
+inverted. The row bytes are the JSON `tableRowsAsJSON` already produces, with
+the header prepended. In the specified mode, the same bytes are framed with
+the named version's ID once the output matches it.
 
 Both rule sets are the first draft of the `types:` declarations in Type tables
 below.
@@ -614,9 +701,24 @@ Each cell declares `registered`, or `refused` with
 `user.sink.schema_incompatible`.
 
 A specified schema is a separate column. The pipeline registers nothing in
-that mode, so no compatibility level applies. Its cases are the same output
-changes, judged against the named schema: `exact`, `coerced` with a rule, or
-`refused` with a code.
+that mode, so no compatibility level applies. Its cells judge the same output
+changes against the named schema, by the matching rules in Encoding. Each cell
+declares `exact`, `coerced` with a rule, or `refused` with a code. The
+expected answers:
+
+- `column.add` is refused with `user.sink.schema_mismatch`.
+- `column.drop` writes the field's default, or is refused when the field has
+  none.
+- `column.rename` fails on both counts. The new name is an extra column, and
+  the old field has no column.
+- `column.reorder` is exact.
+- `column.widen`, `column.narrow` and `column.retype` follow the encoding
+  table's row for the new Arrow key and the field's type.
+
+One case applies to this column alone. In `version.latest.moves`, a new
+version is registered while the pipeline runs. The run keeps encoding against
+the version it resolved at start, and records carry that version's ID until a
+restart.
 
 The write side runs at integration level against Confluent Schema Registry,
 `confluentinc/cp-schema-registry:8.3.1`, the current release on 2026-09-15.
@@ -664,11 +766,12 @@ Appended to the registry, each with a summary and an action:
 | --- | --- | --- |
 | `user.data.schema_unknown` | A record's schema ID is not in the registry | Check the producer registers against the same registry the pipeline reads |
 | `user.sink.schema_incompatible` | The registry refused the output schema under the subject's compatibility rule | Change the handler SQL to keep the output shape, or change the subject's compatibility level |
-| `user.sink.schema_unregistered` | `auto_register` is false and the output schema is not registered | Register the schema, or set `auto_register: true` where the registry allows it |
+| `user.sink.schema_unregistered` | The subject or version that `schema` names is not in the registry | Register the schema, or name a version the subject holds |
+| `user.sink.schema_mismatch` | The handler SQL's output columns do not match the specified schema's fields | Rename, add or remove columns in the handler SQL to match the schema, or name a version that matches |
 
-`codes.golden` gains three lines. Everything else reuses `user.data.malformed`,
+`codes.golden` gains four lines. Everything else reuses `user.data.malformed`,
 `user.sql.type_unsupported`, `user.sink.type_unsupported`,
-`user.config.invalid`, `system.source.unreachable` and
+`user.sink.encode_failed`, `user.config.invalid`, `system.source.unreachable` and
 `system.sink.unreachable`.
 
 ### Dev stack
@@ -729,7 +832,7 @@ Two configs under `dev/config/examples/`, every variable with a default so
 the example test renders them:
 
 - `kafka.avro.yml`: Avro in from the registry, aggregate in SQL, Avro out
-  under a new subject with `auto_register: true`.
+  under a new subject with a generated schema.
 - `kafka.json-schema.yml`: JSON Schema in, JSON Schema out.
 
 The example test builds the pipeline's sink, each window's sink, and the
@@ -799,15 +902,24 @@ subjects. It records calls so a test can assert the cache.
 - Typed handler: `Write` of a bad record fails with the decoder's code and
   the batch still ingests the good ones; metadata columns are present and
   correct; `RowsRead` matches.
-- Encoder: `auto_register: true` calls create once per distinct
-  schema; `auto_register: false` on an unregistered schema is
-  `user.sink.schema_unregistered`; a 409 is `user.sink.schema_incompatible`;
+- Encoder, generated mode: create is called once per distinct output schema;
+  a 409 is `user.sink.schema_incompatible`.
+- Encoder, specified mode:
+  - `latest` and a pinned version each fetch once, at start, and frame
+    records with that version's ID.
+  - A missing subject or version is `user.sink.schema_unregistered` from
+    `Probe`.
+  - Each row of the matching table has a test with its code and the column or
+    field it names.
+  - A field default is written when its column is absent.
+  - The match runs once per distinct output schema.
+- Encoder, both modes:
   a framed record decodes back to the same values.
 - Config: each rule in the Config section fails the build with
   `user.config.invalid` and a message naming the key.
 - Error policy: a system-class write error under `DLQ` stops the pipeline
   and writes nothing to the DLQ.
-- Registry: the append-only golden gains three lines; every new code exits
+- Registry: the append-only golden gains four lines; every new code exits
   10 and is not retryable.
 
 Integration tests run against one broker and one registry. The broker is
@@ -828,6 +940,14 @@ container, per the coverage rules.
   1, register version 2 with an added field, produce under it, and assert the
   pipeline keeps running and the added field reads as its default.
 - `TestIntegrationSerdeJsonSchema_RoundTrip`: the same shape for JSON Schema.
+- `TestIntegrationSerdeAvro_WritesAgainstSpecifiedSchema`: register an output
+  schema the way a topic's owners would. It has its own record name and
+  namespace, `doc` strings, and a defaulted field the SQL does not produce.
+  Run a pipeline naming it with `version: latest`. Then assert three things:
+  - The subject still holds one version.
+  - Every record carries that version's ID.
+  - A consumer decoding with that schema reads the SQL's values and the
+    field's default.
 - `TestIntegrationSerdeAvro_GeneratedSchemasRegister` and
   `TestIntegrationSerdeJsonSchema_GeneratedSchemasRegister`: every schema the
   generator emits for a `types:` row registers against the real registry. The
@@ -944,6 +1064,15 @@ If the reader-schema-at-start rule is wrong, a producer that adds a field
 mid-run does not surface it until the pipeline restarts. That is documented
 and it is the Avro specification's own resolution behavior. A pipeline that
 needs the new field restarts.
+
+The sink's `latest` follows the same rule. A topic's owners who register a new
+output version see pipelines write it after their next restart, not at once.
+A pipeline that picked it up mid-run would change its records' shape with no
+deploy, and no SQL edit would be reviewed against the new version.
+
+If refusing an extra column is wrong, a pipeline whose SQL selects a helper
+column stops at its first batch instead of dropping the column quietly. The
+error names the column, and removing it from the SELECT is the fix.
 
 The class guard on the error policy, as written, changes behavior on `main`.
 `InferredDiskBatch`'s invalid-JSON write error and every `Invoke` failure
