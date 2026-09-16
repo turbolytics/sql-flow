@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/turbolytics/sql-flow/internal/errs"
 )
 
 // The formats a value block may name. json is the default and needs no
@@ -109,8 +111,8 @@ func IsReservedSourceColumn(name string) bool {
 
 // Key is the path as a reader writes it: pipeline.sink.kafka.value.format.
 // Violation itself is declared in serve.go, shared with ServeConf.Check and
-// RollupsConf.Check; CheckSchemaRegistry below leaves Code at its zero
-// value, since #296 assigns codes in a later task.
+// RollupsConf.Check; CheckSchemaRegistry below fills Code the same way they
+// do.
 func (v Violation) Key() string { return strings.Join(v.Path, ".") }
 
 // inferredMemBatch is the one handler a registry-backed source may run
@@ -125,7 +127,7 @@ const inferredMemBatch = "handlers.InferredMemBatch"
 func (c *Conf) CheckSchemaRegistry() []Violation {
 	var out []Violation
 	add := func(msg string, path ...string) {
-		out = append(out, Violation{Path: path, Message: msg})
+		out = append(out, Violation{Code: errs.CodeConfigInvalid, Path: path, Message: msg})
 	}
 
 	p := &c.Pipeline

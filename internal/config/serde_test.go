@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
 
@@ -285,6 +286,9 @@ func TestConfigSchemaRegistry_EachRuleNamesItsKey(t *testing.T) {
 			got := conf.CheckSchemaRegistry()
 			assert.Equal(t, tc.want, keys(got))
 			assert.That(t, strings.Contains(got[0].Message, tc.says))
+			for _, v := range got {
+				assert.Equal(t, errs.CodeConfigInvalid, v.Code)
+			}
 		})
 	}
 }
