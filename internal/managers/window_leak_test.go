@@ -329,9 +329,17 @@ func TestManagerTumblingWindow__IndexedTableOnDiskRetainsDeletedRows(t *testing.
 }
 
 // assertLeaks is the signature of the footgun in #268: the table holds many
-// times the rows a SELECT sees, in row groups that keep accumulating. If a
+// times the rows a SELECT sees, and the dead rows keep accumulating. If a
 // DuckDB upgrade makes this fail, the leak is fixed upstream, and the
 // examples, the README, and the validate lint in #268 are out of date.
+//
+// It counts stored rows, not row groups. DuckDB 1.5.2 started a row group per
+// checkpoint, so 1,000 batches went from 3 to 128 groups and 96 MiB. DuckDB
+// 1.5.5 appends into the open row group instead: the same 1,000 batches store
+// the same 20,400 rows for 80 live, in one group. A new group starts only
+// every 122,880 stored rows, so 30,000 batches reach 3 groups and 6 MiB. The
+// dead rows are the leak on both versions; the row group count is only how
+// the older one happened to show it.
 func assertLeaks(t *testing.T, before, after leakSample) {
 	t.Helper()
 	if after.storedRows <= after.liveRows*4 {
@@ -339,14 +347,17 @@ func assertLeaks(t *testing.T, before, after leakSample) {
 			"If DuckDB now reclaims deleted rows from an indexed table, update #268 and the examples.",
 			after.storedRows, after.liveRows)
 	}
-	if after.rowGroups <= before.rowGroups {
-		t.Fatalf("expected row groups to accumulate: %d after warm-up, %d at the end", before.rowGroups, after.rowGroups)
+	if after.storedRows <= before.storedRows*4 {
+		t.Fatalf("expected deleted rows to accumulate: %d stored after warm-up, %d at the end",
+			before.storedRows, after.storedRows)
 	}
 }
 
 // assertLeakFlat is the bound a healthy run holds, in DuckDB's own
 // accounting. Two row groups is the steady state for a table rewritten every
-// batch: the one being written and the one being vacuumed.
+// batch: the one being written and the one being vacuumed. The row group bound
+// alone would pass a leaking table on DuckDB 1.5.5, which packs dead rows into
+// one group, so stored rows are bounded too.
 //
 // Resident memory is reported and deliberately not asserted. On macOS
 // ResidentAnonBytes falls back to getrusage, which is peak RSS: it only rises,
@@ -368,5 +379,9 @@ func assertLeakFlat(t *testing.T, before, after leakSample) {
 	if g := after.tableBytes - before.tableBytes; g > maxTableGrowth {
 		t.Errorf("DuckDB table memory grew by %d MiB (%d -> %d MiB)",
 			g>>20, before.tableBytes>>20, after.tableBytes>>20)
+	}
+	if after.storedRows > after.liveRows*4 {
+		t.Errorf("the window table stores %d rows for %d live; deleted rows are not being reclaimed",
+			after.storedRows, after.liveRows)
 	}
 }
