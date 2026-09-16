@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	prom "github.com/prometheus/client_golang/prometheus"
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
@@ -32,6 +33,11 @@ type Server struct {
 	origins map[string]bool
 	// healthTimeout bounds /healthz, which waits for a session like a query.
 	healthTimeout time.Duration
+	// registry and metrics are nil unless the config asks for /metrics. Every
+	// metrics method tolerates a nil receiver, so the request path records
+	// unconditionally.
+	registry *prom.Registry
+	metrics  *metrics
 	// now is when a request arrived: the until a ranged request does not
 	// give. A test fixes it.
 	now func() time.Time
@@ -81,6 +87,20 @@ func WithLogger(l *zap.Logger) Option {
 	return func(s *Server) { s.logger = l }
 }
 
+// WithMetrics registers serve's instruments on reg and serves them at
+// /metrics. New builds the instruments, because they read the executor's
+// session counts, and installs the wait hook on the executor afterwards.
+func WithMetrics(reg *prom.Registry) Option {
+	return func(s *Server) { s.registry = reg }
+}
+
+// waitObserver is an executor whose pool can report how long an Acquire
+// waited. The DuckDB one does; a future one need not, and then the wait
+// histogram is simply empty rather than the server failing to start.
+type waitObserver interface {
+	setOnWait(func(time.Duration))
+}
+
 // New checks the config's rules and prepares every statement against ex.
 //
 // ex must already carry whatever the config's commands attach. Any rule
@@ -102,6 +122,20 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+
+	// The instruments read the executor's session counts, so they are built
+	// here rather than by the caller, and the wait hook is installed on the
+	// pool before the server listens.
+	if s.registry != nil && conf.Serve.MetricsEnabled() {
+		m, err := newMetrics(s.registry, ex.Stats)
+		if err != nil {
+			return nil, err
+		}
+		s.metrics = m
+		if wo, ok := ex.(waitObserver); ok {
+			wo.setOnWait(m.observeWait)
+		}
 	}
 
 	health, err := ex.Prepare(ctx, StatementSpec{Dataset: "healthz", SQL: "SELECT 1"})

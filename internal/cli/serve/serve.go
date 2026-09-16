@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	prom "github.com/prometheus/client_golang/prometheus"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -108,7 +109,12 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 		return err
 	}
 
-	srv, err := api.New(ctx, conf, ex, api.WithLogger(l))
+	opts := []api.Option{api.WithLogger(l)}
+	if conf.Serve.MetricsEnabled() {
+		opts = append(opts, api.WithMetrics(prom.NewRegistry()))
+	}
+
+	srv, err := api.New(ctx, conf, ex, opts...)
 	if err != nil {
 		ex.Close()
 		return err

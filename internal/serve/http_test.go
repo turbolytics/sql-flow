@@ -83,6 +83,13 @@ type testServer struct {
 
 func newTestServer(t *testing.T, text string) *testServer {
 	t.Helper()
+	return newTestServerWith(t, text)
+}
+
+// newTestServerWith takes extra options, for a test that needs the metrics
+// registry.
+func newTestServerWith(t *testing.T, text string, extra ...Option) *testServer {
+	t.Helper()
 	// One session: every assertion below about ordering and timing is the
 	// old single-connection behaviour.
 	ex, _ := newExec(t, 1, "SET TimeZone='UTC'", createPostsTable)
@@ -91,7 +98,7 @@ func newTestServer(t *testing.T, text string) *testServer {
 	assert.NoError(t, err)
 
 	core, logs := observer.New(zap.InfoLevel)
-	srv, err := New(context.Background(), conf, ex, WithLogger(zap.New(core)))
+	srv, err := New(context.Background(), conf, ex, append([]Option{WithLogger(zap.New(core))}, extra...)...)
 	assert.NoError(t, err)
 	// Registered after newExec's cleanups, so it runs first: a slow query
 	// still holding a session finishes before the database closes.
@@ -117,7 +124,9 @@ func (ts *testServer) do(t *testing.T, method, target string, header map[string]
 	ts.handler.ServeHTTP(w, req)
 
 	resp := response{status: w.Code, header: w.Header(), raw: w.Body.String()}
-	if w.Body.Len() > 0 {
+	// Only the JSON routes decode. /metrics answers Prometheus text, and a
+	// HEAD answers nothing.
+	if w.Body.Len() > 0 && strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
 		assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp.body))
 	}
 	return resp

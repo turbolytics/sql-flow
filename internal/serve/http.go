@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,6 +24,12 @@ const (
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
+	if s.metrics != nil {
+		// No token: it carries no row data, and the listener is already
+		// public. It is absent unless the config turns it on, because the
+		// labels name every dataset and grain.
+		mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
+	}
 	mux.HandleFunc("/v1/datasets", s.authed(s.listDatasets))
 	mux.HandleFunc("/v1/datasets/{name}", s.authed(s.queryDataset))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +161,9 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	res, queued, err := query(ctx, s.exec, st.stmt, values, ds.maxRows)
+	// Measured whatever the outcome: the error mix is what the counter is
+	// for, so a timeout and a failure count too.
+	entry.queryDur, entry.measured = time.Since(start)-queued, true
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		// An exhausted pool arrives here too: the wait for a session is the
@@ -287,6 +297,11 @@ func getOnly(next http.Handler) http.Handler {
 type logEntry struct {
 	token, dataset, grain, code string
 	status, rows                int
+	// queryDur is the query alone, which only the dataset handler knows. The
+	// middleware records the metrics, because that is where the outcome and
+	// the total are both known.
+	queryDur time.Duration
+	measured bool
 }
 
 type entryKey struct{}
@@ -322,6 +337,17 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			fields = append(fields, zap.String("code", entry.code))
 		}
 		s.logger.Info("request", fields...)
+
+		// Only a dataset request carries a query to measure. A listing, a
+		// health probe or a refusal would otherwise report a query of zero
+		// seconds and flatten the histogram.
+		if entry.measured {
+			code := entry.code
+			if code == "" {
+				code = "ok"
+			}
+			s.metrics.observeRequest(entry.dataset, entry.grain, code, entry.queryDur, time.Since(start))
+		}
 	})
 }
 

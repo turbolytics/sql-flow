@@ -147,6 +147,14 @@ func (p *pool) Acquire(ctx context.Context) (Session, error) {
 	}
 }
 
+// setOnWait installs the hook the wait histogram reads. It runs before the
+// server listens, so no Acquire can be in flight.
+func (p *pool) setOnWait(f func(time.Duration)) {
+	if f != nil {
+		p.onWait = f
+	}
+}
+
 func (p *pool) Stats() Stats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
