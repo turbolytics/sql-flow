@@ -1,5 +1,11 @@
 package config
 
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
 // The formats a value block may name. json is the default and needs no
 // registry. The other two are framed by a Confluent-compatible schema
 // registry: a magic byte, a four-byte schema ID, then the payload.
@@ -84,4 +90,160 @@ func (s *KafkaSink) ResolvedSubject() string {
 		return s.Value.Subject
 	}
 	return s.Topic + "-value"
+}
+
+// ReservedSourceColumns are the metadata columns the inferred handler adds
+// to every batch. A reader schema that defines one of them would give batch
+// two columns of that name, so #300 refuses it at start.
+var ReservedSourceColumns = []string{"kafka_topic", "kafka_partition", "kafka_offset"}
+
+// IsReservedSourceColumn reports whether name is one of ReservedSourceColumns.
+func IsReservedSourceColumn(name string) bool {
+	for _, r := range ReservedSourceColumns {
+		if name == r {
+			return true
+		}
+	}
+	return false
+}
+
+// Key is the path as a reader writes it: pipeline.sink.kafka.value.format.
+// Violation itself is declared in serve.go, shared with ServeConf.Check and
+// RollupsConf.Check; CheckSchemaRegistry below leaves Code at its zero
+// value, since #296 assigns codes in a later task.
+func (v Violation) Key() string { return strings.Join(v.Path, ".") }
+
+// inferredMemBatch is the one handler a registry-backed source may run
+// under. The disk handler stages JSON files and the structured handler
+// derives its schema from a table; a typed path for either is a follow-up.
+const inferredMemBatch = "handlers.InferredMemBatch"
+
+// CheckSchemaRegistry holds a config to the rules the JSON Schema cannot
+// state, plus the two it can, because run has no schema pass. It returns
+// every violation rather than the first: validate lists them all, and run
+// prints the first. Nothing here reads the network.
+func (c *Conf) CheckSchemaRegistry() []Violation {
+	var out []Violation
+	add := func(msg string, path ...string) {
+		out = append(out, Violation{Path: path, Message: msg})
+	}
+
+	p := &c.Pipeline
+	registry := p.SchemaRegistry
+
+	if registry != nil {
+		if registry.URL == "" {
+			add("url is needed: the registry's base URL", "pipeline", "schema_registry", "url")
+		}
+		if a := registry.Auth; a != nil {
+			basic := a.Username != "" || a.Password != ""
+			switch {
+			case basic && a.BearerToken != "":
+				add("auth carries a username and password, or a bearer_token, not both",
+					"pipeline", "schema_registry", "auth")
+			case basic && (a.Username == "" || a.Password == ""):
+				add("auth needs both username and password",
+					"pipeline", "schema_registry", "auth")
+			case !basic && a.BearerToken == "":
+				add("auth is empty: give it a username and password, or a bearer_token, or remove the block",
+					"pipeline", "schema_registry", "auth")
+			}
+		}
+	}
+
+	if src := p.Source.Kafka; src != nil && src.Value != nil {
+		v := src.Value
+		path := []string{"pipeline", "source", "kafka", "value"}
+		format := v.ResolvedFormat()
+		if !knownFormat(format) {
+			add(fmt.Sprintf("format %q is not one of json, json_schema or avro", format),
+				append(path, "format")...)
+		}
+		if v.Subject != "" {
+			add("subject is a sink key: a source reads the subject its records carry",
+				append(path, "subject")...)
+		}
+		if v.Schema != nil {
+			add("schema is a sink key: a source reads the schema its records carry",
+				append(path, "schema")...)
+		}
+		if knownFormat(format) && v.RegistryBacked() {
+			if registry == nil {
+				add(fmt.Sprintf("format %s needs pipeline.schema_registry", format),
+					append(path, "format")...)
+			}
+			if len(src.Topics) != 1 {
+				add(fmt.Sprintf("format %s reads exactly one topic, one reader schema per pipeline; got %d",
+					format, len(src.Topics)), "pipeline", "source", "kafka", "topics")
+			}
+			if p.Handler.Type != inferredMemBatch {
+				add(fmt.Sprintf("format %s needs handler type %s; got %s",
+					format, inferredMemBatch, p.Handler.Type), "pipeline", "handler", "type")
+			}
+		}
+	}
+
+	checkSink := func(s Sink, path ...string) {
+		if s.Kafka == nil || s.Kafka.Value == nil {
+			return
+		}
+		v := s.Kafka.Value
+		path = append(path, "kafka", "value")
+		format := v.ResolvedFormat()
+		if !knownFormat(format) {
+			add(fmt.Sprintf("format %q is not one of json, json_schema or avro", format),
+				append(path, "format")...)
+			return
+		}
+		if v.RegistryBacked() && registry == nil {
+			add(fmt.Sprintf("format %s needs pipeline.schema_registry", format),
+				append(path, "format")...)
+		}
+		if v.Subject != "" && !v.RegistryBacked() {
+			add("subject needs a format other than json; a json sink registers nothing",
+				append(path, "subject")...)
+		}
+		if v.Schema != nil {
+			if !v.RegistryBacked() {
+				add("schema needs a format other than json; a json sink writes against no registered version",
+					append(path, "schema")...)
+			} else if !validVersion(v.Schema.Version) {
+				add(fmt.Sprintf("version is latest or a version number of at least 1; got %q", v.Schema.Version),
+					append(path, "schema", "version")...)
+			}
+		}
+	}
+
+	checkSink(p.Sink, "pipeline", "sink")
+	if p.OnError != nil && p.OnError.DLQ != nil {
+		checkSink(*p.OnError.DLQ, "pipeline", "on_error", "dlq")
+	}
+	if c.Tables != nil {
+		for i, table := range c.Tables.SQL {
+			if table.Window != nil {
+				checkSink(table.Window.Sink, "tables", "sql", strconv.Itoa(i), "window", "sink")
+			}
+		}
+	}
+
+	return out
+}
+
+func knownFormat(format string) bool {
+	for _, f := range Formats {
+		if format == f {
+			return true
+		}
+	}
+	return false
+}
+
+// validVersion accepts latest or a positive integer. yaml.v3 hands both
+// spellings over as a string.
+func validVersion(v string) bool {
+	if v == "latest" {
+		return true
+	}
+	n, err := strconv.Atoi(v)
+	return err == nil && n >= 1
 }
