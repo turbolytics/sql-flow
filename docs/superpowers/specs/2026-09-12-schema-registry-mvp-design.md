@@ -64,6 +64,54 @@ Out, each a follow-up issue:
   for every sink.
 - Compatibility columns for registries other than Confluent's own, such as
   Redpanda, Apicurio and Karapace. Each is another column with its own image.
+- Writing a schema that has references. A generated schema has none, and a
+  specified schema's are resolved for reading, not rewritten.
+- Arrow types of their own for the Avro logical types the decoder does not
+  map: `timestamp-nanos`, `local-timestamp-nanos`, `big-decimal`, and `uuid`
+  on a `fixed`. They read as their underlying type until then.
+
+## Prior art
+
+Flink is the closest thing to this design that ships: a SQL engine reading
+and writing Confluent-framed records. Two of them were read on 2026-09-15,
+open-source Apache Flink and Confluent Cloud for Apache Flink, and both
+informed the decisions below.
+
+What both do that this spec already does:
+
+| Decision | Flink |
+| --- | --- |
+| One reader schema, fixed at start | Confluent Cloud pins the version when a statement is created. "existing statements don't pick up or forward these new fields to the sink tables" |
+| A value that does not fit its column fails the record | "If an incoming JSON type cannot be safely converted to the target SQL type, the statement fails with a deserialization error" |
+| A dead-letter row keeps the record's bytes | Its DLQ table's `source_record` holds "topic, partition, offset, timestamp, timestamp_type, headers, key (bytes), and value (bytes)" |
+| The output is checked against the registered schema | "Flink checks the schema your statement produces against the schema already registered for the topic… Flink rejects the conversion" |
+| Avro `enum` reads as a string | Both do. Confluent adds that a Flink schema cannot contain an enum field |
+| A zoned timestamp is an instant, a local one is not | `timestamp-millis` and `timestamp-micros` become an instant; `local-timestamp-*` a local date-time |
+
+Where Flink shaped a decision here:
+
+- A nullable JSON Schema property reads from all three forms, because
+  Confluent's writer emits `oneOf(Null, T)`. See Decoding.
+- An unknown Avro logical type reads as its underlying type, which is the
+  Avro specification's rule and Flink's behavior. See Decoding.
+- Schema references are the registry client's job in Flink and ours here,
+  because franz-go's client stops at the reference list. See Schema
+  references.
+- Reading a schema ID from a record header goes in Out, with Confluent
+  Cloud's order: header, then the payload prefix.
+
+Where this spec does not follow Flink:
+
+- A union with two or more non-null branches fails at start. Open-source
+  Flink falls back to a Kryo-serialized `GENERIC(Object)` that no SQL can
+  read, and Confluent Cloud maps it to a `ROW` whose field naming its own
+  documentation contradicts.
+- The specified-schema mode registers nothing. Flink's
+  `avro-confluent.schema` is "The schema registered or to be registered", so
+  Flink still registers, and a read-only registry refuses that.
+- The error policy covers a sink's failures too. Confluent Cloud's covers
+  only the source: "Only deserialization errors at the source are
+  supported."
 
 ## Design
 
@@ -189,6 +237,7 @@ func (r *Registry) SchemaByID(ctx context.Context, id int) (sr.Schema, error)
 func (r *Registry) Latest(ctx context.Context, subject string) (sr.SubjectSchema, error)
 func (r *Registry) Register(ctx context.Context, subject string, s sr.Schema) (int, error)
 func (r *Registry) Version(ctx context.Context, subject string, version int) (sr.SubjectSchema, error)
+func (r *Registry) Refs(ctx context.Context, s sr.Schema) ([]sr.SubjectSchema, error)
 
 // Decoder turns one framed record into one row of the reader schema, in two
 // phases. Decode makes every conversion and every check, and touches no
@@ -341,7 +390,18 @@ Avro to Arrow:
 | `timestamp-millis`, `timestamp-micros` | `timestamp[ms, UTC]`, `timestamp[us, UTC]` |
 | `local-timestamp-*` | `timestamp` with no zone |
 | `decimal` | `decimal128(precision, scale)` |
+| a logical type this table does not name | its underlying Avro type |
 | union with two or more non-null branches, `duration` | `user.sql.type_unsupported` at start |
+
+A logical type the decoder does not know reads as the type underneath it. The
+Avro specification requires it: "Language implementations must ignore unknown
+logical types when reading, and should use the underlying Avro type." Flink
+does the same. Its `AvroSchemaConverter` returns `INT` for an `int` whose
+logical type is neither `date` nor `time-millis`, and `BIGINT` for any other
+`long`. So `timestamp-nanos` and `local-timestamp-nanos` read as `int64`,
+`big-decimal` as `binary`, and `uuid` on a `fixed` as `binary`. Each is a
+lattice row declaring that. Mapping them to Arrow types of their own is in
+Out.
 
 `user.sql.type_unsupported` already exists: "A message field has a type the
 handler cannot convert." The error names the field path and the Avro type.
@@ -357,7 +417,15 @@ JSON Schema to Arrow, draft 7 and 2020-12 vocabulary that the MVP reads:
 | `object` with `properties` | `struct` |
 | `array` with `items` | `list` |
 | `type: [T, "null"]` | nullable `T` |
-| `$ref`, `oneOf`, `anyOf`, `object` without `properties`, `array` without `items` | `user.sql.type_unsupported` at start |
+| `oneOf: [T, null]`, `anyOf: [T, null]`, in either order | nullable `T` |
+| `$ref`, local or to another subject | the referenced schema's mapping |
+| `oneOf` or `anyOf` with two or more non-null branches, `object` without `properties`, `array` without `items` | `user.sql.type_unsupported` at start |
+
+A nullable property arrives in all three forms, so all three read as a
+nullable `T`. Confluent's own writer uses the second: Confluent Cloud for
+Apache Flink documents that "Nullable types are expressed as oneOf(Null, T)".
+Refusing `oneOf` outright would refuse the schemas Confluent's tools
+produce.
 
 `format: date-time` stays `utf8` in the MVP; a `CAST` in the handler SQL is
 the workaround, and it is the same workaround the JSON path needs today.
@@ -365,6 +433,41 @@ the workaround, and it is the same workaround the JSON path needs today.
 These two tables are the first draft of the `decode:` declarations in Type
 tables below. Once the runner judges the declarations, they are the
 authority.
+
+#### Schema references
+
+A registered schema can import another. Its registry entry carries a
+`references` list, and each entry names a schema by name, subject and
+version. The payload is unchanged: the referenced types are part of the
+schema the ID resolves to.
+
+Nothing resolves them for us. Flink's Confluent format hands the ID to
+Confluent's Java client and takes back a parsed schema, so the client does
+the resolving and Flink has no code for it
+(`ConfluentSchemaRegistryCoder.readSchema` calls
+`schemaRegistryClient.getById`). franz-go's client returns the schema and its
+`References` list, and stops there. So `serde.Registry` resolves them:
+
+1. `Refs` walks a schema's `References`, fetching each with `Version`, depth
+   first, and returns the closure in dependency order.
+2. Each fetch goes through the same cache as any other schema. A subject and
+   version pair is immutable, so the cache never expires.
+3. A cycle, or a closure deeper than 32, is `user.sql.type_unsupported` at
+   start. A recursive record is already unsupported for the same reason.
+
+Each format assembles the closure its own way:
+
+- Avro: each referenced schema is parsed into a `hamba` `SchemaCache` under
+  its name, in dependency order, then the root is parsed with
+  `ParseWithCache`.
+- JSON Schema: each referenced schema is added to the compiler with
+  `AddResource` under the name the reference gives it, then the root is
+  compiled. That covers a local `$ref` too, which needs no registry call.
+
+The sink never writes a schema with references. A generated schema has none.
+A specified schema's references are resolved the same way before the encoder
+is built. Flink is the same in both directions: its writer calls
+`register(subject, schema)` with no references.
 
 ### The typed handler
 
@@ -605,6 +708,10 @@ is `<underlying>:<logicalType>`.
 | Containers | `array<T>` for every depth-1 key the decoder maps; `array<fixed:duration>` and `array<[A, B]>` as unsupported-element witnesses; `map<long>`, `map<string>` |
 | Depth 3 | `array<array<long>>`, `array<record>`, `record<record>` |
 | References | a recursive `record`; a named type imported through the registry's `references` |
+
+Three of these rows have their outcome settled in Decoding above. A reference
+resolves. A recursive record is unsupported. A logical type the decoder does
+not map reads as its underlying type.
 
 hamba v2.31.0 knows ten logical types. The Avro 1.12 specification adds
 `timestamp-nanos`, `local-timestamp-nanos`, `big-decimal` and `uuid` on a
@@ -1098,6 +1205,19 @@ subjects. It records calls so a test can assert the cache.
   - A record whose last field fails `Decode` appends nothing.
   - The next record's values land in their own row.
   - A batch holding one invalid UTF-8 string ingests every other record.
+- Schema references:
+  - A schema importing another resolves, and both formats decode a record
+    holding the imported type.
+  - Each referenced schema is fetched once across a thousand records.
+  - A cycle fails at start with `user.sql.type_unsupported`.
+  - `TestIntegrationSerdeAvro_ResolvesReferences` registers a schema with a
+    reference against the real registry and reads a record through it.
+- Nullable forms: `type: [T, "null"]`, `oneOf: [T, null]` and
+  `anyOf: [T, null]` all decode to the same nullable column, in either
+  branch order.
+- Unknown logical types: `timestamp-nanos`, `local-timestamp-nanos`,
+  `big-decimal` and `uuid` on a `fixed` each decode as the underlying type
+  their lattice row declares.
 - Value failures: each case in Value failures, for both formats, is
   `user.data.invalid` naming its field path. A missing optional property is
   null. A `pattern` mismatch is not refused.
@@ -1322,7 +1442,8 @@ differently is outside what the matrix measured.
 ## Build order
 
 1. Config structs, rules, schema regeneration, error codes.
-2. `serde.Registry` with the fake registry and its tests.
+2. `serde.Registry`, including `Refs` and its cycle and depth limits, with the
+   fake registry and its tests.
 3. The declarations, with nothing judged yet:
    - the `serde` integration kind and `applies_to` lists;
    - `lattice.avro.yml`, `lattice.json_schema.yml` and the two compatibility
