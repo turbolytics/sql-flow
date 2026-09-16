@@ -591,6 +591,45 @@ binary, timestamps, dates and lists. It returns `user.sink.type_unsupported`
 for decimal, struct, map and time columns, so the mapping above needs those
 cases added.
 
+#### Names in a generated schema
+
+An Avro name starts with a letter or an underscore and continues with
+letters, digits and underscores. A DuckDB result column is under no such
+rule. `count_star()` and `sum(value)` are ordinary column names, and hamba
+refuses both when it parses the schema, in `validateName`.
+
+A column's name is never rewritten, at any depth. A name Avro cannot carry is
+`user.sink.name_invalid`, naming the column and the alias that fixes it:
+`SELECT count(*) AS event_count`. Rewriting it to `count_star__` would put a
+name nobody chose into a schema other teams read, and two columns whose names
+differ only in the rewritten characters would collide into one.
+
+Record type names are ours, so those are derived. The top-level record is
+named from the subject and a nested record from its column path, each with
+characters outside `[A-Za-z0-9_]` replaced by `_` and a leading digit
+prefixed with `_`. The namespace is `io.turbolytics.sqlflow`.
+
+hamba's `SkipNameValidation` is never set, and its error never escapes
+uncoded. An uncoded error reports as `system.internal.unexpected` and exits 1,
+which tells an operator this is sqlflow's bug and tells a supervisor to
+restart. It is neither.
+
+The check runs once per distinct output Arrow schema, beside the match
+against a specified schema, and for the same reason: a handler's output is not
+known at start. Deriving it early by running the handler SQL against an empty
+`batch` table does not work, because handler SQL may be an `INSERT`, as
+`dev/config/examples/kafka.stateful.window.yml` is. Running it at start would
+write rows.
+
+The check reads the output Arrow schema and nothing else, so it needs no
+broker and no registry. `sqlflow dev invoke` runs it against a fixture, and
+`validate` runs it statically once it fetches schemas. A pipeline that passes
+either one does not meet this failure in production.
+
+JSON Schema property names are arbitrary strings, so this is Avro's rule
+alone. In the specified mode nothing changes: a column no field is named for
+is already `user.sink.schema_mismatch`.
+
 Arrow to JSON Schema in the generated mode: an `object` with one property per
 column, `required` listing the non-nullable ones, and the type mapping
 inverted. The row bytes are the JSON `tableRowsAsJSON` already produces, with
@@ -1068,8 +1107,9 @@ Appended to the registry, each with a summary and an action:
 | `user.sink.schema_incompatible` | The registry refused the output schema under the subject's compatibility rule | Change the handler SQL to keep the output shape, or change the subject's compatibility level |
 | `user.sink.schema_unregistered` | The subject or version that `schema` names is not in the registry | Register the schema, or name a version the subject holds |
 | `user.sink.schema_mismatch` | The handler SQL's output columns do not match the specified schema's fields | Rename, add or remove columns in the handler SQL to match the schema, or name a version that matches |
+| `user.sink.name_invalid` | A result column's name cannot be written in the sink's schema language | Alias the column in the handler SQL, as in `SELECT count(*) AS event_count` |
 
-`codes.golden` gains four lines. Everything else reuses `user.data.malformed`,
+`codes.golden` gains five lines. Everything else reuses `user.data.malformed`,
 `user.data.invalid`, `user.sql.type_unsupported`, `user.sink.type_unsupported`,
 `user.sink.encode_failed`, `user.config.invalid`,
 `user.source.security_invalid`, `system.source.unreachable` and
@@ -1235,6 +1275,10 @@ subjects. It records calls so a test can assert the cache.
     field it names.
   - A field default is written when its column is absent.
   - The match runs once per distinct output schema.
+- Names: a column named `count_star()` is `user.sink.name_invalid` naming the
+  column; a struct's field is checked at its own depth; a subject whose name
+  starts with a digit produces a record name with its prefix; the check runs
+  once per output schema; no name is ever rewritten.
 - Encoder, both modes:
   a framed record decodes back to the same values.
 - Config: each rule in the Config section fails the build with
