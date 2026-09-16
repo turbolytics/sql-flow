@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -19,16 +18,16 @@ import (
 // runner does not bring it under them; range(200000000) alone took 320 ms.
 const slowSQL = "SELECT sum(hash(a.range * b.range)) AS n FROM range(10000) a, range(10000) b"
 
-func mustPrepare(t *testing.T, conn adbc.Connection, sql string, params ...config.ServeParam) *statement {
+func mustPrepare(t *testing.T, ex Executor, sql string, params ...config.ServeParam) Statement {
 	t.Helper()
-	st, err := prepare(context.Background(), conn, "ds", "", sql, params)
+	st, err := ex.Prepare(context.Background(), StatementSpec{Dataset: "ds", SQL: sql, Params: params})
 	assert.NoError(t, err)
 	return st
 }
 
-func queryRows(t *testing.T, conn adbc.Connection, st *statement, values map[string]any) []map[string]any {
+func queryRows(t *testing.T, ex Executor, st Statement, values map[string]any) []map[string]any {
 	t.Helper()
-	res, err := st.query(context.Background(), conn, values, 100)
+	res, _, err := query(context.Background(), ex, st, values, 100)
 	assert.NoError(t, err)
 	return decodeRows(t, res)
 }
@@ -37,15 +36,16 @@ func queryRows(t *testing.T, conn adbc.Connection, st *statement, values map[str
 // first request.
 func TestCliServe_PrepareFailsAtStartupNamingTheStatement(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
+	ex, _ := newExec(t, 1)
 
-	_, err := prepare(context.Background(), conn, "posts", "1h", "SELECT * FROM no_such_table", nil)
+	_, err := ex.Prepare(context.Background(), StatementSpec{
+		Dataset: "posts", Grain: "1h", SQL: "SELECT * FROM no_such_table"})
 	assert.Error(t, err)
 	assert.Equal(t, errs.CodeSQLInvalid, errs.CodeOf(err))
 	assert.That(t, strings.Contains(err.Error(), "dataset posts grain 1h"))
 	assert.That(t, strings.Contains(err.Error(), "no_such_table"))
 
-	_, err = prepare(context.Background(), conn, "posts", "", "SELECT $1", nil)
+	_, err = ex.Prepare(context.Background(), StatementSpec{Dataset: "posts", SQL: "SELECT $1"})
 	assert.Equal(t, errs.CodeConfigServeDataset, errs.CodeOf(err))
 }
 
@@ -55,10 +55,13 @@ func TestCliServe_PrepareFailsAtStartupNamingTheStatement(t *testing.T) {
 // server refuses to start.
 func TestCliServe_PrepareRefusesAParamCountMismatch(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
+	ex, _ := newExec(t, 1)
 
-	_, err := prepare(context.Background(), conn, "posts", "", `SELECT E'it\'s $fake' AS s`,
-		[]config.ServeParam{{Name: "fake", Type: "string"}})
+	_, err := ex.Prepare(context.Background(), StatementSpec{
+		Dataset: "posts",
+		SQL:     `SELECT E'it\'s $fake' AS s`,
+		Params:  []config.ServeParam{{Name: "fake", Type: "string"}},
+	})
 	assert.Error(t, err)
 	assert.Equal(t, errs.CodeSQLInvalid, errs.CodeOf(err))
 	assert.That(t, strings.Contains(err.Error(), "DuckDB counts 0 parameters and sqlflow counts 1"))
@@ -69,13 +72,13 @@ func TestCliServe_PrepareRefusesAParamCountMismatch(t *testing.T) {
 // rows.
 func TestCliServe_BindsEachValueToItsOwnPlaceholder(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
+	ex, _ := newExec(t, 1)
 
-	st := mustPrepare(t, conn, "SELECT $b AS b, $a AS a, $a || '!' AS a2",
+	st := mustPrepare(t, ex, "SELECT $b AS b, $a AS a, $a || '!' AS a2",
 		config.ServeParam{Name: "a", Type: "string"},
 		config.ServeParam{Name: "b", Type: "string"})
 
-	rows := queryRows(t, conn, st, map[string]any{"a": "from a", "b": "from b"})
+	rows := queryRows(t, ex, st, map[string]any{"a": "from a", "b": "from b"})
 	assert.Equal(t, "from b", rows[0]["b"])
 	assert.Equal(t, "from a", rows[0]["a"])
 	assert.Equal(t, "from a!", rows[0]["a2"])
@@ -85,9 +88,9 @@ func TestCliServe_BindsEachValueToItsOwnPlaceholder(t *testing.T) {
 // default and the column keeps its type.
 func TestCliServe_AnAbsentParamBindsATypedNull(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
+	ex, _ := newExec(t, 1)
 
-	st := mustPrepare(t, conn, `SELECT
+	st := mustPrepare(t, ex, `SELECT
 			coalesce($since, TIMESTAMPTZ '2000-01-01 00:00:00+00') AS since,
 			coalesce($n, 7) AS n,
 			coalesce($s, 'default') AS s`,
@@ -95,7 +98,7 @@ func TestCliServe_AnAbsentParamBindsATypedNull(t *testing.T) {
 		config.ServeParam{Name: "n", Type: "integer"},
 		config.ServeParam{Name: "s", Type: "string"})
 
-	res, err := st.query(context.Background(), conn, map[string]any{}, 10)
+	res, _, err := query(context.Background(), ex, st, map[string]any{}, 10)
 	assert.NoError(t, err)
 	assert.Equal(t, "TIMESTAMP WITH TIME ZONE", res.Columns[0].Type)
 	assert.Equal(t, "BIGINT", res.Columns[1].Type)
@@ -105,7 +108,7 @@ func TestCliServe_AnAbsentParamBindsATypedNull(t *testing.T) {
 	assert.Equal(t, "default", rows[0]["s"])
 
 	since := time.Date(2026, 9, 10, 12, 30, 0, 0, time.FixedZone("EDT", -4*3600))
-	rows = queryRows(t, conn, st, map[string]any{"since": since, "n": int64(-3), "s": "given"})
+	rows = queryRows(t, ex, st, map[string]any{"since": since, "n": int64(-3), "s": "given"})
 	assert.Equal(t, "2026-09-10T16:30:00Z", rows[0]["since"])
 	assert.Equal(t, float64(-3), rows[0]["n"])
 	assert.Equal(t, "given", rows[0]["s"])
@@ -115,74 +118,83 @@ func TestCliServe_AnAbsentParamBindsATypedNull(t *testing.T) {
 // plan, built against an empty table, and returned nothing forever after.
 func TestCliServe_ARequestSeesTheTableAsItIsNow(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
-	execSQL(t, conn, "CREATE TABLE t (n BIGINT)")
+	ex, db := newExec(t, 1, "CREATE TABLE t (n BIGINT)")
 
-	st := mustPrepare(t, conn, "SELECT n FROM t WHERE n >= coalesce($min, 0) ORDER BY n",
+	// A writer outside the pool, the way an attached source changes under a
+	// running server.
+	writer, err := db.Connect(context.Background())
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = writer.Close() })
+
+	st := mustPrepare(t, ex, "SELECT n FROM t WHERE n >= coalesce($min, 0) ORDER BY n",
 		config.ServeParam{Name: "min", Type: "integer"})
-	assert.Equal(t, 0, len(queryRows(t, conn, st, nil)))
+	assert.Equal(t, 0, len(queryRows(t, ex, st, nil)))
 
-	execSQL(t, conn, "INSERT INTO t VALUES (1), (2), (3)")
-	assert.Equal(t, 3, len(queryRows(t, conn, st, nil)))
-	assert.Equal(t, 1, len(queryRows(t, conn, st, map[string]any{"min": int64(3)})))
+	execSQL(t, writer, "INSERT INTO t VALUES (1), (2), (3)")
+	assert.Equal(t, 3, len(queryRows(t, ex, st, nil)))
+	assert.Equal(t, 1, len(queryRows(t, ex, st, map[string]any{"min": int64(3)})))
 }
 
 // DuckDB cannot be cancelled, so the deadline bounds the caller's wait and
-// the query keeps the lock. A request right behind it waits on the lock and
-// times out too. Once the query finishes, the next request answers.
-func TestCliServe_ATimeoutReturnsWhileTheQueryHoldsTheLock(t *testing.T) {
+// the query keeps its session. A request right behind it waits for that
+// session and times out too. Once the query finishes, the next request
+// answers. This is a pool of one, which is the behaviour serve had before
+// there was a pool.
+func TestCliServe_ATimeoutReturnsWhileTheQueryHoldsTheSession(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
-	exec := &executor{conn: conn}
+	ex, _ := newExec(t, 1)
 
-	slow := mustPrepare(t, conn, slowSQL)
-	fast := mustPrepare(t, conn, "SELECT 1 AS n")
-	runStatement := func(st *statement) func(context.Context, adbc.Connection) (result, error) {
-		return func(ctx context.Context, conn adbc.Connection) (result, error) {
-			return st.query(ctx, conn, nil, 10)
-		}
+	slow := mustPrepare(t, ex, slowSQL)
+	fast := mustPrepare(t, ex, "SELECT 1 AS n")
+	run := func(st Statement, timeout time.Duration) (result, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		res, _, err := query(ctx, ex, st, nil, 10)
+		return res, err
 	}
 
 	start := time.Now()
-	_, err := exec.run(context.Background(), 100*time.Millisecond, runStatement(slow))
+	_, err := run(slow, 100*time.Millisecond)
 	assert.That(t, errors.Is(err, context.DeadlineExceeded))
 	assert.That(t, time.Since(start) < 500*time.Millisecond)
 
-	_, err = exec.run(context.Background(), 100*time.Millisecond, runStatement(fast))
+	_, err = run(fast, 100*time.Millisecond)
 	assert.That(t, errors.Is(err, context.DeadlineExceeded))
 
-	res, err := exec.run(context.Background(), 60*time.Second, runStatement(fast))
+	res, err := run(fast, 60*time.Second)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, res.RowCount)
 }
 
-// Shutdown closes the connection after close returns, so close must wait for
-// the running query, and nothing may start on the connection afterwards.
+// Shutdown closes the sessions after Close returns, so Close must wait for
+// the running query, and nothing may start on a session afterwards.
 func TestCliServe_CloseWaitsForTheRunningQuery(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
-	exec := &executor{conn: conn}
-	slow := mustPrepare(t, conn, slowSQL)
+	ex, _ := newExec(t, 1)
+	slow := mustPrepare(t, ex, slowSQL)
+
+	sess, err := ex.Acquire(context.Background())
+	assert.NoError(t, err)
 
 	finished := make(chan time.Time, 1)
 	go func() {
-		_, _ = exec.run(context.Background(), 60*time.Second,
-			func(ctx context.Context, conn adbc.Connection) (result, error) {
-				defer func() { finished <- time.Now() }()
-				return slow.query(ctx, conn, nil, 10)
-			})
+		rdr, err := sess.Run(context.Background(), slow, nil)
+		if err == nil {
+			_, _ = readRows(rdr, 10)
+			rdr.Release()
+		}
+		// Recorded before the session goes back, so a Close that returned
+		// first would be a Close that did not wait.
+		finished <- time.Now()
+		sess.Release()
 	}()
 	time.Sleep(50 * time.Millisecond)
 
-	exec.close()
+	ex.Close()
 	closedAt := time.Now()
 	queryDone := <-finished
 	assert.That(t, !closedAt.Before(queryDone))
 
-	_, err := exec.run(context.Background(), time.Second,
-		func(context.Context, adbc.Connection) (result, error) {
-			t.Fatal("a query ran after close")
-			return result{}, nil
-		})
-	assert.That(t, errors.Is(err, errClosed))
+	_, err = ex.Acquire(context.Background())
+	assert.That(t, errors.Is(err, ErrClosed))
 }

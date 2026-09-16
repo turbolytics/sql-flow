@@ -68,6 +68,13 @@ serve:
       sql: ` + slowSQL + `
 `
 
+const createPostsTable = `CREATE TABLE posts AS SELECT * FROM (VALUES
+	(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'en', 10::BIGINT),
+	(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'ja', 4::BIGINT),
+	(TIMESTAMPTZ '2026-09-10 01:00:00+00', 'en', 7::BIGINT),
+	(TIMESTAMPTZ '2026-09-11 00:00:00+00', 'en', 1::BIGINT)
+) AS t(bucket, lang, posts)`
+
 type testServer struct {
 	srv     *Server
 	handler http.Handler
@@ -76,23 +83,18 @@ type testServer struct {
 
 func newTestServer(t *testing.T, text string) *testServer {
 	t.Helper()
-	conn := newConn(t)
-	execSQL(t, conn, "SET TimeZone='UTC'")
-	execSQL(t, conn, `CREATE TABLE posts AS SELECT * FROM (VALUES
-		(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'en', 10::BIGINT),
-		(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'ja', 4::BIGINT),
-		(TIMESTAMPTZ '2026-09-10 01:00:00+00', 'en', 7::BIGINT),
-		(TIMESTAMPTZ '2026-09-11 00:00:00+00', 'en', 1::BIGINT)
-	) AS t(bucket, lang, posts)`)
+	// One session: every assertion below about ordering and timing is the
+	// old single-connection behaviour.
+	ex, _ := newExec(t, 1, "SET TimeZone='UTC'", createPostsTable)
 
 	conf, err := config.ParseServe([]byte(text))
 	assert.NoError(t, err)
 
 	core, logs := observer.New(zap.InfoLevel)
-	srv, err := New(context.Background(), conf, conn, WithLogger(zap.New(core)))
+	srv, err := New(context.Background(), conf, ex, WithLogger(zap.New(core)))
 	assert.NoError(t, err)
-	// Registered after newConn's cleanup, so it runs first: a slow query
-	// still holding the lock finishes before the connection closes.
+	// Registered after newExec's cleanups, so it runs first: a slow query
+	// still holding a session finishes before the database closes.
 	t.Cleanup(srv.Close)
 
 	return &testServer{srv: srv, handler: srv.Handler(), logs: logs}
@@ -338,8 +340,8 @@ func TestCliServe_MaxRowsTruncatesAndTheNextRequestAnswers(t *testing.T) {
 	assert.Equal(t, float64(3), again.body["row_count"])
 }
 
-// A query past its deadline is a 504, and the health check, waiting on the
-// same lock, goes red until the query finishes.
+// A query past its deadline is a 504, and the health check, waiting for the
+// pool's only session, goes red until the query finishes.
 func TestCliServe_ASlowQueryIsA504AndTurnsHealthRed(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	ts := newTestServer(t, testServe)
@@ -502,16 +504,16 @@ func TestCliServe_ServeDrainsAnInFlightRequest(t *testing.T) {
 // New. Neither is found on the first request.
 func TestCliServe_NewRefusesWhatCannotAnswer(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
+	ex, _ := newExec(t, 1)
 
 	emptyToken, err := config.ParseServe([]byte(strings.Replace(testServe, "token: page-token", `token: ""`, 1)))
 	assert.NoError(t, err)
-	_, err = New(context.Background(), emptyToken, conn)
+	_, err = New(context.Background(), emptyToken, ex)
 	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
 
 	noTable, err := config.ParseServe([]byte(testServe))
 	assert.NoError(t, err)
-	_, err = New(context.Background(), noTable, conn)
+	_, err = New(context.Background(), noTable, ex)
 	assert.Equal(t, errs.CodeSQLInvalid, errs.CodeOf(err))
 	assert.That(t, strings.Contains(err.Error(), "dataset status"))
 }

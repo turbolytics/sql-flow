@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apache/arrow-adbc/go/adbc"
 	"go.uber.org/zap"
 )
 
@@ -31,7 +30,7 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	// Cheap rejections first: CORS, then the method, then auth inside the
-	// routes, all before anything waits on the connection's lock.
+	// routes, all before anything waits for a session.
 	return s.logRequests(s.cors(getOnly(mux)))
 }
 
@@ -64,24 +63,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
-	_, err := s.exec.run(r.Context(), s.healthTimeout,
-		func(ctx context.Context, conn adbc.Connection) (result, error) {
-			stmt, err := conn.NewStatement()
-			if err != nil {
-				return result{}, err
-			}
-			defer stmt.Close()
-			if err := stmt.SetSqlQuery("SELECT 1"); err != nil {
-				return result{}, err
-			}
-			rdr, _, err := stmt.ExecuteQuery(ctx)
-			if err != nil {
-				return result{}, err
-			}
-			defer rdr.Release()
-			return readRows(rdr, 1)
-		})
-	if err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), s.healthTimeout)
+	defer cancel()
+
+	if _, _, err := query(ctx, s.exec, s.health, nil, 1); err != nil {
 		s.logger.Warn("health check failed", zap.String("error", Redact(err.Error())))
 		writeJSON(w, r, http.StatusServiceUnavailable, []byte(`{"status":"unavailable"}`))
 		return
@@ -116,14 +101,15 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query, err := url.ParseQuery(r.URL.RawQuery)
+	// params, not query: query is the helper that runs one.
+	params, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		writeError(w, r, &apiError{http.StatusBadRequest, "invalid_param",
 			"the query string does not parse: " + err.Error()})
 		return
 	}
 
-	values, apiErr := parseParams(ds.conf.Params, query)
+	values, apiErr := parseParams(ds.conf.Params, params)
 	if apiErr != nil {
 		writeError(w, r, apiErr)
 		return
@@ -132,13 +118,13 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 	// A ranged dataset needs the parsed since and until to choose a grain;
 	// any other dataset takes the grain as named.
 	var (
-		st  *statement
+		st  datasetStatement
 		win *window
 	)
 	if ds.span != nil {
-		st, win, apiErr = ds.resolveRange(query, values, s.now())
+		st, win, apiErr = ds.resolveRange(params, values, s.now())
 	} else {
-		st, apiErr = ds.resolveStatement(query)
+		st, apiErr = ds.resolveStatement(params)
 	}
 	if apiErr != nil {
 		writeError(w, r, apiErr)
@@ -146,15 +132,19 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 	}
 	entry.grain = st.grain
 
+	// The deadline bounds this caller's wait: for a session, and then for the
+	// query on it.
+	ctx, cancel := context.WithTimeout(r.Context(), ds.timeout)
+	defer cancel()
+
 	start := time.Now()
-	res, err := s.exec.run(r.Context(), ds.timeout,
-		func(ctx context.Context, conn adbc.Connection) (result, error) {
-			return st.query(ctx, conn, values, ds.maxRows)
-		})
+	res, _, err := query(ctx, s.exec, st.stmt, values, ds.maxRows)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
+		// An exhausted pool arrives here too: the wait for a session is the
+		// same wait as far as the caller is concerned.
 		writeError(w, r, &apiError{http.StatusGatewayTimeout, "query_timeout",
-			st.where() + " did not answer within " + ds.timeout.String()})
+			st.stmt.Where() + " did not answer within " + ds.timeout.String()})
 		return
 	case errors.Is(err, context.Canceled):
 		// The caller hung up. There is nobody to answer.
@@ -167,7 +157,7 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("query failed", zap.String("dataset", name),
 			zap.String("grain", st.grain), zap.String("error", Redact(err.Error())))
 		writeError(w, r, &apiError{http.StatusInternalServerError, "query_failed",
-			st.where() + " failed; the server log has the database's error"})
+			st.stmt.Where() + " failed; the server log has the database's error"})
 		return
 	}
 

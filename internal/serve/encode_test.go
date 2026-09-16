@@ -29,6 +29,33 @@ func execSQL(t *testing.T, conn adbc.Connection, sql string) {
 	assert.NoError(t, err)
 }
 
+// newExec opens an in-memory DuckDB and returns an executor of size sessions
+// over it, having run setup on the init connection. Size 1 is the old
+// single-connection behaviour, which is what keeps a test's ordering and
+// timing true. The database comes back too, for a test that has to change
+// the data from outside the pool.
+func newExec(t *testing.T, size int, setup ...string) (Executor, *duckdb.DB) {
+	t.Helper()
+	db, err := duckdb.OpenPath(context.Background(), "")
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	ex, err := NewDuckDBExecutor(context.Background(), db, size,
+		func(ctx context.Context, conn adbc.Connection) error {
+			for _, sql := range setup {
+				if err := execOn(ctx, conn, sql); err != nil {
+					return err
+				}
+			}
+			return nil
+		}, nil)
+	assert.NoError(t, err)
+	// Registered after the database's cleanup, so it runs first: a query
+	// still holding a session finishes before the database closes under it.
+	t.Cleanup(ex.Close)
+	return ex, db
+}
+
 // encodeSQL runs sql and encodes its rows the way a request does.
 func encodeSQL(t *testing.T, conn adbc.Connection, sql string, maxRows int) result {
 	t.Helper()
