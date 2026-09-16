@@ -1468,16 +1468,16 @@ git commit -m "serve: six metrics, and the session wait that sizes the pool"
 
 ---
 
-### Task 7: `/healthz` says busy rather than down
+### Task 7: `/healthz` says busy rather than down, and answers HEAD
 
 **Files:**
-- Modify: `internal/serve/http.go` (`healthz`)
+- Modify: `internal/serve/http.go` (`healthz`, `getOnly`)
 - Test: `internal/serve/http_test.go`
 - Modify: `README.md` (the routes table)
 
 **Interfaces:**
 - Consumes: `query`, `s.healthTimeout`.
-- Produces: `503 {"status":"busy"}` distinct from `503 {"status":"unavailable"}`.
+- Produces: `503 {"status":"busy"}` distinct from `503 {"status":"unavailable"}`; `HEAD /healthz` answered, `HEAD` elsewhere still `405`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1532,22 +1532,96 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 
 A caveat worth a comment: a request that timed out leaves its session busy until its query finishes, so a pool full of abandoned slow queries reports busy. That is the truth about the server.
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Write the failing HEAD test**
+
+Uptime monitors send `HEAD`, and `getOnly` refuses it with `405` today. Add to `internal/serve/http_test.go`:
+
+```go
+// Monitors send HEAD, and the status line is the whole answer. A dataset
+// still refuses it: running the query and discarding the rows would spend a
+// session on nothing.
+func TestCliServe_HealthzAnswersHead(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	r := ts.do(t, http.MethodHead, "/healthz", nil)
+	assert.Equal(t, http.StatusOK, r.status)
+	assert.Equal(t, "", r.raw)
+
+	sess, err := ts.srv.exec.Acquire(context.Background())
+	assert.NoError(t, err)
+	busy := ts.do(t, http.MethodHead, "/healthz", nil)
+	sess.Release()
+	assert.Equal(t, http.StatusServiceUnavailable, busy.status)
+
+	ds := ts.do(t, http.MethodHead, "/v1/datasets/status", pageToken)
+	assert.Equal(t, http.StatusMethodNotAllowed, ds.status)
+	assert.Equal(t, http.MethodGet, ds.header.Get("Allow"))
+}
+```
+
+`ts.do` unmarshals the body as JSON when it is non-empty; a HEAD response has none, so confirm the helper tolerates an empty body and adjust it if it does not.
+
+- [ ] **Step 5: Run it to see it fail**
+
+Run: `go test -short ./internal/serve/ -run TestCliServe_HealthzAnswersHead`
+Expected: FAIL. `getOnly` answers `405` for the two `/healthz` calls.
+
+- [ ] **Step 6: Let HEAD through for healthz only**
+
+In `internal/serve/http.go`:
+
+```go
+// getOnly refuses every method but GET, and HEAD on /healthz.
+//
+// Monitors send HEAD, and for /healthz the status line is the whole answer.
+// Every other route stays GET-only on purpose: a HEAD of a dataset would run
+// the query, borrow a session and throw the rows away, which spends the pool
+// on nothing. net/http suppresses the body of a HEAD response, so the health
+// handler needs no special case.
+func getOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		allowed := http.MethodGet
+		if r.URL.Path == "/healthz" {
+			allowed = "GET, HEAD"
+		}
+		if r.Method == http.MethodGet || (r.Method == http.MethodHead && r.URL.Path == "/healthz") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Allow", allowed)
+		writeError(w, r, &apiError{http.StatusMethodNotAllowed, "method_not_allowed",
+			r.Method + " is not allowed; " + allowedDescription(r.URL.Path)})
+	})
+}
+
+// allowedDescription names what a route accepts, for the error message.
+func allowedDescription(path string) string {
+	if path == "/healthz" {
+		return "/healthz is GET or HEAD"
+	}
+	return "every route is GET, and /healthz is also HEAD"
+}
+```
+
+- [ ] **Step 7: Run the tests**
 
 Run: `go test -short -race ./internal/serve/`
-Expected: PASS. `TestCliServe_ASlowQueryIsA504AndTurnsHealthRed` now expects `busy` rather than `unavailable`; update its assertion and its name to `...TurnsHealthBusy`.
+Expected: PASS. `TestCliServe_ASlowQueryIsA504AndTurnsHealthRed` now expects `busy` rather than `unavailable`; update its assertion and its name to `...TurnsHealthBusy`. `TestCliServe_ErrorsCarryTheirCodeAndNameTheCause`'s "not GET" case asserts the `405` message; update its expected substring if it no longer matches.
 
-- [ ] **Step 5: Document and commit**
+- [ ] **Step 8: Document and commit**
 
 In `README.md`, change the `/healthz` row of the routes table to:
 
 ```markdown
-| `/healthz` | none | `200` `{"status":"ok"}`; `503` `{"status":"busy"}` when no session is free, `{"status":"unavailable"}` when the query fails |
+| `/healthz` | none | `200` `{"status":"ok"}`; `503` `{"status":"busy"}` when no session is free, `{"status":"unavailable"}` when the query fails. `HEAD` is answered too, for monitors |
 ```
+
+and note under the table that every other route is GET only, because a `HEAD` of a dataset would run its query and discard the rows.
 
 ```bash
 git add internal/serve/http.go internal/serve/http_test.go README.md
-git commit -m "serve: healthz reports a busy pool as busy, not as down"
+git commit -m "serve: healthz reports a busy pool as busy, and answers HEAD"
 ```
 
 ---

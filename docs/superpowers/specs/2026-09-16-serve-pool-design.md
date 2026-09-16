@@ -345,8 +345,17 @@ else and a supervisor can kill a server that is merely busy.
 
 With a pool it takes the health timeout as its deadline and answers `503` with
 `{"status":"busy"}` when no session comes free in time, distinct from `503`
-`{"status":"down"}` when the query itself fails. Busy is not dead, and an
-operator reading a restart loop needs to know which one it was.
+`{"status":"unavailable"}` when the query itself fails. Busy is not dead, and
+an operator reading a restart loop needs to know which one it was.
+
+`/healthz` also answers `HEAD`, which is what many uptime monitors send and
+what `getOnly` refuses today with `405`. The status line is the whole answer
+to a `HEAD`, so the handler does the same work and Go suppresses the body.
+
+`HEAD` stays refused on every other route. A `HEAD` of a dataset would run
+the query, borrow a session, and discard the result, which is a way to spend
+the pool on nothing. `getOnly` therefore allows `HEAD` for `/healthz` alone
+and keeps its `Allow` header accurate per route.
 
 ## Memory, and why 4
 
@@ -457,6 +466,9 @@ Unit, `go test -short`:
   session comes back before the query would have finished. Dropping the
   context check from `readRows` fails it.
 - `TestCliServe_HealthzIsBusyNotDownWhenThePoolIsFull`.
+- `TestCliServe_HealthzAnswersHead`: `HEAD /healthz` is `200` with an empty
+  body, `503` when the pool is full, and `HEAD` of a dataset is still `405`
+  with `Allow: GET`.
 - `TestCliServe_MetricsAreOffUnlessEnabled`, and with it enabled, `/metrics`
   carries all six instruments after one request.
 - `TestCliServe_PoolSizeRules`: negative and over-64 sizes report at their
