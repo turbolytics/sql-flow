@@ -1,7 +1,11 @@
 # Schema registry MVP: Avro and JSON Schema through Kafka, both directions
 
 Issue #272. Written against `main` at ae8fd28 on 2026-09-12. Re-verified
-against `main` at dd51502 on 2026-09-15.
+against `main` at dd51502 on 2026-09-15, and rebased onto 54b17f2 on
+2026-09-16. The three commits in between are `serve` and rollups. They touch
+none of the files this spec cites: `turbine.go`, the handlers, the sinks, the
+coverage machinery and `scripts/coverage_matrix` are all unchanged. Two codes
+were appended to the error registry, which this spec's five join.
 
 ## The problem
 
