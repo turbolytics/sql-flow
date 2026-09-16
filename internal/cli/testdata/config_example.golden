@@ -62,12 +62,8 @@ pipeline:
         # Sink only. A registered version to write against. Absent means the
         # sink generates a schema from its output and registers it.
         schema:
-          # latest, or a version number of at least 1. A string in Go because
-          # yaml.v3 reads both spellings into one field.
-          # pattern and minimum sit in jsonschema_extras: oneof_type clears the
-          # schema's type, and the reflector drops the two keywords for a field
-          # with no type. pattern constrains only a string and minimum only a
-          # number, so the pair reads as "latest, or an integer of at least 1".
+          # latest, or a version number of at least 1. Written as the word
+          # latest or as a number.
           version: <unknown>
     websocket:
       uri: <string>
@@ -118,12 +114,8 @@ pipeline:
         # Sink only. A registered version to write against. Absent means the
         # sink generates a schema from its output and registers it.
         schema:
-          # latest, or a version number of at least 1. A string in Go because
-          # yaml.v3 reads both spellings into one field.
-          # pattern and minimum sit in jsonschema_extras: oneof_type clears the
-          # schema's type, and the reflector drops the two keywords for a field
-          # with no type. pattern constrains only a string and minimum only a
-          # number, so the pair reads as "latest, or an integer of at least 1".
+          # latest, or a version number of at least 1. Written as the word
+          # latest or as a number.
           version: <unknown>
     # Console output sink configuration.
     console:
@@ -231,12 +223,8 @@ pipeline:
           # Sink only. A registered version to write against. Absent means the
           # sink generates a schema from its output and registers it.
           schema:
-            # latest, or a version number of at least 1. A string in Go because
-            # yaml.v3 reads both spellings into one field.
-            # pattern and minimum sit in jsonschema_extras: oneof_type clears the
-            # schema's type, and the reflector drops the two keywords for a field
-            # with no type. pattern constrains only a string and minimum only a
-            # number, so the pair reads as "latest, or an integer of at least 1".
+            # latest, or a version number of at least 1. Written as the word
+            # latest or as a number.
             version: <unknown>
       # Console output sink configuration.
       console:
@@ -354,12 +342,8 @@ tables:
               # Sink only. A registered version to write against. Absent means the
               # sink generates a schema from its output and registers it.
               schema:
-                # latest, or a version number of at least 1. A string in Go because
-                # yaml.v3 reads both spellings into one field.
-                # pattern and minimum sit in jsonschema_extras: oneof_type clears the
-                # schema's type, and the reflector drops the two keywords for a field
-                # with no type. pattern constrains only a string and minimum only a
-                # number, so the pair reads as "latest, or an integer of at least 1".
+                # latest, or a version number of at least 1. Written as the word
+                # latest or as a number.
                 version: <unknown>
           # Console output sink configuration.
           console:

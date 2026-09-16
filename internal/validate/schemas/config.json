@@ -202,7 +202,7 @@
                               "type": "integer"
                             }
                           ],
-                          "description": "latest, or a version number of at least 1. A string in Go because\nyaml.v3 reads both spellings into one field.\n\npattern and minimum sit in jsonschema_extras: oneof_type clears the\nschema's type, and the reflector drops the two keywords for a field\nwith no type. pattern constrains only a string and minimum only a\nnumber, so the pair reads as \"latest, or an integer of at least 1\".",
+                          "description": "latest, or a version number of at least 1. Written as the word\nlatest or as a number.",
                           "minimum": 1,
                           "pattern": "^latest$"
                         }
@@ -440,7 +440,7 @@
                               "type": "integer"
                             }
                           ],
-                          "description": "latest, or a version number of at least 1. A string in Go because\nyaml.v3 reads both spellings into one field.\n\npattern and minimum sit in jsonschema_extras: oneof_type clears the\nschema's type, and the reflector drops the two keywords for a field\nwith no type. pattern constrains only a string and minimum only a\nnumber, so the pair reads as \"latest, or an integer of at least 1\".",
+                          "description": "latest, or a version number of at least 1. Written as the word\nlatest or as a number.",
                           "minimum": 1,
                           "pattern": "^latest$"
                         }
@@ -764,7 +764,7 @@
                                   "type": "integer"
                                 }
                               ],
-                              "description": "latest, or a version number of at least 1. A string in Go because\nyaml.v3 reads both spellings into one field.\n\npattern and minimum sit in jsonschema_extras: oneof_type clears the\nschema's type, and the reflector drops the two keywords for a field\nwith no type. pattern constrains only a string and minimum only a\nnumber, so the pair reads as \"latest, or an integer of at least 1\".",
+                              "description": "latest, or a version number of at least 1. Written as the word\nlatest or as a number.",
                               "minimum": 1,
                               "pattern": "^latest$"
                             }
@@ -1118,7 +1118,7 @@
                                         "type": "integer"
                                       }
                                     ],
-                                    "description": "latest, or a version number of at least 1. A string in Go because\nyaml.v3 reads both spellings into one field.\n\npattern and minimum sit in jsonschema_extras: oneof_type clears the\nschema's type, and the reflector drops the two keywords for a field\nwith no type. pattern constrains only a string and minimum only a\nnumber, so the pair reads as \"latest, or an integer of at least 1\".",
+                                    "description": "latest, or a version number of at least 1. Written as the word\nlatest or as a number.",
                                     "minimum": 1,
                                     "pattern": "^latest$"
                                   }

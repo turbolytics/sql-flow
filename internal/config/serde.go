@@ -49,13 +49,14 @@ type KafkaValue struct {
 
 // KafkaValueSchema names the registered version a sink writes against.
 type KafkaValueSchema struct {
-	// latest, or a version number of at least 1. A string in Go because
-	// yaml.v3 reads both spellings into one field.
-	//
-	// pattern and minimum sit in jsonschema_extras: oneof_type clears the
-	// schema's type, and the reflector drops the two keywords for a field
-	// with no type. pattern constrains only a string and minimum only a
-	// number, so the pair reads as "latest, or an integer of at least 1".
+	// pattern and minimum ride the jsonschema_extras tag. oneof_type clears
+	// the schema's type, and the reflector then dispatches pattern and
+	// minimum on that type and drops both. pattern constrains only a
+	// string and minimum only a number, so together they read as "latest,
+	// or an integer of at least 1".
+
+	// latest, or a version number of at least 1. Written as the word
+	// latest or as a number.
 	Version string `yaml:"version" jsonschema:"oneof_type=string;integer" jsonschema_extras:"pattern=^latest$,minimum=1"`
 }
 
