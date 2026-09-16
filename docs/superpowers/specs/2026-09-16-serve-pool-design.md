@@ -50,7 +50,8 @@ In:
 
 Out:
 
-- Caching. The next spec, and it belongs behind the same interface.
+- Caching. The next spec, and it belongs behind the same interface. See
+  "Scaling out": it is also what makes more than one instance worth running.
 - A second executor implementation. The interface exists so one can be added
   without touching the request path; writing it now would be guessing.
 - Per-dataset pools, priorities, rate limiting.
@@ -349,6 +350,46 @@ something this spec should assume.
 of 8 against a testcontainers Postgres, drive concurrent scans, and read
 `pg_stat_activity`. The README then documents the real relationship, and the
 demo sets `pg_connection_limit` from it.
+
+## Scaling out
+
+A pool scales one process. The question it raises is whether the next step is
+more processes, so this section records what is true today, before a cache
+exists to change it.
+
+Serve is stateless: an in-memory DuckDB, no durable local state, no session
+affinity, tokens from config, and every request self-contained. Instances need
+no coordination, and startup is already safe for several at once, because each
+runs the migration script and that script takes an advisory lock. So more
+instances is a deployment change, not a code change.
+
+Adding them buys real capacity, because real work happens in serve. A request
+splits between an index range scan in Postgres, which ships the rows, and the
+fold in DuckDB — `dense_rank` over a partition, then `GROUP BY` — plus JSON
+encoding. If the fold ran in Postgres, another instance would add nothing.
+
+Two things bound it, and both are shared:
+
+- **Connections.** The worst case is `instances × pool.size × pg_connection_limit`
+  against a database that also carries the pipeline's writer. At the defaults
+  that is up to 16 per instance, which exhausts a small Postgres within
+  single-digit instances. The exact number waits on the integration test
+  above.
+- **Repeated work.** Instances share nothing, so each pulls the same hot rows
+  for the same popular ranges. Ten instances means ten times the scanning and
+  transfer for identical queries: database capacity spent to buy serve
+  capacity, which is backwards.
+
+So scaling out today trades a bottleneck for a worse one. What changes that is
+the cache, which is the argument for building it next: a settled bucket never
+changes, so an instance holding settled buckets answers most requests without
+touching Postgres, the database sees only the live tail, and instances become
+nearly independent. The cache is not primarily a latency optimisation. It is
+what makes horizontal scale pay.
+
+Until then the order under load is: size the pool from
+`sqlflow_serve_session_wait_seconds`, then give the database more capacity or
+a replica, and only then add instances.
 
 ## Tests
 
