@@ -232,7 +232,7 @@ func query(ctx context.Context, ex Executor, st Statement, values map[string]any
 			// tells the driver to stop, and before the caller is told: the
 			// buffers go back before the next request allocates its own.
 			defer rdr.Release()
-			return readRows(rdr, maxRows)
+			return readRows(ctx, rdr, maxRows)
 		}()
 		done <- outcome{res: res, err: err}
 	}()

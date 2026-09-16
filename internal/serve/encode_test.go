@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -67,7 +68,7 @@ func encodeSQL(t *testing.T, conn adbc.Connection, sql string, maxRows int) resu
 	assert.NoError(t, err)
 	defer rdr.Release()
 
-	res, err := readRows(rdr, maxRows)
+	res, err := readRows(context.Background(), rdr, maxRows)
 	assert.NoError(t, err)
 	return res
 }
@@ -186,4 +187,29 @@ func TestCliServe_EncodeTruncatesAtMaxRows(t *testing.T) {
 	assert.Equal(t, 0, empty.RowCount)
 	assert.Equal(t, "[]", string(empty.Rows))
 	assert.Equal(t, 1, len(empty.Columns))
+}
+
+// A caller that gave up should not pay for the rest of its own result, and
+// should not hold a session while it drains one. Releasing a reader without
+// consuming it is ADBC's documented equivalent of cancel, so stopping early is
+// what actually stops the query.
+func TestCliServe_ReadRowsStopsWhenTheRequestIsGone(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	conn := newConn(t)
+	stmt, err := conn.NewStatement()
+	assert.NoError(t, err)
+	defer stmt.Close()
+	// More rows than one batch, so there is a boundary to stop at.
+	assert.NoError(t, stmt.SetSqlQuery("SELECT i FROM range(500000) t(i)"))
+	rdr, _, err := stmt.ExecuteQuery(context.Background())
+	assert.NoError(t, err)
+	defer rdr.Release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res, err := readRows(ctx, rdr, 1000000)
+	assert.That(t, errors.Is(err, context.Canceled))
+	assert.That(t, res.RowCount < 1000000)
 }

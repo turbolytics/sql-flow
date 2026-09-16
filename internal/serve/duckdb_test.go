@@ -46,7 +46,7 @@ func TestCliServe_EverySessionIsUTC(t *testing.T) {
 	for i, s := range held {
 		rdr, err := s.Run(ctx, st, nil)
 		assert.NoError(t, err)
-		res, err := readRows(rdr, 1)
+		res, err := readRows(context.Background(), rdr, 1)
 		rdr.Release()
 		assert.NoError(t, err)
 

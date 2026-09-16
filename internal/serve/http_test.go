@@ -554,3 +554,30 @@ func TestCliServe_RedactRemovesPasswords(t *testing.T) {
 		assert.Equal(t, want, Redact(in))
 	}
 }
+
+// elapsed_ms used to include the wait for a connection, so a 13 ms query on a
+// loaded server reported a second and sent its reader looking for a slow query
+// that did not exist. The two are separate fields now.
+func TestCliServe_QueuedMsSeparatesWaitFromWork(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	idle := ts.get(t, "/v1/datasets/status")
+	assert.Equal(t, http.StatusOK, idle.status)
+	assert.Equal(t, float64(0), idle.body["queued_ms"])
+
+	// Hold the only session, then time a request that has to wait for it.
+	held, err := ts.srv.exec.Acquire(context.Background())
+	assert.NoError(t, err)
+
+	done := make(chan response, 1)
+	go func() { done <- ts.get(t, "/v1/datasets/status") }()
+	time.Sleep(300 * time.Millisecond)
+	held.Release()
+
+	queued := <-done
+	assert.Equal(t, http.StatusOK, queued.status)
+	assert.That(t, queued.body["queued_ms"].(float64) >= 250)
+	// The query itself is unchanged by the wait, which is the whole point.
+	assert.That(t, queued.body["elapsed_ms"].(float64) < 250)
+}

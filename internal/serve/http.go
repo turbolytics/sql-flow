@@ -87,7 +87,12 @@ type rowsResponse struct {
 	Rows      json.RawMessage `json:"rows"`
 	RowCount  int             `json:"row_count"`
 	Truncated bool            `json:"truncated"`
-	ElapsedMS int64           `json:"elapsed_ms"`
+	// QueuedMS is how long the request waited for a session, and ElapsedMS is
+	// the query alone. Before the pool, elapsed_ms silently included the wait,
+	// so a 13 ms query on a loaded server reported a second and sent its
+	// reader looking for a slow query that did not exist.
+	QueuedMS  int64 `json:"queued_ms"`
+	ElapsedMS int64 `json:"elapsed_ms"`
 }
 
 func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +143,7 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	start := time.Now()
-	res, _, err := query(ctx, s.exec, st.stmt, values, ds.maxRows)
+	res, queued, err := query(ctx, s.exec, st.stmt, values, ds.maxRows)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		// An exhausted pool arrives here too: the wait for a session is the
@@ -169,7 +174,8 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		Rows:      res.Rows,
 		RowCount:  res.RowCount,
 		Truncated: res.Truncated,
-		ElapsedMS: time.Since(start).Milliseconds(),
+		QueuedMS:  queued.Milliseconds(),
+		ElapsedMS: (time.Since(start) - queued).Milliseconds(),
 	})
 	if err != nil {
 		writeError(w, r, &apiError{http.StatusInternalServerError, "query_failed", err.Error()})

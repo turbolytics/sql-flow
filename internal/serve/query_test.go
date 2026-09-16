@@ -180,7 +180,7 @@ func TestCliServe_CloseWaitsForTheRunningQuery(t *testing.T) {
 	go func() {
 		rdr, err := sess.Run(context.Background(), slow, nil)
 		if err == nil {
-			_, _ = readRows(rdr, 10)
+			_, _ = readRows(context.Background(), rdr, 10)
 			rdr.Release()
 		}
 		// Recorded before the session goes back, so a Close that returned
