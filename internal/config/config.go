@@ -58,6 +58,8 @@ type KafkaSink struct {
 	SecurityProtocol string     `yaml:"security_protocol,omitempty"`
 	SSL              *KafkaSSL  `yaml:"ssl,omitempty"`
 	SASL             *KafkaSASL `yaml:"sasl,omitempty"`
+	// How the record's value is encoded. Absent means json.
+	Value *KafkaValue `yaml:"value,omitempty"`
 }
 
 type ConsoleSink struct{}
@@ -241,6 +243,9 @@ type KafkaSource struct {
 	// block to accept the defaults, which bound a backlog replay to a few
 	// fetches rather than the backlog.
 	Fetch *KafkaFetch `yaml:"fetch,omitempty"`
+
+	// How the record's value is encoded. Absent means json.
+	Value *KafkaValue `yaml:"value,omitempty"`
 }
 
 // Defaults for KafkaFetch. The two byte values are what the source set
@@ -364,6 +369,9 @@ type Pipeline struct {
 	Name string `yaml:"name,omitempty"`
 	// Description of the pipeline.
 	Description string `yaml:"description,omitempty"`
+	// The schema registry a source reads schemas from and a sink registers
+	// them with. Needed when any value block names a format other than json.
+	SchemaRegistry *SchemaRegistry `yaml:"schema_registry,omitempty"`
 	// Configuration for the data source.
 	Source  Source  `yaml:"source"`
 	Handler Handler `yaml:"handler"`
