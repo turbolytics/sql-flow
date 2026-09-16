@@ -66,12 +66,22 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.healthTimeout)
 	defer cancel()
 
-	if _, _, err := query(ctx, s.exec, s.health, nil, 1); err != nil {
+	_, _, err := query(ctx, s.exec, s.health, nil, 1)
+	switch {
+	case err == nil:
+		writeJSON(w, r, http.StatusOK, []byte(`{"status":"ok"}`))
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrClosed):
+		// Busy is not dead. A supervisor that cannot tell them apart restarts
+		// a server that is merely loaded, at the worst possible moment.
+		//
+		// A request that timed out leaves its session busy until its query
+		// ends, so a pool full of abandoned queries reports busy too. That is
+		// the truth about the server.
+		writeJSON(w, r, http.StatusServiceUnavailable, []byte(`{"status":"busy"}`))
+	default:
 		s.logger.Warn("health check failed", zap.String("error", Redact(err.Error())))
 		writeJSON(w, r, http.StatusServiceUnavailable, []byte(`{"status":"unavailable"}`))
-		return
 	}
-	writeJSON(w, r, http.StatusOK, []byte(`{"status":"ok"}`))
 }
 
 func (s *Server) listDatasets(w http.ResponseWriter, r *http.Request) {
@@ -249,15 +259,27 @@ func (s *Server) cors(next http.Handler) http.Handler {
 	})
 }
 
+// getOnly refuses every method but GET, and HEAD on /healthz.
+//
+// Monitors send HEAD, and for /healthz the status line is the whole answer.
+// Every other route stays GET-only on purpose: a HEAD of a dataset would run
+// the query, borrow a session and throw the rows away, which spends the pool
+// on nothing. net/http suppresses the body of a HEAD response, so the health
+// handler needs no special case.
 func getOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			writeError(w, r, &apiError{http.StatusMethodNotAllowed, "method_not_allowed",
-				r.Method + " is not allowed; every route is GET"})
+		health := r.URL.Path == "/healthz"
+		if r.Method == http.MethodGet || (health && r.Method == http.MethodHead) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		allowed, where := http.MethodGet, "every route is GET, and /healthz is also HEAD"
+		if health {
+			allowed, where = "GET, HEAD", "/healthz is GET or HEAD"
+		}
+		w.Header().Set("Allow", allowed)
+		writeError(w, r, &apiError{http.StatusMethodNotAllowed, "method_not_allowed",
+			r.Method + " is not allowed; " + where})
 	})
 }
 

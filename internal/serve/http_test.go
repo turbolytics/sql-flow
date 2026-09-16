@@ -581,3 +581,56 @@ func TestCliServe_QueuedMsSeparatesWaitFromWork(t *testing.T) {
 	// The query itself is unchanged by the wait, which is the whole point.
 	assert.That(t, queued.body["elapsed_ms"].(float64) < 250)
 }
+
+// A full pool is not a dead server. A supervisor that cannot tell them apart
+// restarts one that is merely loaded.
+//
+// The config gives health one second rather than the default ten, because the
+// handler waits its whole timeout for a session before it can say busy.
+const busyServe = `
+serve:
+  auth:
+    tokens: [{name: page, token: page-token}]
+  limits:
+    timeout_seconds: 1
+  datasets:
+    - name: status
+      sql: SELECT count(*) AS n FROM posts
+`
+
+func TestCliServe_HealthzIsBusyNotDownWhenThePoolIsFull(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, busyServe)
+
+	held, err := ts.srv.exec.Acquire(context.Background())
+	assert.NoError(t, err)
+	defer held.Release()
+
+	r := ts.do(t, http.MethodGet, "/healthz", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, r.status)
+	assert.Equal(t, "busy", r.body["status"])
+}
+
+// Monitors send HEAD, and the status line is the whole answer. A dataset
+// still refuses it: running the query and discarding the rows would spend a
+// session on nothing.
+//
+// The status is all this asserts. httptest.NewRecorder hands the handler's
+// body straight back, where a real http.Server suppresses it for HEAD, so an
+// empty-body assertion here would be testing the recorder.
+func TestCliServe_HealthzAnswersHead(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, busyServe)
+
+	assert.Equal(t, http.StatusOK, ts.do(t, http.MethodHead, "/healthz", nil).status)
+
+	held, err := ts.srv.exec.Acquire(context.Background())
+	assert.NoError(t, err)
+	busy := ts.do(t, http.MethodHead, "/healthz", nil)
+	held.Release()
+	assert.Equal(t, http.StatusServiceUnavailable, busy.status)
+
+	ds := ts.do(t, http.MethodHead, "/v1/datasets/status", pageToken)
+	assert.Equal(t, http.StatusMethodNotAllowed, ds.status)
+	assert.Equal(t, http.MethodGet, ds.header.Get("Allow"))
+}
