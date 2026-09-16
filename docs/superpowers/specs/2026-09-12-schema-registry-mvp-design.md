@@ -172,6 +172,28 @@ Config rules, checked when the pipeline is built, each failing with
   other than `json`.
 - `schema.version` is `latest` or an integer of at least 1.
 - `auth` carries either `username` and `password` or `bearer_token`, not both.
+- A source field named like a Kafka metadata column, `kafka_topic`,
+  `kafka_partition` or `kafka_offset`, is refused at start, naming the field.
+  The handler adds those columns itself, and a schema that also defines one
+  would have two columns of the same name in `batch`. The source metadata
+  convention (#194) is where a rename belongs.
+
+Every rule runs in `validate` as well as at build time, the way
+`ReemitOverwrites` is refused by both.
+
+`config.Sink` is the shape of three sinks, so `value` reaches the pipeline's
+sink, the DLQ and a window's sink. All three may name a format. A window's
+sink writes the same kind of rows a pipeline's does. A DLQ that encodes its
+rows as Avro is a dead-letter topic a consumer can read with a schema, and a
+DLQ whose encoder fails stops the pipeline, which is the loud failure a
+dead-letter queue that cannot write should have.
+
+`sqlflow dev invoke` refuses a config whose source names a registry format,
+with `user.config.invalid`. Its fixture is a JSONL file, not framed records,
+and inferring types from that file would give the SQL different types than the
+run gives it. A typed fixture mode is a follow-up. When the sink names `avro`,
+`dev invoke` still checks the result's column names against Avro's rules,
+which needs neither a broker nor a registry.
 
 The three struct changes:
 
@@ -391,6 +413,8 @@ Avro to Arrow:
 | `local-timestamp-*` | `timestamp` with no zone |
 | `decimal` | `decimal128(precision, scale)` |
 | a logical type this table does not name | its underlying Avro type |
+| `decimal` whose precision exceeds 38 | `user.sql.type_unsupported` at start |
+| a `record` that contains itself | `user.sql.type_unsupported` at start |
 | union with two or more non-null branches, `duration` | `user.sql.type_unsupported` at start |
 
 A logical type the decoder does not know reads as the type underneath it. The
@@ -581,7 +605,9 @@ in Decoding, with these rules: the record is
 named from the subject with characters outside `[A-Za-z0-9_]` replaced by
 `_`, in namespace `io.turbolytics.sqlflow`; a nullable field is
 `["null", T]` with default `null`; `int8` and `int16` widen to `int`;
-`uint8` through `uint32` widen to `long`; `uint64`, `large_utf8`,
+`uint8` through `uint32` widen to `long`; a `map` whose key is not `utf8` has
+no Avro form, because an Avro map's keys are strings, so it is
+`user.sink.type_unsupported`; `uint64`, `large_utf8`,
 `large_binary` and `dictionary` are `user.sink.type_unsupported`, which the
 ClickHouse and Postgres sinks already return. Cell values come from the
 `arrowValue` extractor the ClickHouse sink already has, which returns
@@ -630,11 +656,52 @@ JSON Schema property names are arbitrary strings, so this is Avro's rule
 alone. In the specified mode nothing changes: a column no field is named for
 is already `user.sink.schema_mismatch`.
 
-Arrow to JSON Schema in the generated mode: an `object` with one property per
-column, `required` listing the non-nullable ones, and the type mapping
-inverted. The row bytes are the JSON `tableRowsAsJSON` already produces, with
-the header prepended. In the specified mode, the same bytes are framed with
-the named version's ID once the output matches it.
+Arrow to JSON Schema in the generated mode describes the bytes
+`tableRowsAsJSON` already writes, with the header prepended. So the mapping
+starts from what that function renders, which nothing had written down. Every
+row below was measured on 2026-09-15 through `array.RecordToJSON` on arrow-go
+v18.6.0, the call `tableRowsAsJSON` makes:
+
+| Arrow | JSON | Property |
+| --- | --- | --- |
+| `bool` | `true` | `boolean` |
+| `int8` through `int64`, `uint8` through `uint32` | `-2147483648` | `integer` |
+| `uint64` | `18446744073709551615` | `integer` |
+| `float32`, `float64` | `1.5`, `1.7976931348623157e+308` | `number` |
+| `decimal(p, s)` | `"123.4567"` | `string` |
+| `utf8` | `"L'Œil 👁 …"` | `string` |
+| `binary` | `"AP9/gA=="` | `string`, `contentEncoding: base64` |
+| `date32` | `"2026-09-08"` | `string`, `format: date` |
+| `time32`, `time64` | `"12:00:00.123456"` | `string`, `format: time` |
+| `timestamp` with no zone | `"2026-09-08T12:00:00.123456Z"` | `string`, `format: date-time` |
+| `timestamp` with a zone | `"2026-09-08T21:00:00.123456+09:00"` | `string`, `format: date-time` |
+| `list<T>` | `[1, 2]` | `array` with `items` |
+| `struct` | `{"a": 7}` | `object` with `properties` |
+| `map<utf8, T>` | `[{"key": "k", "value": 9}]` | `array` of two-property objects |
+| a null in any column | `null` | the property's type array carries `"null"` |
+
+Three of those rows are the reason this table exists rather than an inverted
+copy of the decoding table. A decimal renders as a **string**, so a schema
+calling it a number rejects every record sqlflow writes. Binary renders as
+base64 text. A map renders as an **array of key and value objects**, not as
+an object, so a schema shaped the way Confluent writes a map would not match
+the bytes. `RecordToJSON` also emits its keys in alphabetical order rather
+than the schema's, which no JSON Schema keyword constrains.
+
+The generated schema is an `object` with one property per column, typed as
+above, `required` listing the non-nullable columns, and `additionalProperties:
+false`. Every column of a DuckDB result is nullable, so in practice `required`
+is empty and each property's type is `[T, "null"]`.
+
+The content model is closed on purpose. Confluent checks an open content
+model differently: under `BACKWARD`, old data could already carry the property
+a new schema adds, with any type, so the addition is incompatible. With
+`additionalProperties: false` it is not, and adding a column is the ordinary
+evolution of a pipeline's output. Confluent Cloud for Apache Flink generates
+closed schemas for the same reason.
+
+In the specified mode the bytes are the same, framed with the named version's
+id once the output matches it.
 
 Both rule sets are the first draft of the `types:` declarations in Type tables
 below.
@@ -1275,6 +1342,13 @@ subjects. It records calls so a test can assert the cache.
     field it names.
   - A field default is written when its column is absent.
   - The match runs once per distinct output schema.
+- The JSON rendering: every row of the Arrow to JSON table, asserted against
+  the bytes `tableRowsAsJSON` writes, and the generated JSON Schema validates
+  those bytes with the compiler `validate` already uses.
+- Config: a source schema defining `kafka_topic` is refused at start; a DLQ
+  and a window sink each accept a `value` block; `dev invoke` refuses a
+  registry-backed source and still reports an invalid column name for an
+  `avro` sink.
 - Names: a column named `count_star()` is `user.sink.name_invalid` naming the
   column; a struct's field is checked at its own depth; a subject whose name
   starts with a digit produces a record name with its prefix; the check runs
@@ -1438,6 +1512,12 @@ The README's Error policies section changes in two ways:
 
 `kafka.dlq.yml` stays as it is. Its Kafka dead-letter topic takes the new
 keys with no configuration change.
+
+The docs site carries the reference. `turbolytics.io/docs/sqlflow` gains a
+Schema registry page: the config block, the two sink modes, the two rendered
+type pages and the two rendered compatibility pages. The README links to it,
+and the site is where the tables live, because they are generated from the
+declarations the tests judge and nobody edits them by hand.
 
 ## What breaks if this is wrong
 
