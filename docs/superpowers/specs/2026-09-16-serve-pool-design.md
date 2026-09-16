@@ -72,6 +72,7 @@ Nothing unreleased. It builds on `serve` as of v2026.09.16.
 | Session timezone | Serve runs `SET TimeZone='UTC'` on every session it opens. | Trusting the config's `commands` to reach each session. Measured: `SET TimeZone` is session-scoped, so a second connection inherits the host zone. |
 | Config commands | Run once, on a setup session. | Running them per session: `ATTACH` is database-wide and re-attaching errors. |
 | Waiting for a session | Counts toward the dataset's timeout; a request that never gets one is `504 query_timeout`, as today. | A new status for a busy pool. The caller's experience is a timeout either way, and `queued_ms` plus the metrics say which it was. |
+| Stopping abandoned work | `readRows` takes the request's context and stops at a batch boundary, then releases the reader, which ADBC documents as equivalent to cancel. Postgres `statement_timeout` in the ATTACH string bounds the scan. | Leaving abandoned queries to run to completion, as today. With one connection that cost the next request its turn; with a pool it can hold every session at once. |
 | Metrics | `GET /metrics` on the existing server, no token, off unless `serve.metrics.enabled`. | A second port, as `sqlflow run` uses: Render routes one port, so the demo could not scrape it. |
 
 ## Arrow
@@ -197,9 +198,10 @@ unless the pool is closing.
 
 `Close` is the part worth stating. It stops accepting acquires, then waits for
 every borrowed session to come back before closing any of them. A session
-closed while a query runs on it takes the process down, and DuckDB cannot be
-cancelled through the Go driver manager, so waiting is the only option. The
-wait is bounded by the drain deadline the HTTP server already applies.
+closed while a query runs on it takes the process down, and nothing outside
+the reading goroutine can stop that query (see "Stopping the work"), so
+waiting is the only option. The wait is bounded by the drain deadline the HTTP
+server already applies.
 
 ### Config
 
@@ -271,6 +273,45 @@ A response gains one field:
 `elapsed_ms` becomes the query alone. Today it silently includes the wait,
 which is why the Render measurement above reads 945 ms for a 13 ms query —
 a number that sent the reader looking for a slow query that did not exist.
+
+### Stopping the work, not just the waiting
+
+A timeout bounds the response. It does not, today, bound the work, and with a
+pool that gap costs more than it did with one connection: a session held by a
+query nobody is waiting for is a session the next request cannot have. The
+worst case for occupancy is `pool.size` multiplied by the longest query that
+can actually run, not by `timeout_seconds`.
+
+ADBC's Go API has no `Cancel`. Checked against arrow-adbc v1.6.0 on
+2026-09-16: neither `adbc.Statement` nor the driver manager exposes one,
+though the C API has had `AdbcStatementCancel` since ADBC 1.1.0. What the Go
+interface does say is this, on `ExecuteQuery`:
+
+> Since ADBC 1.1.0: releasing the returned RecordReader without consuming it
+> fully is equivalent to calling AdbcStatementCancel.
+
+So the reader is the cancel. There is no method another goroutine can call,
+but the goroutine that holds the reader can stop.
+
+Three bounds, in the order they bite:
+
+1. **Between batches.** `readRows` takes the request's context and stops at
+   the first batch boundary after it ends, then releases the reader, which
+   cancels. That bounds abandoned work at one batch rather than one query.
+   It does not help inside a single `Next` that never returns.
+2. **In Postgres.** Most of a request is the scan of the attached database,
+   and a libpq connection string carries
+   `options='-c statement_timeout=30000'`, so the ATTACH can cap it
+   server-side. This is the only one of the three that Postgres enforces
+   rather than sqlflow hoping, and it is the one that covers the dominant
+   cost. The README says so where it documents attaching.
+3. **`max_rows`.** Already stops a reader early, and the rollup bounds mean
+   a well-formed config never reaches it.
+
+What none of them bound is a single DuckDB operator that runs long before
+yielding a batch — a sort or an aggregation over more rows than a dataset
+should be reading. The answer there is the row bounds from the rollup spec,
+not a timeout.
 
 ## Metrics
 
@@ -411,6 +452,10 @@ Unit, `go test -short`:
   and `queued_ms` carries the wait.
 - `TestCliServe_QueuedMsSeparatesWaitFromWork`: under a full pool, a fast
   query reports a small `elapsed_ms` and a large `queued_ms`.
+- `TestCliServe_AbandonedWorkStopsAtABatch`: a request that times out over a
+  reader with many batches stops reading rather than draining it, and its
+  session comes back before the query would have finished. Dropping the
+  context check from `readRows` fails it.
 - `TestCliServe_HealthzIsBusyNotDownWhenThePoolIsFull`.
 - `TestCliServe_MetricsAreOffUnlessEnabled`, and with it enabled, `/metrics`
   carries all six instruments after one request.
@@ -433,6 +478,7 @@ adds `integration`.
 | `commands` runs per session | Startup fails on the second `ATTACH`. | Any pool test against a config with an attachment. |
 | Close closes a session mid-query | The process dies during a deploy, mid-request. | `CloseWaitsForBorrowedSessions`. |
 | A cancelled request leaks its session | The pool shrinks under load until it deadlocks. | `AcquireReturnsWhenTheRequestGivesUp`. |
+| Abandoned queries run to completion | A handful of slow requests hold every session while nobody waits for them, and the pool is a queue for work no one wants. | `AbandonedWorkStopsAtABatch`, and `statement_timeout` on the attachment. |
 | The pool is sized past the box | Concurrent queries fail together, out of memory, rather than queueing. | The container measurement in task 1; `memory_limit` is the backstop. |
 | `queued_ms` and `elapsed_ms` are swapped | An operator tunes the wrong thing, as this spec's own Render numbers nearly did. | `QueuedMsSeparatesWaitFromWork`. |
 
@@ -443,7 +489,8 @@ adds `integration`.
 2. The interfaces and the pool, with the DuckDB implementation behind them.
    `serve.New` takes an `Executor`. No behaviour change at `size: 1`.
 3. Session setup: `commands` once, the UTC pin per session.
-4. `queued_ms`, and `elapsed_ms` narrowed to the query.
+4. `queued_ms`, `elapsed_ms` narrowed to the query, and `readRows` stopping
+   at a batch boundary when the request is gone.
 5. Metrics, and the config that enables them.
 6. `/healthz` busy.
 7. The Postgres fan-out measurement, and what the README says about it.
