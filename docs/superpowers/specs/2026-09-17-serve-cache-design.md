@@ -338,8 +338,10 @@ without its evidence:
   integration is the executor because that is the part that may be swapped,
   and every invariant below must hold whatever sits under the cache. A second
   executor proves them again or is exempt with a reason.
-- `freshness` joins `FAMILIES`. None of the five there says how old an answer
-  may be.
+- `cache` joins `FAMILIES`, and all seven rows carry it. The matrix draws one
+  table per family with a column per integration that family touches, so
+  rows filed under `resilience` or `errors` would put an empty `serve.duckdb`
+  column on the sinks' tables.
 
 Each is `verified_by: harness`. The handler tests under Tests emit
 `coverage.Invariant(t, id, "serve.duckdb")`, and each test runs against the

@@ -76,7 +76,7 @@ INTEGRATION_PREFIX = "TestIntegration"
 
 # The closed vocabularies invariants.yml may use. A value outside one of them
 # is a typo, and a typo must not reach the matrix as a missing cell.
-FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors")
+FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors", "cache")
 
 
 # What kind of claim an invariant makes, which is orthogonal to its family.
@@ -93,7 +93,7 @@ FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors")
 CLASSES = ("safety", "liveness")
 
 
-KINDS = ("sink", "source", "handler", "pipeline", "manager")
+KINDS = ("sink", "source", "handler", "pipeline", "manager", "serve")
 
 
 # How an invariant collects evidence. Both are explicit markers: a test says
@@ -114,8 +114,9 @@ PIPELINE = "pipeline"
 # A pipeline configuration is an integration of the harness, though no
 # constructor switch builds one. `constructed: false` says so, and the Kinds()
 # agreement tests skip those entries. A manager is the same: buildManagedTables
-# builds the one kind there is, and no switch lists it.
-INTEGRATION_KINDS = ("sink", "source", "handler", "pipeline", "manager")
+# builds the one kind there is, and no switch lists it. So is serve's executor:
+# cli/serve builds the DuckDB one directly.
+INTEGRATION_KINDS = ("sink", "source", "handler", "pipeline", "manager", "serve")
 
 
 def load_features():

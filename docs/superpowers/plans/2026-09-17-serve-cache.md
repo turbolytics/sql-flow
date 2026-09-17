@@ -41,7 +41,7 @@
 | `internal/serve/cache_http_test.go` (create) | handler tests, which carry the invariant markers |
 | `internal/config/rollup.go`, `rollup_check.go` (modify) | `cache_ttl_seconds` |
 | `internal/rollup/serve.go`, `check.go` (modify) | emit and compare `bucket` and `cache` |
-| `docs/coverage/*`, `scripts/coverage_matrix/registries.py`, `internal/coverage/registry_test.go` (modify/create) | the `serve` kind, the `freshness` family, seven invariants |
+| `docs/coverage/*`, `scripts/coverage_matrix/registries.py`, `internal/coverage/registry_test.go` (modify/create) | the `serve` kind, the `cache` family, seven invariants |
 | `README.md` (modify) | the `cache` block, `bucket`, the half-open rule, the new response fields and metrics |
 
 ---
@@ -2082,6 +2082,8 @@ git commit -m "rollup: every generated grain names its bucket, and cache_ttl_sec
 - Create: `internal/serve/cache_bound_test.go`
 - Generated: `docs/coverage/status/serve.duckdb.yml` and the matrix pages, by `make coverage-matrix`
 
+All seven rows share one family, `cache`: the matrix draws a table per family with a column per integration the family touches, so a serve row filed under `resilience` or `errors` puts an empty `serve.duckdb` column on the sinks' tables.
+
 **Interfaces:**
 - Consumes: the `coverage.Invariant(t, id, "serve.duckdb")` markers Task 4's tests already emit for six of the seven ids.
 
@@ -2142,7 +2144,7 @@ Expected: PASS (the code exists since Task 2; this test is the evidence the regi
 `scripts/coverage_matrix/registries.py`:
 
 ```python
-FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors", "freshness")
+FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors", "cache")
 ```
 
 ```python
@@ -2185,13 +2187,13 @@ In `internal/coverage/registry_test.go`, beside `assert.That(t, kinds["manager"]
 Append to `docs/coverage/invariants.yml`:
 
 ```yaml
-  # --- Freshness: serve's response cache ------------------------------------
+  # --- Cache: serve's response cache ----------------------------------------
   # Serve is never told that its backend changed, so the cache invalidates
   # nothing and bounds everything. These say what the bounds are. Each is
   # proven through the HTTP handler over a counting executor, never against
   # the cache alone: the claim is about what a caller is sent.
   - id: serve.cache.bounded_staleness
-    family: freshness
+    family: cache
     class: safety
     applies_to: serve
     claim: >
@@ -2201,7 +2203,7 @@ Append to `docs/coverage/invariants.yml`:
     requires: []
 
   - id: serve.cache.bucket_exact
-    family: freshness
+    family: cache
     class: safety
     applies_to: serve
     claim: >
@@ -2213,7 +2215,7 @@ Append to `docs/coverage/invariants.yml`:
     requires: []
 
   - id: serve.cache.opt_in
-    family: freshness
+    family: cache
     class: safety
     applies_to: serve
     claim: >
@@ -2223,7 +2225,7 @@ Append to `docs/coverage/invariants.yml`:
     requires: []
 
   - id: serve.cache.bounded_bytes
-    family: resilience
+    family: cache
     class: safety
     applies_to: serve
     claim: The bytes the cache holds never exceed max_mb, whatever is requested.
@@ -2231,7 +2233,7 @@ Append to `docs/coverage/invariants.yml`:
     requires: []
 
   - id: serve.cache.errors_not_stored
-    family: errors
+    family: cache
     class: safety
     applies_to: serve
     claim: >
@@ -2241,7 +2243,7 @@ Append to `docs/coverage/invariants.yml`:
     requires: []
 
   - id: serve.cache.one_fill
-    family: resilience
+    family: cache
     class: safety
     applies_to: serve
     claim: >
@@ -2252,7 +2254,7 @@ Append to `docs/coverage/invariants.yml`:
 
   # Every safety row above holds for a cache that never stores anything.
   - id: serve.cache.answers_from_memory
-    family: freshness
+    family: cache
     class: liveness
     applies_to: serve
     claim: >
@@ -2277,7 +2279,7 @@ Expected: `docs/coverage/status/serve.duckdb.yml` is created with seven lines, e
 
 ```bash
 git add scripts/coverage_matrix/registries.py docs/coverage internal/coverage/registry_test.go internal/serve/cache_bound_test.go
-git commit -m "coverage: a serve kind, a freshness family, and seven invariants the cache is held to"
+git commit -m "coverage: a serve kind, a cache family, and seven invariants the cache is held to"
 ```
 
 ---

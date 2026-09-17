@@ -1,0 +1,13 @@
+# serve over the DuckDB executor. The integration is the executor because
+# that is the part of serve built to be swapped (serve/executor.go says why),
+# and everything serve promises a caller must hold whatever runs the SQL
+# underneath. A second executor proves these again or is exempt with a reason.
+#
+# `constructed: false` because no constructor switch lists executors:
+# cli/serve builds the one there is.
+id: serve.duckdb
+kind: serve
+constructed: false
+implements: [Executor]
+feature: cli.serve
+exempt: []

@@ -18,7 +18,7 @@ integration is two files: what it declares, and where it stands.
 ## Fields
 
 - `id` and `kind` are required. `kind` is one of `sink`, `source`, `handler`,
-  `pipeline`, and it decides which invariants apply.
+  `pipeline`, `manager`, `serve`, and it decides which invariants apply.
 - `feature` ties the entry to `../features.yml`. Every shipped integration
   needs one.
 - `implements` lists the interfaces the integration satisfies beyond its

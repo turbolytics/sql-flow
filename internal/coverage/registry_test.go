@@ -44,8 +44,8 @@ func TestToolingCoverageRegistry_ReadsEveryFileInTheDirectory(t *testing.T) {
 	all, err := loadIntegrations()
 	assert.NoError(t, err)
 
-	// Every kind is present, including the two no constructor builds:
-	// pipeline configurations and managers. A loader that silently skipped a
+	// Every kind is present, including the three no constructor builds:
+	// pipeline configurations, managers and serve's executor. A loader that silently skipped a
 	// file would leave an integration with no cells, which is the
 	// sink.iceberg failure.
 	kinds := map[string]int{}
@@ -54,10 +54,11 @@ func TestToolingCoverageRegistry_ReadsEveryFileInTheDirectory(t *testing.T) {
 		assert.That(t, entry.Kind != "")
 		kinds[entry.Kind]++
 	}
-	assert.Equal(t, 5, len(kinds))
+	assert.Equal(t, 6, len(kinds))
 	assert.That(t, kinds["sink"] >= 6)
 	assert.That(t, kinds["pipeline"] >= 2)
 	assert.That(t, kinds["manager"] >= 1)
+	assert.That(t, kinds["serve"] >= 1)
 }
 
 func TestToolingCoverageRegistry_ReadsInIDOrder(t *testing.T) {
