@@ -151,11 +151,18 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 	// here rather than by the caller, and the wait hook is installed on the
 	// pool before the server listens.
 	if s.registry != nil && conf.Serve.MetricsEnabled() {
-		m, err := newMetrics(s.registry, ex.Stats)
+		var cacheStats func() (int64, int)
+		if s.cache != nil {
+			cacheStats = s.cache.stats
+		}
+		m, err := newMetrics(s.registry, ex.Stats, cacheStats)
 		if err != nil {
 			return nil, err
 		}
 		s.metrics = m
+		if s.cache != nil {
+			s.cache.onEvict = m.observeEviction
+		}
 		if wo, ok := ex.(waitObserver); ok {
 			wo.setOnWait(m.observeWait)
 		}
