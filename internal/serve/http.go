@@ -25,7 +25,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
 	if s.metrics != nil {
-		// No token: it carries no row data, and the listener is already
+		// No client id: it carries no row data, and the listener is already
 		// public. It is absent unless the config turns it on, because the
 		// labels name every dataset and grain.
 		mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
@@ -226,7 +226,7 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		entry.status, entry.code = 499, "client_closed"
 		return
 	case err != nil:
-		// The caller gets no part of DuckDB's error. A token is public, and a
+		// The caller gets no part of DuckDB's error. A client id is public, and a
 		// Postgres connection error carries the connection string, password
 		// included. The log gets it, redacted.
 		s.logger.Error("query failed", zap.String("dataset", name),
@@ -260,34 +260,67 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, body)
 }
 
-// authed requires a bearer token and records whose it is.
+// clientIDParam carries the caller's id. It is a query parameter and not a
+// header for two reasons. The id identifies and does not authenticate, and an
+// Authorization header says otherwise to everyone who reads the page's source.
+// A GET with no custom header is also a CORS simple request, so a browser
+// sends it without a preflight.
+const clientIDParam = "client_id"
+
+// authed requires a configured client id and records whose it is.
 func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		name, ok := s.identify(r.Header.Get("Authorization"))
+		name, ok := s.identify(r)
 		if !ok {
+			// Owed for as long as the deprecated bearer form is accepted: a
+			// 401 must name a scheme.
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, r, &apiError{http.StatusUnauthorized, "unauthorized",
-				"send a configured token as Authorization: Bearer <token>"})
+				"send a configured client id as ?" + clientIDParam + "=<id>"})
 			return
 		}
-		entryFrom(r).token = name
+		entryFrom(r).client = name
 		next(w, r)
 	}
 }
 
-// identify compares the presented token against every configured one in
-// constant time, with no early return, so the time taken says nothing about
-// which token came closest.
-func (s *Server) identify(header string) (string, bool) {
-	scheme, token, found := strings.Cut(header, " ")
-	if !found || !strings.EqualFold(scheme, "Bearer") || token == "" {
-		return "", false
+// identify names the caller from client_id, or from the deprecated
+// Authorization: Bearer header when the request has no client_id. A client_id
+// that matches nothing is refused without a look at the header: a request
+// that answers to two ids would be logged under whichever happened to match.
+func (s *Server) identify(r *http.Request) (string, bool) {
+	if ids, given := r.URL.Query()[clientIDParam]; given {
+		if len(ids) != 1 {
+			return "", false
+		}
+		return s.clientNamed(ids[0])
 	}
 
+	scheme, token, found := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	name, ok := s.clientNamed(token)
+	if ok {
+		s.bearerWarned.Do(func() {
+			s.logger.Warn("a client sent its id as Authorization: Bearer, which the next release refuses; send ?"+
+				clientIDParam+"=<id>", zap.String("client", name))
+		})
+	}
+	return name, ok
+}
+
+// clientNamed compares the presented id against every configured one in
+// constant time, with no early return. An id is public, so the care buys
+// little; it costs nothing, and a config author may treat an id as private.
+func (s *Server) clientNamed(id string) (string, bool) {
+	if id == "" {
+		return "", false
+	}
 	name := ""
-	for _, t := range s.conf.Serve.Auth.Tokens {
-		if subtle.ConstantTimeCompare([]byte(token), []byte(t.Token)) == 1 {
-			name = t.Name
+	for _, c := range s.clients {
+		if subtle.ConstantTimeCompare([]byte(id), []byte(c.ID)) == 1 {
+			name = c.Name
 		}
 	}
 	return name, name != ""
@@ -309,7 +342,9 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		}
 
 		if r.Method == http.MethodOptions {
-			// A preflight carries no token, because browsers never send one.
+			// A request that sends client_id and no header needs no preflight.
+			// Authorization stays allowed for a page that still sends the
+			// deprecated bearer header, which a browser would otherwise block.
 			if allowed {
 				h.Set("Access-Control-Allow-Methods", "GET")
 				h.Set("Access-Control-Allow-Headers", "Authorization")
@@ -350,7 +385,7 @@ func getOnly(next http.Handler) http.Handler {
 
 // logEntry collects one request's log fields as the handlers learn them.
 type logEntry struct {
-	token, dataset, grain, code string
+	client, dataset, grain, code string
 	// cache is how a cached dataset's request was answered, and empty for
 	// every other request.
 	cache        string
@@ -376,8 +411,8 @@ func entryFrom(r *http.Request) *logEntry {
 	return &logEntry{}
 }
 
-// logRequests writes one line per request. The token's name goes in the
-// line; its value never does.
+// logRequests writes one line per request. The client's name goes in the
+// line. Its id does not: the line logs the path and never the query string.
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -386,7 +421,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 
 		fields := []zap.Field{
 			zap.String("path", r.URL.Path),
-			zap.String("token", entry.token),
+			zap.String("client", entry.client),
 			zap.String("dataset", entry.dataset),
 			zap.String("grain", entry.grain),
 			zap.String("cache", entry.cache),

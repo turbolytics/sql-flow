@@ -20,15 +20,26 @@ serve:
       # optional port. No path and no wildcard.
       allowed_origins:
         - <array>
-  # Who may call.
+  # The callers the server answers, each known by its id.
+  clients:
+    -
+      # Names the client in the request log.
+      name: <string>
+      # The value a client sends as ?client_id=<id>. It identifies and does not
+      # authenticate: a browser page ships it in plain sight, as an analytics
+      # snippet ships its site key. It exists so the log names the caller and so
+      # one caller can be cut off by changing the value.
+      id: <string>
+  # Deprecated: the bearer tokens of a config written before clients. Each
+  # token is a client whose id is the token's value. Move the entries to
+  # clients; the next release removes auth.
   auth:
     # One entry per client identity.
     tokens:
       -
         # Names the client in the request log.
         name: <string>
-        # The value a client sends as Authorization: Bearer <token>. It is an
-        # identifier, not a secret: a browser page ships it in plain sight.
+        # The client's id, under its old name.
         token: <string>
   # Limits for every dataset. A dataset's own non-zero limit overrides one.
   limits:

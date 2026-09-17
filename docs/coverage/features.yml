@@ -195,7 +195,7 @@ features:
     requires: [unit, release]
 
   - id: cli.serve
-    description: Serves a config's named SQL datasets over HTTP, with bearer tokens, typed params, grains and limits.
+    description: Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits.
     requires: [unit, integration, release]
 
   - id: cli.rollup

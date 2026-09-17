@@ -24,10 +24,9 @@ serve:
   http:
     cors:
       allowed_origins: [https://turbolytics.io]
-  auth:
-    tokens:
-      - {name: page, token: page-token}
-      - {name: ops, token: ops-token}
+  clients:
+    - {name: page, id: page-id}
+    - {name: ops, id: ops-id}
   limits:
     max_rows: 3
   datasets:
@@ -146,11 +145,18 @@ func (ts *testServer) do(t *testing.T, method, target string, header map[string]
 	return resp
 }
 
-var pageToken = map[string]string{"Authorization": "Bearer page-token"}
+// as adds a client's id to a target, the way a caller sends it.
+func as(id, target string) string {
+	sep := "?"
+	if strings.Contains(target, "?") {
+		sep = "&"
+	}
+	return target + sep + "client_id=" + id
+}
 
 func (ts *testServer) get(t *testing.T, target string) response {
 	t.Helper()
-	return ts.do(t, http.MethodGet, target, pageToken)
+	return ts.do(t, http.MethodGet, as("page-id", target), nil)
 }
 
 func errorOf(t *testing.T, r response) (string, string) {
@@ -162,7 +168,7 @@ func errorOf(t *testing.T, r response) (string, string) {
 	return e["code"].(string), e["message"].(string)
 }
 
-func TestCliServe_HealthzNeedsNoToken(t *testing.T) {
+func TestCliServe_HealthzNeedsNoClientID(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	ts := newTestServer(t, testServe)
 
@@ -172,30 +178,69 @@ func TestCliServe_HealthzNeedsNoToken(t *testing.T) {
 	assert.Equal(t, "application/json", r.header.Get("Content-Type"))
 }
 
-// A missing header, another scheme, an empty token and an unknown token are
-// all 401. The scheme is case-insensitive, as RFC 7235 says.
-func TestCliServe_AuthRequiresAConfiguredBearerToken(t *testing.T) {
+// No id, an empty id, an unknown id, a prefix of one and an id given twice are
+// all 401. An unknown client_id is refused even beside a header that would
+// pass: a request answers to one id.
+func TestCliServe_RequiresAConfiguredClientID(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	for name, tt := range map[string]struct {
+		target string
+		header map[string]string
+	}{
+		"no id":                   {target: "/v1/datasets/status"},
+		"empty id":                {target: "/v1/datasets/status?client_id="},
+		"unknown id":              {target: "/v1/datasets/status?client_id=nope"},
+		"prefix only":             {target: "/v1/datasets/status?client_id=page"},
+		"given twice":             {target: "/v1/datasets/status?client_id=page-id&client_id=ops-id"},
+		"unknown id, good header": {target: "/v1/datasets/status?client_id=nope", header: map[string]string{"Authorization": "Bearer page-id"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := ts.do(t, http.MethodGet, tt.target, tt.header)
+			assert.Equal(t, http.StatusUnauthorized, r.status)
+			code, message := errorOf(t, r)
+			assert.Equal(t, "unauthorized", code)
+			assert.True(t, strings.Contains(message, "?client_id=<id>"))
+		})
+	}
+
+	r := ts.do(t, http.MethodGet, "/v1/datasets/status?client_id=ops-id", nil)
+	assert.Equal(t, http.StatusOK, r.status)
+
+	// client_id is the caller's, not the dataset's: a dataset with params
+	// does not refuse it as one it never declared.
+	r = ts.do(t, http.MethodGet, "/v1/datasets/posts_by_lang?grain=1h&lang=en&client_id=ops-id", nil)
+	assert.Equal(t, http.StatusOK, r.status)
+}
+
+// The deprecated form answers for one release, so a page and its API need not
+// deploy in the same instant. The scheme is case-insensitive, as RFC 7235
+// says. The warning is one line however many requests send the header.
+func TestCliServe_StillAcceptsTheDeprecatedBearerHeader(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	ts := newTestServer(t, testServe)
 
 	for name, header := range map[string]map[string]string{
-		"no header":     nil,
-		"basic scheme":  {"Authorization": "Basic page-token"},
-		"empty token":   {"Authorization": "Bearer "},
-		"unknown token": {"Authorization": "Bearer nope"},
-		"prefix only":   {"Authorization": "Bearer page"},
+		"basic scheme": {"Authorization": "Basic page-id"},
+		"empty id":     {"Authorization": "Bearer "},
+		"unknown id":   {"Authorization": "Bearer nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := ts.do(t, http.MethodGet, "/v1/datasets/status", header)
 			assert.Equal(t, http.StatusUnauthorized, r.status)
-			code, _ := errorOf(t, r)
-			assert.Equal(t, "unauthorized", code)
 			assert.Equal(t, "Bearer", r.header.Get("WWW-Authenticate"))
 		})
 	}
+	assert.Equal(t, 0, ts.logs.FilterLevelExact(zap.WarnLevel).Len())
 
-	r := ts.do(t, http.MethodGet, "/v1/datasets/status", map[string]string{"Authorization": "bearer ops-token"})
-	assert.Equal(t, http.StatusOK, r.status)
+	for range 3 {
+		r := ts.do(t, http.MethodGet, "/v1/datasets/status", map[string]string{"Authorization": "bearer ops-id"})
+		assert.Equal(t, http.StatusOK, r.status)
+	}
+	warnings := ts.logs.FilterLevelExact(zap.WarnLevel).All()
+	assert.Equal(t, 1, len(warnings))
+	assert.Equal(t, "ops", warnings[0].ContextMap()["client"])
 }
 
 // Every field of a data response, against rows the test inserted.
@@ -252,9 +297,8 @@ func TestCliServe_ParamsBindByDeclaredType(t *testing.T) {
 
 const boundedServe = `
 serve:
-  auth:
-    tokens:
-      - {name: page, token: page-token}
+  clients:
+    - {name: page, id: page-id}
   datasets:
     - name: bounded
       params:
@@ -332,7 +376,7 @@ func TestCliServe_ErrorsCarryTheirCodeAndNameTheCause(t *testing.T) {
 		{"query failed", "GET", "/v1/datasets/cast?v=abc", 500, "query_failed", "dataset cast failed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			r := ts.do(t, tt.method, tt.target, pageToken)
+			r := ts.do(t, tt.method, as("page-id", tt.target), nil)
 			assert.Equal(t, tt.status, r.status)
 			code, message := errorOf(t, r)
 			assert.Equal(t, tt.code, code)
@@ -403,9 +447,8 @@ func TestCliServe_CORSAnswersAllowedOriginsOnly(t *testing.T) {
 	assert.Equal(t, "", stranger.header.Get("Access-Control-Allow-Origin"))
 	assert.Equal(t, "", stranger.header.Get("Access-Control-Allow-Methods"))
 
-	get := ts.do(t, http.MethodGet, "/v1/datasets/status", map[string]string{
-		"Origin":        "https://turbolytics.io",
-		"Authorization": "Bearer page-token",
+	get := ts.do(t, http.MethodGet, as("page-id", "/v1/datasets/status"), map[string]string{
+		"Origin": "https://turbolytics.io",
 	})
 	assert.Equal(t, http.StatusOK, get.status)
 	assert.Equal(t, "https://turbolytics.io", get.header.Get("Access-Control-Allow-Origin"))
@@ -452,19 +495,38 @@ func TestCliServe_ListingReturnsTheSQLAsWritten(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, unauthorized.status)
 }
 
-// One line per request, naming the token's identity and never its value.
+// A config not yet moved to clients keeps answering its callers, by either
+// form, and says at startup that it must move.
+func TestCliServe_DeprecatedAuthTokensAreClients(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, strings.Replace(testServe,
+		"  clients:\n    - {name: page, id: page-id}\n    - {name: ops, id: ops-id}\n",
+		"  clients:\n    - {name: page, id: page-id}\n  auth:\n    tokens:\n      - {name: ops, token: ops-id}\n", 1))
+
+	startup := ts.logs.FilterLevelExact(zap.WarnLevel).All()
+	assert.Equal(t, 1, len(startup))
+	assert.True(t, strings.Contains(startup[0].Message, "serve.auth.tokens is deprecated"))
+
+	for _, target := range []string{"/v1/datasets/status?client_id=page-id", "/v1/datasets/status?client_id=ops-id"} {
+		assert.Equal(t, http.StatusOK, ts.do(t, http.MethodGet, target, nil).status)
+	}
+	r := ts.do(t, http.MethodGet, "/v1/datasets/status", map[string]string{"Authorization": "Bearer ops-id"})
+	assert.Equal(t, http.StatusOK, r.status)
+}
+
+// One line per request, naming the client and never its id.
 func TestCliServe_LogsOneLinePerRequest(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	ts := newTestServer(t, testServe)
 
 	ts.get(t, "/v1/datasets/posts_by_lang?grain=1h&lang=en")
-	ts.do(t, http.MethodGet, "/v1/datasets/posts_by_lang?grain=15m", map[string]string{"Authorization": "Bearer ops-token"})
+	ts.do(t, http.MethodGet, as("ops-id", "/v1/datasets/posts_by_lang?grain=15m"), nil)
 
 	lines := ts.logs.FilterMessage("request").All()
 	assert.Equal(t, 2, len(lines))
 
 	ok := lines[0].ContextMap()
-	assert.Equal(t, "page", ok["token"])
+	assert.Equal(t, "page", ok["client"])
 	assert.Equal(t, "posts_by_lang", ok["dataset"])
 	assert.Equal(t, "1h", ok["grain"])
 	assert.Equal(t, int64(200), ok["status"])
@@ -473,14 +535,14 @@ func TestCliServe_LogsOneLinePerRequest(t *testing.T) {
 	assert.False(t, hasCode)
 
 	bad := lines[1].ContextMap()
-	assert.Equal(t, "ops", bad["token"])
+	assert.Equal(t, "ops", bad["client"])
 	assert.Equal(t, int64(400), bad["status"])
 	assert.Equal(t, "unknown_grain", bad["code"])
 
 	for _, entry := range ts.logs.All() {
 		for _, v := range entry.ContextMap() {
-			if s, isString := v.(string); isString && strings.Contains(s, "-token") {
-				t.Fatalf("a log line carries a token value: %v", entry.ContextMap())
+			if s, isString := v.(string); isString && strings.Contains(s, "-id") {
+				t.Fatalf("a log line carries a client id: %v", entry.ContextMap())
 			}
 		}
 	}
@@ -500,8 +562,7 @@ func TestCliServe_ServeDrainsAnInFlightRequest(t *testing.T) {
 
 	status := make(chan int, 1)
 	go func() {
-		req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/v1/datasets/slow", nil)
-		req.Header.Set("Authorization", "Bearer page-token")
+		req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/v1/datasets/slow?client_id=page-id", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			status <- 0
@@ -529,9 +590,9 @@ func TestCliServe_NewRefusesWhatCannotAnswer(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	ex, _ := newExec(t, 1)
 
-	emptyToken, err := config.ParseServe([]byte(strings.Replace(testServe, "token: page-token", `token: ""`, 1)))
+	emptyID, err := config.ParseServe([]byte(strings.Replace(testServe, "id: page-id", `id: ""`, 1)))
 	assert.NoError(t, err)
-	_, err = New(context.Background(), emptyToken, ex)
+	_, err = New(context.Background(), emptyID, ex)
 	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
 
 	noTable, err := config.ParseServe([]byte(testServe))
@@ -541,7 +602,7 @@ func TestCliServe_NewRefusesWhatCannotAnswer(t *testing.T) {
 	assert.That(t, strings.Contains(err.Error(), "dataset status"))
 }
 
-// A token is public, so a 500 carries nothing from the database. The probe
+// A client id is public, so a 500 carries nothing from the database. The probe
 // that found this stopped a Postgres mid-run and got back
 // "Unable to connect to Postgres at \"postgresql://postgres:postgres@...\"".
 // A cast error echoes its input, which stands in for that message here
@@ -640,8 +701,7 @@ func TestCliServe_QueuedMsSeparatesWaitFromWork(t *testing.T) {
 // handler waits its whole timeout for a session before it can say busy.
 const busyServe = `
 serve:
-  auth:
-    tokens: [{name: page, token: page-token}]
+  clients: [{name: page, id: page-id}]
   limits:
     timeout_seconds: 1
   datasets:
@@ -681,7 +741,7 @@ func TestCliServe_HealthzAnswersHead(t *testing.T) {
 	held.Release()
 	assert.Equal(t, http.StatusServiceUnavailable, busy.status)
 
-	ds := ts.do(t, http.MethodHead, "/v1/datasets/status", pageToken)
+	ds := ts.do(t, http.MethodHead, as("page-id", "/v1/datasets/status"), nil)
 	assert.Equal(t, http.StatusMethodNotAllowed, ds.status)
 	assert.Equal(t, http.MethodGet, ds.header.Get("Allow"))
 }

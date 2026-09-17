@@ -305,28 +305,28 @@ def test_cli_serve_answers_requests_from_the_image(image):
     the command's registration, the listener and the libduckdb baked in, and
     no unit test proves those together.
     """
-    token = "release-token"
+    client_id = "release-client"
     container = DockerContainer(image) \
         .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
-        .with_env("SQLFLOW_SERVE_TOKEN", token) \
+        .with_env("SQLFLOW_SERVE_CLIENT_ID", client_id) \
         .with_exposed_ports(8080) \
         .with_command("serve /tmp/conf/config/serve/local.table.yml")
     container.start()
     try:
         wait_for_logs(container, "serving", timeout=60)
         base = f"http://localhost:{container.get_exposed_port(8080)}"
-        auth = {"Authorization": f"Bearer {token}"}
+        client = {"client_id": client_id}
 
         health = requests.get(f"{base}/healthz", timeout=10)
-        listing = requests.get(f"{base}/v1/datasets", headers=auth, timeout=10)
+        listing = requests.get(f"{base}/v1/datasets", params=client, timeout=10)
         window = {"city": "Baltimore",
                   "since": "2026-09-10T00:00:00Z", "until": "2026-09-12T00:00:00Z"}
         rows = requests.get(
             f"{base}/v1/datasets/city_events",
-            params={"grain": "1d", **window}, headers=auth, timeout=10)
+            params={"grain": "1d", **window, **client}, timeout=10)
         chosen = requests.get(
             f"{base}/v1/datasets/city_events",
-            params=window, headers=auth, timeout=10)
+            params={**window, **client}, timeout=10)
         refused = requests.get(f"{base}/v1/datasets", timeout=10)
     finally:
         container.stop()

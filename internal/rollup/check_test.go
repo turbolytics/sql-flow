@@ -23,7 +23,7 @@ func committed(t *testing.T) (*config.RollupsConf, []byte, *config.ServeConf) {
 	assert.NoError(t, err)
 
 	serve := &config.ServeConf{Serve: config.Serve{
-		Auth: config.ServeAuth{Tokens: []config.ServeToken{{Name: "page", Token: "page-token"}}},
+		Clients: []config.ServeClient{{Name: "page", ID: "page-id"}},
 		Datasets: append([]config.ServeDataset{{
 			Name: "pipeline_status",
 			SQL:  "SELECT * FROM pg.pipeline_status",

@@ -19,8 +19,7 @@ import (
 // way rangedTestServe does.
 const cachedTestServe = `
 serve:
-  auth:
-    tokens: [{name: page, token: page-token}]
+  clients: [{name: page, id: page-id}]
   datasets:
     - name: status
       cache: {ttl_seconds: 30}

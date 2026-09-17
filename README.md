@@ -238,10 +238,9 @@ serve:
     addr: "0.0.0.0:8080"
     cors:
       allowed_origins: [https://example.com]
-  auth:
-    tokens:
-      - name: demo-page
-        token: "{{ SQLFLOW_SERVE_TOKEN }}"
+  clients:
+    - name: demo-page
+      id: "{{ SQLFLOW_SERVE_CLIENT_ID }}"
   limits:
     max_rows: 10000
     timeout_seconds: 10
@@ -250,7 +249,7 @@ serve:
     # concurrent query costs a few MiB. Omit for the default, 4.
     size: 4
   metrics:
-    # Serve GET /metrics on this listener, without a token. Off by default:
+    # Serve GET /metrics on this listener, without a client id. Off by default:
     # the listener is public and the labels name every dataset.
     enabled: false
   datasets:
@@ -425,16 +424,15 @@ not cache the other.
 
 Routes, all `GET`:
 
-| Route | Auth | Returns |
+| Route | `client_id` | Returns |
 |---|---|---|
 | `/healthz` | none | `200` `{"status":"ok"}` when a session answers `SELECT 1`; `503` `{"status":"busy"}` when none is free, `{"status":"unavailable"}` when the query fails. `HEAD` is answered too, for monitors |
 | `/metrics` | none | Prometheus text, only when `serve.metrics.enabled` is set |
-| `/v1/datasets` | bearer | Every dataset: its params, and its SQL as written |
-| `/v1/datasets/{name}` | bearer | Rows |
+| `/v1/datasets` | required | Every dataset: its params, and its SQL as written |
+| `/v1/datasets/{name}` | required | Rows |
 
 ```
-$ curl -H 'Authorization: Bearer <token>' \
-    'localhost:8080/v1/datasets/posts_by_lang?grain=1h&lang=en'
+$ curl 'localhost:8080/v1/datasets/posts_by_lang?client_id=<id>&grain=1h&lang=en'
 {"dataset":"posts_by_lang","grain":"1h",
  "columns":[{"name":"bucket","type":"TIMESTAMP WITH TIME ZONE"},...],
  "rows":[{"bucket":"2026-09-10T00:00:00Z","lang":"en","posts":102340}],
@@ -451,9 +449,22 @@ Every route is `GET`, and `/healthz` also answers `HEAD`. A `HEAD` of a
 dataset would run its query, borrow a session and discard the rows, so it is
 refused with `405`.
 
-A token is an identifier, not a secret: a browser page ships it in plain
-sight. It names the caller in the request log, and deleting it revokes the
-caller.
+A client id identifies a caller. It does not authenticate one: a browser page
+ships it in plain sight, as an analytics snippet ships its site key. It names
+the caller in the request log, and deleting it cuts the caller off. Do not
+serve through it anything that the public may not read.
+
+The id travels as `?client_id=<id>` and not in an `Authorization` header, for
+two reasons. A header named for authorization reads as a leaked credential to
+everyone who opens the page's source. A `GET` with no custom header is also a
+CORS simple request, so a browser sends it without a preflight. `client_id`
+is no dataset's param: it never reaches the SQL or the cache key, and a
+dataset cannot declare a param of that name.
+
+Deprecated: this release still answers `Authorization: Bearer <id>` when a
+request has no `client_id`, and still reads `serve.auth.tokens`, each token as
+a client whose id is the token. Both log a warning. The next release refuses
+both.
 
 Every refusal is `{"error": {"code", "message"}}`:
 

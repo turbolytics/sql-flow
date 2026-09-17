@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	prom "github.com/prometheus/client_golang/prometheus"
+	"sync"
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
@@ -28,6 +29,13 @@ type Server struct {
 	// health is the statement /healthz runs. It is prepared at startup like
 	// every other one, so the probe costs a bind and nothing more.
 	health Statement
+
+	// clients is every caller the config names, the deprecated auth.tokens
+	// included.
+	clients []config.ServeClient
+	// bearerWarned limits the deprecation warning to one line. The page polls,
+	// and a line per request would bury the log.
+	bearerWarned sync.Once
 
 	datasets map[string]*dataset
 	// listing is the /v1/datasets body, built once: the config does not change.
@@ -145,12 +153,17 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 		conf:          conf,
 		logger:        zap.NewNop(),
 		exec:          ex,
+		clients:       conf.Serve.AllClients(),
 		datasets:      map[string]*dataset{},
 		healthTimeout: conf.Serve.Timeout(config.ServeDataset{}),
 		now:           time.Now,
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if conf.Serve.Auth != nil {
+		s.logger.Warn("serve.auth.tokens is deprecated and the next release refuses it; " +
+			"move each entry to serve.clients, with id in place of token")
 	}
 
 	// Before the instruments, whose gauges read it. A server where no dataset

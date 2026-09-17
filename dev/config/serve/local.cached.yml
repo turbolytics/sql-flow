@@ -1,8 +1,8 @@
 # local.table.yml with the response cache on for one dataset, and the reason
 # it is off for the other.
 #
-#   SQLFLOW_SERVE_TOKEN=local-dev-token sqlflow serve dev/config/serve/local.cached.yml
-#   curl -H 'Authorization: Bearer local-dev-token' http://localhost:8080/v1/datasets/event_totals
+#   SQLFLOW_SERVE_CLIENT_ID=local-dev sqlflow serve dev/config/serve/local.cached.yml
+#   curl 'http://localhost:8080/v1/datasets/event_totals?client_id=local-dev'
 #
 # Ask twice: the first answer says "cache":"miss", the second "cache":"hit" and
 # how old it is, for fifteen seconds.
@@ -26,10 +26,9 @@ serve:
   http:
     addr: "0.0.0.0:{{ SQLFLOW_SERVE_PORT|default('8080') }}"
 
-  auth:
-    tokens:
-      - name: local
-        token: "{{ SQLFLOW_SERVE_TOKEN }}"
+  clients:
+    - name: local
+      id: "{{ SQLFLOW_SERVE_CLIENT_ID }}"
 
   limits:
     max_rows: 1000

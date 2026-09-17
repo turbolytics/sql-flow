@@ -163,7 +163,10 @@ func parseParams(declared []config.ServeParam, query url.Values) (map[string]any
 
 	values := map[string]any{}
 	for _, key := range keys {
-		if key == "grain" {
+		// Neither is the dataset's: grain picks the statement and client_id
+		// names the caller. Neither reaches the cache key, so two clients
+		// asking one question share one answer.
+		if key == "grain" || key == clientIDParam {
 			continue
 		}
 		p, ok := params[key]
