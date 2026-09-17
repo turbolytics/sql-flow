@@ -53,6 +53,7 @@ func Validate(ctx context.Context, req Request) (Report, error) {
 		checkDrainDeadline(rendered, &rep)
 		checkWindows(rendered, &rep)
 		checkSinks(rendered, &rep)
+		checkSchemaRegistry(rendered, &rep)
 	}
 
 	demoteUnsuppliedVariableErrors(&rep)
