@@ -23,8 +23,12 @@ on the request as sent would never hit.
 
 Two properties of serve make repeated work worse than it looks:
 
-- DuckDB cannot cancel a query. A caller that gives up leaves its query
-  running on one of four sessions, and whatever it computes is thrown away.
+- An abandoned query is not cancelled. ADBC's Go API has no Cancel; serve
+  stops reading at the next batch once a caller gives up, which frees a
+  streaming scan early and does nothing for a query like the demo's, whose
+  ranking and grouping finish before the first batch exists. A caller that
+  gives up leaves that work running on one of four sessions, and whatever it
+  computes is thrown away.
 - A burst of identical requests arrives together, at a page load spike or
   when a cached answer expires. Without coordination each of them runs.
 
@@ -97,7 +101,9 @@ Why `bucket` is a key of its own: a grain's name is a label. Serve never
 parses `5m` out of it, and a dataset may name its grains `fine` and `coarse`.
 `sqlflow rollup serve` knows every grain's width and writes it.
 
-Rules, checked at start and by `validate`, each `user.config.invalid`:
+Rules, checked at start and by `validate`. A dataset's rules carry
+`user.config.serve_dataset` and `max_mb`'s carries `user.config.invalid`, the
+codes their neighbours in `config/serve.go` already use:
 
 - `ttl_seconds` is an integer of at least 1.
 - A dataset with `cache` and `range` declares `bucket` on every grain.
@@ -107,7 +113,8 @@ Rules, checked at start and by `validate`, each `user.config.invalid`:
   week is refused: `date_trunc('week')` starts on a Monday and the epoch was
   a Thursday, so epoch alignment would round to the wrong boundary.
 - `bucket` without `range` is refused: there is nothing for it to align.
-- `max_mb` is at least 1.
+- `max_mb` is not negative. 0 means the default, as it does for `max_rows`,
+  `timeout_seconds` and `pool.size`.
 
 `bucket` is allowed on a ranged dataset without `cache`. It is a fact about
 the grain, and the generator writes it whether or not the dataset is cached.
@@ -163,12 +170,17 @@ func newCache(maxBytes int64, now func() time.Time) *cache
 
 // do returns the result for key: a stored one that has not expired, the
 // result of a fill already running, or the result of fill, which it starts.
-// ctx bounds this caller's wait and nothing else.
+// ctx bounds this caller's wait and nothing else. fill takes no context: the
+// cache never cancels one, and whoever builds fill gives it its own deadline.
+// age is how long ago the result's fill started.
 func (c *cache) do(ctx context.Context, key string, ttl time.Duration,
-	fill func(context.Context) (*result, error)) (*result, outcome, error)
+	fill func() (result, error)) (res result, out cacheOutcome, age time.Duration, err error)
 
-type outcome int // miss, hit, shared
+type cacheOutcome string // "miss", "hit", "shared"
 ```
+
+`result` is the type `encode.go` already has: a query's rows, already encoded,
+pointing into no Arrow buffer.
 
 It knows nothing of HTTP, datasets or DuckDB, and is tested without them.
 
