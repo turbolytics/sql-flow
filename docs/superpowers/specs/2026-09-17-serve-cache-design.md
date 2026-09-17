@@ -311,6 +311,53 @@ generated SQL already compares `bucket >= $since AND bucket < $until` in every
 grain, checked in the demo's `serve.yml` on 2026-09-17, which is the shape the
 key needs.
 
+## Invariants
+
+The cache's promises go in `docs/coverage/invariants.yml`, so the matrix shows
+them proven or not, and a later change that breaks one fails a test that names
+it. Serve has no invariants there today, and the registry has no kind for it.
+Three additions, in the PR that lands the code, so no row is ever declared
+without its evidence:
+
+- `serve` joins `KINDS` and `INTEGRATION_KINDS` in
+  `scripts/coverage_matrix/registries.py`, the way `manager` did.
+- `docs/coverage/integrations/serve.duckdb.yml`: `kind: serve`,
+  `constructed: false`, `implements: [Executor]`, `feature: cli.serve`. The
+  integration is the executor because that is the part that may be swapped,
+  and every invariant below must hold whatever sits under the cache. A second
+  executor proves them again or is exempt with a reason.
+- `freshness` joins `FAMILIES`. None of the five there says how old an answer
+  may be.
+
+Each is `verified_by: harness`. The handler tests under Tests emit
+`coverage.Invariant(t, id, "serve.duckdb")`, and each test runs against the
+real handler with a counting executor, never against `cache` alone: the claim
+is about what a caller is sent.
+
+| id | class | claim |
+| --- | --- | --- |
+| `serve.cache.bounded_staleness` | safety | A response is never built from a result whose fill started more than the dataset's `ttl_seconds` before the request arrived. |
+| `serve.cache.bucket_exact` | safety | For a ranged dataset, a response from the cache carries the rows a query bound to the request's own `since` and `until` would have returned against the same data. Rounding to the bucket changes the key and never the rows. |
+| `serve.cache.opt_in` | safety | A dataset without a `cache` block runs one query per request, and its response carries no `cache` or `age_ms`. |
+| `serve.cache.bounded_bytes` | safety | The bytes held never exceed `max_mb`, whatever is requested. |
+| `serve.cache.errors_not_stored` | safety | A request that fails stores nothing: the next request for its key runs a query. |
+| `serve.cache.one_fill` | safety | Concurrent requests for one key run one query, and a caller leaving fails no other caller. |
+| `serve.cache.answers_from_memory` | liveness | A second request for a key inside its TTL is answered without a query and without a session. |
+
+The liveness row is there for the reason `registries.py` gives: every safety
+row above holds for a cache that never stores anything.
+
+`bounded_staleness` and `bucket_exact` are each proven by a test built to
+fail. The first advances an injected clock across the TTL with the data
+changed underneath, and fails if the expiry check is removed. The second
+drives requests at both edges of a bucket window and one either side of it,
+compares each cached response with an uncached dataset running the same SQL on
+the unrounded values, and fails if rounding goes down instead of up or if the
+SQL is changed to `bucket <= $until`. That second failure is the point: it is
+the case the `cache` block asks an author to rule out, shown to be real.
+
+`requires` is empty on all seven, as it is on every row today.
+
 ## Several instances
 
 Each instance holds its own cache and they share nothing. Two instances fill
