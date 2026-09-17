@@ -50,6 +50,10 @@ const (
 	CodeDataMalformed Code = "user.data.malformed"
 	CodeDataInvalid   Code = "user.data.invalid"
 
+	// A record's schema ID is not in the registry the pipeline reads. The
+	// producer registered against another registry, or none.
+	CodeDataSchemaUnknown Code = "user.data.schema_unknown"
+
 	// SQL: the handler's query and the schema it binds against.
 	CodeSQLBindFailed      Code = "user.sql.bind_failed"
 	CodeSQLTypeUnsupported Code = "user.sql.type_unsupported"
@@ -66,6 +70,17 @@ const (
 	// The value fails identically on every attempt, so the retry ladder does
 	// not retry it (#233).
 	CodeSinkEncodeFailed Code = "user.sink.encode_failed"
+
+	// The registry and the sink's output schema disagree. incompatible: the
+	// registry refused the generated schema under the subject's
+	// compatibility rule. unregistered: the subject or version the config
+	// names is not there. mismatch: the handler SQL's columns do not match
+	// the specified schema's fields. name_invalid: a result column's name
+	// cannot be written in the sink's schema language.
+	CodeSinkSchemaIncompatible Code = "user.sink.schema_incompatible"
+	CodeSinkSchemaUnregistered Code = "user.sink.schema_unregistered"
+	CodeSinkSchemaMismatch     Code = "user.sink.schema_mismatch"
+	CodeSinkNameInvalid        Code = "user.sink.name_invalid"
 
 	// Source and sink failures that are not the user's doing.
 	CodeSourceUnreachable Code = "system.source.unreachable"
@@ -154,6 +169,11 @@ var registry = map[Code]Definition{
 		"A message is unusable for a reason the specific codes do not cover.",
 		"Inspect the record. Set pipeline.on_error to dlq to collect them.",
 	},
+	CodeDataSchemaUnknown: {
+		CodeDataSchemaUnknown,
+		"A record's schema ID is not in the registry.",
+		"Check that the producer registers against the same registry the pipeline reads.",
+	},
 	CodeSQLBindFailed: {
 		CodeSQLBindFailed,
 		"The handler SQL did not bind against the inferred schema.",
@@ -176,8 +196,8 @@ var registry = map[Code]Definition{
 	},
 	CodeSourceSecurityInvalid: {
 		CodeSourceSecurityInvalid,
-		"The source's TLS or SASL configuration is wrong, or its certificate files cannot be read.",
-		"Check security_protocol, the sasl block, and that every ssl path exists and is readable by the pipeline's user.",
+		"The source's TLS or SASL configuration, or the schema registry's credentials, is wrong, or a certificate file cannot be read.",
+		"Check security_protocol, the sasl block, pipeline.schema_registry.auth and ssl, and that every ssl path exists and is readable by the pipeline's user.",
 	},
 	CodeSourceInvalid: {
 		CodeSourceInvalid,
@@ -198,6 +218,26 @@ var registry = map[Code]Definition{
 		CodeSinkEncodeFailed,
 		"The sink's client could not encode a result value for the destination column. It fails the same way on every attempt and is not retried.",
 		"Cast or format the column in the handler SQL to match the destination column's type. The message names the column and the value.",
+	},
+	CodeSinkSchemaIncompatible: {
+		CodeSinkSchemaIncompatible,
+		"The registry refused the output schema under the subject's compatibility rule.",
+		"Change the handler SQL to keep the output shape, or change the subject's compatibility level.",
+	},
+	CodeSinkSchemaUnregistered: {
+		CodeSinkSchemaUnregistered,
+		"The subject or version that schema names is not in the registry.",
+		"Register the schema, or name a version the subject holds.",
+	},
+	CodeSinkSchemaMismatch: {
+		CodeSinkSchemaMismatch,
+		"The handler SQL's output columns do not match the specified schema's fields.",
+		"Rename, add or remove columns in the handler SQL to match the schema, or name a version that matches.",
+	},
+	CodeSinkNameInvalid: {
+		CodeSinkNameInvalid,
+		"A result column's name cannot be written in the sink's schema language.",
+		"Alias the column in the handler SQL, as in `SELECT count(*) AS event_count`.",
 	},
 	CodeSourceUnreachable: {
 		CodeSourceUnreachable,
