@@ -81,6 +81,18 @@ func TestCliRollup_CheckReportsEachServeFieldEditedByHand(t *testing.T) {
 			ds.Grains["1h"] = g
 		}, "serve.datasets.1.grains.1h.sql"},
 		{"a grain removed", func(ds *config.ServeDataset) { delete(ds.Grains, "6h") }, "serve.datasets.1.grains"},
+		// A hand-edited bucket or cache block is drift, like a hand-edited
+		// max_range: the cache's key is only exact for the bucket the rollup
+		// really has.
+		{"a bucket", func(ds *config.ServeDataset) {
+			g := ds.Grains["1h"]
+			g.Bucket = "30m"
+			ds.Grains["1h"] = g
+		}, "serve.datasets.1.grains.1h.bucket"},
+		{"the cache ttl", func(ds *config.ServeDataset) {
+			ds.Cache = &config.ServeDatasetCache{TTLSeconds: 5}
+		}, "serve.datasets.1.cache"},
+		{"the cache block removed", func(ds *config.ServeDataset) { ds.Cache = nil }, "serve.datasets.1.cache"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			conf, migration, serve := committed(t)

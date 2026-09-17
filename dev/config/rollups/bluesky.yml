@@ -44,6 +44,9 @@ rollups:
             Posts per bucket per language. The top languages by posts over the
             range keep their own series and the rest sum into lang "other".
           default_range: 24h
+          # Serve answers repeats of one question from memory for this long.
+          # The generated SQL reads the range half-open, which the cache needs.
+          cache_ttl_seconds: 30
           max_range: {1m: 6h, 5m: 1d, 15m: 3d, 1h: 14d, 6h: 90d, 1d: 365d}
           fold: {dimension: lang, top: {default: 10, max: 20}}
           filters: {lang: lang}

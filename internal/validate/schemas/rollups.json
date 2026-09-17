@@ -196,6 +196,11 @@
                       },
                       "type": "object",
                       "description": "Params that filter the dimension to one value, never folded, keyed by\nparam name."
+                    },
+                    "cache_ttl_seconds": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Opts the generated dataset into serve's response cache, for this many\nseconds. 0 leaves it out. The generated SQL reads the range half-open,\nwhich is what the cache's key needs."
                     }
                   },
                   "additionalProperties": false,

@@ -104,6 +104,10 @@ type RollupDataset struct {
 	// Params that filter the dimension to one value, never folded, keyed by
 	// param name.
 	Filters map[string]string `yaml:"filters,omitempty"`
+	// Opts the generated dataset into serve's response cache, for this many
+	// seconds. 0 leaves it out. The generated SQL reads the range half-open,
+	// which is what the cache's key needs.
+	CacheTTLSeconds int `yaml:"cache_ttl_seconds,omitempty" jsonschema:"minimum=0"`
 }
 
 // RollupFold bounds a dataset's series.

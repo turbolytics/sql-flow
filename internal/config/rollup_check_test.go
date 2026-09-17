@@ -26,6 +26,8 @@ func TestCliRollup_CheckReportsEachRuleAtItsPath(t *testing.T) {
 		path    string
 		message string
 	}{
+		{"negative cache ttl", []edit{{"default_range: 24h\n", "default_range: 24h\n          cache_ttl_seconds: -1\n"}},
+			"rollups.0.serve.datasets.0.cache_ttl_seconds", "must not be negative"},
 		{"bad rollup name", []edit{{"  - name: posts\n    source:", "  - name: Posts\n    source:"}},
 			"rollups.0.name", `"Posts"`},
 		{"bad source table", []edit{{"table: posts_per_minute_by_lang", "table: Posts"}},

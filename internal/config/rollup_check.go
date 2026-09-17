@@ -210,6 +210,11 @@ func checkRollupDataset(r Rollup, ds RollupDataset, path []string, widths map[st
 	}
 	seen[ds.Name] = true
 
+	if ds.CacheTTLSeconds < 0 {
+		add(at(path, "cache_ttl_seconds"), "rollup %s dataset %s: cache_ttl_seconds is %d; it must not be negative, and 0 means no cache",
+			r.Name, ds.Name, ds.CacheTTLSeconds)
+	}
+
 	// Rule 7.
 	set, ok := r.DimensionSet(ds.DimensionSet)
 	if !ok {
