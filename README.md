@@ -329,6 +329,87 @@ grain's, is `400 range_too_wide`, and the message names the grains that fit.
 Nothing is cut from the left of a chart without saying so. Durations are a
 whole number and one unit: `s`, `m`, `h` or `d`.
 
+#### Caching
+
+Every request runs its query unless the dataset opts in:
+
+```yaml
+serve:
+  cache:
+    max_mb: 16              # optional. Bounds the cache; enables nothing
+  datasets:
+    - name: pipeline_status
+      cache: {ttl_seconds: 15}
+      sql: ...
+    - name: posts_by_lang
+      cache: {ttl_seconds: 30}
+      range: {since: since, until: until, default: 24h}
+      grains:
+        5m:
+          bucket: 5m        # how wide one bucket of this grain is
+          max_range: 1d
+          sql: ... WHERE bucket >= $since AND bucket < $until
+```
+
+A cached answer is the encoded result, served for at most `ttl_seconds` after
+the query that produced it **started**. Nothing is invalidated, because
+`serve` is never told that the backend changed: after a backfill, wait one TTL
+or restart. `max_mb` is what every cached dataset shares, 16 by default. The
+least recently used answer goes first, after every expired one, and an answer
+over a quarter of the bound is returned and not kept.
+
+A dataset with a range declares `bucket` on every grain. `since` and `until`
+are rounded **up** to it, the statement binds the rounded values, and `range`
+echoes them, so every request inside one bucket-wide window is one question
+with one answer. A chart polled by a hundred tabs runs its query once per
+window, not once per tab.
+
+**The rounding returns the same rows only for SQL like the above**: `since`
+and `until` compared with a column whose values sit on bucket boundaries,
+half-open, `>= $since AND < $until`. Two ways to break it, and `serve` cannot
+detect either, which is why caching is the author's claim and off by default:
+
+- `bucket <= $until` admits the bucket that starts at the rounded `until`.
+- Filtering a raw timestamp, `event_at >= $since`, drops the events between
+  `since` and the boundary it rounds up to.
+
+`sqlflow rollup serve` writes `bucket` on every grain and SQL of the right
+shape. `bucket` must divide one day, so a week is refused: weeks start on a
+Monday and the epoch was a Thursday.
+
+Concurrent requests for one question run one query. That query finishes even
+if every caller gives up, because the engine would have finished it anyway,
+and its answer is the next caller's hit.
+
+A cached dataset's response says what happened:
+
+```
+"cache":"hit","age_ms":12400,"queued_ms":0,"elapsed_ms":0
+```
+
+`cache` is `miss` when this request ran the query, `hit` when the answer came
+from memory, and `shared` when it waited on a query another request had
+started. `age_ms` is how long ago that query started. `queued_ms` and
+`elapsed_ms` are this request's own, so a hit reports zero and not the
+original query's time. The request log carries `cache` too, and
+`/v1/datasets` lists each dataset's `ttl_seconds` and each grain's `bucket`.
+
+Responses stay `Cache-Control: no-store`: the cache is inside `serve`, and
+nothing between it and the caller holds an answer. Each instance holds its
+own, so two behind a load balancer may answer up to one TTL apart.
+
+With `serve.metrics.enabled`, a server with a cached dataset adds four
+metrics: `sqlflow_serve_cache_requests_total` by `dataset` and `outcome`,
+`sqlflow_serve_cache_evictions_total` by `reason` (`size` or `expired`), and
+the gauges `sqlflow_serve_cache_bytes` and `sqlflow_serve_cache_entries`.
+Expired answers are reclaimed when the next one is stored, so after a quiet
+spell the gauges still count them. `sqlflow_serve_query_duration_seconds`
+counts only requests that ran a query; a hit shows in
+`sqlflow_serve_request_duration_seconds`.
+
+`dev/config/serve/local.cached.yml` caches one dataset and says why it does
+not cache the other.
+
 Routes, all `GET`:
 
 | Route | Auth | Returns |
@@ -455,6 +536,11 @@ What to know before you deploy it:
 - **A served dataset has at most one dimension**, and folds it to its top
   values. `check` proves `max_buckets × (top.max + 1) <= max_rows`, so
   `truncated` never happens.
+- **A served dataset can be cached.** `cache_ttl_seconds: 30` on a serve
+  dataset generates its `cache` block. Every generated grain carries its
+  `bucket`, which is its name, and the generated SQL compares the bucket
+  column half-open, the shape [the cache](#caching) needs. `check` holds the
+  serve file to both.
 
 ### `sqlflow validate`
 

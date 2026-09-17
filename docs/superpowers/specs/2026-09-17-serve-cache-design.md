@@ -149,6 +149,13 @@ rounding `until` up would admit the bucket that starts at the rounded value.
 A dataset written that way must not opt in, and the README says so beside the
 key. The generator's SQL is half-open in every grain.
 
+Nor does it hold for SQL that filters a raw timestamp. `event_at >= $since`
+with `since` rounded from 00:30 up to 01:00 drops the event at 00:40. The
+compared column has to hold values already on bucket boundaries, which a
+rollup table's bucket column does. `dev/config/serve/local.table.yml` filters
+raw events, so its cached twin, `local.cached.yml`, caches the unranged
+dataset only and says why.
+
 The grain is chosen from the width as sent, before rounding. Rounding can
 widen a range by less than one bucket, and a request that fit `max_range`
 must not be refused for it.
