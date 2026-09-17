@@ -387,10 +387,11 @@ What to know before you deploy it:
   tables in Postgres and generates the datasets that read them. A Postgres
   view with the `GROUP BY` also pushes the filter in, but re-aggregates the
   range on every request.
-- **Bound Postgres connections.** One scan opens up to `pg_connection_limit`
-  connections, 64 by default. Set it low for a small database, as a command,
-  and remember the pool multiplies it: the ceiling is `pool.size` scans at
-  once.
+- **Bound Postgres connections.** An attachment opens up to
+  `pg_connection_limit` connections, 64 by default. Set it low for a small
+  database, as a command. The pool does not multiply it: with eight sessions
+  scanning at once and a limit of four, the measured peak was four, so the
+  connections are shared across sessions rather than opened per session.
 - **A timeout stops reading, not always the query.** At the deadline the
   caller gets `504`, and the reader stops at the next batch and is released,
   which is ADBC's equivalent of cancelling. An operator that runs long before

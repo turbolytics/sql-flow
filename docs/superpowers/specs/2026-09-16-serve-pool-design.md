@@ -390,16 +390,19 @@ fixes the default against that, changing 4 if the number says so.
 ## Postgres fan-out
 
 One DuckDB scan of an attached Postgres opens up to `pg_connection_limit`
-connections. With a pool, the worst case may be `size × pg_connection_limit`
-against a database that also carries the pipeline's writer. `pg_connection_limit`
-is global, so it does not scale with the pool by itself, but whether the
-attachment's connections are shared across sessions or held per session is not
-something this spec should assume.
+connections, and this spec would not assume whether a pool multiplies that.
 
-`TestIntegrationServePool_PostgresBackendsStayBounded` settles it: run a pool
-of 8 against a testcontainers Postgres, drive concurrent scans, and read
-`pg_stat_activity`. The README then documents the real relationship, and the
-demo sets `pg_connection_limit` from it.
+`TestIntegrationServePool_PostgresBackendsStayBounded` settled it on
+2026-09-16: eight sessions scanning 400k rows at once, against a
+testcontainers Postgres with `pg_connection_limit = 4`, peaked at **four**
+backends in `pg_stat_activity`. The attachment's connections are shared across
+sessions rather than opened per session, so `pg_connection_limit` caps the
+attachment and the pool does not multiply it.
+
+That is the better of the two outcomes, and it changes the sizing advice: a
+pool costs sessions and memory, not database connections. The test asserts
+that bound rather than the pessimistic one, so a DuckDB release that changed
+it would fail rather than quietly invalidate the README.
 
 ## Scaling out
 
@@ -420,11 +423,11 @@ encoding. If the fold ran in Postgres, another instance would add nothing.
 
 Two things bound it, and both are shared:
 
-- **Connections.** The worst case is `instances × pool.size × pg_connection_limit`
-  against a database that also carries the pipeline's writer. At the defaults
-  that is up to 16 per instance, which exhausts a small Postgres within
-  single-digit instances. The exact number waits on the integration test
-  above.
+- **Connections.** Measured: the pool does not multiply them, so the ceiling
+  is `instances × pg_connection_limit`, not `instances × pool.size ×
+  pg_connection_limit`. At the demo's limit of four that is four per instance
+  against a database that also carries the pipeline's writer — roomier than
+  this spec first assumed, but still the first shared thing to run out.
 - **Repeated work.** Instances share nothing, so each pulls the same hot rows
   for the same popular ranges. Ten instances means ten times the scanning and
   transfer for identical queries: database capacity spent to buy serve

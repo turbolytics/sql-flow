@@ -196,7 +196,7 @@ features:
 
   - id: cli.serve
     description: Serves a config's named SQL datasets over HTTP, with bearer tokens, typed params, grains and limits.
-    requires: [unit, release]
+    requires: [unit, integration, release]
 
   - id: cli.rollup
     description: Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted.
