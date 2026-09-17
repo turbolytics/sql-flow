@@ -165,3 +165,72 @@ func TestValidateSchema_SchemaRegistryUnknownFormatReportedOnce(t *testing.T) {
 	assert.That(t, !rep.OK)
 	assert.Equal(t, 1, diagnosticsAt(rep, "/pipeline/source/kafka/value/format"))
 }
+
+// A schema error at a path never hides a rule the schema cannot state. A
+// typo under auth is the schema's finding, and "auth needs both username
+// and password" at the same path is the rule's: the reader gets both in one
+// run, not the second after fixing the first.
+func TestValidateSchema_SchemaRegistrySchemaErrorDoesNotHideARule(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	registry := registryBlock + "\n    auth:\n      user: u\n      password: p"
+	rep, _ := validateRegistry(t, registry, "", "")
+	assert.That(t, !rep.OK)
+	assert.Equal(t, StatusFail, checkStatus(t, rep, "config.schema"))
+	assert.Equal(t, StatusFail, checkStatus(t, rep, schemaRegistryCheck))
+	assert.Equal(t, 2, diagnosticsAt(rep, "/pipeline/schema_registry/auth"))
+	found := false
+	for _, d := range rep.Diagnostics {
+		if strings.Contains(d.Message, "auth needs both username and password") {
+			found = true
+		}
+	}
+	assert.That(t, found)
+}
+
+// A missing url is reported once. The schema reports a missing required key
+// at the block, and the rule names the key, so the two paths differ.
+func TestValidateSchema_SchemaRegistryMissingURLReportedOnce(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, _ := validateRegistry(t, "  schema_registry:\n    ssl:\n      ca_location: /ca.pem", "", "")
+	assert.That(t, !rep.OK)
+	assert.Equal(t, StatusFail, checkStatus(t, rep, schemaRegistryCheck))
+	about := 0
+	for _, d := range rep.Diagnostics {
+		if strings.Contains(d.Message, "url") {
+			about++
+		}
+	}
+	assert.Equal(t, 1, about)
+
+	// An empty url is the schema's too, at the key itself.
+	rep, _ = validateRegistry(t, "  schema_registry:\n    url: \"\"", "", "")
+	assert.That(t, !rep.OK)
+	assert.Equal(t, 1, diagnosticsAt(rep, "/pipeline/schema_registry/url"))
+}
+
+// The check fails whenever a rule is broken, even when the schema printed
+// the only finding. A per-check table must not show it green.
+func TestValidateSchema_SchemaRegistryFailsEvenWhenTheSchemaPrintedIt(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, _ := validateRegistry(t, registryBlock, "      value:\n        format: protobuf", "")
+	assert.Equal(t, StatusFail, checkStatus(t, rep, schemaRegistryCheck))
+	assert.Equal(t, 1, diagnosticsAt(rep, "/pipeline/source/kafka/value/format"))
+}
+
+// validate and run agree on a version's spelling. A quoted number is a
+// number; a sign or a leading zero is refused, once.
+func TestValidateSchema_SchemaRegistryVersionSpellingsMatchRun(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, _ := validateRegistry(t, registryBlock, avroValue, fmt.Sprintf(avroPinned, `"3"`))
+	if !rep.OK {
+		t.Fatalf(`version "3": %v`, rep.Diagnostics)
+	}
+	for _, bad := range []string{"+3", "03", `"03"`, `"+3"`} {
+		rep, _ := validateRegistry(t, registryBlock, avroValue, fmt.Sprintf(avroPinned, bad))
+		assert.That(t, !rep.OK)
+		assert.Equal(t, StatusFail, checkStatus(t, rep, schemaRegistryCheck))
+		if at := diagnosticsAt(rep, "/pipeline/sink/kafka/value/schema/version"); at != 1 {
+			t.Fatalf("version %s: %d diagnostics at the version, want 1: %v", bad, at, rep.Diagnostics)
+		}
+	}
+}

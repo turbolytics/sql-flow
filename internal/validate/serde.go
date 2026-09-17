@@ -14,9 +14,15 @@ const schemaRegistryCheck = "config.schema_registry"
 // key it names. run applies the same rules and stops at the first; here the
 // reader wants the whole list.
 //
-// A finding at a path the schema check already reported is dropped. The
-// schema refuses an unknown format and a malformed version; the rule checks
-// them too because run has no schema pass, and saying it twice helps nobody.
+// Three rules are the schema's too: a missing or empty url, an unknown
+// format, a malformed version. The rule states them because run has no
+// schema pass. Here such a finding is printed once: when the schema check
+// already reported it, at the key or at the block a required key is missing
+// from, the rule's copy is dropped. No other finding is ever dropped, so a
+// schema error at a path never hides a rule the schema cannot state.
+//
+// The check fails whenever a rule is broken, printed or not. A per-check
+// table that showed this check green on format: protobuf would be wrong.
 func checkSchemaRegistry(rendered []byte, rep *Report) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(rendered, &root); err != nil {
@@ -38,11 +44,12 @@ func checkSchemaRegistry(rendered []byte, rep *Report) {
 
 	status := StatusPass
 	for _, v := range conf.CheckSchemaRegistry() {
+		status = StatusFail
 		context := "/" + strings.Join(v.Path, "/")
-		if reported[context] {
+		parent := "/" + strings.Join(v.Path[:len(v.Path)-1], "/")
+		if v.InSchema && (reported[context] || reported[parent]) {
 			continue
 		}
-		status = StatusFail
 		var pos *Position
 		if line, col, ok := lineOf(&root, v.Path); ok {
 			pos = &Position{Source: "config", Line: line, Column: col}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -345,4 +346,111 @@ func TestConfigSchemaRegistry_ReservedSourceColumns(t *testing.T) {
 	}
 	assert.False(t, IsReservedSourceColumn("topic"))
 	assert.False(t, IsReservedSourceColumn("Kafka_Topic"))
+}
+
+// The table and the ordered list name the same formats, and a rule reads
+// the table: json has no registry behind it, the other two do, and a name
+// the engine does not know is not registry-backed.
+func TestConfigSchemaRegistry_FormatTable(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	assert.Equal(t, len(Formats), len(formatSpecs))
+	for _, name := range Formats {
+		_, ok := LookupFormat(name)
+		assert.True(t, ok)
+	}
+	for name, want := range map[string]bool{FormatJSON: false, FormatJSONSchema: true, FormatAvro: true} {
+		spec, _ := LookupFormat(name)
+		assert.Equal(t, want, spec.Registry)
+		assert.Equal(t, want, (&KafkaValue{Format: name}).RegistryBacked())
+	}
+	_, ok := LookupFormat("protobuf")
+	assert.False(t, ok)
+	assert.False(t, (&KafkaValue{Format: "protobuf"}).RegistryBacked())
+}
+
+// EachSink reaches the pipeline's sink, the DLQ and every window's sink, in
+// that order, names each by its path, and stops when the caller does.
+func TestConfigSchemaRegistry_EachSinkWalksEverySink(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	conf := Conf{
+		Pipeline: Pipeline{
+			Sink:    Sink{Type: "console"},
+			OnError: &OnError{Policy: "DLQ", DLQ: &Sink{Type: "kafka"}},
+		},
+		Tables: &Tables{SQL: []TableSQL{
+			{Name: "plain"},
+			{Name: "agg", Window: &Window{Sink: Sink{Type: "postgres"}}},
+			{Name: "agg2", Window: &Window{Sink: Sink{Type: "noop"}}},
+		}},
+	}
+	var got []string
+	for path, s := range conf.EachSink() {
+		got = append(got, strings.Join(path, ".")+"="+s.Type)
+	}
+	assert.Equal(t, []string{
+		"pipeline.sink=console",
+		"pipeline.on_error.dlq=kafka",
+		"tables.sql.1.window.sink=postgres",
+		"tables.sql.2.window.sink=noop",
+	}, got)
+
+	n := 0
+	for range conf.EachSink() {
+		n++
+		break
+	}
+	assert.Equal(t, 1, n)
+
+	n = 0
+	for range (&Conf{}).EachSink() {
+		n++
+	}
+	assert.Equal(t, 1, n)
+}
+
+// run and validate accept the same spellings of a version: latest, or
+// digits with no sign and no leading zero. Atoi would take +3 and 03.
+func TestConfigSchemaRegistry_VersionSpellings(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	for _, ok := range []string{"latest", "1", "3", "10", "120"} {
+		assert.True(t, validVersion(ok))
+	}
+	for _, bad := range []string{"", "0", "-1", "+3", "03", " 3", "3 ", "3.0", "Latest", "newest"} {
+		if validVersion(bad) {
+			t.Fatalf("%q is accepted", bad)
+		}
+	}
+}
+
+// A struct tag cannot name a constant, so the schema's pattern and
+// versionPattern are written twice. This holds them equal.
+func TestConfigSchemaRegistry_VersionTagCarriesThePattern(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	f, ok := reflect.TypeOf(KafkaValueSchema{}).FieldByName("Version")
+	assert.True(t, ok)
+	assert.That(t, strings.Contains(f.Tag.Get("jsonschema_extras"), "pattern="+versionPattern+","))
+}
+
+// The three rules the JSON Schema states too are marked, and no other rule
+// is: validate may drop a marked finding the schema already printed, and
+// must never drop an unmarked one.
+func TestConfigSchemaRegistry_OnlySchemaRulesAreMarked(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	conf := avroConf()
+	conf.Pipeline.SchemaRegistry.URL = ""
+	conf.Pipeline.SchemaRegistry.Auth = &SchemaRegistryAuth{Username: "u"}
+	conf.Pipeline.Source.Kafka.Value = &KafkaValue{Format: "protobuf", Subject: "x"}
+	conf.Pipeline.Sink.Kafka.Value.Schema.Version = "03"
+
+	marked := map[string]bool{}
+	for _, v := range conf.CheckSchemaRegistry() {
+		marked[v.Key()] = v.InSchema
+	}
+	assert.Equal(t, map[string]bool{
+		"pipeline.schema_registry.url":             true,
+		"pipeline.schema_registry.auth":            false,
+		"pipeline.source.kafka.value.format":       true,
+		"pipeline.source.kafka.value.subject":      false,
+		"pipeline.sink.kafka.value.schema.version": true,
+	}, marked)
 }

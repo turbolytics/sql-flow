@@ -2,7 +2,7 @@ package config
 
 import (
 	"fmt"
-	"strconv"
+	"regexp"
 	"strings"
 
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -17,15 +17,37 @@ const (
 	FormatAvro       = "avro"
 )
 
-// Formats lists every format, for a rule that names them.
+// Formats lists every format, in the order a message names them.
 var Formats = []string{FormatJSON, FormatJSONSchema, FormatAvro}
+
+// FormatSpec is what the engine knows about one format. A rule asks the
+// table, never the name: a format that is not json is not thereby framed by
+// a registry, and the next format added may be neither.
+type FormatSpec struct {
+	// Registry reports that a schema registry frames the records. Such a
+	// format needs pipeline.schema_registry.
+	Registry bool
+}
+
+var formatSpecs = map[string]FormatSpec{
+	FormatJSON:       {},
+	FormatJSONSchema: {Registry: true},
+	FormatAvro:       {Registry: true},
+}
+
+// LookupFormat returns the spec for a format name. ok is false for a name
+// the engine does not know.
+func LookupFormat(name string) (FormatSpec, bool) {
+	spec, ok := formatSpecs[name]
+	return spec, ok
+}
 
 // SchemaRegistry is the registry a source reads schemas from and a sink
 // registers them with. One block on the pipeline: a source and a sink almost
 // always share a registry, and a shared block is one URL and one credential.
 type SchemaRegistry struct {
 	// The registry's base URL.
-	URL string `yaml:"url"`
+	URL string `yaml:"url" jsonschema:"minLength=1"`
 	// Credentials, when the registry asks for them.
 	Auth *SchemaRegistryAuth `yaml:"auth,omitempty"`
 	// TLS material, the same shape as kafka.ssl.
@@ -55,17 +77,26 @@ type KafkaValue struct {
 	Schema *KafkaValueSchema `yaml:"schema,omitempty"`
 }
 
+// versionPattern is latest, or a version number of at least 1 with no sign
+// and no leading zero. The schema carries the same pattern, so validate and
+// run accept the same spellings, quoted or not.
+const versionPattern = `^(latest|[1-9][0-9]*)$`
+
+var versionRE = regexp.MustCompile(versionPattern)
+
 // KafkaValueSchema names the registered version a sink writes against.
 type KafkaValueSchema struct {
 	// pattern and minimum ride the jsonschema_extras tag. oneof_type clears
 	// the schema's type, and the reflector then dispatches pattern and
 	// minimum on that type and drops both. pattern constrains only a
 	// string and minimum only a number, so together they read as "latest,
-	// or an integer of at least 1".
+	// or an integer of at least 1", quoted or not. The pattern here is
+	// versionPattern; a struct tag cannot name a constant, and
+	// TestConfigSchemaRegistry_VersionTagCarriesThePattern holds them equal.
 
 	// latest, or a version number of at least 1. Written as the word
 	// latest or as a number.
-	Version string `yaml:"version" jsonschema:"oneof_type=string;integer" jsonschema_extras:"pattern=^latest$,minimum=1"`
+	Version string `yaml:"version" jsonschema:"oneof_type=string;integer" jsonschema_extras:"pattern=^(latest|[1-9][0-9]*)$,minimum=1"`
 }
 
 // ResolvedFormat is the format the block names, json for an absent block or
@@ -77,9 +108,12 @@ func (v *KafkaValue) ResolvedFormat() string {
 	return v.Format
 }
 
-// RegistryBacked reports whether the records are framed by a schema registry.
+// RegistryBacked reports whether a schema registry frames the records. A
+// format the engine does not know is not: the unknown name is its own
+// violation, and no registry rule can be held against it.
 func (v *KafkaValue) RegistryBacked() bool {
-	return v.ResolvedFormat() != FormatJSON
+	spec, ok := LookupFormat(v.ResolvedFormat())
+	return ok && spec.Registry
 }
 
 // ResolvedSubject is the subject the sink registers under: the one the value
@@ -129,13 +163,23 @@ func keyPath(base []string, keys ...string) []string {
 }
 
 // CheckSchemaRegistry holds a config to the rules the JSON Schema cannot
-// state, plus the two it can, because run has no schema pass. It returns
-// every violation rather than the first: validate lists them all, and run
-// prints the first. Nothing here reads the network.
+// state, plus the three it can, because run has no schema pass. Those three
+// are marked InSchema, so validate can leave them to the schema check. It
+// returns every violation rather than the first: validate lists them all,
+// and run prints the first. Nothing here reads the network.
 func (c *Conf) CheckSchemaRegistry() []Violation {
 	var out []Violation
 	add := func(msg string, path ...string) {
 		out = append(out, Violation{Code: errs.CodeConfigInvalid, Path: path, Message: msg})
+	}
+	// addInSchema is add for a rule the JSON Schema states too: a missing or
+	// empty url, an unknown format, a malformed version.
+	addInSchema := func(msg string, path ...string) {
+		out = append(out, Violation{Code: errs.CodeConfigInvalid, Path: path, Message: msg, InSchema: true})
+	}
+	unknownFormat := func(format string, path []string) {
+		addInSchema(fmt.Sprintf("format %q is not one of %s", format, formatList()),
+			keyPath(path, "format")...)
 	}
 
 	p := &c.Pipeline
@@ -143,7 +187,7 @@ func (c *Conf) CheckSchemaRegistry() []Violation {
 
 	if registry != nil {
 		if registry.URL == "" {
-			add("url is needed: the registry's base URL", "pipeline", "schema_registry", "url")
+			addInSchema("url is needed: the registry's base URL", "pipeline", "schema_registry", "url")
 		}
 		if a := registry.Auth; a != nil {
 			basic := a.Username != "" || a.Password != ""
@@ -165,9 +209,8 @@ func (c *Conf) CheckSchemaRegistry() []Violation {
 		v := src.Value
 		path := []string{"pipeline", "source", "kafka", "value"}
 		format := v.ResolvedFormat()
-		if !knownFormat(format) {
-			add(fmt.Sprintf("format %q is not one of json, json_schema or avro", format),
-				keyPath(path, "format")...)
+		if _, known := LookupFormat(format); !known {
+			unknownFormat(format, path)
 		}
 		if v.Subject != "" {
 			add("subject is a sink key: a source reads the subject its records carry",
@@ -177,7 +220,7 @@ func (c *Conf) CheckSchemaRegistry() []Violation {
 			add("schema is a sink key: a source reads the schema its records carry",
 				keyPath(path, "schema")...)
 		}
-		if knownFormat(format) && v.RegistryBacked() {
+		if v.RegistryBacked() {
 			if registry == nil {
 				add(fmt.Sprintf("format %s needs pipeline.schema_registry", format),
 					keyPath(path, "format")...)
@@ -193,48 +236,34 @@ func (c *Conf) CheckSchemaRegistry() []Violation {
 		}
 	}
 
-	checkSink := func(s Sink, path ...string) {
+	for base, s := range c.EachSink() {
 		if s.Kafka == nil || s.Kafka.Value == nil {
-			return
+			continue
 		}
 		v := s.Kafka.Value
-		path = keyPath(path, "kafka", "value")
+		path := keyPath(base, "kafka", "value")
 		format := v.ResolvedFormat()
-		if !knownFormat(format) {
-			add(fmt.Sprintf("format %q is not one of json, json_schema or avro", format),
-				keyPath(path, "format")...)
+		if _, known := LookupFormat(format); !known {
+			unknownFormat(format, path)
 		}
-		// An unrecognized format is treated as not registry-backed for
-		// subject and schema, the same as json: neither rule can tell it
-		// apart from a format with no registry behind it.
-		registryBacked := knownFormat(format) && v.RegistryBacked()
-		if registryBacked && registry == nil {
+		// A format with no registry behind it, json or a name the engine
+		// does not know, registers nothing and writes against no version.
+		backed := v.RegistryBacked()
+		if backed && registry == nil {
 			add(fmt.Sprintf("format %s needs pipeline.schema_registry", format),
 				keyPath(path, "format")...)
 		}
-		if v.Subject != "" && !registryBacked {
-			add("subject needs a format other than json; a json sink registers nothing",
+		if v.Subject != "" && !backed {
+			add("subject needs a format a registry frames; a json sink registers nothing",
 				keyPath(path, "subject")...)
 		}
 		if v.Schema != nil {
-			if !registryBacked {
-				add("schema needs a format other than json; a json sink writes against no registered version",
+			if !backed {
+				add("schema needs a format a registry frames; a json sink writes against no registered version",
 					keyPath(path, "schema")...)
 			} else if !validVersion(v.Schema.Version) {
-				add(fmt.Sprintf("version is latest or a version number of at least 1; got %q", v.Schema.Version),
+				addInSchema(fmt.Sprintf("version is latest or a version number of at least 1; got %q", v.Schema.Version),
 					keyPath(path, "schema", "version")...)
-			}
-		}
-	}
-
-	checkSink(p.Sink, "pipeline", "sink")
-	if p.OnError != nil && p.OnError.DLQ != nil {
-		checkSink(*p.OnError.DLQ, "pipeline", "on_error", "dlq")
-	}
-	if c.Tables != nil {
-		for i, table := range c.Tables.SQL {
-			if table.Window != nil {
-				checkSink(table.Window.Sink, "tables", "sql", strconv.Itoa(i), "window", "sink")
 			}
 		}
 	}
@@ -242,21 +271,15 @@ func (c *Conf) CheckSchemaRegistry() []Violation {
 	return out
 }
 
-func knownFormat(format string) bool {
-	for _, f := range Formats {
-		if format == f {
-			return true
-		}
-	}
-	return false
+// formatList is "json, json_schema or avro", from Formats.
+func formatList() string {
+	n := len(Formats)
+	return strings.Join(Formats[:n-1], ", ") + " or " + Formats[n-1]
 }
 
-// validVersion accepts latest or a positive integer. yaml.v3 hands both
-// spellings over as a string.
+// validVersion accepts latest, or a version number of at least 1 with no
+// sign and no leading zero. yaml.v3 hands every spelling over as a string,
+// so this is the schema's pattern, not strconv: Atoi takes +3 and 03.
 func validVersion(v string) bool {
-	if v == "latest" {
-		return true
-	}
-	n, err := strconv.Atoi(v)
-	return err == nil && n >= 1
+	return versionRE.MatchString(v)
 }
