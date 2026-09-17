@@ -144,6 +144,17 @@
           "type": "object",
           "description": "Whether to serve Prometheus metrics at /metrics."
         },
+        "cache": {
+          "properties": {
+            "max_mb": {
+              "type": "integer",
+              "description": "The most the cache holds, in MiB. 0 means 16."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "description": "Bounds the response cache. It does not enable it: a dataset opts in\nwith its own cache block."
+        },
         "datasets": {
           "items": {
             "properties": {
@@ -221,6 +232,21 @@
                 "type": "object",
                 "description": "Overrides the top-level limits for this dataset."
               },
+              "cache": {
+                "properties": {
+                  "ttl_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How long an answer is served after the query that produced it\nstarted, in seconds. At least 1."
+                  }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "ttl_seconds"
+                ],
+                "description": "Opts the dataset into the response cache. Absent, every request runs\nits query."
+              },
               "sql": {
                 "type": "string",
                 "description": "The statement, for a dataset without grains. Set sql or grains."
@@ -228,6 +254,10 @@
               "grains": {
                 "additionalProperties": {
                   "properties": {
+                    "bucket": {
+                      "type": "string",
+                      "description": "How wide one bucket of this grain is, such as 5m. Required on every\ngrain of a cached dataset with a range, and refused without a range.\nIt must divide one day. Units: s, m, h, d."
+                    },
                     "max_range": {
                       "type": "string",
                       "description": "The widest range this grain serves, such as 14d. Required when the\ndataset declares a range, and refused otherwise. Units: s, m, h, d."

@@ -57,6 +57,11 @@ serve:
     # token. Off by default: that listener is public, and the metric labels
     # name every dataset and grain.
     enabled: <boolean>
+  # Bounds the response cache. It does not enable it: a dataset opts in
+  # with its own cache block.
+  cache:
+    # The most the cache holds, in MiB. 0 means 16.
+    max_mb: <integer>
   # The datasets this server answers. Nothing else is reachable.
   datasets:
     -
@@ -95,11 +100,21 @@ serve:
           requests_per_second: <number>
           # Reserved. Must be 0.
           burst: <integer>
+      # Opts the dataset into the response cache. Absent, every request runs
+      # its query.
+      cache:
+        # How long an answer is served after the query that produced it
+        # started, in seconds. At least 1.
+        ttl_seconds: <integer>
       # The statement, for a dataset without grains. Set sql or grains.
       sql: <string>
       # One statement per grain, selected by ?grain=<name>. Set sql or grains.
       grains:
         <name>:
+          # How wide one bucket of this grain is, such as 5m. Required on every
+          # grain of a cached dataset with a range, and refused without a range.
+          # It must divide one day. Units: s, m, h, d.
+          bucket: <string>
           # The widest range this grain serves, such as 14d. Required when the
           # dataset declares a range, and refused otherwise. Units: s, m, h, d.
           max_range: <string>
