@@ -17,6 +17,34 @@
 
 ### Added
 
+- `sqlflow serve` can answer a dataset from memory. It is off unless the
+  dataset says `cache: {ttl_seconds: N}`, and a dataset without the block is
+  served byte for byte as before. An answer is served for at most
+  `ttl_seconds` after the query that produced it started; nothing is
+  invalidated, because serve is never told the backend changed.
+  `serve.cache.max_mb`, 16 by default, bounds what every cached dataset
+  shares. A dataset with a range declares `bucket` on each grain, and `since`
+  and `until` are rounded up to it, in what the statement binds and in the
+  `range` the response echoes, so every request inside one bucket-wide window
+  is one question. Concurrent requests for one question run one query, which
+  finishes and is kept even if every caller gives up. Measured locally on the
+  demo's data at 16 concurrent: two hundred requests with two hundred
+  different ranges inside one five-minute window went from 200 queries at a
+  951 ms median to one query at 15 ms. **The rounding returns the same rows
+  only when the SQL compares `since` and `until`, half-open, with a column
+  whose values sit on bucket boundaries**: `bucket >= $since AND bucket <
+  $until`. `bucket <= $until`, or a filter on a raw timestamp, returns
+  different rows, and serve cannot tell, which is why caching is the author's
+  claim. A cached dataset's response carries `cache` (`miss`, `hit` or
+  `shared`) and `age_ms`, the request log carries `cache`, and four
+  `sqlflow_serve_cache_*` metrics join `/metrics`.
+  `sqlflow_serve_query_duration_seconds` now counts only requests that ran a
+  query, so a hit does not pull it toward zero.
+- `sqlflow rollup serve` writes `bucket` on every generated grain, and a
+  `cache` block when the serve dataset sets `cache_ttl_seconds`. `rollup
+  check` holds a serve file to both, so **a serve file generated before this
+  release fails `check` until it is regenerated**: run `sqlflow rollup serve`
+  and paste the datasets again.
 - `sqlflow serve` answers requests from a pool of sessions rather than one
   connection. `serve.pool.size` sets how many run at once, four by default,
   measured to peak at 72 MiB resident on Linux against a 256 MB box. Every

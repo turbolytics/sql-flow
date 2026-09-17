@@ -306,3 +306,46 @@ func TestCliServe_TheLogLineAndTheListingNameTheCache(t *testing.T) {
 	assert.That(t, strings.Contains(listing.raw, `"cache":{"ttl_seconds":30}`))
 	assert.That(t, strings.Contains(listing.raw, `"bucket":"1h"`))
 }
+
+// The page sends no fixed range: until is now, and now moves. While the clock
+// stays inside one bucket every request is one key; the moment it crosses a
+// boundary the rounded until moves with it, the old key is never asked for
+// again, and the first request of the new window runs a query. At every step
+// the rows are the rows an uncached dataset returns for the same instant.
+func TestCliServe_TheKeyRollsOverWithTheClock(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	coverage.Invariant(t, "serve.cache.bucket_exact", serveIntegration)
+	cs := newCachedServer(t)
+
+	at := func(s string) {
+		target, err := time.Parse(time.RFC3339, s)
+		assert.NoError(t, err)
+		cs.clk.advance(target.Sub(cs.clk.now()))
+	}
+	step := func(now, outcome, until string, runs int64) {
+		t.Helper()
+		at(now)
+		before := cs.ex.runs.Load()
+		cached := cs.get(t, "/v1/datasets/posts")
+		assert.Equal(t, http.StatusOK, cached.status)
+		assert.Equal(t, outcome, cached.body["cache"])
+		assert.Equal(t, until, cached.body["range"].(map[string]any)["until"])
+		assert.Equal(t, runs, cs.ex.runs.Load()-before)
+
+		plain := cs.get(t, "/v1/datasets/posts_uncached")
+		c, p := cached.body["rows"].([]any)[0].(map[string]any), plain.body["rows"].([]any)[0].(map[string]any)
+		assert.Equal(t, p["n"], c["n"])
+		assert.Equal(t, p["posts"], c["posts"])
+	}
+
+	// The fixture's last row is at 2026-09-11 00:00, so a 24-hour range ending
+	// here holds rows, and loses the 2026-09-10 00:00 bucket's two rows as it
+	// slides past them.
+	step("2026-09-10T23:59:50Z", "miss", "2026-09-11T00:00:00Z", 1)
+	step("2026-09-10T23:59:59Z", "hit", "2026-09-11T00:00:00Z", 0)
+	step("2026-09-11T00:00:00Z", "hit", "2026-09-11T00:00:00Z", 0) // on the boundary is still this window
+	step("2026-09-11T00:00:01Z", "miss", "2026-09-11T01:00:00Z", 1)
+	step("2026-09-11T00:00:20Z", "hit", "2026-09-11T01:00:00Z", 0)
+	// Same window, past the TTL: the key is the same and the answer is refilled.
+	step("2026-09-11T00:00:31Z", "miss", "2026-09-11T01:00:00Z", 1)
+}
