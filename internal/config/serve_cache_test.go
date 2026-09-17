@@ -35,6 +35,7 @@ serve:
           sql: SELECT * FROM t WHERE bucket >= $since AND bucket < $until
         1d:
           bucket: 1d
+          cache: {ttl_seconds: 600}
           max_range: 365d
           sql: SELECT * FROM t WHERE bucket >= $since AND bucket < $until
 `
@@ -48,6 +49,12 @@ func TestCliServe_CacheConfigResolves(t *testing.T) {
 	assert.That(t, conf.Serve.AnyCached())
 	assert.Equal(t, 15*time.Second, conf.Serve.Datasets[0].CacheTTL())
 	assert.Equal(t, 30*time.Second, conf.Serve.Datasets[1].CacheTTL())
+	// A grain's own TTL wins; a grain without one takes the dataset's. A
+	// year of days changes by one open bucket, so it can be held far longer
+	// than six hours of minutes.
+	assert.Equal(t, 30*time.Second, conf.Serve.Datasets[1].CacheTTLFor("5m"))
+	assert.Equal(t, 600*time.Second, conf.Serve.Datasets[1].CacheTTLFor("1d"))
+	assert.Equal(t, 15*time.Second, conf.Serve.Datasets[0].CacheTTLFor(""))
 
 	// Off unless a dataset says so, and the bound defaults.
 	plain := parseServe(t, validServe)
@@ -74,6 +81,8 @@ func TestCliServe_CheckReportsEachCacheRuleAtItsPath(t *testing.T) {
 			errs.CodeConfigServeDataset, "serve.datasets.1.grains.5m.bucket", `"five" is not a duration`},
 		{"a bucket that does not divide a day", "bucket: 5m", "bucket: 7m",
 			errs.CodeConfigServeDataset, "serve.datasets.1.grains.5m.bucket", "does not divide one day"},
+		{"a grain ttl of zero", "cache: {ttl_seconds: 600}", "cache: {ttl_seconds: 0}",
+			errs.CodeConfigServeDataset, "serve.datasets.1.grains.1d.cache.ttl_seconds", "at least 1"},
 		{"a week", "bucket: 1d", "bucket: 7d",
 			errs.CodeConfigServeDataset, "serve.datasets.1.grains.1d.bucket", "does not divide one day"},
 	} {
@@ -101,9 +110,20 @@ func TestCliServe_CheckReportsEachCacheRuleAtItsPath(t *testing.T) {
 		assert.That(t, strings.Contains(violations[0].Message, "needs a range"))
 	})
 
-	// bucket without cache is allowed: the generator always writes it.
+	// bucket without cache is allowed: the generator always writes it. A
+	// grain's cache block is not: the dataset's block is the opt-in, and a
+	// grain that overrides a TTL nobody set would cache nothing and look as
+	// if it did.
 	t.Run("bucket without cache", func(t *testing.T) {
+		text := strings.Replace(cachedServe, "      cache: {ttl_seconds: 30}\n", "", 1)
+		text = strings.Replace(text, "          cache: {ttl_seconds: 600}\n", "", 1)
+		assert.Equal(t, 0, len(parseServe(t, text).Check()))
+	})
+	t.Run("a grain cache without the dataset's", func(t *testing.T) {
 		conf := parseServe(t, strings.Replace(cachedServe, "      cache: {ttl_seconds: 30}\n", "", 1))
-		assert.Equal(t, 0, len(conf.Check()))
+		violations := conf.Check()
+		assert.Equal(t, 1, len(violations))
+		assert.Equal(t, "serve.datasets.1.grains.1d.cache", strings.Join(violations[0].Path, "."))
+		assert.That(t, strings.Contains(violations[0].Message, "opts it in"))
 	})
 }

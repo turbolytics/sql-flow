@@ -258,6 +258,21 @@
                       "type": "string",
                       "description": "How wide one bucket of this grain is, such as 5m. Required on every\ngrain of a cached dataset with a range, and refused without a range.\nIt must divide one day. Units: s, m, h, d."
                     },
+                    "cache": {
+                      "properties": {
+                        "ttl_seconds": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "description": "How long an answer is served after the query that produced it\nstarted, in seconds. At least 1."
+                        }
+                      },
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": [
+                        "ttl_seconds"
+                      ],
+                      "description": "Holds this grain's answers for its own number of seconds rather than\nthe dataset's. A coarse grain changes by one open bucket, so it can be\nheld far longer than a fine one. Refused unless the dataset has a\ncache block: that block is the opt-in."
+                    },
                     "max_range": {
                       "type": "string",
                       "description": "The widest range this grain serves, such as 14d. Required when the\ndataset declares a range, and refused otherwise. Units: s, m, h, d."

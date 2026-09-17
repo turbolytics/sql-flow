@@ -115,6 +115,14 @@ serve:
           # grain of a cached dataset with a range, and refused without a range.
           # It must divide one day. Units: s, m, h, d.
           bucket: <string>
+          # Holds this grain's answers for its own number of seconds rather than
+          # the dataset's. A coarse grain changes by one open bucket, so it can be
+          # held far longer than a fine one. Refused unless the dataset has a
+          # cache block: that block is the opt-in.
+          cache:
+            # How long an answer is served after the query that produced it
+            # started, in seconds. At least 1.
+            ttl_seconds: <integer>
           # The widest range this grain serves, such as 14d. Required when the
           # dataset declares a range, and refused otherwise. Units: s, m, h, d.
           max_range: <string>

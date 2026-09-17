@@ -191,7 +191,7 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		// as a request is. values is not written again, so the fill reading
 		// it after this request has gone is safe.
 		var fillQueued, fillWork time.Duration
-		res, outcome, age, err = s.cache.do(ctx, cacheKey(name, st.grain, ds.conf.Params, values), ds.cacheTTL,
+		res, outcome, age, err = s.cache.do(ctx, cacheKey(name, st.grain, ds.conf.Params, values), ds.ttlFor(st.grain),
 			func() (result, error) {
 				fctx, done := context.WithTimeout(context.Background(), ds.timeout)
 				defer done()

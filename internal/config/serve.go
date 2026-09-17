@@ -211,6 +211,11 @@ type ServeGrain struct {
 	// grain of a cached dataset with a range, and refused without a range.
 	// It must divide one day. Units: s, m, h, d.
 	Bucket string `yaml:"bucket,omitempty"`
+	// Holds this grain's answers for its own number of seconds rather than
+	// the dataset's. A coarse grain changes by one open bucket, so it can be
+	// held far longer than a fine one. Refused unless the dataset has a
+	// cache block: that block is the opt-in.
+	Cache *ServeDatasetCache `yaml:"cache,omitempty"`
 	// The widest range this grain serves, such as 14d. Required when the
 	// dataset declares a range, and refused otherwise. Units: s, m, h, d.
 	MaxRange string `yaml:"max_range,omitempty"`
@@ -278,6 +283,19 @@ func (ds ServeDataset) CacheTTL() time.Duration {
 		return 0
 	}
 	return time.Duration(ds.Cache.TTLSeconds) * time.Second
+}
+
+// CacheTTLFor is how long one grain's answers are served: the grain's own
+// TTL, else the dataset's, and 0 for a dataset that did not opt in. The empty
+// grain is a dataset without grains.
+func (ds ServeDataset) CacheTTLFor(grain string) time.Duration {
+	if ds.Cache == nil {
+		return 0
+	}
+	if g, ok := ds.Grains[grain]; ok && g.Cache != nil {
+		return time.Duration(g.Cache.TTLSeconds) * time.Second
+	}
+	return ds.CacheTTL()
 }
 
 // Timeout is how long a caller waits on a dataset, resolved the same way as
@@ -749,6 +767,18 @@ func checkCache(ds ServeDataset, path []string, add addFunc) {
 	}
 
 	for _, grain := range ds.GrainNames() {
+		if gc := ds.Grains[grain].Cache; gc != nil {
+			cpath := at(path, "grains", grain, "cache")
+			switch {
+			case ds.Cache == nil:
+				add(code, cpath, "dataset %s grain %s: a grain's cache block overrides the dataset's ttl_seconds, and the dataset has no cache block; the dataset's block is what opts it in",
+					ds.Name, grain)
+			case gc.TTLSeconds < 1:
+				add(code, at(cpath, "ttl_seconds"),
+					"dataset %s grain %s: cache.ttl_seconds is %d; it must be at least 1", ds.Name, grain, gc.TTLSeconds)
+			}
+		}
+
 		gpath := at(path, "grains", grain, "bucket")
 		raw := ds.Grains[grain].Bucket
 		switch {

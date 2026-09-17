@@ -57,6 +57,9 @@ type dataset struct {
 	timeout time.Duration
 	// cacheTTL is 0 for a dataset that did not opt into the cache.
 	cacheTTL time.Duration
+	// grainTTL holds the grains that keep their answers for their own time
+	// rather than the dataset's.
+	grainTTL map[string]time.Duration
 	// span is nil for a dataset without a range.
 	span *span
 }
@@ -94,6 +97,15 @@ func (sp *span) bucketOf(grain string) time.Duration {
 		}
 	}
 	return 0
+}
+
+// ttlFor is how long grain's answers are served. The caller has checked that
+// the dataset is cached.
+func (ds *dataset) ttlFor(grain string) time.Duration {
+	if ttl, ok := ds.grainTTL[grain]; ok {
+		return ttl
+	}
+	return ds.cacheTTL
 }
 
 // Option configures a Server.
@@ -211,7 +223,15 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 				doc.Grains = map[string]grainDoc{}
 			}
 			ds.grains[sc.Grain] = datasetStatement{stmt: st, grain: sc.Grain}
-			doc.Grains[sc.Grain] = grainDoc{SQL: sc.SQL}
+			gd := grainDoc{SQL: sc.SQL}
+			if gc := dc.Grains[sc.Grain].Cache; gc != nil && dc.Cache != nil {
+				if ds.grainTTL == nil {
+					ds.grainTTL = map[string]time.Duration{}
+				}
+				ds.grainTTL[sc.Grain] = dc.CacheTTLFor(sc.Grain)
+				gd.Cache = &cacheDoc{TTLSeconds: gc.TTLSeconds}
+			}
+			doc.Grains[sc.Grain] = gd
 		}
 
 		if dc.Range != nil {
@@ -289,9 +309,11 @@ type paramDoc struct {
 }
 
 type grainDoc struct {
-	Bucket   string `json:"bucket,omitempty"`
-	MaxRange string `json:"max_range,omitempty"`
-	SQL      string `json:"sql"`
+	Bucket string `json:"bucket,omitempty"`
+	// Cache is present only on a grain whose TTL differs from its dataset's.
+	Cache    *cacheDoc `json:"cache,omitempty"`
+	MaxRange string    `json:"max_range,omitempty"`
+	SQL      string    `json:"sql"`
 }
 
 // newSpan reads a dataset's range. Check has already held it to the rules,

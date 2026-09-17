@@ -42,6 +42,22 @@ serve:
           bucket: 1h
           max_range: 14d
           sql: SELECT $since AS since, $until AS until, count(*) AS n, coalesce(sum(posts), 0)::BIGINT AS posts FROM posts WHERE bucket >= $since AND bucket < $until
+    - name: posts_by_grain
+      cache: {ttl_seconds: 30}
+      params:
+        - {name: since, type: timestamp}
+        - {name: until, type: timestamp}
+      range: {since: since, until: until, default: 24h}
+      grains:
+        1h:
+          bucket: 1h
+          max_range: 2d
+          sql: SELECT '1h' AS picked, count(*) AS n FROM posts WHERE bucket >= $since AND bucket < $until
+        1d:
+          bucket: 1d
+          cache: {ttl_seconds: 600}
+          max_range: 365d
+          sql: SELECT '1d' AS picked, count(*) AS n FROM posts WHERE bucket >= $since AND bucket < $until
     - name: posts_uncached
       params:
         - {name: since, type: timestamp}
@@ -348,4 +364,40 @@ func TestCliServe_TheKeyRollsOverWithTheClock(t *testing.T) {
 	step("2026-09-11T00:00:20Z", "hit", "2026-09-11T01:00:00Z", 0)
 	// Same window, past the TTL: the key is the same and the answer is refilled.
 	step("2026-09-11T00:00:31Z", "miss", "2026-09-11T01:00:00Z", 1)
+}
+
+// A grain may hold its answers longer than its dataset does. A year of days
+// changes by one open bucket, and re-running the widest query in the system
+// twice a minute buys a change no chart can show.
+func TestCliServe_AGrainsOwnTTLOverridesTheDatasets(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	coverage.Invariant(t, "serve.cache.bounded_staleness", serveIntegration)
+	cs := newCachedServer(t)
+
+	fine := "/v1/datasets/posts_by_grain?since=2026-09-10T00:00:00Z&until=2026-09-11T00:00:00Z"
+	coarse := "/v1/datasets/posts_by_grain?since=2026-08-01T00:00:00Z&until=2026-09-11T00:00:00Z"
+	outcome := func(target, grain string) string {
+		t.Helper()
+		r := cs.get(t, target)
+		assert.Equal(t, http.StatusOK, r.status)
+		assert.Equal(t, grain, r.body["grain"])
+		return r.body["cache"].(string)
+	}
+
+	assert.Equal(t, "miss", outcome(fine, "1h"))
+	assert.Equal(t, "miss", outcome(coarse, "1d"))
+
+	// Past the dataset's 30 s: the 1h grain refills, the 1d grain does not.
+	cs.clk.advance(31 * time.Second)
+	assert.Equal(t, "miss", outcome(fine, "1h"))
+	assert.Equal(t, "hit", outcome(coarse, "1d"))
+
+	// The bound still holds for the grain, at its own number.
+	cs.clk.advance(568 * time.Second) // 599 s after the 1d fill
+	assert.Equal(t, "hit", outcome(coarse, "1d"))
+	cs.clk.advance(time.Second)
+	assert.Equal(t, "miss", outcome(coarse, "1d"))
+
+	listing := cs.get(t, "/v1/datasets")
+	assert.That(t, strings.Contains(listing.raw, `"1d":{"bucket":"1d","cache":{"ttl_seconds":600}`))
 }
