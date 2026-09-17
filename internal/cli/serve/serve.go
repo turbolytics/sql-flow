@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	prom "github.com/prometheus/client_golang/prometheus"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
@@ -93,31 +95,32 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 		}
 	}()
 
-	conn, err := db.Connect(ctx)
+	ex, err := api.NewDuckDBExecutor(ctx, db, conf.Serve.PoolSize(),
+		func(ctx context.Context, conn adbc.Connection) error {
+			// Uncoded, as in run: an ATTACH that fails because the database
+			// is not up yet exits 1, which a supervisor retries. Redacted
+			// because a failed ATTACH prints the connection string.
+			if err := core.InitCommands(conn, &config.Conf{Commands: conf.Commands}); err != nil {
+				return errors.New("failed to initialize commands: " + api.Redact(err.Error()))
+			}
+			return nil
+		}, nil)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			l.Error("failed to close DuckDB connection", zap.Error(err))
-		}
-	}()
 
-	// Uncoded, as in run: an ATTACH that fails because the database is not up
-	// yet exits 1, which a supervisor retries.
-	//
-	// Redacted: a failed ATTACH prints the connection string, password
-	// included, and this error goes to the log.
-	if err := core.InitCommands(conn, &config.Conf{Commands: conf.Commands}); err != nil {
-		return errors.New("failed to initialize commands: " + api.Redact(err.Error()))
+	opts := []api.Option{api.WithLogger(l)}
+	if conf.Serve.MetricsEnabled() {
+		opts = append(opts, api.WithMetrics(prom.NewRegistry()))
 	}
 
-	srv, err := api.New(ctx, conf, conn, api.WithLogger(l))
+	srv, err := api.New(ctx, conf, ex, opts...)
 	if err != nil {
+		ex.Close()
 		return err
 	}
-	// Deferred after conn's close, so it runs first: a query still holding
-	// the lock finishes before the connection closes under it.
+	// Deferred after the database's close, so it runs first: a query still
+	// holding a session finishes before the database closes under it.
 	defer srv.Close()
 
 	ln, err := net.Listen("tcp", conf.Serve.Addr())

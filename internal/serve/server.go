@@ -10,26 +10,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	prom "github.com/prometheus/client_golang/prometheus"
 	"time"
 
-	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"go.uber.org/zap"
 )
 
-// Server serves one serve config's datasets over one DuckDB connection.
+// Server serves one serve config's datasets over a pool of executor sessions.
 type Server struct {
 	conf   *config.ServeConf
 	logger *zap.Logger
-	exec   *executor
+	exec   Executor
+	// health is the statement /healthz runs. It is prepared at startup like
+	// every other one, so the probe costs a bind and nothing more.
+	health Statement
 
 	datasets map[string]*dataset
 	// listing is the /v1/datasets body, built once: the config does not change.
 	listing []byte
 	// origins is nil without a cors block, which sends no CORS header at all.
 	origins map[string]bool
-	// healthTimeout bounds /healthz, which waits on the same lock as a query.
+	// healthTimeout bounds /healthz, which waits for a session like a query.
 	healthTimeout time.Duration
+	// registry and metrics are nil unless the config asks for /metrics. Every
+	// metrics method tolerates a nil receiver, so the request path records
+	// unconditionally.
+	registry *prom.Registry
+	metrics  *metrics
 	// now is when a request arrived: the until a ranged request does not
 	// give. A test fixes it.
 	now func() time.Time
@@ -39,13 +47,23 @@ type Server struct {
 type dataset struct {
 	conf config.ServeDataset
 	// single is the statement of a dataset without grains.
-	single *statement
+	single datasetStatement
 	// grains holds one statement per grain.
-	grains  map[string]*statement
+	grains  map[string]datasetStatement
 	maxRows int
 	timeout time.Duration
 	// span is nil for a dataset without a range.
 	span *span
+}
+
+// datasetStatement is one prepared statement with the grain it answers. A
+// Statement belongs to the executor and carries no grain of its own, so the
+// grain -- which the response and the log line both name -- travels beside
+// it.
+type datasetStatement struct {
+	stmt Statement
+	// grain is empty for a dataset without grains.
+	grain string
 }
 
 // span is a dataset's range: the params that bound it, the width a request
@@ -69,13 +87,27 @@ func WithLogger(l *zap.Logger) Option {
 	return func(s *Server) { s.logger = l }
 }
 
-// New checks the config's rules and prepares every statement against conn.
+// WithMetrics registers serve's instruments on reg and serves them at
+// /metrics. New builds the instruments, because they read the executor's
+// session counts, and installs the wait hook on the executor afterwards.
+func WithMetrics(reg *prom.Registry) Option {
+	return func(s *Server) { s.registry = reg }
+}
+
+// waitObserver is an executor whose pool can report how long an Acquire
+// waited. The DuckDB one does; a future one need not, and then the wait
+// histogram is simply empty rather than the server failing to start.
+type waitObserver interface {
+	setOnWait(func(time.Duration))
+}
+
+// New checks the config's rules and prepares every statement against ex.
 //
-// conn must already carry whatever the config's commands attach. Any rule
+// ex must already carry whatever the config's commands attach. Any rule
 // violation or statement that fails to prepare is returned, and the server
 // does not start: a dataset that cannot answer is a config error, and
 // finding it on the first request would find it in production.
-func New(ctx context.Context, conf *config.ServeConf, conn adbc.Connection, opts ...Option) (*Server, error) {
+func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Option) (*Server, error) {
 	if err := conf.CheckError(); err != nil {
 		return nil, err
 	}
@@ -83,7 +115,7 @@ func New(ctx context.Context, conf *config.ServeConf, conn adbc.Connection, opts
 	s := &Server{
 		conf:          conf,
 		logger:        zap.NewNop(),
-		exec:          &executor{conn: conn},
+		exec:          ex,
 		datasets:      map[string]*dataset{},
 		healthTimeout: conf.Serve.Timeout(config.ServeDataset{}),
 		now:           time.Now,
@@ -91,6 +123,26 @@ func New(ctx context.Context, conf *config.ServeConf, conn adbc.Connection, opts
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	// The instruments read the executor's session counts, so they are built
+	// here rather than by the caller, and the wait hook is installed on the
+	// pool before the server listens.
+	if s.registry != nil && conf.Serve.MetricsEnabled() {
+		m, err := newMetrics(s.registry, ex.Stats)
+		if err != nil {
+			return nil, err
+		}
+		s.metrics = m
+		if wo, ok := ex.(waitObserver); ok {
+			wo.setOnWait(m.observeWait)
+		}
+	}
+
+	health, err := ex.Prepare(ctx, StatementSpec{Dataset: "healthz", SQL: "SELECT 1"})
+	if err != nil {
+		return nil, err
+	}
+	s.health = health
 
 	if http := conf.Serve.HTTP; http != nil && http.CORS != nil {
 		s.origins = map[string]bool{}
@@ -112,20 +164,22 @@ func New(ctx context.Context, conf *config.ServeConf, conn adbc.Connection, opts
 		}
 
 		for _, sc := range dc.Statements() {
-			st, err := prepare(ctx, conn, dc.Name, sc.Grain, sc.SQL, dc.Params)
+			st, err := ex.Prepare(ctx, StatementSpec{
+				Dataset: dc.Name, Grain: sc.Grain, SQL: sc.SQL, Params: dc.Params,
+			})
 			if err != nil {
 				return nil, err
 			}
 			if sc.Grain == "" {
-				ds.single = st
+				ds.single = datasetStatement{stmt: st}
 				doc.SQL = sc.SQL
 				continue
 			}
 			if ds.grains == nil {
-				ds.grains = map[string]*statement{}
+				ds.grains = map[string]datasetStatement{}
 				doc.Grains = map[string]grainDoc{}
 			}
-			ds.grains[sc.Grain] = st
+			ds.grains[sc.Grain] = datasetStatement{stmt: st, grain: sc.Grain}
 			doc.Grains[sc.Grain] = grainDoc{SQL: sc.SQL}
 		}
 
@@ -156,10 +210,10 @@ func New(ctx context.Context, conf *config.ServeConf, conn adbc.Connection, opts
 	return s, nil
 }
 
-// Close waits for a running query and refuses every later one. Call it after
-// Serve returns and before closing the connection.
+// Close waits for every running query, then closes the executor's sessions.
+// Call it after Serve returns and before closing the database.
 func (s *Server) Close() {
-	s.exec.close()
+	s.exec.Close()
 }
 
 // datasetListing is the /v1/datasets body. The SQL is as the config wrote

@@ -45,6 +45,18 @@ serve:
       requests_per_second: <number>
       # Reserved. Must be 0.
       burst: <integer>
+  # How many requests the server runs at once. Omit for the default.
+  pool:
+    # Sessions the server holds. Each is one backend session, and one
+    # request uses one at a time, so this is the requests that run at once.
+    # 0 means the default, 4.
+    size: <integer>
+  # Whether to serve Prometheus metrics at /metrics.
+  metrics:
+    # Serve GET /metrics on the same listener as the datasets, without a
+    # token. Off by default: that listener is public, and the metric labels
+    # name every dataset and grain.
+    enabled: <boolean>
   # The datasets this server answers. Nothing else is reachable.
   datasets:
     -

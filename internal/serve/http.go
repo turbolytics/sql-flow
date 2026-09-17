@@ -5,13 +5,13 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/apache/arrow-adbc/go/adbc"
 	"go.uber.org/zap"
 )
 
@@ -24,6 +24,12 @@ const (
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
+	if s.metrics != nil {
+		// No token: it carries no row data, and the listener is already
+		// public. It is absent unless the config turns it on, because the
+		// labels name every dataset and grain.
+		mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
+	}
 	mux.HandleFunc("/v1/datasets", s.authed(s.listDatasets))
 	mux.HandleFunc("/v1/datasets/{name}", s.authed(s.queryDataset))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +37,7 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	// Cheap rejections first: CORS, then the method, then auth inside the
-	// routes, all before anything waits on the connection's lock.
+	// routes, all before anything waits for a session.
 	return s.logRequests(s.cors(getOnly(mux)))
 }
 
@@ -64,29 +70,25 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
-	_, err := s.exec.run(r.Context(), s.healthTimeout,
-		func(ctx context.Context, conn adbc.Connection) (result, error) {
-			stmt, err := conn.NewStatement()
-			if err != nil {
-				return result{}, err
-			}
-			defer stmt.Close()
-			if err := stmt.SetSqlQuery("SELECT 1"); err != nil {
-				return result{}, err
-			}
-			rdr, _, err := stmt.ExecuteQuery(ctx)
-			if err != nil {
-				return result{}, err
-			}
-			defer rdr.Release()
-			return readRows(rdr, 1)
-		})
-	if err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), s.healthTimeout)
+	defer cancel()
+
+	_, _, err := query(ctx, s.exec, s.health, nil, 1)
+	switch {
+	case err == nil:
+		writeJSON(w, r, http.StatusOK, []byte(`{"status":"ok"}`))
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrClosed):
+		// Busy is not dead. A supervisor that cannot tell them apart restarts
+		// a server that is merely loaded, at the worst possible moment.
+		//
+		// A request that timed out leaves its session busy until its query
+		// ends, so a pool full of abandoned queries reports busy too. That is
+		// the truth about the server.
+		writeJSON(w, r, http.StatusServiceUnavailable, []byte(`{"status":"busy"}`))
+	default:
 		s.logger.Warn("health check failed", zap.String("error", Redact(err.Error())))
 		writeJSON(w, r, http.StatusServiceUnavailable, []byte(`{"status":"unavailable"}`))
-		return
 	}
-	writeJSON(w, r, http.StatusOK, []byte(`{"status":"ok"}`))
 }
 
 func (s *Server) listDatasets(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +104,12 @@ type rowsResponse struct {
 	Rows      json.RawMessage `json:"rows"`
 	RowCount  int             `json:"row_count"`
 	Truncated bool            `json:"truncated"`
-	ElapsedMS int64           `json:"elapsed_ms"`
+	// QueuedMS is how long the request waited for a session, and ElapsedMS is
+	// the query alone. Before the pool, elapsed_ms silently included the wait,
+	// so a 13 ms query on a loaded server reported a second and sent its
+	// reader looking for a slow query that did not exist.
+	QueuedMS  int64 `json:"queued_ms"`
+	ElapsedMS int64 `json:"elapsed_ms"`
 }
 
 func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
@@ -116,14 +123,15 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query, err := url.ParseQuery(r.URL.RawQuery)
+	// params, not query: query is the helper that runs one.
+	params, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		writeError(w, r, &apiError{http.StatusBadRequest, "invalid_param",
 			"the query string does not parse: " + err.Error()})
 		return
 	}
 
-	values, apiErr := parseParams(ds.conf.Params, query)
+	values, apiErr := parseParams(ds.conf.Params, params)
 	if apiErr != nil {
 		writeError(w, r, apiErr)
 		return
@@ -132,13 +140,13 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 	// A ranged dataset needs the parsed since and until to choose a grain;
 	// any other dataset takes the grain as named.
 	var (
-		st  *statement
+		st  datasetStatement
 		win *window
 	)
 	if ds.span != nil {
-		st, win, apiErr = ds.resolveRange(query, values, s.now())
+		st, win, apiErr = ds.resolveRange(params, values, s.now())
 	} else {
-		st, apiErr = ds.resolveStatement(query)
+		st, apiErr = ds.resolveStatement(params)
 	}
 	if apiErr != nil {
 		writeError(w, r, apiErr)
@@ -146,15 +154,22 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 	}
 	entry.grain = st.grain
 
+	// The deadline bounds this caller's wait: for a session, and then for the
+	// query on it.
+	ctx, cancel := context.WithTimeout(r.Context(), ds.timeout)
+	defer cancel()
+
 	start := time.Now()
-	res, err := s.exec.run(r.Context(), ds.timeout,
-		func(ctx context.Context, conn adbc.Connection) (result, error) {
-			return st.query(ctx, conn, values, ds.maxRows)
-		})
+	res, queued, err := query(ctx, s.exec, st.stmt, values, ds.maxRows)
+	// Measured whatever the outcome: the error mix is what the counter is
+	// for, so a timeout and a failure count too.
+	entry.queryDur, entry.measured = time.Since(start)-queued, true
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
+		// An exhausted pool arrives here too: the wait for a session is the
+		// same wait as far as the caller is concerned.
 		writeError(w, r, &apiError{http.StatusGatewayTimeout, "query_timeout",
-			st.where() + " did not answer within " + ds.timeout.String()})
+			st.stmt.Where() + " did not answer within " + ds.timeout.String()})
 		return
 	case errors.Is(err, context.Canceled):
 		// The caller hung up. There is nobody to answer.
@@ -167,7 +182,7 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("query failed", zap.String("dataset", name),
 			zap.String("grain", st.grain), zap.String("error", Redact(err.Error())))
 		writeError(w, r, &apiError{http.StatusInternalServerError, "query_failed",
-			st.where() + " failed; the server log has the database's error"})
+			st.stmt.Where() + " failed; the server log has the database's error"})
 		return
 	}
 
@@ -179,7 +194,8 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		Rows:      res.Rows,
 		RowCount:  res.RowCount,
 		Truncated: res.Truncated,
-		ElapsedMS: time.Since(start).Milliseconds(),
+		QueuedMS:  queued.Milliseconds(),
+		ElapsedMS: (time.Since(start) - queued).Milliseconds(),
 	})
 	if err != nil {
 		writeError(w, r, &apiError{http.StatusInternalServerError, "query_failed", err.Error()})
@@ -253,15 +269,27 @@ func (s *Server) cors(next http.Handler) http.Handler {
 	})
 }
 
+// getOnly refuses every method but GET, and HEAD on /healthz.
+//
+// Monitors send HEAD, and for /healthz the status line is the whole answer.
+// Every other route stays GET-only on purpose: a HEAD of a dataset would run
+// the query, borrow a session and throw the rows away, which spends the pool
+// on nothing. net/http suppresses the body of a HEAD response, so the health
+// handler needs no special case.
 func getOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			writeError(w, r, &apiError{http.StatusMethodNotAllowed, "method_not_allowed",
-				r.Method + " is not allowed; every route is GET"})
+		health := r.URL.Path == "/healthz"
+		if r.Method == http.MethodGet || (health && r.Method == http.MethodHead) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		allowed, where := http.MethodGet, "every route is GET, and /healthz is also HEAD"
+		if health {
+			allowed, where = "GET, HEAD", "/healthz is GET or HEAD"
+		}
+		w.Header().Set("Allow", allowed)
+		writeError(w, r, &apiError{http.StatusMethodNotAllowed, "method_not_allowed",
+			r.Method + " is not allowed; " + where})
 	})
 }
 
@@ -269,6 +297,11 @@ func getOnly(next http.Handler) http.Handler {
 type logEntry struct {
 	token, dataset, grain, code string
 	status, rows                int
+	// queryDur is the query alone, which only the dataset handler knows. The
+	// middleware records the metrics, because that is where the outcome and
+	// the total are both known.
+	queryDur time.Duration
+	measured bool
 }
 
 type entryKey struct{}
@@ -304,6 +337,17 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			fields = append(fields, zap.String("code", entry.code))
 		}
 		s.logger.Info("request", fields...)
+
+		// Only a dataset request carries a query to measure. A listing, a
+		// health probe or a refusal would otherwise report a query of zero
+		// seconds and flatten the histogram.
+		if entry.measured {
+			code := entry.code
+			if code == "" {
+				code = "ok"
+			}
+			s.metrics.observeRequest(entry.dataset, entry.grain, code, entry.queryDur, time.Since(start))
+		}
 	})
 }
 

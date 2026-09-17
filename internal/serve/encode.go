@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -39,7 +40,14 @@ const naiveTimestampLayout = "2006-01-02T15:04:05.999999999"
 //
 // It stops reading at the first row past maxRows. DuckDB streams results, so
 // the caller releasing the reader then stops the query.
-func readRows(rdr array.RecordReader, maxRows int) (result, error) {
+//
+// It also stops at the first batch boundary after ctx ends. ADBC's Go API has
+// no Cancel, and documents releasing a reader without consuming it as
+// equivalent to AdbcStatementCancel, so stopping here and letting the caller
+// release is the only way a request that gave up stops the work it started. A
+// session held by a query nobody is waiting for is a session the next request
+// cannot have.
+func readRows(ctx context.Context, rdr array.RecordReader, maxRows int) (result, error) {
 	fields := rdr.Schema().Fields()
 	res := result{Columns: make([]column, len(fields))}
 	keys := make([][]byte, len(fields))
@@ -55,6 +63,9 @@ func readRows(rdr array.RecordReader, maxRows int) (result, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('[')
 	for !res.Truncated && rdr.Next() {
+		if err := ctx.Err(); err != nil {
+			return result{}, err
+		}
 		rec := rdr.RecordBatch()
 		for r := 0; r < int(rec.NumRows()); r++ {
 			if res.RowCount == maxRows {

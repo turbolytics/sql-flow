@@ -68,6 +68,13 @@ serve:
       sql: ` + slowSQL + `
 `
 
+const createPostsTable = `CREATE TABLE posts AS SELECT * FROM (VALUES
+	(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'en', 10::BIGINT),
+	(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'ja', 4::BIGINT),
+	(TIMESTAMPTZ '2026-09-10 01:00:00+00', 'en', 7::BIGINT),
+	(TIMESTAMPTZ '2026-09-11 00:00:00+00', 'en', 1::BIGINT)
+) AS t(bucket, lang, posts)`
+
 type testServer struct {
 	srv     *Server
 	handler http.Handler
@@ -76,23 +83,25 @@ type testServer struct {
 
 func newTestServer(t *testing.T, text string) *testServer {
 	t.Helper()
-	conn := newConn(t)
-	execSQL(t, conn, "SET TimeZone='UTC'")
-	execSQL(t, conn, `CREATE TABLE posts AS SELECT * FROM (VALUES
-		(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'en', 10::BIGINT),
-		(TIMESTAMPTZ '2026-09-10 00:00:00+00', 'ja', 4::BIGINT),
-		(TIMESTAMPTZ '2026-09-10 01:00:00+00', 'en', 7::BIGINT),
-		(TIMESTAMPTZ '2026-09-11 00:00:00+00', 'en', 1::BIGINT)
-	) AS t(bucket, lang, posts)`)
+	return newTestServerWith(t, text)
+}
+
+// newTestServerWith takes extra options, for a test that needs the metrics
+// registry.
+func newTestServerWith(t *testing.T, text string, extra ...Option) *testServer {
+	t.Helper()
+	// One session: every assertion below about ordering and timing is the
+	// old single-connection behaviour.
+	ex, _ := newExec(t, 1, "SET TimeZone='UTC'", createPostsTable)
 
 	conf, err := config.ParseServe([]byte(text))
 	assert.NoError(t, err)
 
 	core, logs := observer.New(zap.InfoLevel)
-	srv, err := New(context.Background(), conf, conn, WithLogger(zap.New(core)))
+	srv, err := New(context.Background(), conf, ex, append([]Option{WithLogger(zap.New(core))}, extra...)...)
 	assert.NoError(t, err)
-	// Registered after newConn's cleanup, so it runs first: a slow query
-	// still holding the lock finishes before the connection closes.
+	// Registered after newExec's cleanups, so it runs first: a slow query
+	// still holding a session finishes before the database closes.
 	t.Cleanup(srv.Close)
 
 	return &testServer{srv: srv, handler: srv.Handler(), logs: logs}
@@ -115,7 +124,9 @@ func (ts *testServer) do(t *testing.T, method, target string, header map[string]
 	ts.handler.ServeHTTP(w, req)
 
 	resp := response{status: w.Code, header: w.Header(), raw: w.Body.String()}
-	if w.Body.Len() > 0 {
+	// Only the JSON routes decode. /metrics answers Prometheus text, and a
+	// HEAD answers nothing.
+	if w.Body.Len() > 0 && strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
 		assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp.body))
 	}
 	return resp
@@ -338,8 +349,8 @@ func TestCliServe_MaxRowsTruncatesAndTheNextRequestAnswers(t *testing.T) {
 	assert.Equal(t, float64(3), again.body["row_count"])
 }
 
-// A query past its deadline is a 504, and the health check, waiting on the
-// same lock, goes red until the query finishes.
+// A query past its deadline is a 504, and the health check, waiting for the
+// pool's only session, goes red until the query finishes.
 func TestCliServe_ASlowQueryIsA504AndTurnsHealthRed(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	ts := newTestServer(t, testServe)
@@ -502,16 +513,16 @@ func TestCliServe_ServeDrainsAnInFlightRequest(t *testing.T) {
 // New. Neither is found on the first request.
 func TestCliServe_NewRefusesWhatCannotAnswer(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
+	ex, _ := newExec(t, 1)
 
 	emptyToken, err := config.ParseServe([]byte(strings.Replace(testServe, "token: page-token", `token: ""`, 1)))
 	assert.NoError(t, err)
-	_, err = New(context.Background(), emptyToken, conn)
+	_, err = New(context.Background(), emptyToken, ex)
 	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
 
 	noTable, err := config.ParseServe([]byte(testServe))
 	assert.NoError(t, err)
-	_, err = New(context.Background(), noTable, conn)
+	_, err = New(context.Background(), noTable, ex)
 	assert.Equal(t, errs.CodeSQLInvalid, errs.CodeOf(err))
 	assert.That(t, strings.Contains(err.Error(), "dataset status"))
 }
@@ -551,4 +562,84 @@ func TestCliServe_RedactRemovesPasswords(t *testing.T) {
 	} {
 		assert.Equal(t, want, Redact(in))
 	}
+}
+
+// elapsed_ms used to include the wait for a connection, so a 13 ms query on a
+// loaded server reported a second and sent its reader looking for a slow query
+// that did not exist. The two are separate fields now.
+func TestCliServe_QueuedMsSeparatesWaitFromWork(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, testServe)
+
+	idle := ts.get(t, "/v1/datasets/status")
+	assert.Equal(t, http.StatusOK, idle.status)
+	assert.Equal(t, float64(0), idle.body["queued_ms"])
+
+	// Hold the only session, then time a request that has to wait for it.
+	held, err := ts.srv.exec.Acquire(context.Background())
+	assert.NoError(t, err)
+
+	done := make(chan response, 1)
+	go func() { done <- ts.get(t, "/v1/datasets/status") }()
+	time.Sleep(300 * time.Millisecond)
+	held.Release()
+
+	queued := <-done
+	assert.Equal(t, http.StatusOK, queued.status)
+	assert.That(t, queued.body["queued_ms"].(float64) >= 250)
+	// The query itself is unchanged by the wait, which is the whole point.
+	assert.That(t, queued.body["elapsed_ms"].(float64) < 250)
+}
+
+// A full pool is not a dead server. A supervisor that cannot tell them apart
+// restarts one that is merely loaded.
+//
+// The config gives health one second rather than the default ten, because the
+// handler waits its whole timeout for a session before it can say busy.
+const busyServe = `
+serve:
+  auth:
+    tokens: [{name: page, token: page-token}]
+  limits:
+    timeout_seconds: 1
+  datasets:
+    - name: status
+      sql: SELECT count(*) AS n FROM posts
+`
+
+func TestCliServe_HealthzIsBusyNotDownWhenThePoolIsFull(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, busyServe)
+
+	held, err := ts.srv.exec.Acquire(context.Background())
+	assert.NoError(t, err)
+	defer held.Release()
+
+	r := ts.do(t, http.MethodGet, "/healthz", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, r.status)
+	assert.Equal(t, "busy", r.body["status"])
+}
+
+// Monitors send HEAD, and the status line is the whole answer. A dataset
+// still refuses it: running the query and discarding the rows would spend a
+// session on nothing.
+//
+// The status is all this asserts. httptest.NewRecorder hands the handler's
+// body straight back, where a real http.Server suppresses it for HEAD, so an
+// empty-body assertion here would be testing the recorder.
+func TestCliServe_HealthzAnswersHead(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	ts := newTestServer(t, busyServe)
+
+	assert.Equal(t, http.StatusOK, ts.do(t, http.MethodHead, "/healthz", nil).status)
+
+	held, err := ts.srv.exec.Acquire(context.Background())
+	assert.NoError(t, err)
+	busy := ts.do(t, http.MethodHead, "/healthz", nil)
+	held.Release()
+	assert.Equal(t, http.StatusServiceUnavailable, busy.status)
+
+	ds := ts.do(t, http.MethodHead, "/v1/datasets/status", pageToken)
+	assert.Equal(t, http.StatusMethodNotAllowed, ds.status)
+	assert.Equal(t, http.MethodGet, ds.header.Get("Allow"))
 }

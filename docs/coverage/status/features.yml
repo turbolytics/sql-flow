@@ -3,7 +3,7 @@
 cli.dev_invoke: {unit: covered, integration: not_required, release: covered}
 cli.invocation: {unit: covered, integration: not_required, release: not_required}
 cli.rollup: {unit: covered, integration: covered, release: not_required}
-cli.serve: {unit: covered, integration: not_required, release: covered}
+cli.serve: {unit: covered, integration: covered, release: covered}
 cli.version: {unit: not_required, integration: not_required, release: covered}
 config.templating: {unit: covered, integration: not_required, release: covered}
 config.validation: {unit: covered, integration: not_required, release: covered}

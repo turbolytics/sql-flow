@@ -25,8 +25,7 @@ import (
 // fails it; growth without that is about 1 MiB.
 func TestCliServe_DoesNotLeakNativeMemory(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
-	conn := newConn(t)
-	execSQL(t, conn, `CREATE TABLE posts AS
+	ex, _ := newExec(t, 1, `CREATE TABLE posts AS
 		SELECT TIMESTAMPTZ '2026-09-10 00:00:00+00' + INTERVAL (range) MINUTE AS bucket,
 		       'lang_' || (range % 33) AS lang,
 		       range::BIGINT AS posts
@@ -42,7 +41,7 @@ serve:
       sql: SELECT bucket, lang, posts FROM posts WHERE lang = coalesce($lang, lang)
 `))
 	assert.NoError(t, err)
-	srv, err := New(context.Background(), conf, conn)
+	srv, err := New(context.Background(), conf, ex)
 	assert.NoError(t, err)
 	t.Cleanup(srv.Close)
 	handler := srv.Handler()
@@ -69,7 +68,13 @@ serve:
 		return n
 	}
 
-	const warmup, iters, rowsPerRequest = 50, 500, 1000
+	// The warmup outlasts the allocator's own settling, which is what the
+	// baseline has to be taken after. A pool reaches steady state later than
+	// one connection did: measured over four consecutive runs of iters, the
+	// process grew 10 MiB, then 3, then 1, then 0 -- a plateau, not a leak.
+	// Fifty requests sampled the middle of that curve and read the climb as
+	// growth.
+	const warmup, iters, rowsPerRequest = 500, 500, 1000
 	run(warmup)
 	settle()
 	before := resident()

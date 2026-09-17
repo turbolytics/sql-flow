@@ -70,22 +70,38 @@ func execDuck(t *testing.T, conn adbc.Connection, sql string) {
 func TestCliRollup_ServeDatasetsAnswerFromTheirTables(t *testing.T) {
 	coverage.Covers(t, "cli.rollup")
 
-	conn, err := duckdb.Open(context.Background())
-	assert.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
-	execDuck(t, conn, "SET TimeZone='UTC'")
-	execDuck(t, conn, "ATTACH ':memory:' AS pg")
-	execDuck(t, conn, "CREATE TABLE pg.posts_per_minute_by_lang (bucket TIMESTAMPTZ, lang VARCHAR, posts INTEGER, updated_at TIMESTAMPTZ)")
-	for _, g := range []string{"5m", "15m", "1h", "6h", "1d"} {
-		execDuck(t, conn, "CREATE TABLE pg.posts_by_lang_"+g+" (bucket TIMESTAMPTZ, lang VARCHAR, posts BIGINT)")
-		execDuck(t, conn, "CREATE TABLE pg.posts_total_"+g+" (bucket TIMESTAMPTZ, minutes BIGINT, posts BIGINT)")
+	// The setup runs on the executor's own connection: ATTACH is
+	// database-wide, and serve opens its sessions from the same database.
+	setup := []string{
+		"SET TimeZone='UTC'",
+		"ATTACH ':memory:' AS pg",
+		"CREATE TABLE pg.posts_per_minute_by_lang (bucket TIMESTAMPTZ, lang VARCHAR, posts INTEGER, updated_at TIMESTAMPTZ)",
 	}
-	execDuck(t, conn, `INSERT INTO pg.posts_per_minute_by_lang VALUES
+	for _, g := range []string{"5m", "15m", "1h", "6h", "1d"} {
+		setup = append(setup,
+			"CREATE TABLE pg.posts_by_lang_"+g+" (bucket TIMESTAMPTZ, lang VARCHAR, posts BIGINT)",
+			"CREATE TABLE pg.posts_total_"+g+" (bucket TIMESTAMPTZ, minutes BIGINT, posts BIGINT)")
+	}
+	setup = append(setup,
+		`INSERT INTO pg.posts_per_minute_by_lang VALUES
 		('2026-09-13 18:01:00+00', 'en', 5, now()), ('2026-09-13 18:02:00+00', 'en', 7, now()),
-		('2026-09-13 18:01:00+00', 'ja', 3, now())`)
-	execDuck(t, conn, `INSERT INTO pg.posts_by_lang_15m VALUES
-		('2026-09-12 00:15:00+00', 'en', 10), ('2026-09-12 00:15:00+00', 'ja', 4)`)
-	execDuck(t, conn, `INSERT INTO pg.posts_total_1d VALUES ('2026-09-12 00:00:00+00', 1440, 250000)`)
+		('2026-09-13 18:01:00+00', 'ja', 3, now())`,
+		`INSERT INTO pg.posts_by_lang_15m VALUES
+		('2026-09-12 00:15:00+00', 'en', 10), ('2026-09-12 00:15:00+00', 'ja', 4)`,
+		`INSERT INTO pg.posts_total_1d VALUES ('2026-09-12 00:00:00+00', 1440, 250000)`)
+
+	db, err := duckdb.OpenPath(context.Background(), "")
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	ex, err := api.NewDuckDBExecutor(context.Background(), db, 1,
+		func(ctx context.Context, conn adbc.Connection) error {
+			for _, sql := range setup {
+				execDuck(t, conn, sql)
+			}
+			return nil
+		}, nil)
+	assert.NoError(t, err)
 
 	datasets, err := ServeDatasets(withTotals(t))
 	assert.NoError(t, err)
@@ -93,7 +109,7 @@ func TestCliRollup_ServeDatasetsAnswerFromTheirTables(t *testing.T) {
 		Auth:     config.ServeAuth{Tokens: []config.ServeToken{{Name: "page", Token: "page-token"}}},
 		Datasets: datasets,
 	}}
-	srv, err := api.New(context.Background(), conf, conn)
+	srv, err := api.New(context.Background(), conf, ex)
 	assert.NoError(t, err)
 	t.Cleanup(srv.Close)
 	handler := srv.Handler()

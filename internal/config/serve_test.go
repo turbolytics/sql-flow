@@ -110,6 +110,24 @@ func TestCliServe_LimitsResolveDatasetThenTopLevelThenDefault(t *testing.T) {
 	assert.Equal(t, DefaultServeAddr, bare.Addr())
 }
 
+// The pool defaults rather than failing closed: a config written before the
+// pool existed gets concurrency, not one session.
+func TestCliServe_PoolSizeDefaults(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	conf := parseServe(t, validServe)
+	assert.Equal(t, DefaultServePoolSize, conf.Serve.PoolSize())
+	assert.False(t, conf.Serve.MetricsEnabled())
+
+	sized := parseServe(t, strings.Replace(validServe, "  limits:", "  pool: {size: 8}\n  metrics: {enabled: true}\n  limits:", 1))
+	assert.Equal(t, 8, sized.Serve.PoolSize())
+	assert.True(t, sized.Serve.MetricsEnabled())
+
+	// 0 is unset, not "no sessions".
+	zero := parseServe(t, strings.Replace(validServe, "  limits:", "  pool: {size: 0}\n  limits:", 1))
+	assert.Equal(t, DefaultServePoolSize, zero.Serve.PoolSize())
+}
+
 func TestCliServe_CheckAcceptsAValidConfig(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 
@@ -177,6 +195,10 @@ func TestCliServe_CheckReportsEachRuleAtItsPath(t *testing.T) {
 			errs.CodeConfigServeDataset, "serve.datasets.1.params.0.max", "min and max bound integer params only"},
 		{"min above max", "{name: lang, type: string}", "{name: lang, type: integer, min: 5, max: 1}",
 			errs.CodeConfigServeDataset, "serve.datasets.1.params.1.max", "min 5 above max 1"},
+		{"negative pool size", "  limits:", "  pool: {size: -1}\n  limits:",
+			errs.CodeConfigInvalid, "serve.pool.size", "must not be negative"},
+		{"pool size past the ceiling", "  limits:", "  pool: {size: 65}\n  limits:",
+			errs.CodeConfigInvalid, "serve.pool.size", "65 sessions is more than the 64 this version allows"},
 		{"positional placeholder", "SELECT count(*) AS n FROM t", "SELECT $1 AS n FROM t",
 			errs.CodeConfigServeDataset, "serve.datasets.0.sql", "$1"},
 		{"undeclared placeholder", "SELECT count(*) AS n FROM t", "SELECT $nope AS n FROM t",

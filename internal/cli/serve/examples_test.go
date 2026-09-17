@@ -60,16 +60,25 @@ func TestCliServe_ShippedExamplesValidateAndBuild(t *testing.T) {
 			assert.NoError(t, err)
 			assert.NoError(t, conf.CheckError())
 
-			conn, err := duckdb.Open(context.Background())
+			db, err := duckdb.OpenPath(context.Background(), "")
 			assert.NoError(t, err)
-			defer conn.Close()
-			denyExternalAccess(t, conn)
+			defer db.Close()
 
-			if err := core.InitCommands(conn, &config.Conf{Commands: conf.Commands}); err != nil {
-				t.Skipf("commands need an external system: %v", err)
+			// The init connection is the one the commands run on, so it is
+			// the one that must be kept off the network.
+			var initErr error
+			ex, err := api.NewDuckDBExecutor(context.Background(), db, conf.Serve.PoolSize(),
+				func(ctx context.Context, conn adbc.Connection) error {
+					denyExternalAccess(t, conn)
+					initErr = core.InitCommands(conn, &config.Conf{Commands: conf.Commands})
+					return initErr
+				}, nil)
+			if initErr != nil {
+				t.Skipf("commands need an external system: %v", initErr)
 			}
+			assert.NoError(t, err)
 
-			srv, err := api.New(context.Background(), conf, conn)
+			srv, err := api.New(context.Background(), conf, ex)
 			assert.NoError(t, err)
 			srv.Close()
 		})

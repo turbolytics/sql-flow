@@ -122,6 +122,28 @@
           "type": "object",
           "description": "Limits for every dataset. A dataset's own non-zero limit overrides one."
         },
+        "pool": {
+          "properties": {
+            "size": {
+              "type": "integer",
+              "description": "Sessions the server holds. Each is one backend session, and one\nrequest uses one at a time, so this is the requests that run at once.\n0 means the default, 4."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "description": "How many requests the server runs at once. Omit for the default."
+        },
+        "metrics": {
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Serve GET /metrics on the same listener as the datasets, without a\ntoken. Off by default: that listener is public, and the metric labels\nname every dataset and grain."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "description": "Whether to serve Prometheus metrics at /metrics."
+        },
         "datasets": {
           "items": {
             "properties": {

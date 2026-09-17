@@ -22,6 +22,14 @@ const (
 	DefaultServeAddr           = "0.0.0.0:8080"
 	DefaultServeMaxRows        = 10000
 	DefaultServeTimeoutSeconds = 10
+	// DefaultServePoolSize is the sessions a server holds when the config
+	// names no number. Four fits a 256 MB box: idle sessions cost nothing
+	// measurable, and a concurrent query costs about 15 MiB.
+	DefaultServePoolSize = 4
+	// MaxServePoolSize is the most this version accepts. A larger pool on a
+	// small box fails queries with out-of-memory rather than queueing them,
+	// because DuckDB's memory_limit is one budget shared by every session.
+	MaxServePoolSize = 64
 )
 
 // ServeConf is a whole serve file: the commands that attach the data, and the
@@ -44,6 +52,10 @@ type Serve struct {
 	Auth ServeAuth `yaml:"auth"`
 	// Limits for every dataset. A dataset's own non-zero limit overrides one.
 	Limits *ServeLimits `yaml:"limits,omitempty"`
+	// How many requests the server runs at once. Omit for the default.
+	Pool *ServePool `yaml:"pool,omitempty"`
+	// Whether to serve Prometheus metrics at /metrics.
+	Metrics *ServeMetrics `yaml:"metrics,omitempty"`
 	// The datasets this server answers. Nothing else is reachable.
 	Datasets []ServeDataset `yaml:"datasets"`
 }
@@ -98,6 +110,22 @@ type ServeRateLimit struct {
 	RequestsPerSecond float64 `yaml:"requests_per_second,omitempty"`
 	// Reserved. Must be 0.
 	Burst int `yaml:"burst,omitempty"`
+}
+
+// ServePool sizes the sessions a server answers requests on.
+type ServePool struct {
+	// Sessions the server holds. Each is one backend session, and one
+	// request uses one at a time, so this is the requests that run at once.
+	// 0 means the default, 4.
+	Size int `yaml:"size,omitempty"`
+}
+
+// ServeMetrics turns on the Prometheus endpoint.
+type ServeMetrics struct {
+	// Serve GET /metrics on the same listener as the datasets, without a
+	// token. Off by default: that listener is public, and the metric labels
+	// name every dataset and grain.
+	Enabled bool `yaml:"enabled,omitempty"`
 }
 
 // ServeDataset is one named, parameterized SQL statement, or one per grain.
@@ -178,6 +206,19 @@ func (s Serve) MaxRows(ds ServeDataset) int {
 		return s.Limits.MaxRows
 	}
 	return DefaultServeMaxRows
+}
+
+// PoolSize is the sessions to hold, defaulted.
+func (s Serve) PoolSize() int {
+	if s.Pool != nil && s.Pool.Size > 0 {
+		return s.Pool.Size
+	}
+	return DefaultServePoolSize
+}
+
+// MetricsEnabled reports whether to serve /metrics.
+func (s Serve) MetricsEnabled() bool {
+	return s.Metrics != nil && s.Metrics.Enabled
 }
 
 // Timeout is how long a caller waits on a dataset, resolved the same way as
@@ -386,6 +427,18 @@ func (c *ServeConf) Check() []Violation {
 	}
 
 	checkLimits(s.Limits, []string{"serve", "limits"}, add)
+
+	if s.Pool != nil {
+		switch {
+		case s.Pool.Size < 0:
+			add(errs.CodeConfigInvalid, []string{"serve", "pool", "size"},
+				"pool.size is %d; it must not be negative, and 0 means the default", s.Pool.Size)
+		case s.Pool.Size > MaxServePoolSize:
+			add(errs.CodeConfigInvalid, []string{"serve", "pool", "size"},
+				"pool.size %d sessions is more than the %d this version allows; DuckDB's memory limit is one budget shared by every session, so a pool past the box fails queries rather than queueing them",
+				s.Pool.Size, MaxServePoolSize)
+		}
+	}
 
 	if len(s.Datasets) == 0 {
 		add(errs.CodeConfigInvalid, []string{"serve", "datasets"},

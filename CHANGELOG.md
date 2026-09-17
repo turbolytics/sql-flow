@@ -4,6 +4,19 @@
 
 ### Added
 
+- `sqlflow serve` answers requests from a pool of sessions rather than one
+  connection. `serve.pool.size` sets how many run at once, four by default,
+  measured to peak at 72 MiB resident on Linux against a 256 MB box. Every
+  session is pinned to UTC, and the config's `commands` run once, on a
+  connection of their own, because `ATTACH` is database-wide while
+  `SET TimeZone` is not. A response carries `queued_ms` beside `elapsed_ms`,
+  so a busy pool is no longer reported as a slow query. `/healthz` answers
+  `busy` rather than `unavailable` when no session is free, and answers
+  `HEAD` for monitors. With `serve.metrics.enabled`, `GET /metrics` serves
+  six instruments, including the session wait that sizes the pool. A request
+  that gives up now stops reading at the next batch and releases its reader,
+  which is ADBC's documented equivalent of cancelling.
+
 - `sqlflow serve`: an `integer` param may declare `min` and `max`. A request
   outside them is `400 invalid_param` naming the bounds, and `/v1/datasets`
   lists them.

@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -29,6 +30,33 @@ func execSQL(t *testing.T, conn adbc.Connection, sql string) {
 	assert.NoError(t, err)
 }
 
+// newExec opens an in-memory DuckDB and returns an executor of size sessions
+// over it, having run setup on the init connection. Size 1 is the old
+// single-connection behaviour, which is what keeps a test's ordering and
+// timing true. The database comes back too, for a test that has to change
+// the data from outside the pool.
+func newExec(t *testing.T, size int, setup ...string) (Executor, *duckdb.DB) {
+	t.Helper()
+	db, err := duckdb.OpenPath(context.Background(), "")
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	ex, err := NewDuckDBExecutor(context.Background(), db, size,
+		func(ctx context.Context, conn adbc.Connection) error {
+			for _, sql := range setup {
+				if err := execOn(ctx, conn, sql); err != nil {
+					return err
+				}
+			}
+			return nil
+		}, nil)
+	assert.NoError(t, err)
+	// Registered after the database's cleanup, so it runs first: a query
+	// still holding a session finishes before the database closes under it.
+	t.Cleanup(ex.Close)
+	return ex, db
+}
+
 // encodeSQL runs sql and encodes its rows the way a request does.
 func encodeSQL(t *testing.T, conn adbc.Connection, sql string, maxRows int) result {
 	t.Helper()
@@ -40,7 +68,7 @@ func encodeSQL(t *testing.T, conn adbc.Connection, sql string, maxRows int) resu
 	assert.NoError(t, err)
 	defer rdr.Release()
 
-	res, err := readRows(rdr, maxRows)
+	res, err := readRows(context.Background(), rdr, maxRows)
 	assert.NoError(t, err)
 	return res
 }
@@ -159,4 +187,29 @@ func TestCliServe_EncodeTruncatesAtMaxRows(t *testing.T) {
 	assert.Equal(t, 0, empty.RowCount)
 	assert.Equal(t, "[]", string(empty.Rows))
 	assert.Equal(t, 1, len(empty.Columns))
+}
+
+// A caller that gave up should not pay for the rest of its own result, and
+// should not hold a session while it drains one. Releasing a reader without
+// consuming it is ADBC's documented equivalent of cancel, so stopping early is
+// what actually stops the query.
+func TestCliServe_ReadRowsStopsWhenTheRequestIsGone(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	conn := newConn(t)
+	stmt, err := conn.NewStatement()
+	assert.NoError(t, err)
+	defer stmt.Close()
+	// More rows than one batch, so there is a boundary to stop at.
+	assert.NoError(t, stmt.SetSqlQuery("SELECT i FROM range(500000) t(i)"))
+	rdr, _, err := stmt.ExecuteQuery(context.Background())
+	assert.NoError(t, err)
+	defer rdr.Release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res, err := readRows(ctx, rdr, 1000000)
+	assert.That(t, errors.Is(err, context.Canceled))
+	assert.That(t, res.RowCount < 1000000)
 }

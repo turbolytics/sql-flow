@@ -20,12 +20,12 @@ type apiError struct {
 }
 
 // resolveStatement picks the dataset's statement for the request's grain.
-func (ds *dataset) resolveStatement(query url.Values) (*statement, *apiError) {
+func (ds *dataset) resolveStatement(query url.Values) (datasetStatement, *apiError) {
 	grains, given := query["grain"]
 
 	if ds.grains == nil {
 		if given {
-			return nil, &apiError{http.StatusBadRequest, "unknown_grain",
+			return datasetStatement{}, &apiError{http.StatusBadRequest, "unknown_grain",
 				"dataset " + ds.conf.Name + " has no grains"}
 		}
 		return ds.single, nil
@@ -34,16 +34,16 @@ func (ds *dataset) resolveStatement(query url.Values) (*statement, *apiError) {
 	names := ds.conf.GrainNames()
 	switch {
 	case !given:
-		return nil, &apiError{http.StatusBadRequest, "missing_grain",
+		return datasetStatement{}, &apiError{http.StatusBadRequest, "missing_grain",
 			"dataset " + ds.conf.Name + " needs a grain; grains: " + strings.Join(names, ", ")}
 	case len(grains) > 1:
-		return nil, &apiError{http.StatusBadRequest, "invalid_param",
+		return datasetStatement{}, &apiError{http.StatusBadRequest, "invalid_param",
 			"grain is given " + strconv.Itoa(len(grains)) + " times"}
 	}
 
 	st, ok := ds.grains[grains[0]]
 	if !ok {
-		return nil, &apiError{http.StatusBadRequest, "unknown_grain",
+		return datasetStatement{}, &apiError{http.StatusBadRequest, "unknown_grain",
 			"dataset " + ds.conf.Name + " has no grain " + grains[0] + "; grains: " + strings.Join(names, ", ")}
 	}
 	return st, nil
@@ -63,7 +63,7 @@ type window struct {
 // values already holds the parsed params. The resolved since and until are
 // written back into it, so the statement binds timestamps, never NULL, and
 // needs no defaults of its own.
-func (ds *dataset) resolveRange(query url.Values, values map[string]any, now time.Time) (*statement, *window, *apiError) {
+func (ds *dataset) resolveRange(query url.Values, values map[string]any, now time.Time) (datasetStatement, *window, *apiError) {
 	sp := ds.span
 
 	// Microseconds, because that is what binds. The echoed range then says
@@ -80,7 +80,7 @@ func (ds *dataset) resolveRange(query url.Values, values map[string]any, now tim
 	since = since.UTC().Truncate(time.Microsecond)
 
 	if !since.Before(until) {
-		return nil, nil, &apiError{http.StatusBadRequest, "invalid_param",
+		return datasetStatement{}, nil, &apiError{http.StatusBadRequest, "invalid_param",
 			sp.since + " must be before " + sp.until + "; got " + sp.since + " " + since.Format(time.RFC3339Nano) +
 				" and " + sp.until + " " + until.Format(time.RFC3339Nano)}
 	}
@@ -96,18 +96,18 @@ func (ds *dataset) resolveRange(query url.Values, values map[string]any, now tim
 			}
 		}
 		widest := sp.grains[len(sp.grains)-1]
-		return nil, nil, &apiError{http.StatusBadRequest, "range_too_wide",
+		return datasetStatement{}, nil, &apiError{http.StatusBadRequest, "range_too_wide",
 			"the range is " + describeWidth(width) + " and the widest grain, " + widest.name +
 				", serves at most " + config.FormatServeDuration(widest.max)}
 	}
 
 	if len(grains) > 1 {
-		return nil, nil, &apiError{http.StatusBadRequest, "invalid_param",
+		return datasetStatement{}, nil, &apiError{http.StatusBadRequest, "invalid_param",
 			"grain is given " + strconv.Itoa(len(grains)) + " times"}
 	}
 	st, ok := ds.grains[grains[0]]
 	if !ok {
-		return nil, nil, &apiError{http.StatusBadRequest, "unknown_grain",
+		return datasetStatement{}, nil, &apiError{http.StatusBadRequest, "unknown_grain",
 			"dataset " + ds.conf.Name + " has no grain " + grains[0] + "; grains: " + strings.Join(ds.conf.GrainNames(), ", ")}
 	}
 
@@ -127,7 +127,7 @@ func (ds *dataset) resolveRange(query url.Values, values map[string]any, now tim
 		if len(fits) > 0 {
 			msg += "; grains that serve it: " + strings.Join(fits, ", ")
 		}
-		return nil, nil, &apiError{http.StatusBadRequest, "range_too_wide", msg}
+		return datasetStatement{}, nil, &apiError{http.StatusBadRequest, "range_too_wide", msg}
 	}
 	return st, win, nil
 }

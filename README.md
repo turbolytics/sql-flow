@@ -245,6 +245,14 @@ serve:
   limits:
     max_rows: 10000
     timeout_seconds: 10
+  pool:
+    # Requests answered at once. Each session is a backend session; a
+    # concurrent query costs a few MiB. Omit for the default, 4.
+    size: 4
+  metrics:
+    # Serve GET /metrics on this listener, without a token. Off by default:
+    # the listener is public and the labels name every dataset.
+    enabled: false
   datasets:
     - name: posts_by_lang
       description: Posts per bucket per language.
@@ -325,7 +333,8 @@ Routes, all `GET`:
 
 | Route | Auth | Returns |
 |---|---|---|
-| `/healthz` | none | `200` when the connection answers `SELECT 1`, `503` otherwise |
+| `/healthz` | none | `200` `{"status":"ok"}` when a session answers `SELECT 1`; `503` `{"status":"busy"}` when none is free, `{"status":"unavailable"}` when the query fails. `HEAD` is answered too, for monitors |
+| `/metrics` | none | Prometheus text, only when `serve.metrics.enabled` is set |
 | `/v1/datasets` | bearer | Every dataset: its params, and its SQL as written |
 | `/v1/datasets/{name}` | bearer | Rows |
 
@@ -335,11 +344,18 @@ $ curl -H 'Authorization: Bearer <token>' \
 {"dataset":"posts_by_lang","grain":"1h",
  "columns":[{"name":"bucket","type":"TIMESTAMP WITH TIME ZONE"},...],
  "rows":[{"bucket":"2026-09-10T00:00:00Z","lang":"en","posts":102340}],
- "row_count":1,"truncated":false,"elapsed_ms":41}
+ "row_count":1,"truncated":false,"queued_ms":0,"elapsed_ms":41}
 ```
 
 A zoned timestamp is UTC. A decimal is a string of its exact digits. `NaN`
 and infinities are strings. `truncated: true` means `max_rows` cut the result.
+
+`elapsed_ms` is the query. `queued_ms` is how long the request waited for a
+session, which is what rises when the pool is too small for the load.
+
+Every route is `GET`, and `/healthz` also answers `HEAD`. A `HEAD` of a
+dataset would run its query, borrow a session and discard the rows, so it is
+refused with `405`.
 
 A token is an identifier, not a secret: a browser page ships it in plain
 sight. It names the caller in the request log, and deleting it revokes the
@@ -371,13 +387,23 @@ What to know before you deploy it:
   tables in Postgres and generates the datasets that read them. A Postgres
   view with the `GROUP BY` also pushes the filter in, but re-aggregates the
   range on every request.
-- **Bound Postgres connections.** One scan opens up to `pg_connection_limit`
-  connections, 64 by default. Set it low for a small database, as a command.
-- **A timeout does not stop the query.** DuckDB cannot be cancelled through
-  its Go driver. At the deadline the caller gets `504`, and the query runs to
-  completion. `max_rows` does stop it early.
-- **One connection serves every request.** Requests run one at a time. A slow
-  query makes the ones behind it wait, and `/healthz` waits with them.
+- **Bound Postgres connections.** An attachment opens up to
+  `pg_connection_limit` connections, 64 by default. Set it low for a small
+  database, as a command. The pool does not multiply it: with eight sessions
+  scanning at once and a limit of four, the measured peak was four, so the
+  connections are shared across sessions rather than opened per session.
+- **A timeout stops reading, not always the query.** At the deadline the
+  caller gets `504`, and the reader stops at the next batch and is released,
+  which is ADBC's equivalent of cancelling. An operator that runs long before
+  yielding a batch still runs to the end, holding its session. Bound the part
+  that is usually slow in the backend instead: a libpq connection string takes
+  `options='-c statement_timeout=30000'`, so an attached Postgres enforces its
+  own ceiling.
+- **A pool serves requests.** `serve.pool.size` sessions answer at once, four
+  by default. A request waits for a free session, and that wait counts toward
+  the dataset's timeout, so an exhausted pool answers `504 query_timeout`.
+  `queued_ms` in the response and `sqlflow_serve_session_wait_seconds` in the
+  metrics say whether the pool is the limit.
 
 ### `sqlflow rollup`
 
