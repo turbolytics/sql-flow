@@ -172,18 +172,51 @@ type outcome int // miss, hit, shared
 
 It knows nothing of HTTP, datasets or DuckDB, and is tested without them.
 
-Inside: a map from key to entry, a doubly linked list in recency order, a byte
-total, and a map of fills in flight, all under one mutex. The mutex is never
-held across a fill. An entry's size is the length of its rows plus its
-columns. Storing evicts from the cold end until the total fits. A result
-larger than a quarter of `max_mb` is returned and not stored, so one response
-cannot empty the cache. Expired entries are dropped when a lookup finds them
-and when eviction walks past them; there is no sweeper goroutine.
+Inside: a map from key to entry, a doubly linked list in recency order, a
+min-heap in expiry order, a byte total, and a map of fills in flight, all
+under one mutex. The mutex is never held across a fill. An entry's size is the
+length of its rows plus its columns. A result larger than a quarter of
+`max_mb` is returned and not stored, so one response cannot empty the cache.
+
+Storing makes room in two steps, in this order: pop every expired entry off
+the heap, then evict from the cold end of the list until the total fits.
+Recency order is not expiry order, and without the heap the bound would evict
+an answer still good while an expired one kept its bytes. A lookup that finds
+an expired entry removes it. There is no sweeper goroutine: nothing is
+reclaimed while nothing is stored, and nothing needs to be, because the bound
+already holds. The gauges count what is held, so after a quiet spell they
+include expired entries until the next store; the README says so.
 
 What is stored is the query's outcome, already encoded: columns, the rows as
-`json.RawMessage`, the row count, `truncated`, and when it was filled. A hit
-builds the envelope around those bytes, which copies them once, and borrows
-no session.
+`json.RawMessage`, the row count, `truncated`, and the time its fill
+**started**. A hit builds the envelope around those bytes, which copies them
+once, and borrows no session.
+
+### Freshness, and why nothing is invalidated
+
+Serve is never told that Postgres changed, so no entry is invalidated. Every
+entry is bounded instead: it expires `ttl_seconds` after its fill started, and
+no entry has a longer life than that for any reason. The age runs from the
+start of the fill because that is when the query read its data. Counted from
+the end, a 2.5 s query would serve answers 2.5 s staler than the TTL says.
+
+What can make a stored answer wrong, and what bounds each:
+
+| Change | Bound |
+| --- | --- |
+| The open bucket fills in | The TTL. |
+| Time passes | `ceil(until)` crosses a boundary and requests build a new key. The old key is not asked for again and expires. |
+| A replay or backfill re-merges old buckets | The TTL, which is why a range in the past gets no longer one. |
+| An older fill finishing after a newer one | Cannot happen: one fill per key at a time. |
+| A deploy, a changed config, changed SQL | The cache is in memory and serve has no reload, so a new process starts empty. |
+| A failed query | Never stored. |
+
+Expiry compares times that carry Go's monotonic reading, so a wall-clock step
+does not lengthen an entry's life.
+
+An operator who has backfilled and wants it seen now waits one TTL or restarts
+serve. There is no purge endpoint: at the TTLs this is for, the wait is
+shorter than finding the endpoint's token.
 
 ### Fills are detached
 
@@ -304,6 +337,14 @@ Unit, `go test -short`, on `cache` alone with an injected clock:
 - Storing past `max_bytes` evicts the least recently used; a hit refreshes
   recency.
 - A result over a quarter of the bound is returned and not stored.
+- An entry expires one TTL after its fill started, not after it finished: a
+  fill that takes two seconds of the injected clock leaves TTL minus two.
+- With the cache full of expired entries and one live one, a store removes
+  the expired ones and keeps the live one, though the live one is coldest.
+- Invariants, checked after each step of a seeded random run of stores,
+  lookups, expiries and clock advances: the byte total equals the sum of the
+  entries' sizes and never exceeds the bound, and the map, the list and the
+  heap hold the same entries.
 - Run under `-race`.
 
 Unit, on the key:
@@ -323,6 +364,10 @@ Through the handler, with the executor counting queries:
   `hit`, a positive `age_ms`, and `elapsed_ms` 0.
 - The echoed `range` is the rounded one, on the miss and on the hit.
 - A `query_failed` is not cached.
+- The staleness bound, end to end: the data changes after a fill, a request
+  inside the TTL still sees the old rows, and the first request past it sees
+  the new ones. Removing the expiry check fails this test, which is what makes
+  it a test.
 - A hit borrows no session: with every session held, a warm key still
   answers.
 - An unauthenticated request for a warm key is a 401.
