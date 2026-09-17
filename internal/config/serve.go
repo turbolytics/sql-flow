@@ -52,8 +52,12 @@ type Serve struct {
 	Name string `yaml:"name,omitempty"`
 	// Where to listen, and which browser origins may call.
 	HTTP *ServeHTTP `yaml:"http,omitempty"`
-	// Who may call.
-	Auth ServeAuth `yaml:"auth"`
+	// The callers the server answers, each known by its id.
+	Clients []ServeClient `yaml:"clients,omitempty"`
+	// Deprecated: the bearer tokens of a config written before clients. Each
+	// token is a client whose id is the token's value. Move the entries to
+	// clients; the next release removes auth.
+	Auth *ServeAuth `yaml:"auth,omitempty"`
 	// Limits for every dataset. A dataset's own non-zero limit overrides one.
 	Limits *ServeLimits `yaml:"limits,omitempty"`
 	// How many requests the server runs at once. Omit for the default.
@@ -82,19 +86,42 @@ type ServeCORS struct {
 	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
-// ServeAuth lists the bearer tokens the server accepts.
+// ServeClient names one caller.
+type ServeClient struct {
+	// Names the client in the request log.
+	Name string `yaml:"name"`
+	// The value a client sends as ?client_id=<id>. It identifies and does not
+	// authenticate: a browser page ships it in plain sight, as an analytics
+	// snippet ships its site key. It exists so the log names the caller and so
+	// one caller can be cut off by changing the value.
+	ID string `yaml:"id"`
+}
+
+// ServeAuth is the deprecated form of clients.
 type ServeAuth struct {
 	// One entry per client identity.
 	Tokens []ServeToken `yaml:"tokens"`
 }
 
-// ServeToken names one client identity.
+// ServeToken is the deprecated form of a client.
 type ServeToken struct {
 	// Names the client in the request log.
 	Name string `yaml:"name"`
-	// The value a client sends as Authorization: Bearer <token>. It is an
-	// identifier, not a secret: a browser page ships it in plain sight.
+	// The client's id, under its old name.
 	Token string `yaml:"token"`
+}
+
+// AllClients returns the clients, then each deprecated token as the client it
+// is. The server identifies against this list, so a config not yet moved to
+// clients keeps answering its callers.
+func (s Serve) AllClients() []ServeClient {
+	out := append([]ServeClient(nil), s.Clients...)
+	if s.Auth != nil {
+		for _, t := range s.Auth.Tokens {
+			out = append(out, ServeClient{Name: t.Name, ID: t.Token})
+		}
+	}
+	return out
 }
 
 // ServeLimits bounds one request. The same block appears at the top level
@@ -475,31 +502,40 @@ func (c *ServeConf) Check() []Violation {
 		}
 	}
 
-	if len(s.Auth.Tokens) == 0 {
-		add(errs.CodeConfigInvalid, []string{"serve", "auth", "tokens"},
-			"serve.auth.tokens declares no token, so no request could authenticate")
+	if len(s.AllClients()) == 0 {
+		add(errs.CodeConfigInvalid, []string{"serve", "clients"},
+			"serve.clients declares no client, so the server would answer nobody")
 	}
+	// One pass over both keys: a name or an id used once under clients and
+	// once under the deprecated auth.tokens is as ambiguous as twice in one.
 	names := map[string]bool{}
-	values := map[string]string{}
-	for i, tok := range s.Auth.Tokens {
-		path := []string{"serve", "auth", "tokens", strconv.Itoa(i)}
+	ids := map[string]string{}
+	checkClient := func(path []string, valueKey string, i int, name, id string) {
 		switch {
-		case tok.Name == "":
-			add(errs.CodeConfigInvalid, at(path, "name"), "token %d has no name", i)
-		case names[tok.Name]:
-			add(errs.CodeConfigInvalid, at(path, "name"), "token name %s is used twice", tok.Name)
+		case name == "":
+			add(errs.CodeConfigInvalid, at(path, "name"), "client %d has no name", i)
+		case names[name]:
+			add(errs.CodeConfigInvalid, at(path, "name"), "client name %s is used twice", name)
 		}
-		names[tok.Name] = true
+		names[name] = true
 
 		switch {
-		case tok.Token == "":
-			add(errs.CodeConfigInvalid, at(path, "token"), "token %s has an empty value", tok.Name)
-		case values[tok.Token] != "":
-			add(errs.CodeConfigInvalid, at(path, "token"),
-				"tokens %s and %s have the same value; one identity takes one token",
-				values[tok.Token], tok.Name)
+		case id == "":
+			add(errs.CodeConfigInvalid, at(path, valueKey), "client %s has an empty %s", name, valueKey)
+		case ids[id] != "":
+			add(errs.CodeConfigInvalid, at(path, valueKey),
+				"clients %s and %s have the same %s; one client takes one id",
+				ids[id], name, valueKey)
 		default:
-			values[tok.Token] = tok.Name
+			ids[id] = name
+		}
+	}
+	for i, c := range s.Clients {
+		checkClient([]string{"serve", "clients", strconv.Itoa(i)}, "id", i, c.Name, c.ID)
+	}
+	if s.Auth != nil {
+		for i, tok := range s.Auth.Tokens {
+			checkClient([]string{"serve", "auth", "tokens", strconv.Itoa(i)}, "token", i, tok.Name, tok.Token)
 		}
 	}
 
@@ -595,6 +631,9 @@ func checkDataset(ds ServeDataset, path []string, seen map[string]bool, add addF
 		case p.Name == "grain":
 			add(code, at(ppath, "name"),
 				"dataset %s: a param cannot be named grain, because grain selects the grain", ds.Name)
+		case p.Name == "client_id":
+			add(code, at(ppath, "name"),
+				"dataset %s: a param cannot be named client_id, because client_id identifies the caller", ds.Name)
 		case declared[p.Name]:
 			add(code, at(ppath, "name"), "dataset %s: param %s is declared twice", ds.Name, p.Name)
 		}

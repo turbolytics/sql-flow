@@ -33,7 +33,7 @@ func TestCliRollup_ServeDatasetsPassServesRules(t *testing.T) {
 	datasets, err := ServeDatasets(withTotals(t))
 	assert.NoError(t, err)
 	conf := config.ServeConf{Serve: config.Serve{
-		Auth:     config.ServeAuth{Tokens: []config.ServeToken{{Name: "page", Token: "page-token"}}},
+		Clients:  []config.ServeClient{{Name: "page", ID: "page-id"}},
 		Datasets: datasets,
 	}}
 	assert.Equal(t, 0, len(conf.Check()))
@@ -106,7 +106,7 @@ func TestCliRollup_ServeDatasetsAnswerFromTheirTables(t *testing.T) {
 	datasets, err := ServeDatasets(withTotals(t))
 	assert.NoError(t, err)
 	conf := &config.ServeConf{Serve: config.Serve{
-		Auth:     config.ServeAuth{Tokens: []config.ServeToken{{Name: "page", Token: "page-token"}}},
+		Clients:  []config.ServeClient{{Name: "page", ID: "page-id"}},
 		Datasets: datasets,
 	}}
 	srv, err := api.New(context.Background(), conf, ex)
@@ -115,8 +115,7 @@ func TestCliRollup_ServeDatasetsAnswerFromTheirTables(t *testing.T) {
 	handler := srv.Handler()
 
 	get := func(target string) (int, map[string]any) {
-		req := httptest.NewRequest(http.MethodGet, target, nil)
-		req.Header.Set("Authorization", "Bearer page-token")
+		req := httptest.NewRequest(http.MethodGet, target+"&client_id=page-id", nil)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 		var body map[string]any

@@ -1,8 +1,7 @@
 # Serves a table this file creates, so it runs with nothing installed.
 #
-#   SQLFLOW_SERVE_TOKEN=local-dev-token sqlflow serve dev/config/serve/local.table.yml
-#   curl -H 'Authorization: Bearer local-dev-token' \
-#     'http://localhost:8080/v1/datasets/city_events?city=Baltimore&since=2026-09-10T00:00:00Z&until=2026-09-12T00:00:00Z'
+#   SQLFLOW_SERVE_CLIENT_ID=local-dev sqlflow serve dev/config/serve/local.table.yml
+#   curl 'http://localhost:8080/v1/datasets/city_events?client_id=local-dev&city=Baltimore&since=2026-09-10T00:00:00Z&until=2026-09-12T00:00:00Z'
 #
 # The events are fixed in September 2026, so give since and until: the
 # default range ends now.
@@ -26,10 +25,9 @@ serve:
   http:
     addr: "0.0.0.0:{{ SQLFLOW_SERVE_PORT|default('8080') }}"
 
-  auth:
-    tokens:
-      - name: local
-        token: "{{ SQLFLOW_SERVE_TOKEN }}"
+  clients:
+    - name: local
+      id: "{{ SQLFLOW_SERVE_CLIENT_ID }}"
 
   limits:
     max_rows: 1000

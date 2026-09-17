@@ -25,9 +25,8 @@ commands:
 serve:
   http:
     addr: 127.0.0.1:0
-  auth:
-    tokens:
-      - {name: test, token: test-token}
+  clients:
+    - {name: test, id: test-id}
   datasets:
     - name: numbers
       sql: SELECT n FROM t ORDER BY n
@@ -69,8 +68,7 @@ func TestCliServe_ServesAConfigUntilItsContextEnds(t *testing.T) {
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	req, _ := http.NewRequest(http.MethodGet, base+"/v1/datasets/numbers", nil)
-	req.Header.Set("Authorization", "Bearer test-token")
+	req, _ := http.NewRequest(http.MethodGet, base+"/v1/datasets/numbers?client_id=test-id", nil)
 	resp, err = http.DefaultClient.Do(req)
 	assert.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
@@ -108,12 +106,12 @@ func TestCliServe_RefusesARateLimitWithExit10(t *testing.T) {
 	assert.That(t, strings.Contains(err.Error(), "rate_limit"))
 }
 
-// validate warns on a token rendered from an unset variable, so CI passes.
+// validate warns on a client id rendered from an unset variable, so CI passes.
 // serve must not start with it: every request would be refused.
-func TestCliServe_RefusesAnEmptyTokenAtStart(t *testing.T) {
+func TestCliServe_RefusesAnEmptyClientIDAtStart(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	path := writeConfig(t, strings.Replace(cliServe,
-		"token: test-token", `token: "{{ SQLFLOW_SERVE_TOKEN_UNSET_IN_THIS_TEST }}"`, 1))
+		"id: test-id", `id: "{{ SQLFLOW_SERVE_CLIENT_ID_UNSET_IN_THIS_TEST }}"`, 1))
 
 	err := serveConfig(context.Background(), path, zap.NewNop(), nil)
 	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))

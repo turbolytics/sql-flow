@@ -26,10 +26,9 @@ serve:
       allowed_origins:
         - https://turbolytics.io
 
-  auth:
-    tokens:
-      - name: bluesky-demo-page
-        token: "{{ SQLFLOW_SERVE_TOKEN_BLUESKY_DEMO }}"
+  clients:
+    - name: bluesky-demo-page
+      id: "{{ SQLFLOW_SERVE_CLIENT_ID_BLUESKY_DEMO }}"
 
   limits:
     max_rows: 10000

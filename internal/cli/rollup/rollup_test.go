@@ -69,7 +69,7 @@ func writeCommitted(t *testing.T) (string, string) {
 	datasets, _, err := run(t, "serve", "-c", example)
 	assert.NoError(t, err)
 	var serve strings.Builder
-	serve.WriteString("serve:\n  auth:\n    tokens:\n      - {name: page, token: \"{{ SQLFLOW_SERVE_TOKEN }}\"}\n  datasets:\n")
+	serve.WriteString("serve:\n  clients:\n    - {name: page, id: \"{{ SQLFLOW_SERVE_CLIENT_ID }}\"}\n  datasets:\n")
 	for _, line := range strings.Split(strings.TrimRight(datasets, "\n"), "\n") {
 		serve.WriteString("    " + line + "\n")
 	}

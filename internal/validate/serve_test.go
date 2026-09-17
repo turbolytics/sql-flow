@@ -11,10 +11,9 @@ import (
 )
 
 const validServeConfig = `serve:
-  auth:
-    tokens:
-      - name: page
-        token: page-token
+  clients:
+    - name: page
+      id: page-id
   datasets:
     - name: posts
       params:
@@ -108,8 +107,8 @@ func TestValidateServe_ARuleViolationNamesItsLine(t *testing.T) {
 	assert.Equal(t, string(errs.CodeConfigServeReserved), errors[0].Code)
 	assert.Equal(t, "/serve/limits/rate_limit", errors[0].Context)
 	assert.That(t, errors[0].Position != nil)
-	// validServeConfig is ten lines; rate_limit is the twelfth.
-	assert.Equal(t, 12, errors[0].Position.Line)
+	// validServeConfig is nine lines; rate_limit is the eleventh.
+	assert.Equal(t, 11, errors[0].Position.Line)
 }
 
 // A param type outside the enum breaks the schema and a rule at the same key.
@@ -128,22 +127,22 @@ func TestValidateServe_ASchemaFaultIsNotRepeatedByTheRules(t *testing.T) {
 	assert.Equal(t, StatusFail, checkStatus(t, rep, "serve.rules"))
 }
 
-// CI validates without secrets. A token rendered from an unset variable is
+// CI validates without its environment. A client id rendered from an unset variable is
 // empty, and that is the environment being incomplete, not the config being
 // wrong, so validate warns. serve refuses to start on the same file.
-func TestValidateServe_AnUnsetTokenVariableIsAWarning(t *testing.T) {
+func TestValidateServe_AnUnsetClientIDVariableIsAWarning(t *testing.T) {
 	coverage.Covers(t, "cli.serve", "validate.template")
 
 	rep, err := Validate(context.Background(), Request{
 		Config: strings.Replace(validServeConfig,
-			"token: page-token", `token: "{{ SQLFLOW_SERVE_TOKEN_UNSET_IN_THIS_TEST }}"`, 1),
+			"id: page-id", `id: "{{ SQLFLOW_SERVE_CLIENT_ID_UNSET_IN_THIS_TEST }}"`, 1),
 	})
 	assert.NoError(t, err)
 	assert.That(t, rep.OK)
 
 	var demoted bool
 	for _, d := range rep.Diagnostics {
-		if d.Code == string(errs.CodeConfigInvalid) && strings.Contains(d.Message, "empty value") {
+		if d.Code == string(errs.CodeConfigInvalid) && strings.Contains(d.Message, "empty id") {
 			assert.Equal(t, SeverityWarning, d.Severity)
 			demoted = true
 		}

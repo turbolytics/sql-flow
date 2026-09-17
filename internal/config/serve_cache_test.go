@@ -14,8 +14,7 @@ import (
 // with, every grain carrying its bucket.
 const cachedServe = `
 serve:
-  auth:
-    tokens: [{name: page, token: page-token}]
+  clients: [{name: page, id: page-id}]
   cache:
     max_mb: 8
   datasets:

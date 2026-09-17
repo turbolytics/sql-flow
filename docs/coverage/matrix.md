@@ -58,7 +58,7 @@ added, and this page changes only when a status does.
 | `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — |
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ |
-| `cli.serve` | Serves a config's named SQL datasets over HTTP, with bearer tokens, typed params, grains and limits. | ✅ | ✅ | ✅ |
+| `cli.serve` | Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits. | ✅ | ✅ | ✅ |
 | `cli.rollup` | Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted. | ✅ | ✅ | — |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ |
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |

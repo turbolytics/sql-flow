@@ -15,8 +15,7 @@ import (
 // that depends on the clock.
 const rangedTestServe = `
 serve:
-  auth:
-    tokens: [{name: page, token: page-token}]
+  clients: [{name: page, id: page-id}]
   datasets:
     - name: posts
       params:

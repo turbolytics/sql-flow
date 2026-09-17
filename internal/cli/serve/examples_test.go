@@ -19,9 +19,9 @@ import (
 // exampleOverrides supplies every variable the shipped serve examples read
 // without a default, the way a deploy's environment would.
 var exampleOverrides = map[string]string{
-	"SQLFLOW_SERVE_TOKEN":              "example-token",
-	"SQLFLOW_SERVE_TOKEN_BLUESKY_DEMO": "example-token",
-	"SQLFLOW_POSTGRES_URI":             "postgresql://sqlflow@127.0.0.1:1/unreachable",
+	"SQLFLOW_SERVE_CLIENT_ID":              "example-client",
+	"SQLFLOW_SERVE_CLIENT_ID_BLUESKY_DEMO": "example-client",
+	"SQLFLOW_POSTGRES_URI":                 "postgresql://sqlflow@127.0.0.1:1/unreachable",
 }
 
 // denyExternalAccess keeps the sweep off the network: INSTALL postgres and

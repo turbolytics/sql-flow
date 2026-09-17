@@ -24,10 +24,9 @@ serve:
     addr: 127.0.0.1:0
     cors:
       allowed_origins: [https://turbolytics.io, http://localhost:3000]
-  auth:
-    tokens:
-      - {name: page, token: page-token}
-      - {name: ops, token: ops-token}
+  clients:
+    - {name: page, id: page-id}
+    - {name: ops, id: ops-id}
   limits:
     max_rows: 100
     timeout_seconds: 5
@@ -148,14 +147,20 @@ func TestCliServe_CheckReportsEachRuleAtItsPath(t *testing.T) {
 		path     string
 		message  string
 	}{
-		{"no tokens", "      - {name: page, token: page-token}\n      - {name: ops, token: ops-token}", "      []",
-			errs.CodeConfigInvalid, "serve.auth.tokens", "no token"},
-		{"duplicate token name", "{name: ops, token: ops-token}", "{name: page, token: ops-token}",
-			errs.CodeConfigInvalid, "serve.auth.tokens.1.name", "page is used twice"},
-		{"empty token", "token: ops-token", `token: ""`,
-			errs.CodeConfigInvalid, "serve.auth.tokens.1.token", "ops has an empty value"},
-		{"duplicate token value", "token: ops-token", "token: page-token",
-			errs.CodeConfigInvalid, "serve.auth.tokens.1.token", "page and ops have the same value"},
+		{"no clients", "    - {name: page, id: page-id}\n    - {name: ops, id: ops-id}", "    []",
+			errs.CodeConfigInvalid, "serve.clients", "no client"},
+		{"duplicate client name", "{name: ops, id: ops-id}", "{name: page, id: ops-id}",
+			errs.CodeConfigInvalid, "serve.clients.1.name", "page is used twice"},
+		{"empty id", "id: ops-id", `id: ""`,
+			errs.CodeConfigInvalid, "serve.clients.1.id", "ops has an empty id"},
+		{"duplicate id", "id: ops-id", "id: page-id",
+			errs.CodeConfigInvalid, "serve.clients.1.id", "page and ops have the same id"},
+		// The deprecated key is held to the same rules, at its own path, and
+		// against the clients beside it.
+		{"deprecated token, empty", "    - {name: ops, id: ops-id}", "  auth:\n    tokens:\n      - {name: ops, token: \"\"}",
+			errs.CodeConfigInvalid, "serve.auth.tokens.0.token", "ops has an empty token"},
+		{"deprecated token, same value as a client", "    - {name: ops, id: ops-id}", "  auth:\n    tokens:\n      - {name: ops, token: page-id}",
+			errs.CodeConfigInvalid, "serve.auth.tokens.0.token", "page and ops have the same token"},
 		{"bad addr", "addr: 127.0.0.1:0", "addr: localhost",
 			errs.CodeConfigInvalid, "serve.http.addr", "not a host:port"},
 		{"origin with a path", "https://turbolytics.io,", "https://turbolytics.io/demo,",
@@ -187,6 +192,9 @@ func TestCliServe_CheckReportsEachRuleAtItsPath(t *testing.T) {
 		{"param named grain", "      sql: SELECT count(*) AS n FROM t",
 			"      params: [{name: grain, type: string}]\n      sql: SELECT count(*) AS n FROM t WHERE $grain IS NULL",
 			errs.CodeConfigServeDataset, "serve.datasets.0.params.0.name", "grain selects the grain"},
+		{"param named client_id", "      sql: SELECT count(*) AS n FROM t",
+			"      params: [{name: client_id, type: string}]\n      sql: SELECT count(*) AS n FROM t WHERE $client_id IS NULL",
+			errs.CodeConfigServeDataset, "serve.datasets.0.params.0.name", "client_id identifies the caller"},
 		{"bad param type", "{name: lang, type: string}", "{name: lang, type: text}",
 			errs.CodeConfigServeDataset, "serve.datasets.1.params.1.type", `"text"`},
 		{"min on a string param", "{name: lang, type: string}", "{name: lang, type: string, min: 1}",
@@ -267,8 +275,7 @@ func TestCliServe_CheckErrorListsEveryViolation(t *testing.T) {
 // rangedServe declares a range and a max_range per grain, and breaks no rule.
 const rangedServe = `
 serve:
-  auth:
-    tokens: [{name: page, token: page-token}]
+  clients: [{name: page, id: page-id}]
   datasets:
     - name: posts
       params:
@@ -361,8 +368,7 @@ func TestCliServe_CheckReportsEachRangeRuleAtItsPath(t *testing.T) {
 	t.Run("a range without grains", func(t *testing.T) {
 		conf := parseServe(t, `
 serve:
-  auth:
-    tokens: [{name: page, token: page-token}]
+  clients: [{name: page, id: page-id}]
   datasets:
     - name: posts
       params: [{name: since, type: timestamp}, {name: until, type: timestamp}]

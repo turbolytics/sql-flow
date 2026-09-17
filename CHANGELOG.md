@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Changed
+
+- `sqlflow serve` takes the caller's id as `?client_id=<id>`, and the config
+  declares callers under `serve.clients`, each with a `name` and an `id`. The
+  id was an `Authorization: Bearer` token under `serve.auth.tokens`. It never
+  authenticated anyone: a browser page ships it in plain sight. Sent as a
+  bearer token, it read as a leaked credential to anyone who opened the page's
+  source. A request with no `Authorization` header is also a CORS simple
+  request, so a browser no longer sends a preflight before it. `client_id`
+  reaches neither the SQL nor the cache key, and a dataset cannot declare a
+  param of that name. The request log's `token` field is now `client`.
+
+### Deprecated
+
+- `Authorization: Bearer <id>` and `serve.auth.tokens`. This release answers
+  the header when a request has no `client_id`, reads each token as a client,
+  and logs a warning for each. The next release refuses both. To move: deploy
+  this release, switch every caller to `?client_id=`, then rename
+  `serve.auth.tokens[].token` to `serve.clients[].id`.
+
 ### Fixed
 
 - `sqlflow serve` redacted a password from a database error before logging it,

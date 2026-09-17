@@ -59,6 +59,29 @@
           "type": "object",
           "description": "Where to listen, and which browser origins may call."
         },
+        "clients": {
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Names the client in the request log."
+              },
+              "id": {
+                "type": "string",
+                "description": "The value a client sends as ?client_id=\u003cid\u003e. It identifies and does not\nauthenticate: a browser page ships it in plain sight, as an analytics\nsnippet ships its site key. It exists so the log names the caller and so\none caller can be cut off by changing the value."
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "name",
+              "id"
+            ],
+            "description": "ServeClient names one caller."
+          },
+          "type": "array",
+          "description": "The callers the server answers, each known by its id."
+        },
         "auth": {
           "properties": {
             "tokens": {
@@ -70,7 +93,7 @@
                   },
                   "token": {
                     "type": "string",
-                    "description": "The value a client sends as Authorization: Bearer \u003ctoken\u003e. It is an\nidentifier, not a secret: a browser page ships it in plain sight."
+                    "description": "The client's id, under its old name."
                   }
                 },
                 "additionalProperties": false,
@@ -79,7 +102,7 @@
                   "name",
                   "token"
                 ],
-                "description": "ServeToken names one client identity."
+                "description": "ServeToken is the deprecated form of a client."
               },
               "type": "array",
               "description": "One entry per client identity."
@@ -90,7 +113,7 @@
           "required": [
             "tokens"
           ],
-          "description": "Who may call."
+          "description": "Deprecated: the bearer tokens of a config written before clients. Each\ntoken is a client whose id is the token's value. Move the entries to\nclients; the next release removes auth."
         },
         "limits": {
           "properties": {
@@ -331,7 +354,6 @@
       "additionalProperties": false,
       "type": "object",
       "required": [
-        "auth",
         "datasets"
       ],
       "description": "What to serve, to whom, and within which limits."

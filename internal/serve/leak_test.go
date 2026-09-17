@@ -33,8 +33,7 @@ func TestCliServe_DoesNotLeakNativeMemory(t *testing.T) {
 
 	conf, err := config.ParseServe([]byte(`
 serve:
-  auth:
-    tokens: [{name: leak, token: leak-token}]
+  clients: [{name: leak, id: leak-id}]
   datasets:
     - name: posts
       params: [{name: lang, type: string}]
@@ -48,8 +47,7 @@ serve:
 
 	run := func(n int) {
 		for i := 0; i < n; i++ {
-			req := httptest.NewRequest(http.MethodGet, "/v1/datasets/posts", nil)
-			req.Header.Set("Authorization", "Bearer leak-token")
+			req := httptest.NewRequest(http.MethodGet, "/v1/datasets/posts?client_id=leak-id", nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 			if w.Code != http.StatusOK {
