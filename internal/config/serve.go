@@ -30,6 +30,10 @@ const (
 	// small box fails queries with out-of-memory rather than queueing them,
 	// because DuckDB's memory_limit is one budget shared by every session.
 	MaxServePoolSize = 64
+	// DefaultServeCacheMaxMB bounds the response cache when the config names
+	// no number. Sixteen holds over a hundred of the demo's widest responses
+	// and is small beside four sessions' 72 MiB peak on a 256 MB box.
+	DefaultServeCacheMaxMB = 16
 )
 
 // ServeConf is a whole serve file: the commands that attach the data, and the
@@ -56,6 +60,9 @@ type Serve struct {
 	Pool *ServePool `yaml:"pool,omitempty"`
 	// Whether to serve Prometheus metrics at /metrics.
 	Metrics *ServeMetrics `yaml:"metrics,omitempty"`
+	// Bounds the response cache. It does not enable it: a dataset opts in
+	// with its own cache block.
+	Cache *ServeCache `yaml:"cache,omitempty"`
 	// The datasets this server answers. Nothing else is reachable.
 	Datasets []ServeDataset `yaml:"datasets"`
 }
@@ -120,6 +127,22 @@ type ServePool struct {
 	Size int `yaml:"size,omitempty"`
 }
 
+// ServeCache bounds the response cache every cached dataset shares.
+type ServeCache struct {
+	// The most the cache holds, in MiB. 0 means 16.
+	MaxMB int `yaml:"max_mb,omitempty"`
+}
+
+// ServeDatasetCache opts one dataset into the response cache. For a dataset
+// with a range it also asserts that the SQL reads the range as
+// bucket >= $since AND bucket < $until, which is what makes rounding the
+// range to the bucket exact.
+type ServeDatasetCache struct {
+	// How long an answer is served after the query that produced it
+	// started, in seconds. At least 1.
+	TTLSeconds int `yaml:"ttl_seconds" jsonschema:"minimum=1"`
+}
+
 // ServeMetrics turns on the Prometheus endpoint.
 type ServeMetrics struct {
 	// Serve GET /metrics on the same listener as the datasets, without a
@@ -140,6 +163,9 @@ type ServeDataset struct {
 	Params []ServeParam `yaml:"params,omitempty"`
 	// Overrides the top-level limits for this dataset.
 	Limits *ServeLimits `yaml:"limits,omitempty"`
+	// Opts the dataset into the response cache. Absent, every request runs
+	// its query.
+	Cache *ServeDatasetCache `yaml:"cache,omitempty"`
 	// The statement, for a dataset without grains. Set sql or grains.
 	SQL string `yaml:"sql,omitempty"`
 	// One statement per grain, selected by ?grain=<name>. Set sql or grains.
@@ -181,6 +207,15 @@ type ServeParam struct {
 
 // ServeGrain is one grain's statement.
 type ServeGrain struct {
+	// How wide one bucket of this grain is, such as 5m. Required on every
+	// grain of a cached dataset with a range, and refused without a range.
+	// It must divide one day. Units: s, m, h, d.
+	Bucket string `yaml:"bucket,omitempty"`
+	// Holds this grain's answers for its own number of seconds rather than
+	// the dataset's. A coarse grain changes by one open bucket, so it can be
+	// held far longer than a fine one. Refused unless the dataset has a
+	// cache block: that block is the opt-in.
+	Cache *ServeDatasetCache `yaml:"cache,omitempty"`
 	// The widest range this grain serves, such as 14d. Required when the
 	// dataset declares a range, and refused otherwise. Units: s, m, h, d.
 	MaxRange string `yaml:"max_range,omitempty"`
@@ -219,6 +254,48 @@ func (s Serve) PoolSize() int {
 // MetricsEnabled reports whether to serve /metrics.
 func (s Serve) MetricsEnabled() bool {
 	return s.Metrics != nil && s.Metrics.Enabled
+}
+
+// CacheMaxBytes is the response cache's bound, defaulted.
+func (s Serve) CacheMaxBytes() int64 {
+	mb := DefaultServeCacheMaxMB
+	if s.Cache != nil && s.Cache.MaxMB > 0 {
+		mb = s.Cache.MaxMB
+	}
+	return int64(mb) << 20
+}
+
+// AnyCached reports whether any dataset opted into the cache. A server with
+// none builds no cache at all.
+func (s Serve) AnyCached() bool {
+	for _, ds := range s.Datasets {
+		if ds.Cache != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// CacheTTL is how long a dataset's answers are served, or 0 for a dataset
+// that did not opt in.
+func (ds ServeDataset) CacheTTL() time.Duration {
+	if ds.Cache == nil {
+		return 0
+	}
+	return time.Duration(ds.Cache.TTLSeconds) * time.Second
+}
+
+// CacheTTLFor is how long one grain's answers are served: the grain's own
+// TTL, else the dataset's, and 0 for a dataset that did not opt in. The empty
+// grain is a dataset without grains.
+func (ds ServeDataset) CacheTTLFor(grain string) time.Duration {
+	if ds.Cache == nil {
+		return 0
+	}
+	if g, ok := ds.Grains[grain]; ok && g.Cache != nil {
+		return time.Duration(g.Cache.TTLSeconds) * time.Second
+	}
+	return ds.CacheTTL()
 }
 
 // Timeout is how long a caller waits on a dataset, resolved the same way as
@@ -440,6 +517,11 @@ func (c *ServeConf) Check() []Violation {
 		}
 	}
 
+	if s.Cache != nil && s.Cache.MaxMB < 0 {
+		add(errs.CodeConfigInvalid, []string{"serve", "cache", "max_mb"},
+			"cache.max_mb is %d; it must not be negative, and 0 means the default", s.Cache.MaxMB)
+	}
+
 	if len(s.Datasets) == 0 {
 		add(errs.CodeConfigInvalid, []string{"serve", "datasets"},
 			"serve.datasets declares no dataset, so the server would answer nothing")
@@ -552,6 +634,7 @@ func checkDataset(ds ServeDataset, path []string, seen map[string]bool, add addF
 	}
 
 	checkRange(ds, path, declaredTypes(ds.Params), add)
+	checkCache(ds, path, add)
 
 	for _, st := range ds.Statements() {
 		spath, where := child("sql"), "dataset "+ds.Name
@@ -666,6 +749,57 @@ func checkRange(ds ServeDataset, path []string, types map[string]string, add add
 	if defErr == nil && widest > 0 && def > widest {
 		add(code, at(rpath, "default"), "dataset %s: range.default %s is wider than the widest grain's max_range %s",
 			ds.Name, FormatServeDuration(def), FormatServeDuration(widest))
+	}
+}
+
+// checkCache holds a dataset's cache block and its grains' buckets to the
+// rules the cache key depends on. The key rounds a range up to the bucket,
+// which is exact only for buckets aligned to the epoch, and a width that
+// divides one day is aligned the way time_bucket and date_trunc align it. A
+// week is not: date_trunc('week') starts on a Monday and the epoch was a
+// Thursday.
+func checkCache(ds ServeDataset, path []string, add addFunc) {
+	code := errs.CodeConfigServeDataset
+
+	if ds.Cache != nil && ds.Cache.TTLSeconds < 1 {
+		add(code, at(path, "cache", "ttl_seconds"),
+			"dataset %s: cache.ttl_seconds is %d; it must be at least 1", ds.Name, ds.Cache.TTLSeconds)
+	}
+
+	for _, grain := range ds.GrainNames() {
+		if gc := ds.Grains[grain].Cache; gc != nil {
+			cpath := at(path, "grains", grain, "cache")
+			switch {
+			case ds.Cache == nil:
+				add(code, cpath, "dataset %s grain %s: a grain's cache block overrides the dataset's ttl_seconds, and the dataset has no cache block; the dataset's block is what opts it in",
+					ds.Name, grain)
+			case gc.TTLSeconds < 1:
+				add(code, at(cpath, "ttl_seconds"),
+					"dataset %s grain %s: cache.ttl_seconds is %d; it must be at least 1", ds.Name, grain, gc.TTLSeconds)
+			}
+		}
+
+		gpath := at(path, "grains", grain, "bucket")
+		raw := ds.Grains[grain].Bucket
+		switch {
+		case raw == "" && ds.Cache != nil && ds.Range != nil:
+			add(code, gpath, "dataset %s grain %s: a cached dataset with a range needs bucket on every grain",
+				ds.Name, grain)
+		case raw == "":
+		case ds.Range == nil:
+			add(code, gpath, "dataset %s grain %s: bucket needs a range on the dataset; without one there is nothing to align",
+				ds.Name, grain)
+		default:
+			d, err := ParseServeDuration(raw)
+			if err != nil {
+				add(code, gpath, "dataset %s grain %s: bucket %v", ds.Name, grain, err)
+				continue
+			}
+			if (24*time.Hour)%d != 0 {
+				add(code, gpath, "dataset %s grain %s: bucket %s does not divide one day, so its buckets are not aligned to the epoch",
+					ds.Name, grain, raw)
+			}
+		}
 	}
 }
 

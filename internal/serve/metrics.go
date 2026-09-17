@@ -21,19 +21,23 @@ var latencyBuckets = []float64{
 	0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16,
 }
 
-// metrics is the six instruments the pool needs to be sized, and nothing
-// else. Every method tolerates a nil receiver, so the request path records
+// metrics is the six instruments the pool needs to be sized, and the cache's
+// four when a dataset opted into it, and nothing else. Every method tolerates a nil receiver, so the request path records
 // unconditionally and a server without the endpoint pays one nil check.
 type metrics struct {
 	requests        metric.Int64Counter
 	requestDuration metric.Float64Histogram
 	queryDuration   metric.Float64Histogram
 	sessionWait     metric.Float64Histogram
+	// cacheRequests is nil on a server where no dataset opted into the cache.
+	cacheRequests  metric.Int64Counter
+	cacheEvictions metric.Int64Counter
 }
 
 // newMetrics builds the instruments against reg and registers the gauges'
-// callback, which reads stats whenever the endpoint is scraped.
-func newMetrics(reg *prom.Registry, stats func() Stats) (*metrics, error) {
+// callbacks, which read stats and cacheStats whenever the endpoint is
+// scraped. cacheStats is nil for a server without a cache.
+func newMetrics(reg *prom.Registry, stats func() Stats, cacheStats func() (int64, int)) (*metrics, error) {
 	exp, err := prometheus.New(prometheus.WithRegisterer(reg))
 	if err != nil {
 		return nil, err
@@ -91,7 +95,47 @@ func newMetrics(reg *prom.Registry, stats func() Stats) (*metrics, error) {
 		return nil, err
 	}
 
+	// A server where no dataset opted in has no cache, and publishes nothing
+	// about one.
+	if cacheStats != nil {
+		if mm.cacheRequests, err = m.Int64Counter("sqlflow_serve_cache_requests_total",
+			metric.WithDescription("Requests to cached datasets, by dataset and by whether the answer was a hit, a miss, or shared with a query already running.")); err != nil {
+			return nil, err
+		}
+		if mm.cacheEvictions, err = m.Int64Counter("sqlflow_serve_cache_evictions_total",
+			metric.WithDescription("Entries dropped, by reason: size, when the bound needed the room, or expired.")); err != nil {
+			return nil, err
+		}
+		cacheBytes, err := m.Int64ObservableGauge("sqlflow_serve_cache_bytes",
+			metric.WithDescription("Bytes of encoded results held. After a quiet spell this includes expired entries, until the next store reclaims them."),
+			metric.WithUnit("By"))
+		if err != nil {
+			return nil, err
+		}
+		cacheEntries, err := m.Int64ObservableGauge("sqlflow_serve_cache_entries",
+			metric.WithDescription("Results held, counted the way the bytes are."))
+		if err != nil {
+			return nil, err
+		}
+		if _, err := m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+			bytes, entries := cacheStats()
+			o.ObserveInt64(cacheBytes, bytes)
+			o.ObserveInt64(cacheEntries, int64(entries))
+			return nil
+		}, cacheBytes, cacheEntries); err != nil {
+			return nil, err
+		}
+	}
+
 	return &mm, nil
+}
+
+// observeEviction counts one entry leaving the cache.
+func (m *metrics) observeEviction(reason string) {
+	if m == nil || m.cacheEvictions == nil {
+		return
+	}
+	m.cacheEvictions.Add(context.Background(), 1, metric.WithAttributes(attribute.String("reason", reason)))
 }
 
 // observeWait records one Acquire, including the ones that gave up waiting.
@@ -102,9 +146,21 @@ func (m *metrics) observeWait(d time.Duration) {
 	m.sessionWait.Record(context.Background(), d.Seconds())
 }
 
+// observeCache counts one cached dataset's request by how it was answered.
+func (m *metrics) observeCache(dataset string, outcome cacheOutcome) {
+	if m == nil || m.cacheRequests == nil {
+		return
+	}
+	m.cacheRequests.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("dataset", dataset),
+		attribute.String("outcome", string(outcome)),
+	))
+}
+
 // observeRequest records one finished request. code is the error code, or
-// "ok".
-func (m *metrics) observeRequest(dataset, grain, code string, query, total time.Duration) {
+// "ok". ran is whether the request ran a query: a cache hit did not, and
+// recording its zero would flatten the query histogram.
+func (m *metrics) observeRequest(dataset, grain, code string, query time.Duration, ran bool, total time.Duration) {
 	if m == nil {
 		return
 	}
@@ -116,5 +172,7 @@ func (m *metrics) observeRequest(dataset, grain, code string, query, total time.
 	ctx := context.Background()
 	m.requests.Add(ctx, 1, attrs)
 	m.requestDuration.Record(ctx, total.Seconds(), attrs)
-	m.queryDuration.Record(ctx, query.Seconds(), attrs)
+	if ran {
+		m.queryDuration.Record(ctx, query.Seconds(), attrs)
+	}
 }

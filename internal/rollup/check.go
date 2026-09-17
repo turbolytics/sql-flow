@@ -100,6 +100,10 @@ func compareDataset(want, got config.ServeDataset, path []string, drift func([]s
 		drift(child("range"), "dataset %s: range differs from the generated range %+v", want.Name, *want.Range)
 	}
 
+	if !reflect.DeepEqual(want.Cache, got.Cache) {
+		drift(child("cache"), "dataset %s: the cache block differs from what the declaration's cache_ttl_seconds generates", want.Name)
+	}
+
 	wantGrains, gotGrains := want.GrainNames(), got.GrainNames()
 	if !slices.Equal(wantGrains, gotGrains) {
 		drift(child("grains"), "dataset %s: grains are %s; the declaration generates %s",
@@ -107,6 +111,14 @@ func compareDataset(want, got config.ServeDataset, path []string, drift func([]s
 		return
 	}
 	for _, g := range wantGrains {
+		if want.Grains[g].Bucket != got.Grains[g].Bucket {
+			drift(child("grains", g, "bucket"), "dataset %s grain %s: bucket is %q; the declaration generates %s",
+				want.Name, g, got.Grains[g].Bucket, want.Grains[g].Bucket)
+		}
+		if !reflect.DeepEqual(want.Grains[g].Cache, got.Grains[g].Cache) {
+			drift(child("grains", g, "cache"), "dataset %s grain %s: the cache block differs from what the declaration's cache_ttl_by_grain generates",
+				want.Name, g)
+		}
 		if want.Grains[g].MaxRange != got.Grains[g].MaxRange {
 			drift(child("grains", g, "max_range"), "dataset %s grain %s: max_range is %s; the declaration generates %s",
 				want.Name, g, got.Grains[g].MaxRange, want.Grains[g].MaxRange)

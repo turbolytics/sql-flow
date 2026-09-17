@@ -107,6 +107,20 @@ func newTestServerWith(t *testing.T, text string, extra ...Option) *testServer {
 	return &testServer{srv: srv, handler: srv.Handler(), logs: logs}
 }
 
+// newTestServerOn builds the server over an executor the test already has,
+// for a test that wraps one.
+func newTestServerOn(t *testing.T, text string, ex Executor) *testServer {
+	t.Helper()
+	conf, err := config.ParseServe([]byte(text))
+	assert.NoError(t, err)
+
+	core, logs := observer.New(zap.InfoLevel)
+	srv, err := New(context.Background(), conf, ex, WithLogger(zap.New(core)))
+	assert.NoError(t, err)
+	t.Cleanup(srv.Close)
+	return &testServer{srv: srv, handler: srv.Handler(), logs: logs}
+}
+
 type response struct {
 	status int
 	header http.Header

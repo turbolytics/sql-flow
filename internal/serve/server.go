@@ -22,6 +22,9 @@ type Server struct {
 	conf   *config.ServeConf
 	logger *zap.Logger
 	exec   Executor
+	// cache is nil unless some dataset opted in. Only a cached dataset's
+	// requests reach it.
+	cache *cache
 	// health is the statement /healthz runs. It is prepared at startup like
 	// every other one, so the probe costs a bind and nothing more.
 	health Statement
@@ -52,6 +55,11 @@ type dataset struct {
 	grains  map[string]datasetStatement
 	maxRows int
 	timeout time.Duration
+	// cacheTTL is 0 for a dataset that did not opt into the cache.
+	cacheTTL time.Duration
+	// grainTTL holds the grains that keep their answers for their own time
+	// rather than the dataset's.
+	grainTTL map[string]time.Duration
 	// span is nil for a dataset without a range.
 	span *span
 }
@@ -77,6 +85,27 @@ type span struct {
 type spanGrain struct {
 	name string
 	max  time.Duration
+	// bucket is 0 for a grain that declares none.
+	bucket time.Duration
+}
+
+// bucketOf is the width of one of grain's buckets, or 0.
+func (sp *span) bucketOf(grain string) time.Duration {
+	for _, g := range sp.grains {
+		if g.name == grain {
+			return g.bucket
+		}
+	}
+	return 0
+}
+
+// ttlFor is how long grain's answers are served. The caller has checked that
+// the dataset is cached.
+func (ds *dataset) ttlFor(grain string) time.Duration {
+	if ttl, ok := ds.grainTTL[grain]; ok {
+		return ttl
+	}
+	return ds.cacheTTL
 }
 
 // Option configures a Server.
@@ -124,15 +153,28 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 		opt(s)
 	}
 
+	// Before the instruments, whose gauges read it. A server where no dataset
+	// opted in holds no cache at all.
+	if conf.Serve.AnyCached() {
+		s.cache = newCache(conf.Serve.CacheMaxBytes(), time.Now)
+	}
+
 	// The instruments read the executor's session counts, so they are built
 	// here rather than by the caller, and the wait hook is installed on the
 	// pool before the server listens.
 	if s.registry != nil && conf.Serve.MetricsEnabled() {
-		m, err := newMetrics(s.registry, ex.Stats)
+		var cacheStats func() (int64, int)
+		if s.cache != nil {
+			cacheStats = s.cache.stats
+		}
+		m, err := newMetrics(s.registry, ex.Stats, cacheStats)
 		if err != nil {
 			return nil, err
 		}
 		s.metrics = m
+		if s.cache != nil {
+			s.cache.onEvict = m.observeEviction
+		}
 		if wo, ok := ex.(waitObserver); ok {
 			wo.setOnWait(m.observeWait)
 		}
@@ -154,9 +196,10 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 	listing := datasetListing{Datasets: []datasetDoc{}}
 	for _, dc := range conf.Serve.Datasets {
 		ds := &dataset{
-			conf:    dc,
-			maxRows: conf.Serve.MaxRows(dc),
-			timeout: conf.Serve.Timeout(dc),
+			conf:     dc,
+			maxRows:  conf.Serve.MaxRows(dc),
+			timeout:  conf.Serve.Timeout(dc),
+			cacheTTL: dc.CacheTTL(),
 		}
 		doc := datasetDoc{Name: dc.Name, Description: dc.Description, Params: []paramDoc{}}
 		for _, p := range dc.Params {
@@ -180,7 +223,15 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 				doc.Grains = map[string]grainDoc{}
 			}
 			ds.grains[sc.Grain] = datasetStatement{stmt: st, grain: sc.Grain}
-			doc.Grains[sc.Grain] = grainDoc{SQL: sc.SQL}
+			gd := grainDoc{SQL: sc.SQL}
+			if gc := dc.Grains[sc.Grain].Cache; gc != nil && dc.Cache != nil {
+				if ds.grainTTL == nil {
+					ds.grainTTL = map[string]time.Duration{}
+				}
+				ds.grainTTL[sc.Grain] = dc.CacheTTLFor(sc.Grain)
+				gd.Cache = &cacheDoc{TTLSeconds: gc.TTLSeconds}
+			}
+			doc.Grains[sc.Grain] = gd
 		}
 
 		if dc.Range != nil {
@@ -193,8 +244,15 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 			for _, g := range sp.grains {
 				gd := doc.Grains[g.name]
 				gd.MaxRange = config.FormatServeDuration(g.max)
+				if g.bucket > 0 {
+					gd.Bucket = config.FormatServeDuration(g.bucket)
+				}
 				doc.Grains[g.name] = gd
 			}
+		}
+
+		if dc.Cache != nil {
+			doc.Cache = &cacheDoc{TTLSeconds: dc.Cache.TTLSeconds}
 		}
 
 		s.datasets[dc.Name] = ds
@@ -229,6 +287,12 @@ type datasetDoc struct {
 	SQL         string              `json:"sql,omitempty"`
 	Grains      map[string]grainDoc `json:"grains,omitempty"`
 	Range       *rangeDoc           `json:"range,omitempty"`
+	Cache       *cacheDoc           `json:"cache,omitempty"`
+}
+
+// cacheDoc tells a caller how stale a dataset's answer may be.
+type cacheDoc struct {
+	TTLSeconds int `json:"ttl_seconds"`
 }
 
 type rangeDoc struct {
@@ -245,8 +309,11 @@ type paramDoc struct {
 }
 
 type grainDoc struct {
-	MaxRange string `json:"max_range,omitempty"`
-	SQL      string `json:"sql"`
+	Bucket string `json:"bucket,omitempty"`
+	// Cache is present only on a grain whose TTL differs from its dataset's.
+	Cache    *cacheDoc `json:"cache,omitempty"`
+	MaxRange string    `json:"max_range,omitempty"`
+	SQL      string    `json:"sql"`
 }
 
 // newSpan reads a dataset's range. Check has already held it to the rules,
@@ -262,7 +329,13 @@ func newSpan(dc config.ServeDataset) (*span, error) {
 		if err != nil {
 			return nil, fmt.Errorf("dataset %s grain %s: max_range: %w", dc.Name, name, err)
 		}
-		sp.grains = append(sp.grains, spanGrain{name: name, max: max})
+		var bucket time.Duration
+		if raw := dc.Grains[name].Bucket; raw != "" {
+			if bucket, err = config.ParseServeDuration(raw); err != nil {
+				return nil, fmt.Errorf("dataset %s grain %s: bucket: %w", dc.Name, name, err)
+			}
+		}
+		sp.grains = append(sp.grains, spanGrain{name: name, max: max, bucket: bucket})
 	}
 	return sp, nil
 }

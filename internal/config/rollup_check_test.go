@@ -26,6 +26,14 @@ func TestCliRollup_CheckReportsEachRuleAtItsPath(t *testing.T) {
 		path    string
 		message string
 	}{
+		{"negative cache ttl", []edit{{"default_range: 24h\n", "default_range: 24h\n          cache_ttl_seconds: -1\n"}},
+			"rollups.0.serve.datasets.0.cache_ttl_seconds", "must not be negative"},
+		{"by-grain ttl without a default", []edit{{"default_range: 24h\n", "default_range: 24h\n          cache_ttl_by_grain: {1d: 600}\n"}},
+			"rollups.0.serve.datasets.0.cache_ttl_by_grain", "needs cache_ttl_seconds"},
+		{"by-grain ttl for a grain not served", []edit{{"default_range: 24h\n", "default_range: 24h\n          cache_ttl_seconds: 30\n          cache_ttl_by_grain: {2h: 600}\n"}},
+			"rollups.0.serve.datasets.0.cache_ttl_by_grain.2h", "not a grain this dataset serves"},
+		{"by-grain ttl below one", []edit{{"default_range: 24h\n", "default_range: 24h\n          cache_ttl_seconds: 30\n          cache_ttl_by_grain: {1d: 0}\n"}},
+			"rollups.0.serve.datasets.0.cache_ttl_by_grain.1d", "at least 1"},
 		{"bad rollup name", []edit{{"  - name: posts\n    source:", "  - name: Posts\n    source:"}},
 			"rollups.0.name", `"Posts"`},
 		{"bad source table", []edit{{"table: posts_per_minute_by_lang", "table: Posts"}},

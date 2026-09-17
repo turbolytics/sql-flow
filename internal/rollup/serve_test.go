@@ -165,3 +165,38 @@ func jsonNumber(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+// Every generated grain carries its bucket, which is its name: a rollup
+// grain is named for its width. The cache block appears only when the
+// declaration asks.
+func TestCliRollup_ServeDatasetsCarryBucketsAndTheCacheOptIn(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	conf := withTotals(t)
+	for i := range conf.Rollups[0].Serve.Datasets {
+		conf.Rollups[0].Serve.Datasets[i].CacheTTLSeconds = 0
+	}
+	conf.Rollups[0].Serve.Datasets[0].CacheTTLSeconds = 30
+	conf.Rollups[0].Serve.Datasets[0].CacheTTLByGrain = map[string]int{"1d": 600}
+
+	datasets, err := ServeDatasets(conf)
+	assert.NoError(t, err)
+	assert.That(t, len(datasets) >= 2)
+	for _, ds := range datasets {
+		for name, g := range ds.Grains {
+			assert.Equal(t, name, g.Bucket)
+		}
+	}
+	assert.Equal(t, 30, datasets[0].Cache.TTLSeconds)
+	// Only the grain the declaration names carries a block of its own.
+	for name, g := range datasets[0].Grains {
+		if name == "1d" {
+			assert.Equal(t, 600, g.Cache.TTLSeconds)
+		} else {
+			assert.That(t, g.Cache == nil)
+		}
+	}
+	for _, ds := range datasets[1:] {
+		assert.That(t, ds.Cache == nil)
+	}
+}

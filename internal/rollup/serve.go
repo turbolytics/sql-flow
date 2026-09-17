@@ -59,13 +59,24 @@ func serveDataset(r config.Rollup, ds config.RollupDataset) config.ServeDataset 
 
 	grains := map[string]config.ServeGrain{}
 	for g, maxRange := range ds.MaxRange {
-		grains[g] = config.ServeGrain{MaxRange: maxRange, SQL: grainSQL(r, set, ds, g)}
+		// A rollup grain is named for its width, so the name is the bucket.
+		grain := config.ServeGrain{Bucket: g, MaxRange: maxRange, SQL: grainSQL(r, set, ds, g)}
+		if ttl, ok := ds.CacheTTLByGrain[g]; ok {
+			grain.Cache = &config.ServeDatasetCache{TTLSeconds: ttl}
+		}
+		grains[g] = grain
+	}
+
+	var cache *config.ServeDatasetCache
+	if ds.CacheTTLSeconds > 0 {
+		cache = &config.ServeDatasetCache{TTLSeconds: ds.CacheTTLSeconds}
 	}
 
 	return config.ServeDataset{
 		Name:        ds.Name,
 		Description: ds.Description,
 		Params:      params,
+		Cache:       cache,
 		Range:       &config.ServeRange{Since: "since", Until: "until", Default: ds.DefaultRange},
 		Grains:      grains,
 	}

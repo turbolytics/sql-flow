@@ -72,7 +72,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**43 invariants declared: 36 safety and 7 liveness. Of 171 (invariant, integration) cells: 87 proven, 50 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
+**50 invariants declared: 42 safety and 8 liveness. Of 178 (invariant, integration) cells: 94 proven, 50 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -188,6 +188,17 @@ drains. An invariant holds only if it holds on all four.
 | `error.dlq.carries_provenance` | A DLQ record carries the payload, offset, partition and reason. *(declared, tracked by #166)* | ❌ missing | ❌ missing |
 | `error.bad_record.threshold` | N bad records in a window fail the pipeline rather than discarding forever. *(declared, tracked by #166)* | ❌ missing | ❌ missing |
 
+## Safety invariants: cache
+
+| Invariant | Claim | `serve.duckdb` |
+| --- | --- | --- |
+| `serve.cache.bounded_staleness` | A response is never built from a result whose fill started more than the dataset's ttl_seconds before the request arrived. | ✅ u |
+| `serve.cache.bucket_exact` | For a ranged dataset, a response from the cache carries the rows a query bound to the request's own since and until would have returned against the same data. Rounding to the bucket changes the key and never the rows. | ✅ u |
+| `serve.cache.opt_in` | A dataset without a cache block runs one query per request, and its response carries no cache or age_ms. | ✅ u |
+| `serve.cache.bounded_bytes` | The bytes the cache holds never exceed max_mb, whatever is requested. | ✅ u |
+| `serve.cache.errors_not_stored` | A request that fails stores nothing: the next request for its key runs a query. | ✅ u |
+| `serve.cache.one_fill` | Concurrent requests for one key run one query, and a caller leaving fails no other caller. | ✅ u |
+
 ## Liveness invariants: lifecycle
 
 | Invariant | Claim | `manager.watermark` |
@@ -209,4 +220,10 @@ drains. An invariant holds only if it holds on all four.
 | `pipeline.progress.no_silent_stall` | A configuration cannot remove the flush ticker. flush_interval_seconds absent, zero or negative all run with the thirty second default, so a batch a low-traffic topic never fills still leaves on time. This entry previously claimed the opposite, that zero removed the ticker and stalled such a topic forever; the run command has always defaulted it. Pinned by TestCliInvocation_FlushIntervalNeverZero, not by the harness, and unenforced for that reason: the harness drives a pipeline that is already constructed, and this is a property of resolving the config before construction. There is nothing per-subject to observe, so demanding a cell from every subject would buy a fake rather than a proof. The liveness the harness can see is pipeline.flush.eventually, which it proves. | ❌ missing | ❌ missing |
 | `lifecycle.drain.bounded` | A drain finishes or fails inside pipeline.drain_deadline_seconds. A sink that never answers cannot hold the process past it: the loop returns system.lifecycle.drain_incomplete, commits nothing for the batch it could not write, and the next start replays it. | ✅ u | ✅ u |
 | `pipeline.batch.timeout` | A batch whose query exceeds the timeout fails the batch, not the process. *(declared, tracked by #163)* | ❌ missing | ❌ missing |
+
+## Liveness invariants: cache
+
+| Invariant | Claim | `serve.duckdb` |
+| --- | --- | --- |
+| `serve.cache.answers_from_memory` | A second request for a key inside its TTL is answered without a query and without a session. | ✅ u |
 

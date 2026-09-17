@@ -210,6 +210,25 @@ func checkRollupDataset(r Rollup, ds RollupDataset, path []string, widths map[st
 	}
 	seen[ds.Name] = true
 
+	if ds.CacheTTLSeconds < 0 {
+		add(at(path, "cache_ttl_seconds"), "rollup %s dataset %s: cache_ttl_seconds is %d; it must not be negative, and 0 means no cache",
+			r.Name, ds.Name, ds.CacheTTLSeconds)
+	}
+	if len(ds.CacheTTLByGrain) > 0 && ds.CacheTTLSeconds <= 0 {
+		add(at(path, "cache_ttl_by_grain"), "rollup %s dataset %s: cache_ttl_by_grain needs cache_ttl_seconds, which opts the dataset in and is what the other grains take",
+			r.Name, ds.Name)
+	}
+	for _, g := range slices.Sorted(maps.Keys(ds.CacheTTLByGrain)) {
+		switch ttl := ds.CacheTTLByGrain[g]; {
+		case ds.MaxRange[g] == "":
+			add(at(path, "cache_ttl_by_grain", g), "rollup %s dataset %s: cache_ttl_by_grain names %s, which is not a grain this dataset serves; max_range lists them",
+				r.Name, ds.Name, g)
+		case ttl < 1:
+			add(at(path, "cache_ttl_by_grain", g), "rollup %s dataset %s: cache_ttl_by_grain.%s is %d; it must be at least 1",
+				r.Name, ds.Name, g, ttl)
+		}
+	}
+
 	// Rule 7.
 	set, ok := r.DimensionSet(ds.DimensionSet)
 	if !ok {

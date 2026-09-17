@@ -73,3 +73,57 @@ func sampleValue(t *testing.T, text, name string) string {
 	t.Fatalf("no sample named %s", name)
 	return ""
 }
+
+// labelledValue returns the value of the sample with this name that carries
+// every one of labels, whatever order the exporter wrote them in.
+func labelledValue(t *testing.T, text, name string, labels ...string) string {
+	t.Helper()
+next:
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, name+"{") {
+			continue
+		}
+		for _, l := range labels {
+			if !strings.Contains(line, l) {
+				continue next
+			}
+		}
+		fields := strings.Fields(line)
+		return fields[len(fields)-1]
+	}
+	t.Fatalf("no sample named %s with %v:\n%s", name, labels, text)
+	return ""
+}
+
+// The cache's four instruments, and the rule that a hit leaves the query
+// histogram alone.
+func TestCliServe_CacheMetrics(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	text := strings.Replace(cachedTestServe, "serve:\n", "serve:\n  metrics: {enabled: true}\n", 1)
+	ts := newTestServerWith(t, text, WithMetrics(prom.NewRegistry()))
+
+	for i := 0; i < 3; i++ {
+		assert.Equal(t, http.StatusOK, ts.get(t, "/v1/datasets/status").status)
+	}
+
+	body := ts.do(t, http.MethodGet, "/metrics", nil).raw
+	assert.Equal(t, "1", labelledValue(t, body, "sqlflow_serve_cache_requests_total", `dataset="status"`, `outcome="miss"`))
+	assert.Equal(t, "2", labelledValue(t, body, "sqlflow_serve_cache_requests_total", `dataset="status"`, `outcome="hit"`))
+	assert.Equal(t, "1", sampleValue(t, body, "sqlflow_serve_cache_entries"))
+	assert.That(t, sampleValue(t, body, "sqlflow_serve_cache_bytes") != "0")
+
+	// Three requests, one query.
+	assert.Equal(t, "3", labelledValue(t, body, "sqlflow_serve_request_duration_seconds_count", `dataset="status"`, `code="ok"`))
+	assert.Equal(t, "1", labelledValue(t, body, "sqlflow_serve_query_duration_seconds_count", `dataset="status"`, `code="ok"`))
+}
+
+// A server where no dataset opted in publishes nothing about a cache.
+func TestCliServe_NoCacheMetricsWithoutACachedDataset(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	enabled := strings.Replace(testServe, "  limits:", "  metrics: {enabled: true}\n  limits:", 1)
+	ts := newTestServerWith(t, enabled, WithMetrics(prom.NewRegistry()))
+	assert.Equal(t, http.StatusOK, ts.get(t, "/v1/datasets/status").status)
+	assert.That(t, !strings.Contains(ts.do(t, http.MethodGet, "/metrics", nil).raw, "sqlflow_serve_cache"))
+}

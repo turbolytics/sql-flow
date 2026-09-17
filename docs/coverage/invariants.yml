@@ -537,3 +537,79 @@ invariants:
     verified_by: harness
     requires: []
     enforced: true
+
+  # --- Cache: serve's response cache ----------------------------------------
+  # Serve is never told that its backend changed, so the cache invalidates
+  # nothing and bounds everything. These say what the bounds are. Each is
+  # proven through the HTTP handler over a counting executor, never against
+  # the cache alone: the claim is about what a caller is sent.
+  - id: serve.cache.bounded_staleness
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      A response is never built from a result whose fill started more than
+      the dataset's ttl_seconds before the request arrived.
+    verified_by: harness
+    requires: []
+
+  - id: serve.cache.bucket_exact
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      For a ranged dataset, a response from the cache carries the rows a
+      query bound to the request's own since and until would have returned
+      against the same data. Rounding to the bucket changes the key and never
+      the rows.
+    verified_by: harness
+    requires: []
+
+  - id: serve.cache.opt_in
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      A dataset without a cache block runs one query per request, and its
+      response carries no cache or age_ms.
+    verified_by: harness
+    requires: []
+
+  - id: serve.cache.bounded_bytes
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: The bytes the cache holds never exceed max_mb, whatever is requested.
+    verified_by: harness
+    requires: []
+
+  - id: serve.cache.errors_not_stored
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      A request that fails stores nothing: the next request for its key runs
+      a query.
+    verified_by: harness
+    requires: []
+
+  - id: serve.cache.one_fill
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      Concurrent requests for one key run one query, and a caller leaving
+      fails no other caller.
+    verified_by: harness
+    requires: []
+
+  # Every safety row above holds for a cache that never stores anything.
+  - id: serve.cache.answers_from_memory
+    family: cache
+    class: liveness
+    applies_to: serve
+    claim: >
+      A second request for a key inside its TTL is answered without a query
+      and without a session.
+    verified_by: harness
+    requires: []
