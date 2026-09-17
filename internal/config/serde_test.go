@@ -224,6 +224,14 @@ func TestConfigSchemaRegistry_EachRuleNamesItsKey(t *testing.T) {
 			says:   "json, json_schema or avro",
 		},
 		{
+			name: "an unknown format on a sink",
+			mutate: func(c *Conf) {
+				c.Pipeline.Sink.Kafka.Value = &KafkaValue{Format: "protobuf", Subject: "x"}
+			},
+			want: []string{"pipeline.sink.kafka.value.format", "pipeline.sink.kafka.value.subject"},
+			says: "json, json_schema or avro",
+		},
+		{
 			name: "auth with both credentials",
 			mutate: func(c *Conf) {
 				c.Pipeline.SchemaRegistry.Auth = &SchemaRegistryAuth{Username: "u", Password: "p", BearerToken: "t"}
@@ -291,6 +299,39 @@ func TestConfigSchemaRegistry_EachRuleNamesItsKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A DLQ or window sink builds its violation paths from a base of three or
+// more elements. A naive append from that base can leave spare capacity,
+// so two violations built from the same base share a backing array and
+// the second write clobbers the first. Both keys, and both violations,
+// must survive.
+func TestConfigSchemaRegistry_TwoViolationsOnOneSinkKeepTheirKeys(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+
+	dlq := avroConf()
+	dlq.Pipeline.Source.Kafka.Value = nil
+	dlq.Pipeline.Sink = Sink{Type: "console"}
+	dlq.Pipeline.OnError = &OnError{Policy: "DLQ", DLQ: &Sink{Type: "kafka", Kafka: &KafkaSink{
+		Topic: "dead", Value: &KafkaValue{Subject: "x", Schema: &KafkaValueSchema{Version: "1"}},
+	}}}
+	assert.Equal(t, []string{
+		"pipeline.on_error.dlq.kafka.value.subject",
+		"pipeline.on_error.dlq.kafka.value.schema",
+	}, keys(dlq.CheckSchemaRegistry()))
+
+	win := avroConf()
+	win.Pipeline.Source.Kafka.Value = nil
+	win.Pipeline.Sink = Sink{Type: "console"}
+	win.Tables = &Tables{SQL: []TableSQL{
+		{Name: "agg", Window: &Window{Sink: Sink{Type: "kafka", Kafka: &KafkaSink{
+			Topic: "agg", Value: &KafkaValue{Subject: "x", Schema: &KafkaValueSchema{Version: "1"}},
+		}}}},
+	}}
+	assert.Equal(t, []string{
+		"tables.sql.0.window.sink.kafka.value.subject",
+		"tables.sql.0.window.sink.kafka.value.schema",
+	}, keys(win.CheckSchemaRegistry()))
 }
 
 // The handler adds kafka_topic, kafka_partition and kafka_offset itself. A

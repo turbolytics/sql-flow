@@ -120,6 +120,14 @@ func (v Violation) Key() string { return strings.Join(v.Path, ".") }
 // derives its schema from a table; a typed path for either is a follow-up.
 const inferredMemBatch = "handlers.InferredMemBatch"
 
+// keyPath is base plus keys, in a slice of its own. A violation keeps its
+// path, so two violations built from one base must not share an array.
+func keyPath(base []string, keys ...string) []string {
+	out := make([]string, 0, len(base)+len(keys))
+	out = append(out, base...)
+	return append(out, keys...)
+}
+
 // CheckSchemaRegistry holds a config to the rules the JSON Schema cannot
 // state, plus the two it can, because run has no schema pass. It returns
 // every violation rather than the first: validate lists them all, and run
@@ -159,20 +167,20 @@ func (c *Conf) CheckSchemaRegistry() []Violation {
 		format := v.ResolvedFormat()
 		if !knownFormat(format) {
 			add(fmt.Sprintf("format %q is not one of json, json_schema or avro", format),
-				append(path, "format")...)
+				keyPath(path, "format")...)
 		}
 		if v.Subject != "" {
 			add("subject is a sink key: a source reads the subject its records carry",
-				append(path, "subject")...)
+				keyPath(path, "subject")...)
 		}
 		if v.Schema != nil {
 			add("schema is a sink key: a source reads the schema its records carry",
-				append(path, "schema")...)
+				keyPath(path, "schema")...)
 		}
 		if knownFormat(format) && v.RegistryBacked() {
 			if registry == nil {
 				add(fmt.Sprintf("format %s needs pipeline.schema_registry", format),
-					append(path, "format")...)
+					keyPath(path, "format")...)
 			}
 			if len(src.Topics) != 1 {
 				add(fmt.Sprintf("format %s reads exactly one topic, one reader schema per pipeline; got %d",
@@ -190,28 +198,31 @@ func (c *Conf) CheckSchemaRegistry() []Violation {
 			return
 		}
 		v := s.Kafka.Value
-		path = append(path, "kafka", "value")
+		path = keyPath(path, "kafka", "value")
 		format := v.ResolvedFormat()
 		if !knownFormat(format) {
 			add(fmt.Sprintf("format %q is not one of json, json_schema or avro", format),
-				append(path, "format")...)
-			return
+				keyPath(path, "format")...)
 		}
-		if v.RegistryBacked() && registry == nil {
+		// An unrecognized format is treated as not registry-backed for
+		// subject and schema, the same as json: neither rule can tell it
+		// apart from a format with no registry behind it.
+		registryBacked := knownFormat(format) && v.RegistryBacked()
+		if registryBacked && registry == nil {
 			add(fmt.Sprintf("format %s needs pipeline.schema_registry", format),
-				append(path, "format")...)
+				keyPath(path, "format")...)
 		}
-		if v.Subject != "" && !v.RegistryBacked() {
+		if v.Subject != "" && !registryBacked {
 			add("subject needs a format other than json; a json sink registers nothing",
-				append(path, "subject")...)
+				keyPath(path, "subject")...)
 		}
 		if v.Schema != nil {
-			if !v.RegistryBacked() {
+			if !registryBacked {
 				add("schema needs a format other than json; a json sink writes against no registered version",
-					append(path, "schema")...)
+					keyPath(path, "schema")...)
 			} else if !validVersion(v.Schema.Version) {
 				add(fmt.Sprintf("version is latest or a version number of at least 1; got %q", v.Schema.Version),
-					append(path, "schema", "version")...)
+					keyPath(path, "schema", "version")...)
 			}
 		}
 	}
