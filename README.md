@@ -349,6 +349,11 @@ serve:
           bucket: 5m        # how wide one bucket of this grain is
           max_range: 1d
           sql: ... WHERE bucket >= $since AND bucket < $until
+        1d:
+          bucket: 1d
+          cache: {ttl_seconds: 600}   # optional: this grain's own TTL
+          max_range: 365d
+          sql: ...
 ```
 
 A cached answer is the encoded result, served for at most `ttl_seconds` after
@@ -357,6 +362,14 @@ the query that produced it **started**. Nothing is invalidated, because
 or restart. `max_mb` is what every cached dataset shares, 16 by default. The
 least recently used answer goes first, after every expired one, and an answer
 over a quarter of the bound is returned and not kept.
+
+A grain may carry a `cache` block of its own, and its `ttl_seconds` replaces
+the dataset's for that grain. Use it on the coarse grains. A year of days
+changes by one open bucket, and its rounded `until` only moves at midnight, so
+the TTL is the only thing that re-runs the widest query there is: at the
+dataset's 30 seconds, twice a minute, for a change no chart can show. The
+dataset's block is still the opt-in, and a grain's block without it is
+refused.
 
 A dataset with a range declares `bucket` on every grain. `since` and `until`
 are rounded **up** to it, the statement binds the rounded values, and `range`
@@ -537,7 +550,8 @@ What to know before you deploy it:
   values. `check` proves `max_buckets × (top.max + 1) <= max_rows`, so
   `truncated` never happens.
 - **A served dataset can be cached.** `cache_ttl_seconds: 30` on a serve
-  dataset generates its `cache` block. Every generated grain carries its
+  dataset generates its `cache` block, and `cache_ttl_by_grain: {1h: 120,
+  1d: 600}` generates a longer one on the grains it names. Every generated grain carries its
   `bucket`, which is its name, and the generated SQL compares the bucket
   column half-open, the shape [the cache](#caching) needs. `check` holds the
   serve file to both.

@@ -92,6 +92,11 @@ func TestCliRollup_CheckReportsEachServeFieldEditedByHand(t *testing.T) {
 		{"the cache ttl", func(ds *config.ServeDataset) {
 			ds.Cache = &config.ServeDatasetCache{TTLSeconds: 5}
 		}, "serve.datasets.1.cache"},
+		{"a grain's ttl", func(ds *config.ServeDataset) {
+			g := ds.Grains["1d"]
+			g.Cache = &config.ServeDatasetCache{TTLSeconds: 5}
+			ds.Grains["1d"] = g
+		}, "serve.datasets.1.grains.1d.cache"},
 		{"the cache block removed", func(ds *config.ServeDataset) { ds.Cache = nil }, "serve.datasets.1.cache"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

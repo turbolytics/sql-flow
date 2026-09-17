@@ -115,6 +115,10 @@ func compareDataset(want, got config.ServeDataset, path []string, drift func([]s
 			drift(child("grains", g, "bucket"), "dataset %s grain %s: bucket is %q; the declaration generates %s",
 				want.Name, g, got.Grains[g].Bucket, want.Grains[g].Bucket)
 		}
+		if !reflect.DeepEqual(want.Grains[g].Cache, got.Grains[g].Cache) {
+			drift(child("grains", g, "cache"), "dataset %s grain %s: the cache block differs from what the declaration's cache_ttl_by_grain generates",
+				want.Name, g)
+		}
 		if want.Grains[g].MaxRange != got.Grains[g].MaxRange {
 			drift(child("grains", g, "max_range"), "dataset %s grain %s: max_range is %s; the declaration generates %s",
 				want.Name, g, got.Grains[g].MaxRange, want.Grains[g].MaxRange)

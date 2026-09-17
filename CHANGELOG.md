@@ -26,7 +26,10 @@
   shares. A dataset with a range declares `bucket` on each grain, and `since`
   and `until` are rounded up to it, in what the statement binds and in the
   `range` the response echoes, so every request inside one bucket-wide window
-  is one question. Concurrent requests for one question run one query, which
+  is one question. A grain may carry its own `cache: {ttl_seconds}`, which
+  replaces the dataset's for that grain: a year of days changes by one open
+  bucket and its key only rolls over at midnight, so the TTL alone decides
+  how often the widest query runs. Concurrent requests for one question run one query, which
   finishes and is kept even if every caller gives up. Measured locally on the
   demo's data at 16 concurrent: two hundred requests with two hundred
   different ranges inside one five-minute window went from 200 queries at a
@@ -40,8 +43,9 @@
   `sqlflow_serve_cache_*` metrics join `/metrics`.
   `sqlflow_serve_query_duration_seconds` now counts only requests that ran a
   query, so a hit does not pull it toward zero.
-- `sqlflow rollup serve` writes `bucket` on every generated grain, and a
-  `cache` block when the serve dataset sets `cache_ttl_seconds`. `rollup
+- `sqlflow rollup serve` writes `bucket` on every generated grain, a `cache`
+  block when the serve dataset sets `cache_ttl_seconds`, and a grain's own
+  block for each grain `cache_ttl_by_grain` names. `rollup
   check` holds a serve file to both, so **a serve file generated before this
   release fails `check` until it is regenerated**: run `sqlflow rollup serve`
   and paste the datasets again.

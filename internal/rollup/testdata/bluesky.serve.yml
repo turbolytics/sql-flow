@@ -16,6 +16,8 @@
   grains:
     1d:
       bucket: 1d
+      cache:
+        ttl_seconds: 600
       max_range: 365d
       sql: |
         SELECT bucket,
@@ -35,6 +37,8 @@
         ORDER BY bucket, lang
     1h:
       bucket: 1h
+      cache:
+        ttl_seconds: 120
       max_range: 14d
       sql: |
         SELECT bucket,
@@ -92,6 +96,8 @@
         ORDER BY bucket, lang
     6h:
       bucket: 6h
+      cache:
+        ttl_seconds: 300
       max_range: 90d
       sql: |
         SELECT bucket,

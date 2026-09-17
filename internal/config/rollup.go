@@ -108,6 +108,11 @@ type RollupDataset struct {
 	// seconds. 0 leaves it out. The generated SQL reads the range half-open,
 	// which is what the cache's key needs.
 	CacheTTLSeconds int `yaml:"cache_ttl_seconds,omitempty" jsonschema:"minimum=0"`
+	// Grains that hold their answers for their own number of seconds, such
+	// as {1d: 600}: a year of days changes by one open bucket, and re-running
+	// the widest query every cache_ttl_seconds buys nothing a chart can show.
+	// Needs cache_ttl_seconds, which the other grains take.
+	CacheTTLByGrain map[string]int `yaml:"cache_ttl_by_grain,omitempty"`
 }
 
 // RollupFold bounds a dataset's series.

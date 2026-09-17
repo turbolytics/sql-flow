@@ -201,6 +201,13 @@
                       "type": "integer",
                       "minimum": 0,
                       "description": "Opts the generated dataset into serve's response cache, for this many\nseconds. 0 leaves it out. The generated SQL reads the range half-open,\nwhich is what the cache's key needs."
+                    },
+                    "cache_ttl_by_grain": {
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "type": "object",
+                      "description": "Grains that hold their answers for their own number of seconds, such\nas {1d: 600}: a year of days changes by one open bucket, and re-running\nthe widest query every cache_ttl_seconds buys nothing a chart can show.\nNeeds cache_ttl_seconds, which the other grains take."
                     }
                   },
                   "additionalProperties": false,

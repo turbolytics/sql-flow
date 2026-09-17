@@ -177,6 +177,7 @@ func TestCliRollup_ServeDatasetsCarryBucketsAndTheCacheOptIn(t *testing.T) {
 		conf.Rollups[0].Serve.Datasets[i].CacheTTLSeconds = 0
 	}
 	conf.Rollups[0].Serve.Datasets[0].CacheTTLSeconds = 30
+	conf.Rollups[0].Serve.Datasets[0].CacheTTLByGrain = map[string]int{"1d": 600}
 
 	datasets, err := ServeDatasets(conf)
 	assert.NoError(t, err)
@@ -187,6 +188,14 @@ func TestCliRollup_ServeDatasetsCarryBucketsAndTheCacheOptIn(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 30, datasets[0].Cache.TTLSeconds)
+	// Only the grain the declaration names carries a block of its own.
+	for name, g := range datasets[0].Grains {
+		if name == "1d" {
+			assert.Equal(t, 600, g.Cache.TTLSeconds)
+		} else {
+			assert.That(t, g.Cache == nil)
+		}
+	}
 	for _, ds := range datasets[1:] {
 		assert.That(t, ds.Cache == nil)
 	}

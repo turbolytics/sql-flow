@@ -87,6 +87,12 @@ serve:
           bucket: 5m          # new: how wide one bucket of this grain is
           max_range: 1d
           sql: ...
+        1d:
+          bucket: 1d
+          cache:              # optional: this grain's own TTL
+            ttl_seconds: 600
+          max_range: 365d
+          sql: ...
 ```
 
 A dataset without a `cache` block is served exactly as today: no key is
@@ -97,6 +103,19 @@ Why opt-in per dataset: the key below is exact only if the SQL reads `since`
 and `until` by comparing them with bucket-aligned values. Serve cannot prove
 that of arbitrary SQL. The `cache` block is the author saying so.
 
+Why a grain may carry its own `ttl_seconds`: how fast an answer goes stale
+depends on the grain, and one number per dataset fits only one of them. At 1m
+a new bucket lands every minute and 30 seconds is about right. At 1d the only
+thing that changes in a year of days is today's open bucket, and the rounded
+`until` moves once a day, at midnight UTC, so the key never rolls over and
+the TTL alone decides how often the widest query in the system runs. Thirty
+seconds runs it twice a minute for a change no chart can show. The dataset's
+block stays the opt-in and the default; a grain's block without it is
+refused, because it would cache nothing and look as if it did. This replaced
+an idea the first draft ruled out, a longer TTL for a range wholly in the
+past, which needs serve to know what is settled. This needs nothing: the
+author knows the grain.
+
 Why `bucket` is a key of its own: a grain's name is a label. Serve never
 parses `5m` out of it, and a dataset may name its grains `fine` and `coarse`.
 `sqlflow rollup serve` knows every grain's width and writes it.
@@ -105,7 +124,8 @@ Rules, checked at start and by `validate`. A dataset's rules carry
 `user.config.serve_dataset` and `max_mb`'s carries `user.config.invalid`, the
 codes their neighbours in `config/serve.go` already use:
 
-- `ttl_seconds` is an integer of at least 1.
+- `ttl_seconds` is an integer of at least 1, on a dataset and on a grain.
+- A grain's `cache` block needs the dataset's.
 - A dataset with `cache` and `range` declares `bucket` on every grain.
 - `bucket` uses the units `max_range` does, is positive, and either divides
   one day or is exactly `1d`. Buckets are aligned to the Unix epoch in UTC,
@@ -323,6 +343,12 @@ serve:
     - name: posts_by_lang
       cache_ttl_seconds: 30
 ```
+
+`cache_ttl_by_grain: {1h: 120, 1d: 600}` beside it names the grains that hold
+their answers longer. It needs `cache_ttl_seconds`, its keys must be grains
+the dataset serves, and each value is at least 1. It is a second key rather
+than `cache_ttl_seconds` taking a number or a map, so the schema has one type
+per key.
 
 `sqlflow rollup serve` writes `bucket` on every grain always, and the `cache`
 block when the key is present. `sqlflow rollup check` compares both. The
