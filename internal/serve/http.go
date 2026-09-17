@@ -110,6 +110,12 @@ type rowsResponse struct {
 	// reader looking for a slow query that did not exist.
 	QueuedMS  int64 `json:"queued_ms"`
 	ElapsedMS int64 `json:"elapsed_ms"`
+	// Cache and AgeMS are present only for a dataset that opted into the
+	// cache. On a hit or a shared fill, queued_ms and elapsed_ms are this
+	// request's own wait and work, never the filling request's: a reader
+	// must not be sent looking for a slow query this request did not run.
+	Cache string `json:"cache,omitempty"`
+	AgeMS *int64 `json:"age_ms,omitempty"`
 }
 
 func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
@@ -160,10 +166,54 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	start := time.Now()
-	res, queued, err := query(ctx, s.exec, st.stmt, values, ds.maxRows)
+	var (
+		res     result
+		queued  time.Duration
+		work    time.Duration
+		outcome cacheOutcome
+		age     time.Duration
+	)
+	if ds.cacheTTL == 0 {
+		res, queued, err = query(ctx, s.exec, st.stmt, values, ds.maxRows)
+		work = time.Since(start) - queued
+		entry.ran = true
+	} else {
+		// Check guarantees a bucket on every grain of a cached range. The
+		// guard is for a Server built from a config nobody checked: it must
+		// serve unrounded rather than divide by zero.
+		if ds.span != nil {
+			if bucket := ds.span.bucketOf(st.grain); bucket > 0 {
+				alignRange(ds.span.since, ds.span.until, bucket, values, win)
+			}
+		}
+		// The fill answers to its own deadline, not this caller's. It is the
+		// dataset's timeout either way, so a fill nobody waits for is bounded
+		// as a request is. values is not written again, so the fill reading
+		// it after this request has gone is safe.
+		var fillQueued, fillWork time.Duration
+		res, outcome, age, err = s.cache.do(ctx, cacheKey(name, st.grain, ds.conf.Params, values), ds.cacheTTL,
+			func() (result, error) {
+				fctx, done := context.WithTimeout(context.Background(), ds.timeout)
+				defer done()
+				began := time.Now()
+				r, q, e := query(fctx, s.exec, st.stmt, values, ds.maxRows)
+				fillQueued, fillWork = q, time.Since(began)-q
+				return r, e
+			})
+		switch {
+		case outcome == cacheMiss && err == nil:
+			// Read only after the fill is done, which do waited for.
+			queued, work = fillQueued, fillWork
+			entry.ran = true
+		case outcome == cacheShared:
+			queued = time.Since(start)
+		}
+		entry.cache = string(outcome)
+		s.metrics.observeCache(name, outcome)
+	}
 	// Measured whatever the outcome: the error mix is what the counter is
 	// for, so a timeout and a failure count too.
-	entry.queryDur, entry.measured = time.Since(start)-queued, true
+	entry.queryDur, entry.measured = work, true
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		// An exhausted pool arrives here too: the wait for a session is the
@@ -186,7 +236,7 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := json.Marshal(rowsResponse{
+	resp := rowsResponse{
 		Dataset:   name,
 		Grain:     st.grain,
 		Range:     win,
@@ -195,8 +245,13 @@ func (s *Server) queryDataset(w http.ResponseWriter, r *http.Request) {
 		RowCount:  res.RowCount,
 		Truncated: res.Truncated,
 		QueuedMS:  queued.Milliseconds(),
-		ElapsedMS: (time.Since(start) - queued).Milliseconds(),
-	})
+		ElapsedMS: work.Milliseconds(),
+	}
+	if ds.cacheTTL > 0 {
+		ms := age.Milliseconds()
+		resp.Cache, resp.AgeMS = string(outcome), &ms
+	}
+	body, err := json.Marshal(resp)
 	if err != nil {
 		writeError(w, r, &apiError{http.StatusInternalServerError, "query_failed", err.Error()})
 		return
@@ -296,12 +351,18 @@ func getOnly(next http.Handler) http.Handler {
 // logEntry collects one request's log fields as the handlers learn them.
 type logEntry struct {
 	token, dataset, grain, code string
-	status, rows                int
+	// cache is how a cached dataset's request was answered, and empty for
+	// every other request.
+	cache        string
+	status, rows int
 	// queryDur is the query alone, which only the dataset handler knows. The
 	// middleware records the metrics, because that is where the outcome and
 	// the total are both known.
 	queryDur time.Duration
 	measured bool
+	// ran is whether this request ran a query. A hit did not, and must not
+	// drag the query histogram toward zero.
+	ran bool
 }
 
 type entryKey struct{}
@@ -328,6 +389,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			zap.String("token", entry.token),
 			zap.String("dataset", entry.dataset),
 			zap.String("grain", entry.grain),
+			zap.String("cache", entry.cache),
 			zap.Int("status", entry.status),
 			zap.Int("rows", entry.rows),
 			zap.Int64("elapsed_ms", time.Since(start).Milliseconds()),
@@ -346,7 +408,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			if code == "" {
 				code = "ok"
 			}
-			s.metrics.observeRequest(entry.dataset, entry.grain, code, entry.queryDur, time.Since(start))
+			s.metrics.observeRequest(entry.dataset, entry.grain, code, entry.queryDur, entry.ran, time.Since(start))
 		}
 	})
 }

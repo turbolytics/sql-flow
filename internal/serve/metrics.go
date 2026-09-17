@@ -29,6 +29,8 @@ type metrics struct {
 	requestDuration metric.Float64Histogram
 	queryDuration   metric.Float64Histogram
 	sessionWait     metric.Float64Histogram
+	// cacheRequests is nil on a server where no dataset opted into the cache.
+	cacheRequests metric.Int64Counter
 }
 
 // newMetrics builds the instruments against reg and registers the gauges'
@@ -102,9 +104,21 @@ func (m *metrics) observeWait(d time.Duration) {
 	m.sessionWait.Record(context.Background(), d.Seconds())
 }
 
+// observeCache counts one cached dataset's request by how it was answered.
+func (m *metrics) observeCache(dataset string, outcome cacheOutcome) {
+	if m == nil || m.cacheRequests == nil {
+		return
+	}
+	m.cacheRequests.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("dataset", dataset),
+		attribute.String("outcome", string(outcome)),
+	))
+}
+
 // observeRequest records one finished request. code is the error code, or
-// "ok".
-func (m *metrics) observeRequest(dataset, grain, code string, query, total time.Duration) {
+// "ok". ran is whether the request ran a query: a cache hit did not, and
+// recording its zero would flatten the query histogram.
+func (m *metrics) observeRequest(dataset, grain, code string, query time.Duration, ran bool, total time.Duration) {
 	if m == nil {
 		return
 	}
@@ -116,5 +130,7 @@ func (m *metrics) observeRequest(dataset, grain, code string, query, total time.
 	ctx := context.Background()
 	m.requests.Add(ctx, 1, attrs)
 	m.requestDuration.Record(ctx, total.Seconds(), attrs)
-	m.queryDuration.Record(ctx, query.Seconds(), attrs)
+	if ran {
+		m.queryDuration.Record(ctx, query.Seconds(), attrs)
+	}
 }
