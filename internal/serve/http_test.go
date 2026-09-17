@@ -564,6 +564,34 @@ func TestCliServe_RedactRemovesPasswords(t *testing.T) {
 	}
 }
 
+// A password is not the only credential a config attaches with. MotherDuck
+// takes a token in the URL or as an ATTACH option, and DuckDB's own secrets
+// carry keys the same way, so an ATTACH that fails prints them into the log
+// exactly as a Postgres one prints its password.
+func TestCliServe_RedactRemovesTokensAndKeys(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+
+	for in, want := range map[string]string{
+		// MotherDuck, both forms.
+		`ATTACH 'md:db?motherduck_token=ey.J9.sig' AS md`: `ATTACH 'md:db?motherduck_token=***' AS md`,
+		`ATTACH 'md:db' AS md (TOKEN 'ey.J9.sig')`:        `ATTACH 'md:db' AS md (TOKEN '***')`,
+		`failed: motherduck_token = 'ey.J9.sig'`:          `failed: motherduck_token = ***`,
+
+		// DuckDB secrets: the key id identifies, the secret authenticates.
+		`CREATE SECRET (TYPE S3, KEY_ID 'AKIA', SECRET 'wJalr')`: `CREATE SECRET (TYPE S3, KEY_ID 'AKIA', SECRET '***')`,
+		`s3_secret_access_key=wJalr&s3_region=us-east-1`:         `s3_secret_access_key=***&s3_region=us-east-1`,
+		`api_key: abc123`: `api_key: ***`,
+
+		// Untouched: no credential, and an error a reader needs whole.
+		`ATTACH 'md:db' AS md`:                                 `ATTACH 'md:db' AS md`,
+		`Catalog Error: no database named 'sample_data' found`: `Catalog Error: no database named 'sample_data' found`,
+		`ATTACH '...' AS pg (TYPE POSTGRES, READ_ONLY)`:        `ATTACH '...' AS pg (TYPE POSTGRES, READ_ONLY)`,
+		`Binder Error: column "token" does not exist`:          `Binder Error: column "token" does not exist`,
+	} {
+		assert.Equal(t, want, Redact(in))
+	}
+}
+
 // elapsed_ms used to include the wait for a connection, so a 13 ms query on a
 // loaded server reported a second and sent its reader looking for a slow query
 // that did not exist. The two are separate fields now.

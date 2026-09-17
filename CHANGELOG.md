@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed
+
+- `sqlflow serve` redacted a password from a database error before logging it,
+  but not a token or a key. A MotherDuck attach carries its token in the URL
+  or as an `ATTACH ... (TOKEN '…')` option, and DuckDB's secrets carry keys
+  the same way, so an attach that failed wrote the credential into the log —
+  on a hosted deployment, into a dashboard an operator pastes from. Redaction
+  now covers `token`, `secret`, `api_key`, `access_key` and `credential`,
+  including compound names like `motherduck_token` and
+  `s3_secret_access_key`, in both the `=`/`:` and the DuckDB option form.
+  `KEY_ID` is left alone: it identifies a secret rather than authenticating
+  it, and a reader needs it to tell two apart.
+
 ### Added
 
 - `sqlflow serve` answers requests from a pool of sessions rather than one
