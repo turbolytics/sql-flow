@@ -1,0 +1,44 @@
+# A metrics table with counts and gauges: one row per minute per series, a
+# series being a name, a type and a set of dimensions. It is the declaration
+# the Deploy to Render template uses.
+#
+#   sqlflow rollup ddl -c dev/config/rollups/metrics.yml
+#
+# It has no serve block. A generated dataset takes at most one dimension and
+# folds it, and a series here is three columns that cannot fold. The template
+# writes its dataset's grains in serve.yml.
+rollups:
+  - name: metrics
+    source:
+      table: metrics_1m
+      time_column: bucket
+      grain: 1m
+      dimensions: [name, type, dimensions_key]
+
+    grains:
+      5m: {from: 1m}
+      15m: {from: 5m}
+      1h: {from: 15m}
+      6h: {from: 1h}
+      1d: {from: 6h}
+
+    dimension_sets:
+      - name: metrics
+        dimensions: [name, type, dimensions_key]
+        measures:
+          # A gauge of 0.73 summed as an integer is 0.
+          value_sum: {type: sum, column: value_sum, numeric: double}
+          value_count: {type: sum, column: value_count}
+          value_min: {type: min, column: value_min}
+          value_max: {type: max, column: value_max}
+          # A gauge's headline value: queue depth now, not its sum.
+          value_last: {type: last, column: value_last}
+      # A name across every set of dimensions. No last: two series share a
+      # bucket here, and neither is the later one.
+      - name: metrics_total
+        dimensions: [name, type]
+        measures:
+          value_sum: {type: sum, column: value_sum, numeric: double}
+          value_count: {type: sum, column: value_count}
+          value_min: {type: min, column: value_min}
+          value_max: {type: max, column: value_max}

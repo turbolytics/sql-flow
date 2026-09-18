@@ -60,15 +60,36 @@ func keyColumns(r config.Rollup, set config.RollupDimensionSet) []string {
 	return append([]string{r.Source.TimeColumn}, set.Dimensions...)
 }
 
+// sumCast is the type a sum is stored as. The tables are created from the
+// query that fills them, so the cast is also the column's type.
+func sumCast(m config.RollupMeasure) string {
+	if m.Numeric == "double" {
+		return "double precision"
+	}
+	return "bigint"
+}
+
+// lastExpr is the value of column in the latest of the finer rows aliased f.
+// Nulls sort after every value, so a bucket whose latest row is null keeps
+// the one before it, and a bucket of nulls stores null. Check admits last
+// only in a set that keeps every source dimension, so a group holds one row
+// per finer bucket and the order has no ties.
+func lastExpr(r config.Rollup, column string) string {
+	c := "f." + quote(column)
+	return "(array_agg(" + c + " ORDER BY (" + c + " IS NULL), f." + quote(r.Source.TimeColumn) + " DESC))[1]"
+}
+
 // sourceExpr builds a measure's stored form from source rows aliased f.
 func sourceExpr(r config.Rollup, m config.RollupMeasure) string {
 	switch m.Type {
 	case "sum":
-		return "sum(f." + quote(m.Column) + ")::bigint"
+		return "sum(f." + quote(m.Column) + ")::" + sumCast(m)
 	case "min":
 		return "min(f." + quote(m.Column) + ")"
 	case "max":
 		return "max(f." + quote(m.Column) + ")"
+	case "last":
+		return lastExpr(r, m.Column)
 	case "count_buckets":
 		return "count(DISTINCT f." + quote(r.Source.TimeColumn) + ")"
 	}
@@ -76,15 +97,21 @@ func sourceExpr(r config.Rollup, m config.RollupMeasure) string {
 }
 
 // mergeExpr merges a measure's stored form from finer rollup rows aliased f.
-// count_buckets sums, because source buckets never overlap in time.
-func mergeExpr(name string, m config.RollupMeasure) string {
+// count_buckets sums, because source buckets never overlap in time. Every
+// table of a set names its time column as the source does, so last orders by
+// the same column at every grain.
+func mergeExpr(r config.Rollup, name string, m config.RollupMeasure) string {
 	switch m.Type {
-	case "sum", "count_buckets":
+	case "sum":
+		return "sum(f." + quote(name) + ")::" + sumCast(m)
+	case "count_buckets":
 		return "sum(f." + quote(name) + ")::bigint"
 	case "min":
 		return "min(f." + quote(name) + ")"
 	case "max":
 		return "max(f." + quote(name) + ")"
+	case "last":
+		return lastExpr(r, name)
 	}
 	panic(fmt.Sprintf("rollup: no merge expression for measure type %q; Check admits only generated types", m.Type))
 }
@@ -102,7 +129,7 @@ func selectList(r config.Rollup, set config.RollupDimensionSet, grain config.Rol
 		if grain.From == r.Source.Grain {
 			cols = append(cols, sourceExpr(r, m))
 		} else {
-			cols = append(cols, mergeExpr(name, m))
+			cols = append(cols, mergeExpr(r, name, m))
 		}
 	}
 	return cols

@@ -199,3 +199,23 @@ func TestCliRollup_ServeDatasetsCarryBucketsAndTheCacheOptIn(t *testing.T) {
 		assert.That(t, ds.Cache == nil)
 	}
 }
+
+// A folded dataset sums a measure across the values folded into other. A
+// double sum cast to BIGINT there would lose the fraction the tables kept.
+func TestCliRollup_ServeKeepsADoubleSumsFraction(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	conf := loadExample(t)
+	set := conf.Rollups[0].DimensionSets[0]
+	m := set.Measures["posts"]
+	m.Numeric = "double"
+	set.Measures["posts"] = m
+
+	datasets, err := ServeDatasets(conf)
+	assert.NoError(t, err)
+	for grain, g := range datasets[0].Grains {
+		if !strings.Contains(g.SQL, "sum(posts)::DOUBLE AS posts") {
+			t.Fatalf("grain %s still casts the sum to an integer:\n%s", grain, g.SQL)
+		}
+	}
+}
