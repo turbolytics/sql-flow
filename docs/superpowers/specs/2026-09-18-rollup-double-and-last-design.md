@@ -1,6 +1,6 @@
 # `sqlflow rollup`: sums that keep their fraction, and a `last` measure
 
-No issue yet. Verified against `main` at bc86bc7 on 2026-09-18. Part of
+Issue #331. Verified against `main` at bc86bc7 on 2026-09-18. Part of
 [Deploy to Render](2026-09-18-render-metrics-template-design.md). Extends
 [Rollups](2026-09-15-rollups-design.md).
 

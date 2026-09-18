@@ -1,16 +1,17 @@
 # Deploy to Render: a metrics pipeline from one button, and the install telemetry it reports
 
-No issue yet. Verified against `main` at bc86bc7 on 2026-09-18. The Render
+Issue #331. Verified against `main` at bc86bc7 on 2026-09-18. The Render
 facts under "The Blueprint" were read from Render's Blueprint reference and
 Deploy to Render page on 2026-09-18. The DuckDB facts under "The metric" and
 "The read API" were probed in the DuckDB 1.5.2 CLI, the version
 `DUCKDB_VERSION` pins, against an attached Postgres 18 on 2026-09-18.
 
 This is the umbrella spec. It fixes the scope, the decisions, and the build
-order. Two engine changes it depends on have their own specs:
+order. Three engine changes it depends on have their own specs:
 
 - [Webhook listen address](2026-09-18-webhook-addr-design.md)
 - [Rollup: non-integer sums and a `last` measure](2026-09-18-rollup-double-and-last-design.md)
+- [StructuredBatch: an object in a text column keeps its escapes](2026-09-18-structured-raw-json-design.md)
 
 ## The problem
 
@@ -148,7 +149,7 @@ and its port, as the Bluesky demo does.
 
 ## The metric
 
-A request body is one metric or an array of metrics.
+A request body is one metric:
 
 ```json
 {
@@ -160,6 +161,23 @@ A request body is one metric or an array of metrics.
 }
 ```
 
+or several, under `metrics`:
+
+```json
+{"metrics": [{"name": "a", "type": "count"}, {"name": "b", "type": "gauge", "value": 0.73}]}
+```
+
+A bare JSON array is not accepted. The webhook source makes one message of
+one request, and `StructuredBatch` reads a message's top-level keys. Probed
+in v2026.09.17.3: a bare array gives one row of nulls, which the handler
+drops, and a `metrics STRUCT(…)[]` column gives the list, which the handler
+unnests. The handler's table declares the single metric's fields and
+`metrics` side by side, and its SQL unions the two.
+
+`dimensions` is declared `TEXT`. The handler receives the object's JSON text
+and parses it in SQL. That text was corrupted when a value held an escape,
+which is the third engine change.
+
 | Field | Required | Default | Rule |
 |---|---|---|---|
 | `name` | yes | | Non-empty string, at most 200 bytes. |
@@ -168,9 +186,12 @@ A request body is one metric or an array of metrics.
 | `dimensions` | no | `{}` | A JSON object, at most 16 keys. Every value is stored as a string. |
 | `timestamp` | no | arrival time | RFC 3339. |
 
-The handler's SQL keeps a row that meets every rule and drops the rest. A
-dropped row is counted in a Prometheus counter and the request still answers
-200, because the source acknowledges before the handler runs.
+The handler's SQL keeps a row that meets every rule and drops the rest. The
+request still answers 200, because the source acknowledges before the handler
+runs: a body that is not JSON, a bare array, and a metric without a name all
+answer 200 and store nothing. The README says so beside the first request,
+and says to read `series` to confirm a metric landed. Counting dropped rows
+needs a counter the handler SQL cannot reach, and is a follow-up.
 
 `dimensions_key` is the canonical form of `dimensions`: keys sorted, every
 value a string, rendered as compact JSON. The handler builds it in DuckDB:
@@ -307,6 +328,14 @@ Probed against an attached Postgres:
   error. Under `TRY_CAST` it is null. The plan decides between answering 400
   and answering as if no filter was sent; it must not be a 500.
 
+serve has no required param and no JSON param type. A request without `name`
+binds null, matches nothing, and answers an empty result. A `dimensions` that
+is not JSON is null under `TRY_CAST`, contains nothing, and also answers
+empty: a malformed filter must not widen to every series. Each grain's SQL
+writes that as `CASE WHEN $dimensions IS NULL THEN '{}'::JSON ELSE
+TRY_CAST($dimensions AS JSON) END`, not the `coalesce` shown above for
+brevity.
+
 A name with many series meets serve's row limit, and the response says
 `truncated`. `metric_total` is the answer for such a name: one row per
 bucket, whatever the series count.
@@ -420,10 +449,11 @@ own use says so. The collector leaves its own telemetry on: its own
 |---|---|---|---|
 | 1 | Webhook `addr` | webhook-addr | 3 |
 | 2 | Rollup `numeric: double` and `last` | rollup-double-and-last | 3 |
-| | Release a tag with 1 and 2 | | 3 |
+| 2b | StructuredBatch keeps an object's escapes | structured-raw-json | 3 |
+| | Release a tag with 1, 2 and 2b | | 3 |
 | 3 | The template, without telemetry | this spec | 4, 5 |
 | 4 | Deploy the collector from 3's branch | this spec | 5 |
 | 5 | The telemetry client | this spec | |
 
-1 and 2 are independent. 3 and 5 are one PR's worth of files but two plans:
+1, 2 and 2b are independent. 3 and 5 are one PR's worth of files but two plans:
 5 cannot be tested against a real collector until 4 exists.
