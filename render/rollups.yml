@@ -1,0 +1,49 @@
+# The rollups Postgres keeps from the pipeline's minute table.
+#
+#   make rollups    regenerates migrations/0003_rollups.sql
+#
+# CI runs `sqlflow rollup check`, which fails when the migration differs from
+# what this file generates.
+#
+# There is no serve block. sqlflow rollup generates a dataset of at most one
+# dimension, folded. A series here is three columns that cannot fold, so
+# serve.yml's metric and metric_total grains are written by hand.
+rollups:
+  - name: metrics
+    source:
+      table: metrics_1m
+      time_column: bucket
+      grain: 1m
+      dimensions: [name, type, dimensions_key]
+
+    # Each grain a few times the one below it, so a re-merge reads few rows.
+    grains:
+      5m: {from: 1m}
+      15m: {from: 5m}
+      1h: {from: 15m}
+      6h: {from: 1h}
+      1d: {from: 6h}
+
+    dimension_sets:
+      - name: metrics
+        dimensions: [name, type, dimensions_key]
+        measures:
+          # numeric: double keeps the fraction. A sum is stored as a bigint by
+          # default, and Postgres rounds a fraction cast to one: a gauge
+          # reading of 0.73 would be stored as 1, and one of 0.25 as 0.
+          # value_count needs no double: a count of samples is a whole number.
+          value_sum: {type: sum, column: value_sum, numeric: double}
+          value_count: {type: sum, column: value_count}
+          value_min: {type: min, column: value_min}
+          value_max: {type: max, column: value_max}
+          # A gauge's headline value: queue depth now, not its sum.
+          value_last: {type: last, column: value_last}
+      # A name across every set of dimensions, for a name with a series per
+      # user. No last: two series share a bucket here, and neither is later.
+      - name: metrics_total
+        dimensions: [name, type]
+        measures:
+          value_sum: {type: sum, column: value_sum, numeric: double}
+          value_count: {type: sum, column: value_count}
+          value_min: {type: min, column: value_min}
+          value_max: {type: max, column: value_max}
