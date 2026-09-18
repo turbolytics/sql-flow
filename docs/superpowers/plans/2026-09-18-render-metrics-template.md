@@ -24,6 +24,8 @@ This plan covers build-order rows 3 and 4 of the spec: the template without tele
 - The pipeline, the API and every rollup table were verified on 2026-09-18 against a binary built from #334 with #332 and #333 merged: four minutes of signed metrics, every rollup table equal to an independent recomputation from `metrics_1m`, the day equal to sums worked out by hand, `last` following event time and not arrival, a republished minute replacing itself at every grain, and both datasets at all six grains. That run used `psql` and native binaries, not the image or compose, which Task 4 is the first to run.
 - Every file below was written and checked before this plan was: the pipeline, the series trigger and the `metric` dataset ran end to end against `turbolytics/sql-flow:v2026.09.17.3` and Postgres 18 on 2026-09-18, without `addr` and the rollup tables, which need `SQLFLOW_TAG`; `serve.yml` passed `sqlflow validate`; `render.yaml` passed Render's published schema. Type them as written. If one fails, the difference is in the environment or the release, so find it before editing the file.
 - Prose follows `CLAUDE.md`. Comments explain why. Commit messages name the defect, the fix, and the evidence.
+- The deploy asks for two values, the HMAC secret and the client id, both `sync: false`. The first deploy to Render on 2026-09-18 showed why the id cannot be `generateValue`: Render minted one with `+`, `/` and `=`, and pasted into a URL it answered 401. It also showed a 1d grain holding an empty answer for ten minutes after the first event landed, so every grain holds for 30 seconds.
+- Settled by that deploy: a blank secret fails the ingest service with status 2 and the named message; Render finds `render.yaml` at the root from a branch URL; the image builds with `dockerContext: ./render`; the API came up while the database was still being created; and Render marks the ingest service live with no health route on its port.
 - Branch from `main`: `feat/render-metrics-template`.
 
 ## File Structure
@@ -423,14 +425,20 @@ Create `render/serve.yml`:
 #   sqlflow serve -c serve.yml
 #
 # SQLFLOW_POSTGRES_URI     required
-# SQLFLOW_SERVE_CLIENT_ID  required. An identifier, not a secret: it names the
-#                          caller in the log. Render generates it.
+# SQLFLOW_SERVE_CLIENT_ID  required. Sent as ?client_id= on every request. The
+#                          deploy asks for it. bin/serve.sh refuses one that
+#                          would need encoding in a URL.
 # SQLFLOW_SERVE_PORT       default 8080
 #
 # The metric and metric_total grains are written by hand. sqlflow rollup
 # generates a dataset of at most one dimension, folded, and a series here is
 # three columns that cannot fold. Every grain of a dataset is the same
 # statement over another table. CI queries each one.
+#
+# Every grain holds an answer for the same 30 seconds. A coarse grain changes
+# slowly and could be held for minutes, but the first thing a new deploy does
+# is send one metric and ask for it, and an empty answer held for ten minutes
+# reads as a pipeline that does not work.
 commands:
   - name: pin the session timezone
     sql: |
@@ -539,8 +547,6 @@ serve:
             ORDER BY m.bucket, m.type, m.dimensions_key
         1h:
           bucket: 1h
-          cache:
-            ttl_seconds: 120
           max_range: 14d
           sql: |
             SELECT m.bucket, m.type, s.dimensions,
@@ -555,8 +561,6 @@ serve:
             ORDER BY m.bucket, m.type, m.dimensions_key
         6h:
           bucket: 6h
-          cache:
-            ttl_seconds: 300
           max_range: 90d
           sql: |
             SELECT m.bucket, m.type, s.dimensions,
@@ -571,8 +575,6 @@ serve:
             ORDER BY m.bucket, m.type, m.dimensions_key
         1d:
           bucket: 1d
-          cache:
-            ttl_seconds: 600
           max_range: 365d
           sql: |
             SELECT m.bucket, m.type, s.dimensions,
@@ -633,8 +635,6 @@ serve:
             ORDER BY bucket, type
         1h:
           bucket: 1h
-          cache:
-            ttl_seconds: 120
           max_range: 14d
           sql: |
             SELECT bucket, type, value_sum, value_count, value_min, value_max
@@ -643,8 +643,6 @@ serve:
             ORDER BY bucket, type
         6h:
           bucket: 6h
-          cache:
-            ttl_seconds: 300
           max_range: 90d
           sql: |
             SELECT bucket, type, value_sum, value_count, value_min, value_max
@@ -653,8 +651,6 @@ serve:
             ORDER BY bucket, type
         1d:
           bucket: 1d
-          cache:
-            ttl_seconds: 600
           max_range: 365d
           sql: |
             SELECT bucket, type, value_sum, value_count, value_min, value_max
@@ -676,12 +672,25 @@ Create `render/bin/serve.sh`, mode 755:
 # The API service's entrypoint.
 set -euo pipefail
 
-for var in SQLFLOW_POSTGRES_URI SQLFLOW_SERVE_CLIENT_ID; do
-  if [ -z "${!var:-}" ]; then
-    echo "$var is not set" >&2
+if [ -z "${SQLFLOW_POSTGRES_URI:-}" ]; then
+  echo "SQLFLOW_POSTGRES_URI is not set" >&2
+  exit 2
+fi
+
+# The client id is the only thing between a reader and this database's
+# metrics, so there is no default. It travels in a URL as ?client_id=, where
+# '+' reads as a space and '/' and '=' need encoding: an id with any of them
+# answers 401 to a caller who pasted it as it is.
+if [ -z "${SQLFLOW_SERVE_CLIENT_ID:-}" ]; then
+  echo "SQLFLOW_SERVE_CLIENT_ID is not set. Set it to a long random string, such as the output of: openssl rand -hex 16" >&2
+  exit 2
+fi
+case "$SQLFLOW_SERVE_CLIENT_ID" in
+  *[!A-Za-z0-9._~-]*)
+    echo "SQLFLOW_SERVE_CLIENT_ID may hold only letters, digits, '.', '_', '~' and '-', so it can be pasted into a URL. Try: openssl rand -hex 16" >&2
     exit 2
-  fi
-done
+    ;;
+esac
 
 # Both services migrate. Whichever starts first applies the schema, and the
 # advisory lock in migrate.sh makes the other skip. Without it the API would
@@ -801,6 +810,14 @@ for env in "SQLFLOW_WEBHOOK_HMAC_SECRET=" "SQLFLOW_WEBHOOK_AUTH=open" "SQLFLOW_M
   echo "ok   $env exits 2"
 done
 
+echo "== the API refuses a blank client id, and one a URL would mangle"
+for env in "SQLFLOW_SERVE_CLIENT_ID=" "SQLFLOW_SERVE_CLIENT_ID=aA+SZt88/x="; do
+  code=0
+  docker compose run --rm -T --no-deps -e "$env" api >/dev/null 2>&1 || code=$?
+  [ "$code" = 2 ] || fail "api with $env exited $code, want 2"
+  echo "ok   $env exits 2"
+done
+
 echo "== signed requests land"
 docker compose up -d --wait postgres
 docker compose up -d ingest api
@@ -883,6 +900,14 @@ expect "a pinned 1d grain with the default hour is an empty range, not an error"
   '(.range.since == .range.until) and (.rows | type) == "array" and (.rows | length) == 0' "$narrow"
 auto="$(get metric name=checkout)"
 expect "without a grain the API picks the finest that covers the range" '.grain == "1m" and (.rows | length) == 3' "$auto"
+
+# What a reader does with the id they chose: paste it into a URL as it is.
+pasted="$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/datasets/series?client_id=local-dev")"
+[ "$pasted" = 200 ] || fail "a client id pasted into the URL answered $pasted"
+echo "ok   the client id works pasted into a URL, unencoded"
+wrong="$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/datasets/series?client_id=not-the-id")"
+[ "$wrong" = 401 ] || fail "a wrong client id answered $wrong, want 401"
+echo "ok   a wrong client id is refused"
 
 noname="$(get metric)"
 expect "no name answers empty" '(.rows | type) == "array" and (.rows | length) == 0' "$noname"
@@ -1268,7 +1293,7 @@ Expected: `pipeline.yml: valid`, after a line saying the unused-variable check w
 - [ ] **Step 9: Run the test to verify it passes**
 
 Run: `make -C render test`
-Expected: about sixty `ok` lines, then `PASS`. It takes about a minute.
+Expected: 63 `ok` lines, then `PASS`. It takes about a minute.
 
 If `a dimension value with a quote in it survives` fails, `SQLFLOW_TAG` lacks the `StructuredBatch` escape fix. If a grain other than `1m` fails with a missing table, it lacks the rollup change or `0003_rollups.sql` was not regenerated with it.
 
@@ -1333,10 +1358,15 @@ Create `render.yaml` at the repository root. It has no `healthCheckPath` on the 
 # This file is at the repository root because the button reads it from there.
 # Everything it deploys is under render/.
 #
-# The deploy asks for one value:
-#   SQLFLOW_WEBHOOK_HMAC_SECRET  any long random string. A blank one fails the
-#                                deploy: the pipeline will not start unsigned
-#                                unless SQLFLOW_WEBHOOK_AUTH is set to none.
+# The deploy asks for two values. Both are yours to choose, so you have them
+# when the deploy finishes. `openssl rand -hex 32` and `openssl rand -hex 16`
+# make good ones.
+#   SQLFLOW_WEBHOOK_HMAC_SECRET  signs what you send. A blank one fails the
+#                                ingest service: the pipeline will not start
+#                                unsigned unless SQLFLOW_WEBHOOK_AUTH is none.
+#   SQLFLOW_SERVE_CLIENT_ID      reads what you sent, as ?client_id=. A blank
+#                                one fails the API service. Letters, digits,
+#                                '.', '_', '~' and '-' only.
 databases:
   - name: sqlflow-metrics-db
     plan: 0.1c-256mb
@@ -1399,10 +1429,11 @@ services:
         fromDatabase:
           name: sqlflow-metrics-db
           property: connectionString
-      # An identifier sent as ?client_id=, not a secret. Render mints it once.
-      # Copy it from the dashboard.
+      # Prompted for during the deploy, not generated. Render's generated
+      # values hold '+', '/' and '=', and one pasted into a URL as it is
+      # answers 401: '+' reads as a space.
       - key: SQLFLOW_SERVE_CLIENT_ID
-        generateValue: true
+        sync: false
       - key: SQLFLOW_SERVE_PORT
         value: "8080"
       - key: PORT
@@ -1503,19 +1534,30 @@ services, in `virginia`. Render shows the price before you confirm.
 
 ## Deploy
 
-Render asks for one value:
+Make two values before you click, and keep them. You choose both, so you have
+them when the deploy finishes:
 
-| Prompt | Type |
+```sh
+openssl rand -hex 32   # SQLFLOW_WEBHOOK_HMAC_SECRET
+openssl rand -hex 16   # SQLFLOW_SERVE_CLIENT_ID
+```
+
+Render asks for both:
+
+| Prompt | What it does |
 |---|---|
-| `SQLFLOW_WEBHOOK_HMAC_SECRET` | Any long random string, such as the output of `openssl rand -hex 32`. Keep it: you sign requests with it. |
+| `SQLFLOW_WEBHOOK_HMAC_SECRET` | Signs what you send. Any long random string. |
+| `SQLFLOW_SERVE_CLIENT_ID` | Reads what you sent, as `?client_id=`. Letters, digits, `.`, `_`, `~` and `-` only, so it can be pasted into a URL. |
 
-A blank secret fails the deploy, on purpose. The pipeline writes to your
-database, and it will not start unsigned unless you set
-`SQLFLOW_WEBHOOK_AUTH=none` yourself.
+A blank value fails its service, on purpose. The pipeline writes to your
+database and will not start unsigned unless you set
+`SQLFLOW_WEBHOOK_AUTH=none` yourself. The client id is the only thing between
+a reader and your metrics, so it has no default. It travels in the URL: treat
+it as you would a link to a private document, and change it on the API
+service if it leaks.
 
-When the deploy finishes, copy two things from the Render dashboard: the URL
-of `sqlflow-metrics-ingest` and of `sqlflow-metrics-api`, and the value of
-`SQLFLOW_SERVE_CLIENT_ID` on the API service.
+When the deploy finishes, copy the URLs of `sqlflow-metrics-ingest` and
+`sqlflow-metrics-api` from the Render dashboard.
 
 ## Send a metric
 
@@ -1544,7 +1586,7 @@ send it. Ask which series exist:
 
 ```sh
 export API=https://sqlflow-metrics-api-xxxx.onrender.com
-export CLIENT_ID=<SQLFLOW_SERVE_CLIENT_ID>
+export CLIENT_ID=<the client id you typed>
 curl -sG "$API/v1/datasets/series" --data-urlencode "client_id=$CLIENT_ID"
 ```
 
@@ -1611,7 +1653,10 @@ declares them, `migrations/0003_rollups.sql` is generated from it with
 ## The API
 
 Every request except `/healthz` and `/metrics` sends `?client_id=`. It names
-the caller in the log. It is an identifier, not a secret.
+the caller in the log, and a request without it answers 401.
+
+An answer is held for 30 seconds. Ask twice within that and the second answer
+is the first, with `"cache": "hit"` and its age in `age_ms`.
 
 | Route | Returns |
 |---|---|
