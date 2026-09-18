@@ -202,6 +202,12 @@ features:
     description: Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted.
     requires: [unit, integration]
 
+  # The template is YAML, SQL and shell, so what it promises under concurrency
+  # is tested from Go against its migrations, in internal/rendertemplate.
+  - id: template.render
+    description: The Deploy to Render template's schema keeps the minute table and every rollup exact when several pipeline processes write to one database.
+    requires: [integration]
+
   # Release only. The defect this catches -- build args that never reached the
   # -ldflags symbol path, so the binary reports "dev" -- exists only in a built
   # image, and no unit test can see it.

@@ -123,6 +123,36 @@ Every minute of every series stores five values: `value_sum`, `value_count`,
 stored. It says which value to read: `value_sum` for a count, `value_last`
 for a gauge. An average is `value_sum / value_count`, at any grain.
 
+### More than one pipeline instance
+
+You can run several instances of `sqlflow-metrics-ingest`, and Render runs two
+for a moment during every deploy, the old beside the new. Each instance holds
+its own minute in memory, so two of them can each hold part of the same
+minute of the same series.
+
+The pipeline therefore writes to `metrics_1m_writers`, keyed on the series
+and on a `writer` id that `bin/entrypoint.sh` makes new on every start. An
+instance replaces only what it published itself. A trigger merges every
+writer's row into `metrics_1m` inside the same transaction: sums add, min and
+max nest, and `value_last` is the reading with the latest event time across
+instances. Everything else reads `metrics_1m` and never sees a writer.
+
+Keyed on the series alone, the second instance to publish replaced the first:
+two instances sent 7 and 5 of one minute stored 7. `make test` runs two
+instances and sends each a share of one minute, and
+`internal/rendertemplate` runs four concurrent writers through forty rounds
+and holds every grain to what they published.
+
+Never set `SQLFLOW_WRITER_ID` yourself. Two instances that share one replace
+each other's minutes, which is the defect it exists to prevent.
+
+`metrics_1m_writers` holds one row per instance per minute per series, so with
+one instance it is as large as `metrics_1m`. Nothing reads a row of it once
+its minute is merged and no instance can publish that minute again, a few
+minutes later. Deleting older rows is safe and changes no other table.
+
+### Coarser grains
+
 Postgres keeps the same five values at 5m, 15m, 1h, 6h and 1d, by triggers
 that run inside the pipeline's own write. [`rollups.yml`](rollups.yml)
 declares them, `migrations/0003_rollups.sql` is generated from it with
@@ -192,8 +222,8 @@ Set on the `sqlflow-metrics-ingest` service.
 ## Run it locally
 
 ```sh
-make up        # Postgres, the pipeline on :10000, the API on :8080
-make test      # posts metrics and reads them back at every grain
+make up        # Postgres, two pipeline instances on :10000 and :10001, the API on :8080
+make test      # two pipeline instances: posts metrics, reads them back at every grain
 make validate  # the configs, the generated migration, and render.yaml
 ```
 

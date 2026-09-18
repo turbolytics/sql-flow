@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 INGEST="http://127.0.0.1:${INGEST_HOST_PORT:-10000}"
+INGEST2="http://127.0.0.1:${INGEST2_HOST_PORT:-10001}"
 API="http://127.0.0.1:${API_HOST_PORT:-8080}"
 SECRET=local-secret
 GRAINS="1m 5m 15m 1h 6h 1d"
@@ -13,10 +14,10 @@ fail() { echo "FAIL: $*" >&2; docker compose logs --tail 40 ingest api >&2 || tr
 cleanup() { docker compose down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-# status <expected> <signed|unsigned> <body>
+# status <expected> <signed|unsigned> <body> [instance URL]
 status() {
-  local want="$1" mode="$2" body="$3" got sig
-  local args=(-s -o /dev/null -w '%{http_code}' -X POST "$INGEST/events" --data-binary "$body")
+  local want="$1" mode="$2" body="$3" url="${4:-$INGEST}" got sig
+  local args=(-s -o /dev/null -w '%{http_code}' -X POST "$url/events" --data-binary "$body")
   if [ "$mode" = signed ]; then
     sig="$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/^.* //')"
     args+=(-H "X-Signature-256: sha256=$sig")
@@ -68,8 +69,9 @@ done
 
 echo "== signed requests land"
 docker compose up -d --wait postgres
-docker compose up -d ingest api
+docker compose up -d ingest ingest2 api
 wait_for ingest "$INGEST/events"
+wait_for ingest2 "$INGEST2/events"
 wait_for api "$API/healthz"
 
 # One timestamp for every metric. Without it the posts could straddle a
@@ -83,6 +85,17 @@ status 200 signed '{"name":"checkout","type":"count","value":5,"timestamp":"'"$T
 status 200 signed '{"name":"checkout","type":"count","timestamp":"'"$TS"'","dimensions":{"region":"eu","plan":"pro"}}'
 status 200 signed '{"name":"quote","type":"count","timestamp":"'"$TS"'","dimensions":{"q":"say \"hi\""}}'
 status 200 signed '{"metrics":[{"name":"cpu","type":"gauge","value":0.25,"timestamp":"'"$TS"'"},{"name":"cpu","type":"gauge","value":0.5,"timestamp":"'"$TS"'"}]}'
+# One minute of one series, split across two pipeline instances. Each holds
+# its own window and publishes its own part. Keyed on the series alone, the
+# second to publish replaced the first, and 7 and 5 were stored as one of
+# them. The gauge's later reading goes to the second instance, so value_last
+# must be chosen by event time across writers, not by who published last.
+MIN="${TS%:*}"
+status 200 signed '{"name":"split","type":"count","value":7,"timestamp":"'"$TS"'"}' "$INGEST"
+status 200 signed '{"name":"split","type":"count","value":5,"timestamp":"'"$TS"'"}' "$INGEST2"
+status 200 signed '{"name":"split.gauge","type":"gauge","value":9,"timestamp":"'"$MIN"':20Z"}' "$INGEST2"
+status 200 signed '{"name":"split.gauge","type":"gauge","value":1,"timestamp":"'"$MIN"':10Z"}' "$INGEST"
+
 # Each is answered 200 and stores nothing.
 status 200 signed '{"name":"bad-type","type":"histogram"}'
 status 200 signed '{"name":"bad-value","type":"count","value":"abc"}'
@@ -95,13 +108,21 @@ status 200 signed 'not json'
 echo "== waiting for the minute to close"
 for i in $(seq 1 60); do
   n="$(get series | jq '.rows | length')"
-  [ "$n" -ge 5 ] && break
+  [ "$n" -ge 7 ] && break
   sleep 1
 done
+# Both instances must have published before the split minute is read.
+for i in $(seq 1 60); do
+  w="$(docker compose exec -T postgres psql -U metrics -d metrics -Atc "SELECT count(DISTINCT writer) FROM metrics_1m_writers WHERE name = 'split'")"
+  [ "$w" = 2 ] && break
+  sleep 1
+done
+[ "$w" = 2 ] || fail "the split minute has $w writers, want 2: both instances must publish it"
+echo "ok   two writers published the split minute"
 
 series="$(get series)"
-expect "series holds the five that were valid, and no bad one" \
-  '[.rows[].name] | sort == ["checkout","checkout","checkout","cpu","quote"]' "$series"
+expect "series holds the seven that were valid, and no bad one" \
+  '[.rows[].name] | sort == ["checkout","checkout","checkout","cpu","quote","split","split.gauge"]' "$series"
 expect "a dimension value with a quote in it survives" \
   '[.rows[] | select(.name == "quote") | .dimensions | fromjson | .q] == ["say \"hi\""]' "$series"
 
@@ -138,6 +159,13 @@ for g in $GRAINS; do
   expect "$g: a gauge keeps its fraction" \
     '[.rows[] | [.value_sum, .value_count, .value_min, .value_max]] == [[0.75,2,0.25,0.5]]' "$cpu"
 
+  split="$(get metric name=split grain="$g" "$since")"
+  expect "$g: a minute split across two instances is their sum, not the last to publish" \
+    '[.rows[] | [.value_sum, .value_count, .value_min, .value_max]] == [[12,2,5,7]]' "$split"
+  splitg="$(get metric name=split.gauge grain="$g" "$since")"
+  expect "$g: across two instances value_last is the later reading" \
+    '[.rows[] | [.value_last, .value_min, .value_max]] == [[9,1,9]]' "$splitg"
+
   total="$(get metric_total name=checkout grain="$g" "$since")"
   expect "$g: the total sums every series" \
     '[.rows[] | [.value_sum, .value_count, .value_min, .value_max]] == [[9,4,1,5]]' "$total"
@@ -168,9 +196,10 @@ echo "== a restart applies no migration twice"
 docker compose restart ingest >/dev/null
 wait_for ingest "$INGEST/events"
 applied="$(docker compose exec -T postgres psql -U metrics -d metrics -Atc 'SELECT count(*) FROM schema_migrations')"
-[ "$applied" = 3 ] || fail "schema_migrations holds $applied rows after a restart, want 3"
+want="$(ls migrations/*.sql | wc -l | tr -d ' ')"
+[ "$applied" = "$want" ] || fail "schema_migrations holds $applied rows after a restart, want $want, one per file"
 [ -n "$(docker compose ps --status running -q ingest)" ] || fail "ingest is not running after a restart"
-echo "ok   three migrations recorded, and ingest came back"
+echo "ok   $want migrations recorded, one per file, and ingest came back"
 
 echo "== unsigned mode, and the name prefix"
 docker compose stop ingest >/dev/null

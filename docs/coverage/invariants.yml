@@ -538,6 +538,36 @@ invariants:
     requires: []
     enforced: true
 
+  # --- Resilience: more than one process writing one destination -------------
+  # The engine gives each pipeline process its own window, and a windowed
+  # pipeline publishes a closed minute by replacing the row for its key. That
+  # is right for one process and wrong for two: instances behind a load
+  # balancer each hold part of a minute, and keyed on the series alone the
+  # second to publish replaces the first. Two real instances, sent 7 and 5 of
+  # one minute, stored 7 (#331). Two instances also run during every deploy,
+  # the old beside the new.
+  #
+  # Nothing in the engine prevents it, so the claim is about what a destination
+  # ends up holding, and it is proven where a destination's schema makes it
+  # true: the Deploy to Render template keys its write on the process and has
+  # Postgres merge the processes. A pipeline configuration with no such schema
+  # has no evidence here, and that empty cell is accurate.
+  - id: pipeline.writers.merge_exactly
+    family: resilience
+    class: safety
+    applies_to: pipeline
+    claim: >
+      When several pipeline processes publish the same window of the same key
+      to one destination, the destination holds the merge of what every
+      process last published: no process's rows replace another's, and a
+      process that republishes replaces only its own. It holds at every grain
+      derived from that window, under concurrent publishes, without deadlock.
+      Proven in internal/rendertemplate against the Deploy to Render
+      template's migrations and the Postgres sink, not by the conformance
+      harness: the property belongs to the destination's schema.
+    verified_by: harness
+    requires: []
+
   # --- Cache: serve's response cache ----------------------------------------
   # Serve is never told that its backend changed, so the cache invalidates
   # nothing and bounds everything. These say what the bounds are. Each is

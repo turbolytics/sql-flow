@@ -8,6 +8,10 @@
 # SQLFLOW_WEBHOOK_HMAC_SECRET     required under hmac
 # SQLFLOW_WEBHOOK_PORT            default 8001
 # SQLFLOW_WEBHOOK_MAX_BODY_BYTES  default 26214400, 25 MiB
+# SQLFLOW_WRITER_ID               required. bin/entrypoint.sh makes one per
+#                                 process start. Never set it by hand: two
+#                                 processes that share one replace each
+#                                 other's minutes.
 # SQLFLOW_METRIC_NAME_PREFIX      default empty. When set, a metric whose name
 #                                 does not start with it is dropped.
 #
@@ -60,6 +64,7 @@ tables:
         # appended: batches of one minute can arrive out of order.
         emit_sql: |
           SELECT bucket, name, type, dimensions_key,
+                 '{{ SQLFLOW_WRITER_ID }}' AS writer,
                  sum(value_sum) AS value_sum,
                  sum(value_count)::BIGINT AS value_count,
                  min(value_min) AS value_min,
@@ -71,14 +76,20 @@ tables:
 
         sink:
           # upsert on the primary key makes at-least-once delivery survivable:
-          # a minute written twice replaces itself. updated_at is not in the
-          # batch, so a new minute takes the column's DEFAULT now().
+          # a minute this process writes twice replaces itself. updated_at is
+          # not in the batch, so a new row takes the column's DEFAULT now().
+          #
+          # The key carries the writer, and the table is metrics_1m_writers,
+          # not metrics_1m. Another process holds its own part of the same
+          # minute, and keyed on the series alone the second to publish would
+          # replace the first. Postgres merges the writers into metrics_1m.
+          # See migrations/0004_writers.sql.
           type: postgres
           postgres:
             dsn: "{{ SQLFLOW_POSTGRES_URI }}"
-            table: metrics_1m
+            table: metrics_1m_writers
             mode: upsert
-            key: [bucket, name, type, dimensions_key]
+            key: [bucket, name, type, dimensions_key, writer]
 
 pipeline:
   name: render-metrics

@@ -9,7 +9,7 @@ SQLFLOW_IMAGE ?= turbolytics/sql-flow:v2026.09.18
 validate:
 	./bin/validate-render.py ../render.yaml
 	docker run --rm -v $(CURDIR):/w -w /w \
-		-e SQLFLOW_POSTGRES_URI=x -e SQLFLOW_WEBHOOK_HMAC_SECRET=x \
+		-e SQLFLOW_POSTGRES_URI=x -e SQLFLOW_WEBHOOK_HMAC_SECRET=x -e SQLFLOW_WRITER_ID=x \
 		$(SQLFLOW_IMAGE) validate pipeline.yml
 	docker run --rm -v $(CURDIR):/w -w /w \
 		-e SQLFLOW_POSTGRES_URI=x -e SQLFLOW_SERVE_CLIENT_ID=x \

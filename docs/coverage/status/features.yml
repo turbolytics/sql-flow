@@ -37,6 +37,7 @@ source.websocket: {unit: covered, integration: not_required, release: covered}
 state.corruption: {unit: covered, integration: not_required, release: covered}
 state.durability: {unit: covered, integration: not_required, release: covered}
 state.offsets: {unit: covered, integration: not_required, release: covered}
+template.render: {unit: skipped, integration: covered, release: not_required}
 tooling.conformance: {unit: covered, integration: not_required, release: not_required}
 tooling.coverage: {unit: covered, integration: not_required, release: not_required}
 validate.schema: {unit: covered, integration: not_required, release: not_required}

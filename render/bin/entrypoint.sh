@@ -37,6 +37,19 @@ case "${SQLFLOW_METRIC_NAME_PREFIX:-}" in
     ;;
 esac
 
+# Names this process in every row it publishes, so that another instance
+# publishing the same minute adds to it rather than replacing it. Made here
+# and never read from the environment: a value someone set once would be
+# shared by every instance, which is the defect it exists to prevent. New on
+# every start, because a restarted process has lost its window and must add
+# to what the last one published, not replace it.
+SQLFLOW_WRITER_ID="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+if [ "${#SQLFLOW_WRITER_ID}" != 16 ]; then
+  echo "could not make a writer id from /dev/urandom" >&2
+  exit 2
+fi
+export SQLFLOW_WRITER_ID
+
 /app/bin/migrate.sh
 
 # exec keeps sqlflow as PID 1, so the platform's SIGTERM reaches it and the

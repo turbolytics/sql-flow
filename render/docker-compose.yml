@@ -2,6 +2,11 @@
 #
 # The window and flush settings close a minute in seconds, so a test does not
 # wait two minutes for its metric. A deploy leaves them at their defaults.
+#
+# Two pipeline instances, on purpose. Each holds its own window, and the test
+# sends each a share of one minute: what Postgres holds must be the sum. Two
+# instances is also what every deploy runs for a moment, the old beside the
+# new.
 services:
   postgres:
     image: postgres:18
@@ -17,7 +22,7 @@ services:
       timeout: 3s
       retries: 15
 
-  ingest:
+  ingest: &ingest
     build:
       context: .
       args:
@@ -38,6 +43,11 @@ services:
       SQLFLOW_LOG_LEVEL: INFO
     ports:
       - "127.0.0.1:${INGEST_HOST_PORT:-10000}:10000"
+
+  ingest2:
+    <<: *ingest
+    ports:
+      - "127.0.0.1:${INGEST2_HOST_PORT:-10001}:10000"
 
   api:
     build:
