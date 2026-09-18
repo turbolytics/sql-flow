@@ -225,7 +225,9 @@ func TestSourceWebhook_CloseReleasesBlockedRequest(t *testing.T) {
 	}
 }
 
-func TestSourceWebhook_RoutesOnlyPostEvents(t *testing.T) {
+// Deliveries are POST /events and nothing else. /healthz is the one other
+// route, and has its own tests.
+func TestSourceWebhook_RefusesOtherMethodsAndPaths(t *testing.T) {
 	coverage.Covers(t, "source.webhook")
 	s, err := NewSource()
 	assert.NoError(t, err)
@@ -505,4 +507,87 @@ func TestSourceWebhook_DefaultsMaxConnectionsTo64(t *testing.T) {
 	assert.NoError(t, err)
 	defer s.Close()
 	assert.Equal(t, 64, s.MaxConnections())
+}
+
+// A platform's health check and an uptime monitor have no secret, and must not
+// need one: the route reads no body and admits nothing to the pipeline.
+func TestSourceWebhook_HealthzAnswersWithoutASignature(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithHMAC(&HMAC{Header: "X-HMAC-Signature", SigKey: "sha256", Secret: "test_secret"}))
+	assert.NoError(t, err)
+	defer s.Close()
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/healthz")
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	assert.Equal(t, `{"status":"ok"}`, readBody(t, resp))
+
+	// Monitors send HEAD, and the status line is the whole answer.
+	resp, err = http.Head(srv.URL + "/healthz")
+	assert.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp = post(t, srv.URL+"/healthz", []byte("{}"), "", "")
+	resp.Body.Close()
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+
+	// The route opens nothing else: an unsigned delivery is still refused.
+	resp = post(t, srv.URL+"/events", []byte("{}"), "", "")
+	resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// Healthy means deliveries are being admitted. A source that is closing
+// answers 503 to a delivery, so it says the same to the check, and the
+// platform stops routing to an instance that would refuse what it was sent.
+func TestSourceWebhook_HealthzReportsAClosingSource(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource()
+	assert.NoError(t, err)
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	assert.NoError(t, s.Close())
+
+	resp, err := http.Get(srv.URL + "/healthz")
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, `{"detail":"Source is closed"}`, readBody(t, resp))
+}
+
+// A queue that is full is backpressure, not failure. The check must answer
+// while a delivery waits on the pipeline, or a platform restarts an instance
+// for being busy, at the moment it is holding a sender's event.
+func TestSourceWebhook_HealthzAnswersWhileADeliveryWaits(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource()
+	assert.NoError(t, err)
+
+	srv := httptest.NewServer(s.Handler())
+	// The source closes first, which releases the delivery left waiting.
+	// The server's Close waits for that delivery and would never return.
+	defer srv.Close()
+	defer s.Close()
+
+	resp := post(t, srv.URL+"/events", []byte("first"), "", "")
+	resp.Body.Close()
+	go func() {
+		if resp, err := http.Post(srv.URL+"/events", "application/json", strings.NewReader("second")); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	// Give the second delivery time to reach the full queue.
+	time.Sleep(100 * time.Millisecond)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err = client.Get(srv.URL + "/healthz")
+	assert.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }

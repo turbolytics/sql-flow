@@ -151,3 +151,33 @@ func TestSinkRetry_MetricsNoProviderRecordsNothing(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
+
+// webhook_requests_total is how an operator counts deliveries. A platform
+// checks health every few seconds, which would bury them under 200s that
+// delivered nothing.
+func TestSinkRetry_MetricsDoNotCountHealthChecks(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	reader := sdkmetric.NewManualReader()
+	s, err := NewSource(WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
+	assert.NoError(t, err)
+	defer s.Close()
+	drain(s)
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	for range 5 {
+		resp, err := http.Get(srv.URL + "/healthz")
+		assert.NoError(t, err)
+		resp.Body.Close()
+	}
+	resp := post(t, srv.URL+"/events", []byte(`{"a":1}`), "", "")
+	resp.Body.Close()
+
+	sum := collect(t, reader, "webhook_requests_total").Data.(metricdata.Sum[int64])
+	var total int64
+	for _, dp := range sum.DataPoints {
+		total += dp.Value
+	}
+	assert.Equal(t, int64(1), total)
+}

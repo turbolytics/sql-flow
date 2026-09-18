@@ -45,6 +45,12 @@
 - A Deploy to Render button. `render.yaml` and `render/` deploy a Postgres, a
   webhook pipeline that aggregates a generic metric by minute, and a
   `sqlflow serve` API over a six-grain rollup ladder. See `render/README.md`.
+- `GET /healthz` on the webhook source's address. It answers 200 while the
+  source admits deliveries and 503 once it is closing, needs no signature,
+  and is not counted in `webhook_requests_total`. A platform that routes one
+  port to a service checks health on that port, and the pipeline's `/healthz`
+  is on the metrics listener, so a webhook pipeline on Render had no health
+  check at all: it was marked live because its port was open.
 - `sqlflow rollup` measures: `numeric: double` on a `sum`, and a `last` type.
   Every sum was cast to `bigint`, so a fractional value was rounded to an
   integer at every grain. `last` keeps the value of the bucket's latest finer
