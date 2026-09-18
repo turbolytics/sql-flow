@@ -82,6 +82,9 @@ Made in the design conversation on 2026-09-18. Each one closes a fork.
 | Telemetry consent | On by default, opt out with one variable, prompted for at deploy, payload listed in the README. | Opt-in: counts too low to use. No opt-out: not acceptable for open-source infrastructure. |
 | Where telemetry code lives | Shell in `/render/bin`. The sqlflow binary sends nothing. | Telemetry in the engine. |
 | The collector | The public button, deployed in our workspace from the template's PR branch, with three variables set. | A private repository with its own code. One is needed only to keep saved queries. |
+| More than one pipeline process | The pipeline writes `metrics_1m_writers`, keyed on the series and a per-process `writer` id, and a trigger merges the writers into `metrics_1m`. Registered as the invariant `pipeline.writers.merge_exactly`. | Keying on the series alone. Two real instances sent 7 and 5 of one minute stored 7. Documenting "run one instance": Render runs two during every deploy, and the launch schema is the schema. |
+| The merge's lock | One advisory lock, taken before the transaction touches `metrics_1m`, `series` or a rollup. | A lock per minute. An upsert fires the trigger chain twice, for inserted and for updated rows, so a transaction held a rollup lock and wanted a `series` row while another held the row and wanted the lock. Four concurrent writers deadlocked within one round. |
+| The writer id | Made by `entrypoint.sh` on every start, never read from the environment. | A stable id. A restarted process has lost its window and must add to what the last one published. A configured id would be shared by every instance. |
 | Late rows | `late_rows: drop`. | `reemit`. The sink replaces a key rather than merging into it, and `sqlflow validate` refuses the pair. |
 
 ## Layout
@@ -93,7 +96,7 @@ render/
   pipeline.yml                webhook source, handler, window, postgres sink
   serve.yml                   commands, server, and the series and metric datasets, written by hand
   rollups.yml                 the ladder; no serve block
-  migrations/                 0001_metrics_1m.sql, 0002_series.sql, 0003_rollups.sql (generated), 0004_install.sql
+  migrations/                 0001_metrics_1m.sql, 0002_series.sql, 0003_rollups.sql (generated), 0004_writers.sql, 0005_install.sql
   bin/entrypoint.sh           checks, migrate, telemetry, exec sqlflow run
   bin/serve.sh                checks, exec sqlflow serve
   bin/migrate.sh              as the Bluesky demo's, including the wait for the database
@@ -246,6 +249,30 @@ The primary key is `(bucket, name, type, dimensions_key)`.
 The minute table has no `dimensions` column. `dimensions_key` is JSON text,
 so `series` derives `dimensions` as `dimensions_key::jsonb` and no `jsonb`
 passes through the sink.
+
+### Writers
+
+The pipeline does not write `metrics_1m`. It upserts `metrics_1m_writers`,
+which has the minute table's columns and a `writer`, with the primary key
+`(bucket, name, type, dimensions_key, writer)`. A process replaces only the
+rows it published, so a retry or a republish is still idempotent, and another
+process's part of the same minute is another row.
+
+A statement-level trigger re-merges each touched minute of each touched
+series from all of its writers' rows into `metrics_1m`, in the writer's
+transaction: sums add, `min` and `max` nest, and `value_last` is the value
+with the latest `last_at`, the writer breaking a tie. That write fires the
+`series` trigger and the rollup triggers, so nothing downstream knows a
+writer exists. The function refuses any isolation level but READ COMMITTED:
+its lock waits and then needs a new snapshot.
+
+`internal/rendertemplate` holds this against the migrations themselves: two
+controls that must fail, the lock removed and a shared writer id; and four
+writers publishing 36 overlapping keys through the Postgres sink for forty
+rounds, with every grain equal to what the writers remember, computed in Go.
+
+Deleting rows of `metrics_1m_writers` whose minutes can no longer be
+published changes no other table. The test asserts it.
 
 `series` holds one row per `(name, type, dimensions_key)` with `dimensions`,
 `first_bucket`, and `last_bucket`. A statement-level trigger on `metrics_1m`

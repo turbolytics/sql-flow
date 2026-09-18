@@ -12,6 +12,8 @@
 
 This plan covers build-order rows 3 and 4 of the spec: the template without telemetry, and its first deploy. The telemetry client is a later plan on the same branch. The branch merges to `main` after that plan lands, so the button on `main` never exists without its telemetry disclosure.
 
+> **After this plan was executed**, #335 gained work the tasks below do not describe. Read the spec's "Writers" section and commit d50f024: the pipeline writes `metrics_1m_writers` and a trigger merges processes into `metrics_1m` (`migrations/0004_writers.sql`), compose runs two pipeline instances, `make test` has 76 assertions, and `internal/rendertemplate` proves the invariant `pipeline.writers.merge_exactly`. The client id became a deploy prompt and every serve grain holds for 30 seconds in ec6a249.
+
 ## Global Constraints
 
 - **Precondition:** a published `turbolytics/sql-flow` tag that contains `source.webhook.addr`, rollup `numeric: double` and `last`, and the `StructuredBatch` escape fix. This plan calls it `SQLFLOW_TAG`. The tag is `v2026.09.18`, and the files below already carry it. It appears in `render/Dockerfile`, `render/Makefile` and `render/docker-compose.yml`, and the three must match.
