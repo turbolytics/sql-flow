@@ -445,6 +445,31 @@ hostname, no metric names, no counts, no Render identifiers. The README's
 "What this sends" section prints both payloads in full and the one variable
 that stops them. The entrypoint logs one line when it sends.
 
+Built in #335 at caf8033, and what building it settled:
+
+- **The hostname is `https://telemetry.turbolytics.io`.** Verified by hand
+  before the client existed: ten POSTs answered 200, a 5000-byte body 413, and
+  an `install.deployed` with `source: render` read back through the
+  collector's API.
+- **Sent means a 2xx.** The custom domain answered 404 while it propagated.
+  `curl --fail` is what keeps an install that started in such a window from
+  being recorded as sent and never counted.
+- **A lease, not a flag.** Each event has `_claimed_at` and `_sent_at`. A
+  process claims with one `UPDATE … RETURNING`, so two pipeline instances
+  starting together report one install. It gives the claim back when the send
+  fails, and a claim older than two minutes is up for grabs, so a process that
+  died between claiming and sending does not lose the event.
+- **`install.*` is not a first metric.** `install.first_request` asks whether
+  `metrics_1m` has a row whose name is not `install.*`. A database that is
+  itself a collector holds nothing else, and telemetry is not a deployer's
+  request.
+- **Polling backs off.** Every 30 seconds for an hour, then every five
+  minutes, so a deploy nobody sends a metric to does not query its database
+  twice a minute for as long as it lives.
+- **No test can reach the real collector.** Compose runs a local one, the same
+  template with signatures off, and points every pipeline at it. Checked
+  against the real collector's own data after a local run and after CI.
+
 `SQLFLOW_TELEMETRY=off` skips `telemetry.sh` entirely. The collector URL is a
 constant in `telemetry.sh`, overridable by `SQLFLOW_TELEMETRY_URL` for tests.
 
