@@ -8,6 +8,10 @@ INGEST="http://127.0.0.1:${INGEST_HOST_PORT:-10000}"
 INGEST2="http://127.0.0.1:${INGEST2_HOST_PORT:-10001}"
 API="http://127.0.0.1:${API_HOST_PORT:-8080}"
 SECRET=local-secret
+# The tag the image is built from, which an install reports as its version.
+# make test passes it. Must match the Dockerfile's default.
+: "${SQLFLOW_IMAGE:=turbolytics/sql-flow:v2026.09.18}"
+export SQLFLOW_IMAGE
 GRAINS="1m 5m 15m 1h 6h 1d"
 
 fail() { echo "FAIL: $*" >&2; docker compose logs --tail 40 ingest api >&2 || true; exit 1; }
@@ -82,10 +86,16 @@ done
 
 echo "== signed requests land"
 docker compose up -d --wait postgres
-docker compose up -d ingest ingest2 api
+docker compose up -d collector ingest ingest2 api
 wait_for ingest "$INGEST/events"
 wait_for ingest2 "$INGEST2/events"
 wait_for api "$API/healthz"
+
+# install.deployed went out when the pipelines started. install.first_request
+# goes out once the metrics below land, and under this stack's five-second idle
+# bound the collector may already have closed the minute the first was sent
+# in. Start in the next one, so the second is not dropped as late.
+sleep $(( 61 - 10#$(date -u +%S) ))
 
 # One timestamp for every metric. Without it the posts could straddle a
 # minute, and the 1m assertions below would see two buckets.
@@ -120,7 +130,7 @@ status 200 signed 'not json'
 
 echo "== waiting for the minute to close"
 for i in $(seq 1 60); do
-  n="$(get series | jq '.rows | length')"
+  n="$(get series | jq '[.rows[] | select(.name | startswith("install.") | not)] | length')"
   [ "$n" -ge 7 ] && break
   sleep 1
 done
@@ -135,7 +145,7 @@ echo "ok   two writers published the split minute"
 
 series="$(get series)"
 expect "series holds the seven that were valid, and no bad one" \
-  '[.rows[].name] | sort == ["checkout","checkout","checkout","cpu","quote","split","split.gauge"]' "$series"
+  '[.rows[].name | select(startswith("install.") | not)] | sort == ["checkout","checkout","checkout","cpu","quote","split","split.gauge"]' "$series"
 expect "a dimension value with a quote in it survives" \
   '[.rows[] | select(.name == "quote") | .dimensions | fromjson | .q] == ["say \"hi\""]' "$series"
 
@@ -201,6 +211,66 @@ echo "ok   a wrong client id is refused"
 noname="$(get metric)"
 expect "no name answers empty" '(.rows | type) == "array" and (.rows | length) == 0' "$noname"
 
+echo "== telemetry: two events, once each, to the local collector and nowhere else"
+psqlc() { docker compose exec -T postgres psql -U metrics -d metrics -X -Atc "$1"; }
+install_id="$(psqlc 'SELECT install_id FROM install')"
+for i in $(seq 1 60); do
+  n="$(get series | jq '[.rows[] | select(.name == "install.deployed" or .name == "install.first_request")] | length')"
+  [ "$n" -ge 2 ] && break
+  sleep 1
+done
+series="$(get series)"
+expect "one install.deployed and one install.first_request, from two pipeline instances" \
+  '[.rows[] | select(.name | startswith("install.")) | .name] | sort == ["install.deployed","install.first_request"]' "$series"
+expect "the event names this database and nothing about who deployed it" \
+  '[.rows[] | select(.name == "install.deployed") | .dimensions | fromjson] == [{"install_id":"'"$install_id"'","source":"render","template":"render-metrics","sqlflow_version":"'"${SQLFLOW_IMAGE##*:}"'"}]' "$series"
+for name in install.deployed install.first_request; do
+  expect "$name was sent once, though two instances started together" \
+    '[.rows[].value_sum] == [1]' "$(get metric_total name="$name")"
+done
+[ "$(psqlc 'SELECT deployed_sent_at IS NOT NULL AND first_request_sent_at IS NOT NULL FROM install')" = t ] \
+  || fail "install does not record both events as sent"
+echo "ok   both events are recorded as sent"
+
+docker compose restart ingest ingest2 >/dev/null
+wait_for ingest "$INGEST/events"
+sleep 8
+for name in install.deployed install.first_request; do
+  expect "$name is still one after both instances restarted" \
+    '[.rows[].value_sum] | add == 1' "$(get metric_total name="$name" "since=$(since_for 1h)" grain=1h)"
+done
+
+# What off and a dead collector do, each from a clean slate.
+reset_install() { psqlc 'UPDATE install SET deployed_claimed_at = NULL, deployed_sent_at = NULL, first_request_claimed_at = NULL, first_request_sent_at = NULL' >/dev/null; }
+run_probe() { # run_probe <label> <env...>: starts a pipeline on :10077 and leaves it running
+  local label="$1"; shift
+  local args=(); for e in "$@"; do args+=(-e "$e"); done
+  docker compose run -d --rm --no-deps -p 127.0.0.1:10077:10000 "${args[@]}" ingest >/dev/null
+  wait_for "$label" "http://127.0.0.1:10077/events"
+}
+stop_probe() { docker ps -q --filter "publish=10077" | xargs -r docker rm -f >/dev/null; }
+
+reset_install
+run_probe "ingest with telemetry off" SQLFLOW_TELEMETRY=off
+sleep 6
+[ "$(psqlc 'SELECT deployed_sent_at IS NULL AND deployed_claimed_at IS NULL FROM install')" = t ] \
+  || fail "SQLFLOW_TELEMETRY=off still claimed or sent install.deployed"
+stop_probe
+echo "ok   SQLFLOW_TELEMETRY=off sends nothing and claims nothing"
+
+reset_install
+run_probe "ingest with a collector that is down" SQLFLOW_TELEMETRY_URL=http://127.0.0.1:9
+sleep 6
+[ "$(psqlc 'SELECT deployed_sent_at IS NULL FROM install')" = t ] \
+  || fail "install.deployed is recorded as sent though the collector was down"
+status_down="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:10077/events --data-binary '{}')"
+[ "$status_down" = 400 ] || fail "with the collector down the pipeline answered $status_down, want 400 for an unsigned request: it must be up"
+stop_probe
+echo "ok   a collector that is down leaves the event unsent and the pipeline up"
+
+# Give the claim back so the next start, below, is the one that sends.
+reset_install
+
 echo "== a restart applies no migration twice"
 # Both services migrate on every start, so a log line saying skipped proves
 # nothing: whichever service lost the first race already printed one. The
@@ -218,15 +288,15 @@ echo "== unsigned mode, and the name prefix"
 docker compose stop ingest >/dev/null
 SQLFLOW_WEBHOOK_AUTH=none SQLFLOW_WEBHOOK_HMAC_SECRET= SQLFLOW_METRIC_NAME_PREFIX=install. docker compose up -d ingest
 wait_for ingest "$INGEST/events"
-status 200 unsigned '{"name":"install.deployed","type":"count","dimensions":{"install_id":"abc"}}'
+status 200 unsigned '{"name":"install.by.hand","type":"count","dimensions":{"install_id":"abc"}}'
 status 200 unsigned '{"name":"other.thing","type":"count"}'
 for i in $(seq 1 60); do
-  n="$(get series | jq '[.rows[] | select(.name == "install.deployed")] | length')"
+  n="$(get series | jq '[.rows[] | select(.name == "install.by.hand")] | length')"
   [ "$n" -ge 1 ] && break
   sleep 1
 done
 series="$(get series)"
-expect "the prefixed name landed unsigned" '[.rows[] | select(.name == "install.deployed")] | length == 1' "$series"
+expect "the prefixed name landed unsigned" '[.rows[] | select(.name == "install.by.hand")] | length == 1' "$series"
 expect "the name outside the prefix was dropped" '[.rows[] | select(.name == "other.thing")] | length == 0' "$series"
 
 echo "PASS"

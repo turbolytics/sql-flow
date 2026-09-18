@@ -62,6 +62,12 @@ export SQLFLOW_WRITER_ID
 
 /app/bin/migrate.sh
 
+# Two events per install, ever, to the sqlflow maintainers: that this was
+# deployed, and that it received its first metric. SQLFLOW_TELEMETRY=off stops
+# both. In the background and detached from this script's fate: it logs and
+# swallows its own failures, and nothing it does can stop the pipeline below.
+/app/bin/telemetry.sh &
+
 # exec keeps sqlflow as PID 1, so the platform's SIGTERM reaches it and the
 # graceful drain runs. Without exec, bash holds PID 1 and forwards nothing.
 exec sqlflow run -c /app/pipeline.yml "$@"

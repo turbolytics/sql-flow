@@ -12,7 +12,8 @@ services, in `virginia`. Render shows the price before you confirm.
 
 ## Deploy
 
-Make two values before you click, and keep them. You choose both, so you have
+Render asks for three values. Make the first two before you click, and keep
+them. You choose both, so you have
 them when the deploy finishes:
 
 ```sh
@@ -20,12 +21,11 @@ openssl rand -hex 32   # SQLFLOW_WEBHOOK_HMAC_SECRET
 openssl rand -hex 16   # SQLFLOW_SERVE_CLIENT_ID
 ```
 
-Render asks for both:
-
 | Prompt | What it does |
 |---|---|
 | `SQLFLOW_WEBHOOK_HMAC_SECRET` | Signs what you send. Any long random string. |
 | `SQLFLOW_SERVE_CLIENT_ID` | Reads what you sent, as `?client_id=`. Letters, digits, `.`, `_`, `~` and `-` only, so it can be pasted into a URL. |
+| `SQLFLOW_TELEMETRY` | Leave it blank, or type `off`. See [What this sends](#what-this-sends). |
 
 A blank value fails its service, on purpose. The pipeline writes to your
 database and will not start unsigned unless you set
@@ -36,6 +36,52 @@ service if it leaks.
 
 When the deploy finishes, copy the URLs of `sqlflow-metrics-ingest` and
 `sqlflow-metrics-api` from the Render dashboard.
+
+## What this sends
+
+Unless you type `off` at the `SQLFLOW_TELEMETRY` prompt, this deploy sends the
+sqlflow maintainers two events, once each, for as long as it exists. They
+tell us that the template was deployed and that it worked. This is the whole
+of both:
+
+```json
+{"name": "install.deployed", "type": "count", "value": 1,
+ "dimensions": {"install_id": "3f0c1b7e-…", "source": "render",
+                "template": "render-metrics", "sqlflow_version": "v2026.09.18"}}
+```
+
+```json
+{"name": "install.first_request", "type": "count", "value": 1,
+ "dimensions": {"install_id": "3f0c1b7e-…", "source": "render",
+                "template": "render-metrics", "sqlflow_version": "v2026.09.18"}}
+```
+
+| Field | What it is |
+|---|---|
+| `install_id` | A random uuid your database made for itself in `migrations/0005_install.sql`. It is derived from nothing: not your account, a hostname, an address or a Render id. It lets us count a deploy once however often it restarts. |
+| `source`, `template` | Constants: that this is the Render template. |
+| `sqlflow_version` | The image tag. |
+
+The first is sent when the pipeline first starts. The second is sent when your
+database holds its first metric, from anyone. **Your metrics are never read
+for it and never sent:** not a name, a value, a dimension or a count.
+`bin/telemetry.sh` asks Postgres one question, whether `metrics_1m` has a row.
+
+They go to `https://telemetry.turbolytics.io`, which is this same template
+with signatures off. As with any HTTP request, the receiving end sees the
+address it came from. The pipeline neither reads nor stores it. Render's
+request log for that service holds it for a while, as any host's does.
+
+The ingest service logs each event in full when it sends it. `bin/telemetry.sh`
+is 91 lines and is the only code that sends anything. The sqlflow
+binary itself never phones home.
+
+**To turn it off**, type `off` at the prompt, or set `SQLFLOW_TELEMETRY=off` on
+`sqlflow-metrics-ingest` later. `false`, `0` and `no` also work. Nothing is
+sent, and the log says so.
+
+A collector that is down, slow or gone never affects your deploy. A send is
+bounded at five seconds, runs in the background, and is retried later.
 
 ## Send a metric
 
@@ -220,6 +266,7 @@ not name and rewrites one it does, so a setting made here survives a sync.
 | `SQLFLOW_WEBHOOK_HMAC_SECRET` | | Required under `hmac`. |
 | `SQLFLOW_METRIC_NAME_PREFIX` | empty | When set, a metric whose name does not start with it is dropped. Letters, digits, `.`, `_` and `-`. |
 | `SQLFLOW_WEBHOOK_MAX_BODY_BYTES` | 26214400 | A larger body is refused with 413. |
+| `SQLFLOW_TELEMETRY` | on | `off` sends nothing. See [What this sends](#what-this-sends). |
 
 ## Run it locally
 
