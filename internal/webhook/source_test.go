@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -383,4 +384,125 @@ func (zeros) Read(p []byte) (int, error) {
 		p[i] = 0
 	}
 	return len(p), nil
+}
+
+// A connection that never sends a request is closed once the header timeout
+// passes, so it cannot hold a slot open.
+func TestSourceWebhook_ClosesConnectionWithoutHeaders(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAddr("127.0.0.1:0"), WithReadHeaderTimeout(100*time.Millisecond))
+	assert.NoError(t, err)
+	assert.NoError(t, s.Start())
+	defer s.Close()
+
+	conn, err := net.Dial("tcp", s.Addr())
+	assert.NoError(t, err)
+	defer conn.Close()
+
+	assert.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, err = conn.Read(make([]byte, 1))
+	assert.Equal(t, io.EOF, err)
+}
+
+// A body that stalls mid-way is cut at the body timeout with 408, so a slow
+// sender cannot hold the handler once the headers are in.
+func TestSourceWebhook_CutsStalledBody(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAddr("127.0.0.1:0"), WithBodyReadTimeout(100*time.Millisecond))
+	assert.NoError(t, err)
+	assert.NoError(t, s.Start())
+	defer s.Close()
+
+	conn, err := net.Dial("tcp", s.Addr())
+	assert.NoError(t, err)
+	defer conn.Close()
+
+	_, err = io.WriteString(conn, "POST /events HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{\"partial\":")
+	assert.NoError(t, err)
+
+	assert.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	raw, _ := io.ReadAll(conn)
+	assert.That(t, strings.HasPrefix(string(raw), "HTTP/1.1 408"))
+	assert.That(t, strings.Contains(string(raw), `{"detail":"Request body timed out"}`))
+
+	select {
+	case batch := <-s.Stream():
+		t.Fatalf("stalled body reached the stream: %q", batch[0].Value)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// The body timeout covers the read only. A delivery that is in and waiting
+// on the pipeline outlasts it, because a deadline that expired during that
+// wait would cancel the request and drop the event.
+func TestSourceWebhook_BackpressureOutlastsBodyTimeout(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAddr("127.0.0.1:0"), WithBodyReadTimeout(100*time.Millisecond))
+	assert.NoError(t, err)
+	assert.NoError(t, s.Start())
+	defer s.Close()
+
+	resp := post(t, "http://"+s.Addr()+"/events", []byte("first"), "", "")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	second := make(chan int, 1)
+	go func() {
+		resp := post(t, "http://"+s.Addr()+"/events", []byte("second"), "", "")
+		resp.Body.Close()
+		second <- resp.StatusCode
+	}()
+
+	// Well past the body timeout while the second request waits on the queue.
+	time.Sleep(400 * time.Millisecond)
+
+	batch := <-s.Stream()
+	assert.Equal(t, "first", string(batch[0].Value))
+	batch = <-s.Stream()
+	assert.Equal(t, "second", string(batch[0].Value))
+
+	select {
+	case code := <-second:
+		assert.Equal(t, http.StatusOK, code)
+	case <-time.After(2 * time.Second):
+		t.Fatal("second request never completed")
+	}
+}
+
+// Past max_connections a new connection waits in the backlog and is served
+// once one closes, rather than being accepted and given a handler.
+func TestSourceWebhook_LimitsConnections(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAddr("127.0.0.1:0"), WithMaxConnections(1))
+	assert.NoError(t, err)
+	assert.NoError(t, s.Start())
+	defer s.Close()
+
+	go func() {
+		for range s.Stream() {
+		}
+	}()
+
+	held, err := net.Dial("tcp", s.Addr())
+	assert.NoError(t, err)
+
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	_, err = client.Post("http://"+s.Addr()+"/events", "application/json", strings.NewReader(`{}`))
+	assert.Error(t, err)
+
+	assert.NoError(t, held.Close())
+
+	client = &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Post("http://"+s.Addr()+"/events", "application/json", strings.NewReader(`{}`))
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+}
+
+func TestSourceWebhook_DefaultsMaxConnectionsTo64(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource()
+	assert.NoError(t, err)
+	defer s.Close()
+	assert.Equal(t, 64, s.MaxConnections())
 }

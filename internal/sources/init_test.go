@@ -193,3 +193,21 @@ func TestSinkRetry_NewWebhookMaxBodyBytes(t *testing.T) {
 	}, zap.NewNop(), nil)
 	assert.Error(t, err)
 }
+
+func TestSinkRetry_NewWebhookMaxConnections(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	s, err := New(config.Source{
+		Type:    "webhook",
+		Webhook: &config.WebhookSource{MaxConnections: 8},
+	}, zap.NewNop(), nil)
+	assert.NoError(t, err)
+	src := s.(*webhook.Source)
+	assert.Equal(t, 8, src.MaxConnections())
+	assert.NoError(t, src.Close())
+
+	_, err = New(config.Source{
+		Type:    "webhook",
+		Webhook: &config.WebhookSource{MaxConnections: -1},
+	}, zap.NewNop(), nil)
+	assert.Error(t, err)
+}

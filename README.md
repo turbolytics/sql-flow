@@ -769,16 +769,23 @@ source:
       sig_key: 'sha256'
       secret: "{{ SQLFLOW_GITHUB_WEBHOOK_SECRET }}"
     max_body_bytes: 26214400 # optional, default 25 MiB
+    max_connections: 64 # optional, default 64
 ```
 
 Responds 200 on accept, 400 for a missing signature, 403 for an invalid one,
-and 413 for a body over `max_body_bytes`. The bound applies before the body is
-read and before the signature is checked, so an unsigned oversized request
-never holds memory past it. The default is 25 MiB, GitHub's payload ceiling.
+413 for a body over `max_body_bytes`, and 408 for a body that stalls. The
+body bound applies before the body is read and before the signature is
+checked, so an unsigned oversized request never holds memory past it. The
+default is 25 MiB, GitHub's payload ceiling.
 
-> **Known gotcha:** the JSON Schema only enumerates `kafka` and `websocket`, so
-> `sqlflow config validate` **rejects** a webhook config that `sqlflow run`
-> accepts.
+The listener holds at most `max_connections` open connections; past that, a
+new connection waits in the kernel backlog until one closes. Three fixed
+timeouts release a slot: 10s for a connection to send its request headers,
+60s to send the body, and 60s of idle keep-alive. A delivery that is in and
+waiting on the pipeline is under no timeout.
+
+`sqlflow config validate` checks the webhook block, including `max_body_bytes`
+and `max_connections`, against the same JSON Schema `sqlflow run` loads.
 
 ## Handlers
 

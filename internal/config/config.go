@@ -320,12 +320,32 @@ type WebhookHMAC struct {
 // 25 MB, the largest of the senders the examples point at.
 const DefaultWebhookMaxBodyBytes = 25 << 20
 
+// DefaultWebhookMaxConnections bounds open connections to the listener. The
+// pipeline takes one delivery at a time, so the slots only hold bodies; 64
+// keeps the worst case at 64 x the body bound.
+const DefaultWebhookMaxConnections = 64
+
 type WebhookSource struct {
 	SignatureType string       `yaml:"signature_type,omitempty" jsonschema:"enum=hmac"`
 	HMAC          *WebhookHMAC `yaml:"hmac,omitempty"`
 	// Bytes one request body may carry. A larger body is refused with 413
 	// before it is read or its signature checked.
 	MaxBodyBytes int64 `yaml:"max_body_bytes,omitempty" jsonschema:"minimum=1"`
+	// Open connections the listener holds. Past it a new connection waits
+	// in the backlog until one closes.
+	MaxConnections int `yaml:"max_connections,omitempty" jsonschema:"minimum=1"`
+}
+
+// ResolvedMaxConnections is the connection bound in effect, defaulted. A nil
+// receiver is the absent block.
+func (w *WebhookSource) ResolvedMaxConnections() (int, error) {
+	if w == nil || w.MaxConnections == 0 {
+		return DefaultWebhookMaxConnections, nil
+	}
+	if w.MaxConnections < 1 {
+		return 0, errs.New(errs.CodeSourceInvalid, "webhook source: max_connections must be at least 1, got %d", w.MaxConnections)
+	}
+	return w.MaxConnections, nil
 }
 
 // ResolvedMaxBodyBytes is the body bound in effect, defaulted. A nil receiver

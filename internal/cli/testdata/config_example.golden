@@ -46,6 +46,9 @@ pipeline:
       # Bytes one request body may carry. A larger body is refused with 413
       # before it is read or its signature checked.
       max_body_bytes: <integer>
+      # Open connections the listener holds. Past it a new connection waits
+      # in the backlog until one closes.
+      max_connections: <integer>
     error:
       policy: <string>
   handler:

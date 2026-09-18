@@ -178,6 +178,11 @@
                   "type": "integer",
                   "minimum": 1,
                   "description": "Bytes one request body may carry. A larger body is refused with 413\nbefore it is read or its signature checked."
+                },
+                "max_connections": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Open connections the listener holds. Past it a new connection waits\nin the backlog until one closes."
                 }
               },
               "additionalProperties": false,

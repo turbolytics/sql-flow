@@ -30,3 +30,24 @@ func TestConfigTemplating_WebhookMaxBodyBytes(t *testing.T) {
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "max_body_bytes"))
 }
+
+func TestConfigTemplating_WebhookMaxConnections(t *testing.T) {
+	coverage.Covers(t, "config.templating")
+
+	var absent *WebhookSource
+	n, err := absent.ResolvedMaxConnections()
+	assert.NoError(t, err)
+	assert.Equal(t, DefaultWebhookMaxConnections, n)
+
+	n, err = (&WebhookSource{}).ResolvedMaxConnections()
+	assert.NoError(t, err)
+	assert.Equal(t, DefaultWebhookMaxConnections, n)
+
+	n, err = (&WebhookSource{MaxConnections: 8}).ResolvedMaxConnections()
+	assert.NoError(t, err)
+	assert.Equal(t, 8, n)
+
+	_, err = (&WebhookSource{MaxConnections: -1}).ResolvedMaxConnections()
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "max_connections"))
+}
