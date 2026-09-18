@@ -148,6 +148,10 @@
             },
             "webhook": {
               "properties": {
+                "addr": {
+                  "type": "string",
+                  "description": "The address the listener binds, as host:port. Defaults to\n0.0.0.0:8001. A platform that assigns the port sets it from the\nenvironment: \"0.0.0.0:{{ PORT }}\"."
+                },
                 "signature_type": {
                   "type": "string",
                   "enum": [

@@ -37,6 +37,10 @@
 
 ### Added
 
+- `source.webhook.addr` sets the address the webhook source listens on. It
+  was the constant `0.0.0.0:8001`, which is still the default. A platform
+  that assigns the port, as Render does through `PORT`, could not run a
+  webhook pipeline. An `addr` that is not a `host:port` fails at startup.
 - `sqlflow serve` can answer a dataset from memory. It is off unless the
   dataset says `cache: {ttl_seconds: N}`, and a dataset without the block is
   served byte for byte as before. An answer is served for at most
