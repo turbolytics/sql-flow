@@ -55,7 +55,7 @@ func TestCliRollup_CheckReportsEachRuleAtItsPath(t *testing.T) {
 		{"reserved measure type", []edit{{"minutes: {type: count_buckets}", "minutes: {type: histogram}"}},
 			"rollups.0.dimension_sets.1.measures.minutes.type", "does not generate"},
 		{"unknown measure type", []edit{{"minutes: {type: count_buckets}", "minutes: {type: median}"}},
-			"rollups.0.dimension_sets.1.measures.minutes.type", "use sum, min, max or count_buckets"},
+			"rollups.0.dimension_sets.1.measures.minutes.type", "use sum, min, max, last or count_buckets"},
 		{"count_buckets with a column", []edit{{"{type: count_buckets}", "{type: count_buckets, column: bucket}"}},
 			"rollups.0.dimension_sets.1.measures.minutes.column", "reads no column"},
 		{"sum without a column", []edit{{"posts: {type: sum, column: posts}", "posts: {type: sum}"}},
@@ -156,4 +156,85 @@ func TestCliRollup_CheckErrorListsEveryViolation(t *testing.T) {
 	assert.That(t, strings.Contains(err.Error(), "rollups.0.serve.catalog"))
 	assert.That(t, strings.Contains(err.Error(), "rollups.0.serve.max_buckets"))
 	assert.NoError(t, parseRollups(t, validRollups).CheckError())
+}
+
+// lastRollups is the metrics template's declaration: every source dimension
+// kept, a double sum, and a last. It has no serve block, because a served
+// dataset takes at most one dimension.
+const lastRollups = `
+rollups:
+  - name: metrics
+    source:
+      table: metrics_1m
+      time_column: bucket
+      grain: 1m
+      dimensions: [name, type, dimensions_key]
+    grains:
+      5m: {from: 1m}
+      1h: {from: 5m}
+    dimension_sets:
+      - name: metrics
+        dimensions: [name, type, dimensions_key]
+        measures:
+          value_sum: {type: sum, column: value_sum, numeric: double}
+          value_count: {type: sum, column: value_count}
+          value_last: {type: last, column: value_last}
+`
+
+func TestCliRollup_CheckAcceptsLastAndADoubleSum(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+	assert.Equal(t, 0, len(parseRollups(t, lastRollups).Check()))
+}
+
+func TestCliRollup_CheckReportsEachLastAndNumericRule(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	for _, tt := range []struct {
+		name     string
+		from, to string
+		path     string
+		message  string
+	}{
+		{"last without a column", "{type: last, column: value_last}", "{type: last}",
+			"rollups.0.dimension_sets.0.measures.value_last.column", "needs column"},
+		{"numeric on a last", "{type: last, column: value_last}", "{type: last, column: value_last, numeric: double}",
+			"rollups.0.dimension_sets.0.measures.value_last.numeric", "only a sum takes numeric"},
+		{"numeric not a kind", "numeric: double", "numeric: decimal",
+			"rollups.0.dimension_sets.0.measures.value_sum.numeric", "use integer or double"},
+		// Two series share a bucket once a dimension is dropped, and neither
+		// is the later one.
+		{"last in a set that drops a dimension", "        dimensions: [name, type, dimensions_key]", "        dimensions: [name, type]",
+			"rollups.0.dimension_sets.0.measures.value_last.type", "keeps every source dimension"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			text := strings.Replace(lastRollups, tt.from, tt.to, 1)
+			assert.That(t, text != lastRollups)
+			violations := parseRollups(t, text).Check()
+			if len(violations) != 1 {
+				t.Fatalf("want 1 violation, got %d: %+v", len(violations), violations)
+			}
+			assert.Equal(t, errs.CodeConfigRollup, violations[0].Code)
+			assert.Equal(t, tt.path, strings.Join(violations[0].Path, "."))
+			if !strings.Contains(violations[0].Message, tt.message) {
+				t.Fatalf("message %q does not contain %q", violations[0].Message, tt.message)
+			}
+		})
+	}
+}
+
+// A folded dataset sums the values past the top into "other", and the last
+// value of many series is no series' value.
+func TestCliRollup_CheckRefusesLastUnderAFold(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	text := strings.Replace(validRollups,
+		"          posts: {type: sum, column: posts}\n      - name: posts_total",
+		"          posts: {type: sum, column: posts}\n          latest: {type: last, column: posts}\n      - name: posts_total", 1)
+	assert.That(t, text != validRollups)
+	violations := parseRollups(t, text).Check()
+	if len(violations) != 1 {
+		t.Fatalf("want 1 violation, got %d: %+v", len(violations), violations)
+	}
+	assert.Equal(t, "rollups.0.serve.datasets.0.dimension_set", strings.Join(violations[0].Path, "."))
+	assert.That(t, strings.Contains(violations[0].Message, "latest is last"))
 }

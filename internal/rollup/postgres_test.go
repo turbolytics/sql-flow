@@ -78,3 +78,48 @@ func TestCliRollup_PostgresDDLRefusesAFileThatBreaksARule(t *testing.T) {
 	_, err = PostgresDDL(&config.RollupsConf{})
 	assert.Error(t, err)
 }
+
+// metricsPath declares a double sum and a last over three dimensions.
+const metricsPath = "../../dev/config/rollups/metrics.yml"
+
+func loadMetrics(t *testing.T) *config.RollupsConf {
+	t.Helper()
+	conf, err := config.LoadRollups(metricsPath)
+	assert.NoError(t, err)
+	return conf
+}
+
+func TestCliRollup_MetricsDDLMatchesTheGolden(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	got, err := PostgresDDL(loadMetrics(t))
+	assert.NoError(t, err)
+	golden(t, "testdata/metrics.postgres.sql", got)
+}
+
+// The cast is the column's type, because the tables are created from the
+// query that fills them. last is ordered newest first with nulls after every
+// value, so a bucket whose latest minute is null keeps the one before it.
+func TestCliRollup_DoubleSumAndLastExpressions(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	r := loadMetrics(t).Rollups[0]
+	set := r.DimensionSets[0]
+
+	assert.Equal(t, `sum(f."value_sum")::double precision`, sourceExpr(r, set.Measures["value_sum"]))
+	assert.Equal(t, `sum(f."value_sum")::double precision`, mergeExpr(r, "value_sum", set.Measures["value_sum"]))
+	assert.Equal(t, `sum(f."value_count")::bigint`, sourceExpr(r, set.Measures["value_count"]))
+	assert.Equal(t, `sum(f."value_count")::bigint`, mergeExpr(r, "value_count", set.Measures["value_count"]))
+
+	last := `(array_agg(f."value_last" ORDER BY (f."value_last" IS NULL), f."bucket" DESC))[1]`
+	assert.Equal(t, last, sourceExpr(r, set.Measures["value_last"]))
+	assert.Equal(t, last, mergeExpr(r, "value_last", set.Measures["value_last"]))
+
+	// A measure named differently from its column merges by its own name.
+	renamed := config.RollupMeasure{Type: "last", Column: "v"}
+	assert.Equal(t, `(array_agg(f."v" ORDER BY (f."v" IS NULL), f."bucket" DESC))[1]`, sourceExpr(r, renamed))
+	assert.Equal(t, `(array_agg(f."latest" ORDER BY (f."latest" IS NULL), f."bucket" DESC))[1]`, mergeExpr(r, "latest", renamed))
+
+	// count_buckets merges as an integer whatever else the set declares.
+	assert.Equal(t, `sum(f."minutes")::bigint`, mergeExpr(r, "minutes", config.RollupMeasure{Type: "count_buckets"}))
+}

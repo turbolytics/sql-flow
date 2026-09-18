@@ -129,7 +129,11 @@ func grainSQL(r config.Rollup, set config.RollupDimensionSet, ds config.RollupDa
 	for i, name := range measures {
 		switch set.Measures[name].Type {
 		case "sum":
-			outer[i] = "sum(" + name + ")::BIGINT AS " + name
+			cast := "BIGINT"
+			if set.Measures[name].Numeric == "double" {
+				cast = "DOUBLE"
+			}
+			outer[i] = "sum(" + name + ")::" + cast + " AS " + name
 		case "min":
 			outer[i] = "min(" + name + ") AS " + name
 		case "max":
