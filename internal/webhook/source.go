@@ -192,9 +192,45 @@ func (s *Source) MaxConnections() int {
 func (s *Source) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /events", s.receiveEvents)
+
+	root := http.NewServeMux()
+	// Outside the metrics middleware. webhook_requests_total is how an
+	// operator counts deliveries, and a platform checks health every few
+	// seconds: counted, the checks would bury them under 200s that delivered
+	// nothing. Registered for every method, because beside the catch-all
+	// below a GET-only pattern would hand POST /healthz to the delivery mux,
+	// which answers 404 for a path that exists.
+	root.HandleFunc("/healthz", s.healthz)
 	// Wrapped rather than applied per route, so unrouted requests are counted
 	// as they are by the Python middleware.
-	return s.metrics.middleware(mux)
+	root.Handle("/", s.metrics.middleware(mux))
+	return root
+}
+
+// healthz says whether a delivery sent now would be admitted. It is on the
+// webhook's own listener because a platform routes one port to a service and
+// checks health on that port: the pipeline's /healthz is on the metrics
+// listener, which a platform that exposes only this one cannot reach.
+//
+// It reads no body and checks no signature, since a health check has neither,
+// and it admits nothing to the pipeline. It does not wait on the queue: a full
+// queue is backpressure, and a platform that reads busy as dead restarts an
+// instance while it holds a sender's event. A closing source answers 503, as
+// it does to a delivery, so the platform stops routing to it.
+func (s *Source) healthz(w http.ResponseWriter, r *http.Request) {
+	// Monitors send HEAD, and the status line is the whole answer. net/http
+	// drops the body of a HEAD response.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeJSON(w, http.StatusMethodNotAllowed, `{"detail":"Method Not Allowed"}`)
+		return
+	}
+	select {
+	case <-s.done:
+		writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
+	default:
+		writeJSON(w, http.StatusOK, `{"status":"ok"}`)
+	}
 }
 
 // Addr reports the bound address, which only differs from the configured one
