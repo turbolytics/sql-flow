@@ -19,8 +19,9 @@ import (
 	"golang.org/x/net/netutil"
 )
 
-// The Python engine serves on 0.0.0.0:8001; configs and reverse proxies point
-// at that port, so it is not configurable from YAML.
+// The Python engine served on 0.0.0.0:8001. It is the address a Source built
+// without WithAddr binds; the config's default is config.DefaultWebhookAddr,
+// the same value.
 const defaultAddr = "0.0.0.0:8001"
 
 const shutdownTimeout = 5 * time.Second
@@ -94,7 +95,8 @@ func WithHMAC(h *HMAC) Option {
 	}
 }
 
-// WithAddr overrides the listen address. Tests use it to bind port 0.
+// WithAddr sets the listen address. The source registry passes the config's
+// addr; tests pass port 0.
 func WithAddr(addr string) Option {
 	return func(s *Source) {
 		s.addr = addr

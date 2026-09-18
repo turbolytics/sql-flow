@@ -756,13 +756,14 @@ Reconnects with backoff. See the [bluesky examples](dev/config/examples/bluesky/
 
 ### Webhook
 
-Listens for `POST /events` on `0.0.0.0:8001` (not configurable) and optionally
-validates an HMAC-SHA256 signature:
+Listens for `POST /events` on `addr`, by default `0.0.0.0:8001`, and
+optionally validates an HMAC-SHA256 signature:
 
 ```yaml
 source:
   type: webhook
   webhook:
+    addr: "0.0.0.0:8001" # optional, default 0.0.0.0:8001
     signature_type: hmac
     hmac:
       header: 'X-Hub-Signature-256'
@@ -771,6 +772,10 @@ source:
     max_body_bytes: 26214400 # optional, default 25 MiB
     max_connections: 64 # optional, default 64
 ```
+
+A platform that assigns the port passes it through the template:
+`addr: "0.0.0.0:{{ PORT }}"`. sqlflow refuses at startup an `addr` that is
+not a `host:port`.
 
 To send a signed event, compute an HMAC-SHA256 of the exact bytes of the body
 with the shared secret, hex-encode it, and put it in the configured header
