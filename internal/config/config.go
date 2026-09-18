@@ -325,7 +325,15 @@ const DefaultWebhookMaxBodyBytes = 25 << 20
 // keeps the worst case at 64 x the body bound.
 const DefaultWebhookMaxConnections = 64
 
+// DefaultWebhookAddr is where the Python engine listened. Configs and reverse
+// proxies written for it point at this port.
+const DefaultWebhookAddr = "0.0.0.0:8001"
+
 type WebhookSource struct {
+	// The address the listener binds, as host:port. Defaults to
+	// 0.0.0.0:8001. A platform that assigns the port sets it from the
+	// environment: "0.0.0.0:{{ PORT }}".
+	Addr          string       `yaml:"addr,omitempty"`
 	SignatureType string       `yaml:"signature_type,omitempty" jsonschema:"enum=hmac"`
 	HMAC          *WebhookHMAC `yaml:"hmac,omitempty"`
 	// Bytes one request body may carry. A larger body is refused with 413
@@ -358,6 +366,20 @@ func (w *WebhookSource) ResolvedMaxBodyBytes() (int64, error) {
 		return 0, errs.New(errs.CodeSourceInvalid, "webhook source: max_body_bytes must be at least 1, got %d", w.MaxBodyBytes)
 	}
 	return w.MaxBodyBytes, nil
+}
+
+// ResolvedAddr is the listen address in effect, defaulted. A nil receiver is
+// the absent block. Empty means the default rather than an error: it is what
+// a template renders for an unset variable, and net.Listen would read it as
+// a port the kernel picks.
+func (w *WebhookSource) ResolvedAddr() (string, error) {
+	if w == nil || w.Addr == "" {
+		return DefaultWebhookAddr, nil
+	}
+	if !validAddr(w.Addr) {
+		return "", errs.New(errs.CodeSourceInvalid, "webhook source: addr %q is not a host:port", w.Addr)
+	}
+	return w.Addr, nil
 }
 
 // Source
