@@ -262,7 +262,7 @@ rollups:
       - name: metrics
         dimensions: [name, type, dimensions_key]
         measures:
-          # A gauge of 0.73 summed as an integer is 0.
+          # Summed as an integer, a gauge of 0.73 is 1 and one of 0.25 is 0.
           value_sum: {type: sum, column: value_sum, numeric: double}
           value_count: {type: sum, column: value_count}
           value_min: {type: min, column: value_min}
@@ -1737,7 +1737,7 @@ git add render/README.md docs/superpowers/specs/2026-09-18-render-metrics-templa
 git commit -m "docs: what the first deploy measured, and the two checks it settled"
 ```
 
-Write the collector's ingest URL into issue #331. The telemetry plan needs it as the constant in `bin/telemetry.sh`.
+Point the telemetry subdomain, such as `telemetry.turbolytics.io`, at the ingest service: add it as a custom domain on `sqlflow-metrics-ingest` and create the DNS record Render names. Send the Step 5 request to the subdomain and confirm it answers. Write the subdomain into issue #331. The telemetry plan ships it as the constant in `bin/telemetry.sh`, and every deployed copy calls it for as long as it runs, so it must be a hostname we own and not the `onrender.com` URL.
 
 ---
 

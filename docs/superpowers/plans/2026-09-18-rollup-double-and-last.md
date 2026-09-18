@@ -291,7 +291,7 @@ rollups:
       - name: metrics
         dimensions: [name, type, dimensions_key]
         measures:
-          # A gauge of 0.73 summed as an integer is 0.
+          # Summed as an integer, a gauge of 0.73 is 1 and one of 0.25 is 0.
           value_sum: {type: sum, column: value_sum, numeric: double}
           value_count: {type: sum, column: value_count}
           value_min: {type: min, column: value_min}
@@ -571,11 +571,13 @@ func startMetricsPostgres(t *testing.T) *rollupServer {
 
 // putGauge upserts one minute of the series cpu, as the pipeline's sink does:
 // a second write of a minute replaces the first. A nil value stores null.
+// The casts are not decoration: beside the literal 0, Postgres infers $2 as
+// an integer, and 0.25 arrives as 0.
 func putGauge(t *testing.T, conn *pgx.Conn, minute string, value *float64) {
 	t.Helper()
 	_, err := conn.Exec(context.Background(), `
 INSERT INTO metrics_1m (bucket, name, type, dimensions_key, value_sum, value_count, value_min, value_max, value_last)
-VALUES ($1::timestamptz, 'cpu', 'gauge', '{}', coalesce($2, 0), 1, $2, $2, $2)
+VALUES ($1::timestamptz, 'cpu', 'gauge', '{}', coalesce($2::double precision, 0), 1, $2::double precision, $2::double precision, $2::double precision)
 ON CONFLICT (bucket, name, type, dimensions_key) DO UPDATE SET
   value_sum = excluded.value_sum, value_count = excluded.value_count,
   value_min = excluded.value_min, value_max = excluded.value_max, value_last = excluded.value_last`,
@@ -598,14 +600,17 @@ func assertEveryGrain(t *testing.T, conn *pgx.Conn, col string, want float64) {
 	t.Helper()
 	for _, g := range metricsGrains {
 		got := column(t, conn, g, col)
-		if got == nil || *got != want {
-			t.Fatalf("metrics_%s.%s is %v, want %v", g, col, got, want)
+		if got == nil {
+			t.Fatalf("metrics_%s.%s is null, want %v", g, col, want)
+		}
+		if *got != want {
+			t.Fatalf("metrics_%s.%s is %v, want %v", g, col, *got, want)
 		}
 	}
 }
 
 // 0.25 and 0.5 are exact in binary, so equality is exact. Under the bigint
-// cast the sum is 0.
+// cast the sum is 1: Postgres rounds.
 func TestIntegrationRollup_ADoubleSumKeepsItsFraction(t *testing.T) {
 	coverage.Covers(t, "cli.rollup")
 	if testing.Short() {
@@ -741,7 +746,7 @@ These tests are written after the generator, so they cannot be watched failing o
 
 In `internal/rollup/sql.go`, make `sumCast` return `"bigint"` always.
 Run: `go test ./internal/rollup/ -run TestIntegrationRollup_ADoubleSumKeepsItsFraction`
-Expected: FAIL, `metrics_5m.value_sum is 0`, or a `data_type` of `bigint`. Restore `sumCast`.
+Expected: FAIL, `metrics_5m.value_sum is 1, want 0.75`. Restore `sumCast`.
 
 In `lastExpr`, remove ` DESC`.
 Run: `go test ./internal/rollup/ -run 'TestIntegrationRollup_Last'`
@@ -798,7 +803,7 @@ source buckets present, such as minutes observed. `avg`, `gauge` and
 
 A `sum` is stored as a `bigint`. Add `numeric: double` to store a
 `double precision`, which keeps a fraction: a gauge of `0.73` summed as an
-integer is `0`. For an average, keep a sum and a count and divide when you
+integer is `1`, and `0.25` is `0`. For an average, keep a sum and a count and divide when you
 read. That is exact at every grain, and an average of averages is not.
 
 `last` keeps the value of a bucket's latest finer bucket, which is what a
@@ -812,12 +817,12 @@ both.
 
 - [ ] **Step 2: Update the changelog**
 
-Under `## Unreleased`, in `### Added` (create it above `### Changed` if the webhook address change has not landed first):
+Under `## Unreleased`, as the first entry of the existing `### Added` section. Unreleased already has one, below `### Fixed`; do not create a second:
 
 ```markdown
 - `sqlflow rollup` measures: `numeric: double` on a `sum`, and a `last` type.
-  Every sum was cast to `bigint`, so a fractional value summed to its integer
-  part at every grain. `last` keeps the value of the bucket's latest finer
+  Every sum was cast to `bigint`, so a fractional value was rounded to an
+  integer at every grain. `last` keeps the value of the bucket's latest finer
   bucket. A declaration that uses neither generates the migration and the
   serve datasets it did before, byte for byte.
 ```

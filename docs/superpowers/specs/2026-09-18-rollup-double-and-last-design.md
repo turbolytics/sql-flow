@@ -13,7 +13,8 @@ and `count_buckets`. Two things stand between it and the template.
 A `sum` is cast to `bigint` in three places: the source expression and the
 merge expression in `internal/rollup/sql.go` (lines 67 and 83), and the serve
 SQL in `internal/rollup/serve.go` (line 132). The Bluesky demo counts posts,
-so the cast is right there. A gauge of `0.73` summed through it is `0`.
+so the cast is right there. Postgres rounds a fraction cast to `bigint`: a
+gauge of `0.73` summed through it is `1`, and one of `0.25` is `0`.
 
 There is no `last`. A gauge's headline value is its most recent one: queue
 depth, open connections, a temperature. `gauge` is reserved in the measure

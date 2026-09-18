@@ -320,11 +320,9 @@ not a `host:port`.
 
 - [ ] **Step 5: Update the changelog**
 
-In `CHANGELOG.md`, under `## Unreleased`, add an `### Added` section above `### Changed`:
+In `CHANGELOG.md`, under `## Unreleased`, add this as the first entry of the existing `### Added` section. Unreleased already has one, below `### Fixed`; do not create a second:
 
 ```markdown
-### Added
-
 - `source.webhook.addr` sets the address the webhook source listens on. It
   was the constant `0.0.0.0:8001`, which is still the default. A platform
   that assigns the port, as Render does through `PORT`, could not run a

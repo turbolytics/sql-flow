@@ -389,8 +389,19 @@ collector's `/events`:
 
 ```json
 {"name": "install.deployed", "type": "count", "value": 1,
- "dimensions": {"install_id": "<uuid>", "sqlflow_version": "<tag>", "template": "render-metrics"}}
+ "dimensions": {"install_id": "<uuid>", "source": "render",
+                "template": "render-metrics", "sqlflow_version": "<tag>"}}
 ```
+
+| Dimension | Value | Why |
+|---|---|---|
+| `install_id` | The `install` row's uuid. | One install, across restarts and redeploys. |
+| `source` | `render` | Where the install runs. Other marketplaces and vendors will have their own templates reporting to the same collector, each with its own constant. `metric?dimensions={"source":"render"}` is the per-vendor view. |
+| `template` | `render-metrics` | Which template, once a vendor has more than one. |
+| `sqlflow_version` | The image's tag. | Which release is deployed. |
+
+`source` is a constant in `telemetry.sh`, not an environment variable. A
+template knows where it runs, and a deployer has no reason to change it.
 
 | Event | Sent when | Recorded in |
 |---|---|---|
@@ -410,6 +421,25 @@ that stops them. The entrypoint logs one line when it sends.
 `SQLFLOW_TELEMETRY=off` skips `telemetry.sh` entirely. The collector URL is a
 constant in `telemetry.sh`, overridable by `SQLFLOW_TELEMETRY_URL` for tests.
 
+The constant is a hostname we own, such as `https://telemetry.turbolytics.io`,
+not the collector's `onrender.com` URL. A deployed copy never updates itself,
+so whatever URL ships is the URL those installs call for as long as they run.
+A hostname we own can be pointed at another service, region or host later. A
+platform's URL cannot.
+
+The URL does not exist until the collector does, and the collector is this
+template. The order that breaks the circle:
+
+1. The template PR is ready, with no telemetry client in it.
+2. We deploy the collector from that PR's branch into the turbolytics Render
+   workspace, and point the subdomain at its ingest service.
+3. The telemetry client lands on the same branch, with the subdomain as its
+   constant, and is tested against the live collector.
+4. The branch merges.
+
+Until step 2 is done the telemetry plan cannot be finished, and its URL is
+the one value in it that is not known today.
+
 ## The collector
 
 The button, deployed in our workspace from the template's PR branch
@@ -421,6 +451,9 @@ Three variables differ from a user's copy:
 | `SQLFLOW_WEBHOOK_AUTH` | `none` | An install has no secret to sign with. Anything shipped in a public repository is not one. |
 | `SQLFLOW_METRIC_NAME_PREFIX` | `install.` | Drops everything that is not an install event. |
 | `SQLFLOW_WEBHOOK_MAX_BODY_BYTES` | a few KB | An install event is under 300 bytes. |
+
+The collector's ingest service takes the custom domain. Render serves it
+over TLS once the DNS record resolves.
 
 The endpoint is open, so its counts are approximate and the README for our
 own use says so. The collector leaves its own telemetry on: its own
