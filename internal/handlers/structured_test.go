@@ -264,3 +264,56 @@ func TestHandlerStructured_LargeBatch(t *testing.T) {
 	assert.Equal(t, int64(1), res.NumRows())
 	res.Release()
 }
+
+// A free-form object is carried in a text column and parsed in SQL. Its text
+// must be the bytes received: decoding the escapes inside it turns \" into a
+// bare quote, and the text stops being JSON.
+func TestHandlerStructured_ObjectInATextColumnKeepsItsEscapes(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE events (name TEXT, d TEXT);`)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "name", Type: arrow.BinaryTypes.String},
+		{Name: "d", Type: arrow.BinaryTypes.String},
+	}, nil)
+
+	h, err := NewStructuredBatchHandler(conn, `
+SELECT * FROM events
+WHERE d = $${"q":"say \"hi\"","p":"a\\b"}$$
+  AND json_extract_string(d, '$.q') = 'say "hi"'`, "events", schema)
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	assert.NoError(t, h.Write([]byte(`{"name":"b","d":{"q":"say \"hi\"","p":"a\\b"}}`)))
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), res.NumRows())
+	res.Release()
+}
+
+// The decode the object must skip is the one a string needs.
+func TestHandlerStructured_StringInATextColumnStillDecodes(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE events (s TEXT);`)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "s", Type: arrow.BinaryTypes.String},
+	}, nil)
+
+	h, err := NewStructuredBatchHandler(conn,
+		`SELECT * FROM events WHERE s = 'a' || chr(10) || 'b' AND length(s) = 3`, "events", schema)
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	assert.NoError(t, h.Write([]byte(`{"s":"a\nb"}`)))
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), res.NumRows())
+	res.Release()
+}
