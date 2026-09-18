@@ -3,14 +3,20 @@
 #   sqlflow serve -c serve.yml
 #
 # SQLFLOW_POSTGRES_URI     required
-# SQLFLOW_SERVE_CLIENT_ID  required. An identifier, not a secret: it names the
-#                          caller in the log. Render generates it.
+# SQLFLOW_SERVE_CLIENT_ID  required. Sent as ?client_id= on every request. The
+#                          deploy asks for it. bin/serve.sh refuses one that
+#                          would need encoding in a URL.
 # SQLFLOW_SERVE_PORT       default 8080
 #
 # The metric and metric_total grains are written by hand. sqlflow rollup
 # generates a dataset of at most one dimension, folded, and a series here is
 # three columns that cannot fold. Every grain of a dataset is the same
 # statement over another table. CI queries each one.
+#
+# Every grain holds an answer for the same 30 seconds. A coarse grain changes
+# slowly and could be held for minutes, but the first thing a new deploy does
+# is send one metric and ask for it, and an empty answer held for ten minutes
+# reads as a pipeline that does not work.
 commands:
   - name: pin the session timezone
     sql: |
@@ -119,8 +125,6 @@ serve:
             ORDER BY m.bucket, m.type, m.dimensions_key
         1h:
           bucket: 1h
-          cache:
-            ttl_seconds: 120
           max_range: 14d
           sql: |
             SELECT m.bucket, m.type, s.dimensions,
@@ -135,8 +139,6 @@ serve:
             ORDER BY m.bucket, m.type, m.dimensions_key
         6h:
           bucket: 6h
-          cache:
-            ttl_seconds: 300
           max_range: 90d
           sql: |
             SELECT m.bucket, m.type, s.dimensions,
@@ -151,8 +153,6 @@ serve:
             ORDER BY m.bucket, m.type, m.dimensions_key
         1d:
           bucket: 1d
-          cache:
-            ttl_seconds: 600
           max_range: 365d
           sql: |
             SELECT m.bucket, m.type, s.dimensions,
@@ -213,8 +213,6 @@ serve:
             ORDER BY bucket, type
         1h:
           bucket: 1h
-          cache:
-            ttl_seconds: 120
           max_range: 14d
           sql: |
             SELECT bucket, type, value_sum, value_count, value_min, value_max
@@ -223,8 +221,6 @@ serve:
             ORDER BY bucket, type
         6h:
           bucket: 6h
-          cache:
-            ttl_seconds: 300
           max_range: 90d
           sql: |
             SELECT bucket, type, value_sum, value_count, value_min, value_max
@@ -233,8 +229,6 @@ serve:
             ORDER BY bucket, type
         1d:
           bucket: 1d
-          cache:
-            ttl_seconds: 600
           max_range: 365d
           sql: |
             SELECT bucket, type, value_sum, value_count, value_min, value_max

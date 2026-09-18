@@ -58,6 +58,14 @@ for env in "SQLFLOW_WEBHOOK_HMAC_SECRET=" "SQLFLOW_WEBHOOK_AUTH=open" "SQLFLOW_M
   echo "ok   $env exits 2"
 done
 
+echo "== the API refuses a blank client id, and one a URL would mangle"
+for env in "SQLFLOW_SERVE_CLIENT_ID=" "SQLFLOW_SERVE_CLIENT_ID=aA+SZt88/x="; do
+  code=0
+  docker compose run --rm -T --no-deps -e "$env" api >/dev/null 2>&1 || code=$?
+  [ "$code" = 2 ] || fail "api with $env exited $code, want 2"
+  echo "ok   $env exits 2"
+done
+
 echo "== signed requests land"
 docker compose up -d --wait postgres
 docker compose up -d ingest api
@@ -140,6 +148,14 @@ expect "a pinned 1d grain with the default hour is an empty range, not an error"
   '(.range.since == .range.until) and (.rows | type) == "array" and (.rows | length) == 0' "$narrow"
 auto="$(get metric name=checkout)"
 expect "without a grain the API picks the finest that covers the range" '.grain == "1m" and (.rows | length) == 3' "$auto"
+
+# What a reader does with the id they chose: paste it into a URL as it is.
+pasted="$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/datasets/series?client_id=local-dev")"
+[ "$pasted" = 200 ] || fail "a client id pasted into the URL answered $pasted"
+echo "ok   the client id works pasted into a URL, unencoded"
+wrong="$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/datasets/series?client_id=not-the-id")"
+[ "$wrong" = 401 ] || fail "a wrong client id answered $wrong, want 401"
+echo "ok   a wrong client id is refused"
 
 noname="$(get metric)"
 expect "no name answers empty" '(.rows | type) == "array" and (.rows | length) == 0' "$noname"

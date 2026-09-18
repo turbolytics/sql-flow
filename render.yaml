@@ -5,10 +5,15 @@
 # This file is at the repository root because the button reads it from there.
 # Everything it deploys is under render/.
 #
-# The deploy asks for one value:
-#   SQLFLOW_WEBHOOK_HMAC_SECRET  any long random string. A blank one fails the
-#                                deploy: the pipeline will not start unsigned
-#                                unless SQLFLOW_WEBHOOK_AUTH is set to none.
+# The deploy asks for two values. Both are yours to choose, so you have them
+# when the deploy finishes. `openssl rand -hex 32` and `openssl rand -hex 16`
+# make good ones.
+#   SQLFLOW_WEBHOOK_HMAC_SECRET  signs what you send. A blank one fails the
+#                                ingest service: the pipeline will not start
+#                                unsigned unless SQLFLOW_WEBHOOK_AUTH is none.
+#   SQLFLOW_SERVE_CLIENT_ID      reads what you sent, as ?client_id=. A blank
+#                                one fails the API service. Letters, digits,
+#                                '.', '_', '~' and '-' only.
 databases:
   - name: sqlflow-metrics-db
     plan: 0.1c-256mb
@@ -71,10 +76,11 @@ services:
         fromDatabase:
           name: sqlflow-metrics-db
           property: connectionString
-      # An identifier sent as ?client_id=, not a secret. Render mints it once.
-      # Copy it from the dashboard.
+      # Prompted for during the deploy, not generated. Render's generated
+      # values hold '+', '/' and '=', and one pasted into a URL as it is
+      # answers 401: '+' reads as a space.
       - key: SQLFLOW_SERVE_CLIENT_ID
-        generateValue: true
+        sync: false
       - key: SQLFLOW_SERVE_PORT
         value: "8080"
       - key: PORT

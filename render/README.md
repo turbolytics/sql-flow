@@ -12,19 +12,30 @@ services, in `virginia`. Render shows the price before you confirm.
 
 ## Deploy
 
-Render asks for one value:
+Make two values before you click, and keep them. You choose both, so you have
+them when the deploy finishes:
 
-| Prompt | Type |
+```sh
+openssl rand -hex 32   # SQLFLOW_WEBHOOK_HMAC_SECRET
+openssl rand -hex 16   # SQLFLOW_SERVE_CLIENT_ID
+```
+
+Render asks for both:
+
+| Prompt | What it does |
 |---|---|
-| `SQLFLOW_WEBHOOK_HMAC_SECRET` | Any long random string, such as the output of `openssl rand -hex 32`. Keep it: you sign requests with it. |
+| `SQLFLOW_WEBHOOK_HMAC_SECRET` | Signs what you send. Any long random string. |
+| `SQLFLOW_SERVE_CLIENT_ID` | Reads what you sent, as `?client_id=`. Letters, digits, `.`, `_`, `~` and `-` only, so it can be pasted into a URL. |
 
-A blank secret fails the deploy, on purpose. The pipeline writes to your
-database, and it will not start unsigned unless you set
-`SQLFLOW_WEBHOOK_AUTH=none` yourself.
+A blank value fails its service, on purpose. The pipeline writes to your
+database and will not start unsigned unless you set
+`SQLFLOW_WEBHOOK_AUTH=none` yourself. The client id is the only thing between
+a reader and your metrics, so it has no default. It travels in the URL: treat
+it as you would a link to a private document, and change it on the API
+service if it leaks.
 
-When the deploy finishes, copy two things from the Render dashboard: the URL
-of `sqlflow-metrics-ingest` and of `sqlflow-metrics-api`, and the value of
-`SQLFLOW_SERVE_CLIENT_ID` on the API service.
+When the deploy finishes, copy the URLs of `sqlflow-metrics-ingest` and
+`sqlflow-metrics-api` from the Render dashboard.
 
 ## Send a metric
 
@@ -53,7 +64,7 @@ send it. Ask which series exist:
 
 ```sh
 export API=https://sqlflow-metrics-api-xxxx.onrender.com
-export CLIENT_ID=<SQLFLOW_SERVE_CLIENT_ID>
+export CLIENT_ID=<the client id you typed>
 curl -sG "$API/v1/datasets/series" --data-urlencode "client_id=$CLIENT_ID"
 ```
 
@@ -120,7 +131,10 @@ declares them, `migrations/0003_rollups.sql` is generated from it with
 ## The API
 
 Every request except `/healthz` and `/metrics` sends `?client_id=`. It names
-the caller in the log. It is an identifier, not a secret.
+the caller in the log, and a request without it answers 401.
+
+An answer is held for 30 seconds. Ask twice within that and the second answer
+is the first, with `"cache": "hit"` and its age in `age_ms`.
 
 | Route | Returns |
 |---|---|
