@@ -21,6 +21,7 @@ This plan covers build-order rows 3 and 4 of the spec: the template without tele
 - `late_rows: drop`. `sqlflow validate` refuses `reemit` with an upserting sink.
 - DuckDB reserves `AT`. The handler's timestamp column is `ts`.
 - Wire format: one metric in the body's top-level keys, or several under `metrics`. A bare JSON array is not accepted.
+- The pipeline, the API and every rollup table were verified on 2026-09-18 against a binary built from #334 with #332 and #333 merged: four minutes of signed metrics, every rollup table equal to an independent recomputation from `metrics_1m`, the day equal to sums worked out by hand, `last` following event time and not arrival, a republished minute replacing itself at every grain, and both datasets at all six grains. That run used `psql` and native binaries, not the image or compose, which Task 4 is the first to run.
 - Every file below was written and checked before this plan was: the pipeline, the series trigger and the `metric` dataset ran end to end against `turbolytics/sql-flow:v2026.09.17.3` and Postgres 18 on 2026-09-18, without `addr` and the rollup tables, which need `SQLFLOW_TAG`; `serve.yml` passed `sqlflow validate`; `render.yaml` passed Render's published schema. Type them as written. If one fails, the difference is in the environment or the release, so find it before editing the file.
 - Prose follows `CLAUDE.md`. Comments explain why. Commit messages name the defect, the fix, and the evidence.
 - Branch from `main`: `feat/render-metrics-template`.
@@ -262,7 +263,10 @@ rollups:
       - name: metrics
         dimensions: [name, type, dimensions_key]
         measures:
-          # Summed as an integer, a gauge of 0.73 is 1 and one of 0.25 is 0.
+          # numeric: double keeps the fraction. A sum is stored as a bigint by
+          # default, and Postgres rounds a fraction cast to one: a gauge
+          # reading of 0.73 would be stored as 1, and one of 0.25 as 0.
+          # value_count needs no double: a count of samples is a whole number.
           value_sum: {type: sum, column: value_sum, numeric: double}
           value_count: {type: sum, column: value_count}
           value_min: {type: min, column: value_min}
@@ -824,31 +828,49 @@ expect "series holds the five that were valid, and no bad one" \
 expect "a dimension value with a quote in it survives" \
   '[.rows[] | select(.name == "quote") | .dimensions | fromjson | .q] == ["say \"hi\""]' "$series"
 
+# A pinned grain needs a range at least as wide as its bucket. serve snaps the
+# range to bucket boundaries, and a bucket is in the range only when its start
+# is, so the default range of one hour holds no whole 6h or 1d bucket and
+# answers empty. Each grain is asked for a range just inside its max_range.
+since_for() {
+  local hours epoch
+  case "$1" in 1m) hours=5 ;; 5m) hours=23 ;; 15m) hours=71 ;; 1h) hours=335 ;; 6h) hours=2159 ;; 1d) hours=8735 ;; esac
+  epoch=$(( $(date -u +%s) - hours * 3600 ))
+  # GNU date reads @epoch, BSD date reads -r epoch.
+  date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ
+}
+
 for g in $GRAINS; do
   echo "== grain $g"
-  # The default range, one hour, is inside every grain's max_range.
-  all="$(get metric name=checkout grain="$g")"
+  since="since=$(since_for "$g")"
+  all="$(get metric name=checkout grain="$g" "$since")"
   expect "$g: three checkout series" '.grain == "'"$g"'" and (.rows | length) == 3' "$all"
   expect "$g: two key orders were one series, summed" \
     '[.rows[] | select((.dimensions | fromjson) == {"plan":"pro","region":"us-east"}) | [.value_sum, .value_count, .value_min, .value_max]] == [[3,2,1,2]]' "$all"
 
-  one="$(get metric name=checkout grain="$g" 'dimensions={"region":"us-east"}')"
+  one="$(get metric name=checkout grain="$g" "$since" 'dimensions={"region":"us-east"}')"
   expect "$g: one pair returns the two series that contain it" '(.rows | length) == 2' "$one"
-  both="$(get metric name=checkout grain="$g" 'dimensions={"region":"us-east","plan":"free"}')"
+  both="$(get metric name=checkout grain="$g" "$since" 'dimensions={"region":"us-east","plan":"free"}')"
   expect "$g: both pairs return one series" '[.rows[].value_sum] == [5]' "$both"
-  none="$(get metric name=checkout grain="$g" 'dimensions={"region":"us"}')"
+  none="$(get metric name=checkout grain="$g" "$since" 'dimensions={"region":"us"}')"
   expect "$g: a value that is a prefix of another matches nothing" '(.rows | type) == "array" and (.rows | length) == 0' "$none"
-  bad="$(get metric name=checkout grain="$g" 'dimensions={not json')"
+  bad="$(get metric name=checkout grain="$g" "$since" 'dimensions={not json')"
   expect "$g: a filter that is not JSON matches nothing, and is not an error" '(.rows | type) == "array" and (.rows | length) == 0' "$bad"
 
-  cpu="$(get metric name=cpu grain="$g")"
+  cpu="$(get metric name=cpu grain="$g" "$since")"
   expect "$g: a gauge keeps its fraction" \
     '[.rows[] | [.value_sum, .value_count, .value_min, .value_max]] == [[0.75,2,0.25,0.5]]' "$cpu"
 
-  total="$(get metric_total name=checkout grain="$g")"
+  total="$(get metric_total name=checkout grain="$g" "$since")"
   expect "$g: the total sums every series" \
     '[.rows[] | [.value_sum, .value_count, .value_min, .value_max]] == [[9,4,1,5]]' "$total"
 done
+
+narrow="$(get metric name=checkout grain=1d)"
+expect "a pinned 1d grain with the default hour is an empty range, not an error" \
+  '(.range.since == .range.until) and (.rows | type) == "array" and (.rows | length) == 0' "$narrow"
+auto="$(get metric name=checkout)"
+expect "without a grain the API picks the finest that covers the range" '.grain == "1m" and (.rows | length) == 3' "$auto"
 
 noname="$(get metric)"
 expect "no name answers empty" '(.rows | type) == "array" and (.rows | length) == 0' "$noname"
@@ -1587,12 +1609,18 @@ the caller in the log. It is an identifier, not a secret.
 |---|---|
 | `name` | Required. Without it the answer is empty. |
 | `since`, `until` | RFC 3339 with an offset. Encode `+` as `%2B`. Default: the last hour. |
-| `grain` | Optional. Without it the API picks the finest grain that covers the range. |
+| `grain` | Optional. Without it the API picks the finest grain that covers the range, which is what you want. Pin one only with a range at least as wide as its bucket. |
 | `dimensions` | `metric` only. A JSON object. The answer holds the series whose dimensions contain every pair in it. |
 
 `dimensions={"region":"us-east"}` returns every plan in us-east, each its own
 series. `dimensions={"region":"us-east","plan":"pro"}` returns one series. A
 `dimensions` that is not JSON matches nothing.
+
+The API snaps a range to the grain's bucket boundaries, and a bucket is in
+the range when its start is. The response's `range` says what was resolved.
+So `grain=1d` with the default range, the last hour, resolves to an empty
+range and answers no rows: no day starts inside the last hour. Send `since`
+at or before the start of the first bucket you want.
 
 Use `metric_total` for a name with many series, such as one per user. It
 reads one row per bucket. `metric` reads a row per bucket per series, and a
