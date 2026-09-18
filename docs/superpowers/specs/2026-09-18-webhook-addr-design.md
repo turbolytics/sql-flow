@@ -50,10 +50,12 @@ Addr string `yaml:"addr,omitempty"`
 the field is non-empty, and adds the address to the "initializing webhook
 source" log line.
 
-Validation reuses `validAddr` from `internal/config/serve.go`, which
-`serve.http.addr` already goes through, and reports the violation at
-`pipeline.source.webhook.addr` in the same words: `%q is not a host:port`.
-The tests below pin what `validAddr` accepts rather than restating it here.
+`WebhookSource` gains `ResolvedAddr() (string, error)`, beside
+`ResolvedMaxBodyBytes` and `ResolvedMaxConnections`, which is how this block
+already defaults and refuses its fields. It reuses `validAddr` from
+`internal/config/serve.go`, which `serve.http.addr` already goes through, and
+fails startup with `webhook source: addr %q is not a host:port`. The tests
+below pin what `validAddr` accepts rather than restating it here.
 
 An empty string means the default rather than an error. A template whose
 variable is unset renders `addr: ""`, and the template's own

@@ -30,7 +30,7 @@
 | `internal/validate/schemas/rollups.json` | Regenerated. |
 | `internal/rollup/sql.go` | `sumCast`, `lastExpr`, the `sum` and `last` arms of `sourceExpr` and `mergeExpr`. |
 | `internal/rollup/serve.go` | The `sum` arm of the folded outer select casts by `numeric`. |
-| `dev/config/rollups/metrics.yml` | A second example declaration: three dimensions, five measures, no `serve:`. |
+| `dev/config/rollups/metrics.yml` | A second example declaration: a set of three dimensions and five measures, a set that drops one dimension and has no `last`, no `serve:`. |
 | `internal/rollup/testdata/metrics.postgres.sql` | Its golden. |
 | `internal/rollup/postgres_test.go`, `serve_test.go` | Golden and expression tests. |
 | `internal/rollup/metrics_integration_test.go` | The measures against a real Postgres. |
@@ -298,6 +298,15 @@ rollups:
           value_max: {type: max, column: value_max}
           # A gauge's headline value: queue depth now, not its sum.
           value_last: {type: last, column: value_last}
+      # A name across every set of dimensions. No last: two series share a
+      # bucket here, and neither is the later one.
+      - name: metrics_total
+        dimensions: [name, type]
+        measures:
+          value_sum: {type: sum, column: value_sum, numeric: double}
+          value_count: {type: sum, column: value_count}
+          value_min: {type: min, column: value_min}
+          value_max: {type: max, column: value_max}
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -472,6 +481,7 @@ Read `internal/rollup/testdata/metrics.postgres.sql`. Confirm by eye:
 - Its unique index is on `("bucket", "name", "type", "dimensions_key")`.
 - `GROUP BY 1, 2, 3, 4`.
 - The `"sqlflow_rollup_metrics_15m"` function reads `FROM "metrics_5m" AS f` and orders `value_last` by `f."bucket" DESC`.
+- `"metrics_total_5m"` has no `value_last`, is keyed on `("bucket", "name", "type")`, and groups by `1, 2, 3`.
 
 - [ ] **Step 7: Run the unit pass**
 
@@ -579,7 +589,7 @@ func f(v float64) *float64 { return &v }
 func column(t *testing.T, conn *pgx.Conn, grain, col string) *float64 {
 	t.Helper()
 	var v *float64
-	q := fmt.Sprintf("SELECT %s::double precision FROM metrics_%s WHERE name = 'cpu'", col, grain)
+	q := fmt.Sprintf("SELECT %s::double precision FROM metrics_%s WHERE name = 'cpu' AND dimensions_key = '{}'", col, grain)
 	assert.NoError(t, conn.QueryRow(context.Background(), q).Scan(&v))
 	return v
 }
@@ -618,6 +628,30 @@ func TestIntegrationRollup_ADoubleSumKeepsItsFraction(t *testing.T) {
 	assert.NoError(t, srv.conn.QueryRow(context.Background(),
 		"SELECT data_type FROM information_schema.columns WHERE table_name = 'metrics_1d' AND column_name = 'value_count'").Scan(&typ))
 	assert.Equal(t, "bigint", typ)
+}
+
+// Two series of one name sum into metrics_total at every grain, fraction kept.
+func TestIntegrationRollup_ATotalSumsAcrossDimensions(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startMetricsPostgres(t)
+
+	putGauge(t, srv.conn, "10:00", f(0.25))
+	execSQL(t, srv.conn, `INSERT INTO metrics_1m (bucket, name, type, dimensions_key, value_sum, value_count, value_min, value_max, value_last)
+VALUES ('2026-09-15 10:00:00+00', 'cpu', 'gauge', '{"host":"b"}', 0.5, 3, 0.125, 0.25, 0.125)`)
+
+	for _, g := range metricsGrains {
+		var sum, min, max float64
+		var n int64
+		q := fmt.Sprintf("SELECT value_sum, value_count, value_min, value_max FROM metrics_total_%s WHERE name = 'cpu'", g)
+		assert.NoError(t, srv.conn.QueryRow(context.Background(), q).Scan(&sum, &n, &min, &max))
+		assert.Equal(t, 0.75, sum)
+		assert.Equal(t, int64(4), n)
+		assert.Equal(t, 0.125, min)
+		assert.Equal(t, 0.25, max)
+	}
 }
 
 // The minutes are written out of order, so last cannot be the last written.
@@ -699,7 +733,7 @@ func TestIntegrationRollup_LastSkipsANullAndStoresOneWhenNothingElseExists(t *te
 - [ ] **Step 2: Run the tests**
 
 Run: `go test ./internal/rollup/ -run 'TestIntegrationRollup_(ADoubleSum|Last)' -v`
-Expected: PASS, five tests. Docker must be running.
+Expected: PASS, six tests. Docker must be running.
 
 These tests are written after the generator, so they cannot be watched failing on it. Prove each can fail before trusting it:
 
@@ -728,8 +762,9 @@ git commit -m "rollup: a double sum and a last, held against a real Postgres
 
 The generator's expressions were tested as text. Nothing ran them.
 
-Five cases run the metrics migration in Postgres 18: 0.25 + 0.5 is 0.75
-at every grain and the column is double precision; last is the latest
+Six cases run the metrics migration in Postgres 18: 0.25 + 0.5 is 0.75
+at every grain and the column is double precision; two series sum into
+the set that drops their dimension; last is the latest
 minute when minutes arrive out of order; a rewrite moves last only when
 it rewrites the latest minute; a delete changes nothing; a null latest
 minute is skipped, and a bucket of nulls stores null. Each case was

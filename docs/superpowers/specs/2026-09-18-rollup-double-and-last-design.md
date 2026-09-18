@@ -55,8 +55,10 @@ Out:
 | Default | `integer`, today's `bigint`. | `double` for everyone. Every existing generated migration would drift and `rollup check` would fail in the Bluesky demo. |
 | Postgres type for `double` | `double precision`. | `numeric`. Exact, but slower to merge and DuckDB reads it as a decimal whose width must be declared. |
 | What orders `last` | The rollup's time column: the row from the latest finer bucket wins. | A separate `last_at` column per measure carried up the ladder. Buckets at one grain never overlap, so the bucket is already a total order. |
+| `last` in a set that drops a dimension | Refused. `last` needs a set that keeps every source dimension. | Allowing it. Two series share a bucket once a dimension is gone, the order has a tie, and neither value is the later one. |
+| The type of a `last` column | The source column's type. | `double precision`. The tables are created from the query that fills them, so an expression's type is its column's type and nothing needs declaring. |
 | `last` when a source minute is rewritten | The trigger re-merges the touched bucket from its finer rows, as every measure does. | Comparing against the stored value. A re-merge is already idempotent. |
-| `last` and serve | A served dataset may not read a dimension set that has a `last` measure. The check refuses it. | Defining `last` of "other". A served dataset always folds, and the last value of forty unrelated series means nothing. |
+| `last` and serve | A dataset that folds may not read a set with a `last` measure. The check refuses it, beside the rule that refuses `count_buckets` there. | Defining `last` of "other". The last value of forty unrelated series is no series' value. |
 
 ## The change
 
@@ -76,8 +78,11 @@ Numeric string `yaml:"numeric,omitempty" jsonschema:"enum=integer,enum=double"`
 
 - `last` requires `column`, as `sum`, `min` and `max` do.
 - `numeric` on any type but `sum` is a violation naming the field.
-- A served dataset whose dimension set has a `last` measure is a violation.
-  The message says to write the dataset in `serve.yml`.
+- A `last` in a dimension set that keeps fewer dimensions than the source
+  declares is a violation.
+- A dataset over a dimension set that has a dimension, which therefore folds,
+  and a `last` measure is a violation. The message says to write the dataset
+  in `serve.yml`.
 
 ### Generated Postgres
 
@@ -85,23 +90,26 @@ In `internal/rollup/sql.go`:
 
 | | `sum`, integer | `sum`, double | `last` |
 |---|---|---|---|
-| Source | `sum(f.col)::bigint` | `sum(f.col)::double precision` | `(array_agg(f.col ORDER BY f.<time> DESC))[1]` |
-| Merge | `sum(f.name)::bigint` | `sum(f.name)::double precision` | `(array_agg(f.name ORDER BY f.bucket DESC))[1]` |
+| Source | `sum(f.col)::bigint` | `sum(f.col)::double precision` | `(array_agg(f.col ORDER BY (f.col IS NULL), f.<time> DESC))[1]` |
+| Merge | `sum(f.name)::bigint` | `sum(f.name)::double precision` | `(array_agg(f.name ORDER BY (f.name IS NULL), f.<time> DESC))[1]` |
 
-`<time>` is the source's `time_column`. The aggregate runs inside the
+`<time>` is the source's `time_column`, which every table of a set also names
+its bucket column. `mergeExpr` gains the rollup as a parameter to read it.
+`count_buckets` shared the `sum` arm of `mergeExpr`; it gets its own, so it
+stays a `bigint` beside a double sum. The aggregate runs inside the
 existing `GROUP BY` of the coarser bucket and the dimensions, so it sees only
 the finer rows of one bucket of one series: five for 1m to 5m, four for 6h to
 1d.
 
-Column types in the generated `CREATE TABLE`: `bigint`, `double precision`,
-and for `last`, `double precision`. A `last` over an integer source column
-widens; that is stated in the README and is the cost of generating without a
-database connection. `numeric:` on `last` is refused rather than given a
-second meaning.
+`writeTable` creates each table with `CREATE TABLE … AS SELECT … WITH NO
+DATA`, so a column takes the type of the expression that fills it. The cast
+on a sum is therefore its column's type, and a `last` column has the source
+column's type. No list of DDL types changes. `numeric:` on `last` is refused
+rather than given a second meaning.
 
-A source row whose `last` column is null is skipped by ordering nulls last:
-`ORDER BY f.bucket DESC` becomes `ORDER BY (f.col IS NULL), f.bucket DESC`.
-A bucket whose every finer row is null stores null.
+Postgres sorts nulls first under `DESC`. The leading `(f.col IS NULL)` term
+puts them after every value, so a bucket whose latest finer row is null keeps
+the one before it, and a bucket whose every finer row is null stores null.
 
 ### Generated serve SQL
 
@@ -112,9 +120,10 @@ In `internal/rollup/serve.go`, the outer select gains one arm:
 | `sum`, integer | `sum(name)::BIGINT AS name`, unchanged |
 | `sum`, double | `sum(name)::DOUBLE AS name` |
 
-The switch has no `last` arm because the check refuses the dataset before
-generation. The rank in a folded dataset reads a `sum` measure of either
-numeric kind.
+The switch has no `last` arm. It runs only for a set with a dimension, and
+the check refuses `last` there. A set with no dimensions returns earlier,
+selecting each measure as stored. The rank in a folded dataset reads a `sum`
+measure of either numeric kind.
 
 ### `rollup check`
 
@@ -130,13 +139,15 @@ the new release without regenerating.
 
 ## Testing
 
-- `internal/config`: `last` without `column` refused; `numeric` on `min`
-  refused; `numeric: decimal` refused; a served dataset over a `last` measure
-  refused; each names its path.
-- `internal/rollup` golden: a new declaration with all five template
-  measures, three dimensions and no `serve:` block generates the migration. A
-  second, one dimension with a double sum and a fold, generates a serve
-  dataset. Existing goldens unchanged.
+- `internal/config`: `last` without `column` refused; `numeric` on a `last`
+  refused; `numeric: decimal` refused; a `last` in a set that drops a
+  dimension refused; a folded dataset over a `last` refused; each names its
+  path.
+- `internal/rollup` golden: `dev/config/rollups/metrics.yml`, a set of three
+  dimensions with all five measures, a set that drops a dimension with four,
+  and no `serve:` block, generates the migration. Existing goldens unchanged.
+- The source and merge expressions asserted as text, including a `last` whose
+  measure name differs from its column.
 - `internal/rollup/postgres_integration_test.go`, against a real Postgres:
   - `0.25 + 0.5` through a `double` sum reads `0.75` at every grain.
   - Minutes `10:00` = 3, `10:01` = 9, `10:04` = 4 give `last` 4 at 5m and up.
@@ -144,6 +155,7 @@ the new release without regenerating.
     leaves `last` at 7.
   - Deleting `10:04` leaves the rollups unchanged, as for every measure.
   - A null `10:04` with a non-null `10:01` gives 9.
-- `internal/rollup/serve_test.go`: the generated dataset SQL, run in DuckDB
-  against an attached Postgres, returns a `DOUBLE` with its fraction for a
-  double sum.
+- `internal/rollup/serve_test.go`: the Bluesky example with its sum made a
+  double generates `sum(posts)::DOUBLE` at every grain.
+- Each integration case is watched failing against the defect it names: the
+  `bigint` cast, a `last` ordered ascending, a `last` without the null term.
