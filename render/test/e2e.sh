@@ -68,7 +68,11 @@ echo "== an auth mode that is empty still requires a signature"
 # unsigned request was answered 200 by a pipeline with a secret set.
 docker compose up -d --wait postgres
 for env in "SQLFLOW_WEBHOOK_AUTH=" "SQLFLOW_WEBHOOK_AUTH=hmac"; do
-  docker compose run -d --rm --no-deps -p 127.0.0.1:10077:10000 -e "$env" ingest >/dev/null
+  # Telemetry off: these pipelines are killed as soon as they are probed. One
+  # killed between claiming install.deployed and giving the claim back leaves a
+  # two-minute lease behind, and the pipelines started below cannot send the
+  # event until it expires, which is longer than the test waits for it.
+  docker compose run -d --rm --no-deps -p 127.0.0.1:10077:10000 -e "$env" -e SQLFLOW_TELEMETRY=off ingest >/dev/null
   wait_for "ingest with $env" "http://127.0.0.1:10077/events"
   got="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:10077/events --data-binary '{"name":"x","type":"count"}')"
   docker ps -q --filter "publish=10077" | xargs -r docker rm -f >/dev/null
@@ -86,6 +90,9 @@ done
 
 echo "== signed requests land"
 docker compose up -d --wait postgres
+# Whatever ran before this, the pipelines below start with no claim held.
+docker compose exec -T postgres psql -U metrics -d metrics -X -Atqc "UPDATE install SET deployed_claimed_at = NULL, first_request_claimed_at = NULL" >/dev/null 2>&1 || true
+
 docker compose up -d collector ingest ingest2 api
 wait_for ingest "$INGEST/events"
 wait_for ingest2 "$INGEST2/events"
