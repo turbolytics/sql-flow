@@ -768,13 +768,48 @@ source:
       header: 'X-Hub-Signature-256'
       sig_key: 'sha256'
       secret: "{{ SQLFLOW_GITHUB_WEBHOOK_SECRET }}"
+    max_body_bytes: 26214400 # optional, default 25 MiB
+    max_connections: 64 # optional, default 64
 ```
 
-Responds 200 on accept, 400 for a missing signature, 403 for an invalid one.
+To send a signed event, compute an HMAC-SHA256 of the exact bytes of the body
+with the shared secret, hex-encode it, and put it in the configured header
+with the `sha256=` prefix:
 
-> **Known gotcha:** the JSON Schema only enumerates `kafka` and `websocket`, so
-> `sqlflow config validate` **rejects** a webhook config that `sqlflow run`
-> accepts.
+```bash
+export SQLFLOW_GITHUB_WEBHOOK_SECRET=shhh
+body='{"action":"opened","number":1}'
+sig="sha256=$(printf '%s' "$body" \
+  | openssl dgst -sha256 -hmac "$SQLFLOW_GITHUB_WEBHOOK_SECRET" \
+  | awk '{print $NF}')"
+
+curl -s -X POST http://localhost:8001/events \
+  -H 'Content-Type: application/json' \
+  -H "X-Hub-Signature-256: $sig" \
+  --data-binary "$body"
+
+{"status":"received"}
+```
+
+The signature covers the raw bytes, so the body sent must be the body signed:
+`--data-binary` and `printf '%s'` keep it byte for byte, where `-d` and `echo`
+can alter whitespace or add a newline. GitHub signs the same way, so a
+repository webhook with the same secret is accepted as is.
+
+Responds 200 on accept, 400 for a missing signature, 403 for an invalid one,
+413 for a body over `max_body_bytes`, and 408 for a body that stalls. The
+body bound applies before the body is read and before the signature is
+checked, so an unsigned oversized request never holds memory past it. The
+default is 25 MiB, GitHub's payload ceiling.
+
+The listener holds at most `max_connections` open connections; past that, a
+new connection waits in the kernel backlog until one closes. Three fixed
+timeouts release a slot: 10s for a connection to send its request headers,
+60s to send the body, and 60s of idle keep-alive. A delivery that is in and
+waiting on the pipeline is under no timeout.
+
+`sqlflow config validate` checks the webhook block, including `max_body_bytes`
+and `max_connections`, against the same JSON Schema `sqlflow run` loads.
 
 ## Handlers
 

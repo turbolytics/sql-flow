@@ -10,11 +10,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
+	"golang.org/x/net/netutil"
 )
 
 // The Python engine serves on 0.0.0.0:8001; configs and reverse proxies point
@@ -22,6 +24,31 @@ import (
 const defaultAddr = "0.0.0.0:8001"
 
 const shutdownTimeout = 5 * time.Second
+
+// DefaultMaxBodyBytes bounds one delivery. GitHub caps a payload at 25 MB,
+// the largest of the senders the examples point at, so the default admits
+// every delivery those senders make and nothing larger.
+const DefaultMaxBodyBytes int64 = 25 << 20
+
+// DefaultMaxConnections bounds open connections. The pipeline takes one
+// delivery at a time, so beyond a handful the extra connections only hold
+// bodies; 64 leaves room for a proxy's pool and a burst of senders while
+// keeping the worst case, every slot holding a full body, at 1.6 GiB.
+const DefaultMaxConnections = 64
+
+const (
+	// readHeaderTimeout closes a connection that sends no request, the value
+	// the serve package uses.
+	readHeaderTimeout = 10 * time.Second
+	// bodyReadTimeout bounds the body read alone, set from the handler and
+	// cleared once the body is in. It is not the server's ReadTimeout: that
+	// deadline runs through the handler, and when it expires Go cancels the
+	// request, which would drop a delivery waiting on the pipeline. 60s
+	// carries the default body bound at 0.5 MB/s.
+	bodyReadTimeout = 60 * time.Second
+	// idleTimeout releases a keep-alive connection that has gone quiet.
+	idleTimeout = 60 * time.Second
+)
 
 // HMAC configures signature validation of incoming request bodies.
 type HMAC struct {
@@ -31,13 +58,17 @@ type HMAC struct {
 }
 
 type Source struct {
-	addr       string
-	hmac       *HMAC
-	server     *http.Server
-	listener   net.Listener
-	streamChan chan []core.Message
-	done       chan struct{}
-	closeOnce  sync.Once
+	addr              string
+	hmac              *HMAC
+	maxBodyBytes      int64
+	maxConnections    int
+	readHeaderTimeout time.Duration
+	bodyReadTimeout   time.Duration
+	server            *http.Server
+	listener          net.Listener
+	streamChan        chan []core.Message
+	done              chan struct{}
+	closeOnce         sync.Once
 	// mu guards closed against in-flight handlers: a request holds it for
 	// read across its send, so the stream is only closed once no handler can
 	// still write to it.
@@ -70,6 +101,37 @@ func WithAddr(addr string) Option {
 	}
 }
 
+// WithMaxBodyBytes bounds a request body. A body past it is refused with 413
+// before it is read, ahead of signature validation, so the bound holds
+// against a sender that cannot sign.
+func WithMaxBodyBytes(n int64) Option {
+	return func(s *Source) {
+		s.maxBodyBytes = n
+	}
+}
+
+// WithMaxConnections bounds open connections. Past it, a new connection waits
+// in the kernel backlog until one closes.
+func WithMaxConnections(n int) Option {
+	return func(s *Source) {
+		s.maxConnections = n
+	}
+}
+
+// WithReadHeaderTimeout overrides the header timeout. Tests use it.
+func WithReadHeaderTimeout(d time.Duration) Option {
+	return func(s *Source) {
+		s.readHeaderTimeout = d
+	}
+}
+
+// WithBodyReadTimeout overrides the body timeout. Tests use it.
+func WithBodyReadTimeout(d time.Duration) Option {
+	return func(s *Source) {
+		s.bodyReadTimeout = d
+	}
+}
+
 // WithMeterProvider records request metrics against the given provider. A nil
 // provider leaves the source recording nothing.
 func WithMeterProvider(mp metric.MeterProvider) Option {
@@ -80,7 +142,11 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 
 func NewSource(opts ...Option) (*Source, error) {
 	s := &Source{
-		addr: defaultAddr,
+		addr:              defaultAddr,
+		maxBodyBytes:      DefaultMaxBodyBytes,
+		maxConnections:    DefaultMaxConnections,
+		readHeaderTimeout: readHeaderTimeout,
+		bodyReadTimeout:   bodyReadTimeout,
 		// A queue of one, as in the Python source: a delivery is accepted
 		// while the pipeline works on the previous one, and the next sender
 		// waits rather than having its event dropped.
@@ -109,6 +175,16 @@ func (s *Source) HMACConfig() *HMAC {
 	return s.hmac
 }
 
+// MaxBodyBytes reports the body bound in effect.
+func (s *Source) MaxBodyBytes() int64 {
+	return s.maxBodyBytes
+}
+
+// MaxConnections reports the connection bound in effect.
+func (s *Source) MaxConnections() int {
+	return s.maxConnections
+}
+
 // Handler is the webhook endpoint, exposed so it can be served on a listener
 // the caller owns.
 func (s *Source) Handler() http.Handler {
@@ -133,13 +209,17 @@ func (s *Source) Start() error {
 	if err != nil {
 		return err
 	}
-	s.listener = ln
-	s.server = &http.Server{Handler: s.Handler()}
+	s.listener = netutil.LimitListener(ln, s.maxConnections)
+	s.server = &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: s.readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+	}
 
 	s.logger.Info("starting webhook server", zap.String("addr", ln.Addr().String()))
 
 	go func() {
-		if err := s.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := s.server.Serve(s.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.logger.Error("webhook server stopped", zap.Error(err))
 		}
 	}()
@@ -178,11 +258,38 @@ func (s *Source) Close() error {
 }
 
 func (s *Source) receiveEvents(w http.ResponseWriter, r *http.Request) {
+	// The body read runs under its own deadline, cleared once the body is
+	// in, so the wait on the pipeline below is under none. Set before the
+	// length check so the server's drain of a refused body is covered too.
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(s.bodyReadTimeout)); err != nil {
+		s.logger.Debug("body read deadline not supported", zap.Error(err))
+	}
+
+	// The bound comes before the read and before the signature check: the
+	// body is the allocation, and a signature only proves who sent it after
+	// it is held in full. A declared length past the bound is refused
+	// without reading a byte; a chunked body is cut at the bound.
+	if r.ContentLength > s.maxBodyBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, `{"detail":"Request body too large"}`)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, `{"detail":"Request body too large"}`)
+			return
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			writeJSON(w, http.StatusRequestTimeout, `{"detail":"Request body timed out"}`)
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, `{"detail":"Unable to read request body"}`)
 		return
 	}
+	_ = rc.SetReadDeadline(time.Time{})
 
 	if s.hmac != nil {
 		signature := r.Header.Get(s.hmac.Header)
