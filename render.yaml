@@ -1,0 +1,83 @@
+# Render Blueprint for the Deploy to Render button in the README: a Postgres,
+# a web service that accepts metrics over a signed webhook and aggregates them
+# by minute, and a web service that reads them back over HTTP.
+#
+# This file is at the repository root because the button reads it from there.
+# Everything it deploys is under render/.
+#
+# The deploy asks for one value:
+#   SQLFLOW_WEBHOOK_HMAC_SECRET  any long random string. A blank one fails the
+#                                deploy: the pipeline will not start unsigned
+#                                unless SQLFLOW_WEBHOOK_AUTH is set to none.
+databases:
+  - name: sqlflow-metrics-db
+    plan: 0.1c-256mb
+    # Same region as both services: connectionString is the private-network
+    # URL, which only resolves within one region.
+    region: virginia
+    postgresMajorVersion: "18"
+    diskSizeGB: 5
+    # Off, so storage is watched rather than grown silently. Nothing deletes
+    # from the minute table yet.
+    storageAutoscalingEnabled: false
+
+services:
+  # The pipeline. A web service, not a worker, because only a web service
+  # gets a public URL, and senders need one.
+  - type: web
+    name: sqlflow-metrics-ingest
+    runtime: docker
+    dockerfilePath: ./render/Dockerfile
+    dockerContext: ./render
+    plan: 0.5c-512mb
+    region: virginia
+    # Off: a copy of this file in someone else's workspace would otherwise
+    # redeploy whenever this repository's main moves. Quoted: unquoted, YAML
+    # reads off as false, and Render's schema wants a trigger name.
+    autoDeployTrigger: "off"
+    envVars:
+      - key: SQLFLOW_POSTGRES_URI
+        fromDatabase:
+          name: sqlflow-metrics-db
+          property: connectionString
+      # Prompted for during the deploy.
+      - key: SQLFLOW_WEBHOOK_HMAC_SECRET
+        sync: false
+      # hmac or none. none accepts unsigned requests from anyone.
+      - key: SQLFLOW_WEBHOOK_AUTH
+        value: hmac
+      # pipeline.yml listens on SQLFLOW_WEBHOOK_PORT. PORT tells Render the
+      # same port, so it routes there rather than scanning for one.
+      - key: SQLFLOW_WEBHOOK_PORT
+        value: "10000"
+      - key: PORT
+        value: "10000"
+      - key: SQLFLOW_LOG_LEVEL
+        value: INFO
+
+  # The API, from the same image.
+  - type: web
+    name: sqlflow-metrics-api
+    runtime: docker
+    dockerfilePath: ./render/Dockerfile
+    dockerContext: ./render
+    dockerCommand: /app/bin/serve.sh
+    plan: 0.5c-512mb
+    region: virginia
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off"
+    envVars:
+      - key: SQLFLOW_POSTGRES_URI
+        fromDatabase:
+          name: sqlflow-metrics-db
+          property: connectionString
+      # An identifier sent as ?client_id=, not a secret. Render mints it once.
+      # Copy it from the dashboard.
+      - key: SQLFLOW_SERVE_CLIENT_ID
+        generateValue: true
+      - key: SQLFLOW_SERVE_PORT
+        value: "8080"
+      - key: PORT
+        value: "8080"
+      - key: SQLFLOW_LOG_LEVEL
+        value: INFO
