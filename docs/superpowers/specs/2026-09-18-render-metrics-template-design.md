@@ -93,7 +93,7 @@ render/
   pipeline.yml                webhook source, handler, window, postgres sink
   serve.yml                   commands, server, and the series and metric datasets, written by hand
   rollups.yml                 the ladder; no serve block
-  migrations/                 0001_metrics.sql, 0002_series.sql, 0003_install.sql, 0004_rollups.sql (generated)
+  migrations/                 0001_metrics_1m.sql, 0002_series.sql, 0003_rollups.sql (generated), 0004_install.sql
   bin/entrypoint.sh           checks, migrate, telemetry, exec sqlflow run
   bin/serve.sh                checks, exec sqlflow serve
   bin/migrate.sh              as the Bluesky demo's, including the wait for the database
@@ -236,13 +236,16 @@ closes: up to about two minutes. The README says so beside the first request.
 | `name` | `text` |
 | `type` | `text` |
 | `dimensions_key` | `text` |
-| `dimensions` | `jsonb` |
 | `value_sum`, `value_min`, `value_max`, `value_last` | `double precision` |
 | `value_count` | `bigint` |
 | `last_at` | `timestamptz` |
 | `updated_at` | `timestamptz DEFAULT now()` |
 
 The primary key is `(bucket, name, type, dimensions_key)`.
+
+The minute table has no `dimensions` column. `dimensions_key` is JSON text,
+so `series` derives `dimensions` as `dimensions_key::jsonb` and no `jsonb`
+passes through the sink.
 
 `series` holds one row per `(name, type, dimensions_key)` with `dimensions`,
 `first_bucket`, and `last_bucket`. A statement-level trigger on `metrics_1m`
