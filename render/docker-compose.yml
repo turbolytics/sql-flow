@@ -32,7 +32,9 @@ services:
         condition: service_healthy
     environment:
       SQLFLOW_POSTGRES_URI: postgresql://metrics:metrics@postgres:5432/metrics
-      SQLFLOW_WEBHOOK_AUTH: ${SQLFLOW_WEBHOOK_AUTH:-hmac}
+      # No value: passed through when the caller sets it and absent when not,
+      # which is how Render leaves it. The default is the entrypoint's.
+      SQLFLOW_WEBHOOK_AUTH:
       SQLFLOW_WEBHOOK_HMAC_SECRET: ${SQLFLOW_WEBHOOK_HMAC_SECRET-local-secret}
       SQLFLOW_WEBHOOK_PORT: "10000"
       SQLFLOW_METRIC_NAME_PREFIX: ${SQLFLOW_METRIC_NAME_PREFIX:-}

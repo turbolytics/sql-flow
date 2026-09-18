@@ -3,8 +3,9 @@
 #
 # SQLFLOW_POSTGRES_URI            required
 # SQLFLOW_WEBHOOK_AUTH            hmac (default) or none. bin/entrypoint.sh
-#                                 refuses anything else, and refuses hmac
-#                                 without a secret.
+#                                 refuses anything else, refuses hmac without
+#                                 a secret, and exports the mode it settled
+#                                 on. Anything but exactly none is signed.
 # SQLFLOW_WEBHOOK_HMAC_SECRET     required under hmac
 # SQLFLOW_WEBHOOK_PORT            default 8001
 # SQLFLOW_WEBHOOK_MAX_BODY_BYTES  default 26214400, 25 MiB
@@ -103,7 +104,10 @@ pipeline:
     webhook:
       addr: "0.0.0.0:{{ SQLFLOW_WEBHOOK_PORT|default('8001') }}"
       max_body_bytes: {{ SQLFLOW_WEBHOOK_MAX_BODY_BYTES|default('26214400') }}
-{% if SQLFLOW_WEBHOOK_AUTH|default('hmac') == 'hmac' %}
+{# Signed unless the mode is exactly none. bin/entrypoint.sh exports hmac or
+   none and nothing else, and this test fails closed if it is ever run without
+   it: an unset, empty or misspelt mode gets the signature block. #}
+{% if SQLFLOW_WEBHOOK_AUTH|default('hmac') != 'none' %}
       signature_type: hmac
       hmac:
         header: X-Signature-256

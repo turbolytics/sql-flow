@@ -48,9 +48,14 @@ services:
       # Prompted for during the deploy.
       - key: SQLFLOW_WEBHOOK_HMAC_SECRET
         sync: false
-      # hmac or none. none accepts unsigned requests from anyone.
-      - key: SQLFLOW_WEBHOOK_AUTH
-        value: hmac
+      # SQLFLOW_WEBHOOK_AUTH is not here, on purpose. Unset, the pipeline
+      # requires a signature. To accept unsigned requests, add it to this
+      # service in the dashboard with the value none. Render keeps a variable
+      # this file does not name and rewrites one it does, so a value here
+      # would put a pipeline set to none back to hmac on every sync, and it
+      # would start refusing its senders without anyone having changed it.
+      # SQLFLOW_METRIC_NAME_PREFIX and SQLFLOW_WEBHOOK_MAX_BODY_BYTES are left
+      # out for the same reason.
       # pipeline.yml listens on SQLFLOW_WEBHOOK_PORT. PORT tells Render the
       # same port, so it routes there rather than scanning for one.
       - key: SQLFLOW_WEBHOOK_PORT

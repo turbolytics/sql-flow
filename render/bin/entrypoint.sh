@@ -13,14 +13,23 @@ fi
 # Unsigned mode is chosen, never reached by omission. Render lets a deploy
 # leave the secret's prompt blank, and a blank secret under hmac would be a
 # public write endpoint into this database.
+#
+# This script is the one place the mode is decided. It exports the mode it
+# settled on, so pipeline.yml never reads a value this script did not check.
+# The two once decided separately and disagreed about an empty string: this
+# script read it as hmac and was satisfied by the secret, the template read it
+# as not-hmac and rendered no signature block, and an unsigned request was
+# answered 200 by a pipeline whose owner believed it was signed.
 case "${SQLFLOW_WEBHOOK_AUTH:-hmac}" in
   hmac)
+    SQLFLOW_WEBHOOK_AUTH=hmac
     if [ -z "${SQLFLOW_WEBHOOK_HMAC_SECRET:-}" ]; then
       echo "SQLFLOW_WEBHOOK_HMAC_SECRET is not set. Set it, or set SQLFLOW_WEBHOOK_AUTH=none to accept unsigned requests." >&2
       exit 2
     fi
     ;;
   none)
+    SQLFLOW_WEBHOOK_AUTH=none
     echo "webhook accepts unsigned requests: SQLFLOW_WEBHOOK_AUTH=none" >&2
     ;;
   *)
@@ -28,6 +37,7 @@ case "${SQLFLOW_WEBHOOK_AUTH:-hmac}" in
     exit 2
     ;;
 esac
+export SQLFLOW_WEBHOOK_AUTH
 
 # The prefix is rendered into the handler's SQL inside single quotes.
 case "${SQLFLOW_METRIC_NAME_PREFIX:-}" in

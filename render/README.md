@@ -210,11 +210,13 @@ but `value_last` adds.
 
 ## Settings
 
-Set on the `sqlflow-metrics-ingest` service.
+Set on the `sqlflow-metrics-ingest` service, in the dashboard. None of these
+is in `render.yaml`, on purpose: Render keeps a variable the Blueprint does
+not name and rewrites one it does, so a setting made here survives a sync.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SQLFLOW_WEBHOOK_AUTH` | `hmac` | `none` accepts unsigned requests from anyone who has the URL. |
+| `SQLFLOW_WEBHOOK_AUTH` | `hmac` | `none` accepts unsigned requests from anyone who has the URL. Anything but exactly `none` is signed. |
 | `SQLFLOW_WEBHOOK_HMAC_SECRET` | | Required under `hmac`. |
 | `SQLFLOW_METRIC_NAME_PREFIX` | empty | When set, a metric whose name does not start with it is dropped. Letters, digits, `.`, `_` and `-`. |
 | `SQLFLOW_WEBHOOK_MAX_BODY_BYTES` | 26214400 | A larger body is refused with 413. |

@@ -59,6 +59,19 @@ for env in "SQLFLOW_WEBHOOK_HMAC_SECRET=" "SQLFLOW_WEBHOOK_AUTH=open" "SQLFLOW_M
   echo "ok   $env exits 2"
 done
 
+echo "== an auth mode that is empty still requires a signature"
+# The entrypoint and the template once disagreed about an empty mode, and an
+# unsigned request was answered 200 by a pipeline with a secret set.
+docker compose up -d --wait postgres
+for env in "SQLFLOW_WEBHOOK_AUTH=" "SQLFLOW_WEBHOOK_AUTH=hmac"; do
+  docker compose run -d --rm --no-deps -p 127.0.0.1:10077:10000 -e "$env" ingest >/dev/null
+  wait_for "ingest with $env" "http://127.0.0.1:10077/events"
+  got="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:10077/events --data-binary '{"name":"x","type":"count"}')"
+  docker ps -q --filter "publish=10077" | xargs -r docker rm -f >/dev/null
+  [ "$got" = 400 ] || fail "with $env an unsigned request answered $got, want 400"
+  echo "ok   $env refuses an unsigned request"
+done
+
 echo "== the API refuses a blank client id, and one a URL would mangle"
 for env in "SQLFLOW_SERVE_CLIENT_ID=" "SQLFLOW_SERVE_CLIENT_ID=aA+SZt88/x="; do
   code=0
