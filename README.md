@@ -11,6 +11,12 @@ SQLFlow is a stream processing engine that lets you define pipelines with just S
 - [Coverage and invariant matrix](docs/coverage/matrix.md): what is tested, and
   separately, what is *proven* — regenerated from the suites on every push.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/turbolytics/sql-flow)
+
+One click runs sqlflow on Render: a webhook that accepts metrics, a one-minute
+aggregation into Postgres, and an HTTP API that reads them back. It asks for
+one secret and is a paid deploy. See [`render/`](render/README.md).
+
 # Quick Start (Getting Started in 5 Minutes)
 
 1. Build a binary (see [Installation](#installation) for prebuilt binaries and Docker):
