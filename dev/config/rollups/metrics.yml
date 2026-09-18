@@ -26,7 +26,10 @@ rollups:
       - name: metrics
         dimensions: [name, type, dimensions_key]
         measures:
-          # Summed as an integer, a gauge of 0.73 is 1 and one of 0.25 is 0.
+          # numeric: double keeps the fraction. A sum is stored as a bigint by
+          # default, and Postgres rounds a fraction cast to one: a gauge
+          # reading of 0.73 would be stored as 1, and one of 0.25 as 0.
+          # value_count needs no double: a count of samples is a whole number.
           value_sum: {type: sum, column: value_sum, numeric: double}
           value_count: {type: sum, column: value_count}
           value_min: {type: min, column: value_min}
