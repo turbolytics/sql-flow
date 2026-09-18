@@ -15,11 +15,13 @@ FILENAME="${2:-libduckdb.so}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DUCKDB_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/DUCKDB_VERSION")"
 
-case "$(uname -m)" in
-    x86_64)        DUCKDB_ARCH="amd64" ;;
-    aarch64|arm64) DUCKDB_ARCH="arm64" ;;
+# The image build cross-compiles, so the library it needs is the target's,
+# not the host's. Docker sets TARGETARCH; anything else runs on its own arch.
+case "${DUCKDB_ARCH:-${TARGETARCH:-$(uname -m)}}" in
+    x86_64|amd64)        DUCKDB_ARCH="amd64" ;;
+    aarch64|arm64)       DUCKDB_ARCH="arm64" ;;
     *)
-        echo "install-libduckdb: unsupported architecture $(uname -m)" >&2
+        echo "install-libduckdb: unsupported architecture ${DUCKDB_ARCH:-${TARGETARCH:-$(uname -m)}}" >&2
         exit 1
         ;;
 esac

@@ -252,7 +252,7 @@ release-binaries:
 # in the image so it can be read back off a pulled tag.
 .PHONY: sqlflow-image
 sqlflow-image:
-	docker build \
+	DOCKER_BUILDKIT=1 docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(GIT_COMMIT) \
 		--label org.opencontainers.image.version=$(VERSION) \
@@ -266,11 +266,10 @@ sqlflow-image:
 # Multi-arch is the point of the target existing. v1.0.0 was published by hand
 # from a mac with a plain `docker build`, which produces a single-arch image, so
 # it went out arm64-only and could not run on amd64 at all. buildx runs the
-# whole Dockerfile once per platform against a platform-matching golang image;
-# install-libduckdb.sh branches on `uname -m`, so each arch fetches its own
-# libduckdb without any change here. CGO_ENABLED=1 rules out cross-compiling, so
-# the foreign arch builds under emulation -- expect the amd64 `go build` to take
-# several minutes on an arm64 host.
+# Dockerfile once per platform. The builder stage runs on the host's platform
+# and cross-compiles for the target, so the foreign arch never runs a compiler
+# under emulation: on an arm64 host the amd64 `go build` took four minutes
+# emulated and takes about one cross-compiled.
 #
 # Run `make test-image` before releasing; the guards below only cover release
 # integrity, not correctness.
