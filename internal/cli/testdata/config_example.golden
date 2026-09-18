@@ -38,6 +38,10 @@ pipeline:
     websocket:
       uri: <string>
     webhook:
+      # The address the listener binds, as host:port. Defaults to
+      # 0.0.0.0:8001. A platform that assigns the port sets it from the
+      # environment: "0.0.0.0:{{ PORT }}".
+      addr: <string>
       signature_type: hmac
       hmac:
         header: <string>

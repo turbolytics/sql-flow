@@ -135,7 +135,14 @@ func appendValue(builder array.Builder, fieldType arrow.DataType, val []byte, da
 
 	switch fieldType.(type) {
 	case *arrow.StringType:
-		builder.(*array.StringBuilder).Append(jsonString(val))
+		// Only a JSON string has escapes to decode. An object, an array, a
+		// number or a boolean arrives as its own JSON text, and decoding
+		// that rewrites \" inside it into a bare quote.
+		if dataType == jsonparser.String {
+			builder.(*array.StringBuilder).Append(jsonString(val))
+		} else {
+			builder.(*array.StringBuilder).Append(unsafeString(val))
+		}
 
 	case *arrow.BooleanType:
 		b, err := strconv.ParseBool(unsafeString(val))

@@ -24,6 +24,11 @@
 
 ### Fixed
 
+- `StructuredBatch` stored a JSON object read into a `TEXT` column with the
+  escapes inside it decoded, so `{"q":"say \"hi\""}` became
+  `{"q":"say "hi""}`, which is not JSON, and `from_json` failed on it. Only a
+  JSON string is decoded now. An object or an array is stored as the bytes
+  received.
 - `sqlflow serve` redacted a password from a database error before logging it,
   but not a token or a key. A MotherDuck attach carries its token in the URL
   or as an `ATTACH ... (TOKEN '…')` option, and DuckDB's secrets carry keys
@@ -42,6 +47,10 @@
   integer at every grain. `last` keeps the value of the bucket's latest finer
   bucket. A declaration that uses neither generates the migration and the
   serve datasets it did before, byte for byte.
+- `source.webhook.addr` sets the address the webhook source listens on. It
+  was the constant `0.0.0.0:8001`, which is still the default. A platform
+  that assigns the port, as Render does through `PORT`, could not run a
+  webhook pipeline. An `addr` that is not a `host:port` fails at startup.
 - `sqlflow serve` can answer a dataset from memory. It is off unless the
   dataset says `cache: {ttl_seconds: N}`, and a dataset without the block is
   served byte for byte as before. An answer is served for at most
