@@ -14,7 +14,7 @@ This plan covers build-order rows 3 and 4 of the spec: the template without tele
 
 ## Global Constraints
 
-- **Precondition:** a published `turbolytics/sql-flow` tag that contains `source.webhook.addr`, rollup `numeric: double` and `last`, and the `StructuredBatch` escape fix. This plan calls it `SQLFLOW_TAG`. Replace every `SQLFLOW_TAG` in the files below with the real tag, such as `v2026.09.20`. It appears in `render/Dockerfile`, `render/Makefile` and `render/docker-compose.yml`, and the three must match.
+- **Precondition:** a published `turbolytics/sql-flow` tag that contains `source.webhook.addr`, rollup `numeric: double` and `last`, and the `StructuredBatch` escape fix. This plan calls it `SQLFLOW_TAG`. The tag is `v2026.09.18`, and the files below already carry it. It appears in `render/Dockerfile`, `render/Makefile` and `render/docker-compose.yml`, and the three must match.
 - Every file of the template is under `render/`, except `render.yaml` at the repository root and the CI workflow under `.github/workflows/`.
 - The sqlflow binary is not modified by this plan.
 - Unsigned mode is chosen, never reached by omission: `SQLFLOW_WEBHOOK_AUTH=none`. A blank secret under `hmac` exits 2.
@@ -82,7 +82,19 @@ chmod +x render/bin/migrate.sh
 grep -c sqlflow_render_metrics_migrations render/bin/migrate.sh
 ```
 
-Expected: `2`. Read the file. Its comment about "a Blueprint's first deploy" describes the failure the wait exists for, and stays. Change the one phrase "which is how the worker uses it" to "which is how both services use it".
+Expected: `2`.
+
+The repository's `.gitignore` has `bin/`, which also matches `render/bin/`. Without an exception every script in this plan stays out of the commit: the tests pass from the files on disk, and a clone cannot build the image, because the Dockerfile copies `bin`. In `.gitignore`, directly under the `bin/` line, add:
+
+```
+# The Deploy to Render template's scripts are source, not build output.
+!/render/bin/
+```
+
+Run: `git check-ignore -v render/bin/migrate.sh`
+Expected: no output, exit 1. After every `git add` in this plan, `git ls-files render/bin` must list the scripts.
+
+Read the file. Its comment about "a Blueprint's first deploy" describes the failure the wait exists for, and stays. Change the one phrase "which is how the worker uses it" to "which is how both services use it".
 
 - [ ] **Step 3: Verify the runner fails with nothing to apply to**
 
@@ -202,7 +214,7 @@ Expected: refused, `violates check constraint`.
 
 ```bash
 docker stop render-tpl-pg
-git add render/migrations/0001_metrics_1m.sql render/migrations/0002_series.sql render/bin/migrate.sh
+git add .gitignore render/migrations/0001_metrics_1m.sql render/migrations/0002_series.sql render/bin/migrate.sh
 git commit -m "render: the minute table, the series table, and a runner that applies them once
 
 The template's schema. metrics_1m holds five values per minute per
@@ -290,7 +302,7 @@ Create `render/Makefile`. Recipes are indented with tabs:
 
 ```make
 # Must match the Dockerfile and docker-compose.yml.
-SQLFLOW_IMAGE ?= turbolytics/sql-flow:SQLFLOW_TAG
+SQLFLOW_IMAGE ?= turbolytics/sql-flow:v2026.09.18
 
 .PHONY: validate rollups up test psql clean
 
@@ -726,7 +738,7 @@ queries every one."
 
 - [ ] **Step 1: Write the failing test**
 
-Create `render/test/e2e.sh`, mode 755. It asserts, at every one of the six grains: two key orders are one series; one pair of `dimensions` returns the two series that contain it and both pairs return one; a value that is a prefix of another matches nothing; a filter that is not JSON matches nothing; a gauge's `0.25 + 0.5` reads `0.75`; `metric_total` sums three series. It also asserts that seven malformed bodies answer 200 and store nothing, that a dimension value with a quote in it survives, that the entrypoint exits 2 on a blank secret, an unknown auth mode and an unsafe prefix, that a restart skips the migrations, and that `none` with a prefix accepts an unsigned request and drops a name outside the prefix.
+Create `render/test/e2e.sh`, mode 755. It asserts, at every one of the six grains: two key orders are one series; one pair of `dimensions` returns the two series that contain it and both pairs return one; a value that is a prefix of another matches nothing; a filter that is not JSON matches nothing; a gauge's `0.25 + 0.5` reads `0.75`; `metric_total` sums three series. It also asserts that seven malformed bodies answer 200 and store nothing, that a dimension value with a quote in it survives, that the entrypoint exits 2 on a blank secret, an unknown auth mode and an unsafe prefix, that a restart leaves three migrations recorded and the service running, and that `none` with a prefix accepts an unsigned request and drops a name outside the prefix.
 
 ```bash
 #!/usr/bin/env bash
@@ -876,10 +888,16 @@ noname="$(get metric)"
 expect "no name answers empty" '(.rows | type) == "array" and (.rows | length) == 0' "$noname"
 
 echo "== a restart applies no migration twice"
+# Both services migrate on every start, so a log line saying skipped proves
+# nothing: whichever service lost the first race already printed one. The
+# table is the record. A migration applied twice would fail on its CREATE
+# TABLE and take the service down with it.
 docker compose restart ingest >/dev/null
-sleep 3
-docker compose logs ingest | grep -q 'skipped 0001_metrics_1m' || fail "the restart did not skip migration 0001"
-echo "ok   restart skipped the migrations"
+wait_for ingest "$INGEST/events"
+applied="$(docker compose exec -T postgres psql -U metrics -d metrics -Atc 'SELECT count(*) FROM schema_migrations')"
+[ "$applied" = 3 ] || fail "schema_migrations holds $applied rows after a restart, want 3"
+[ -n "$(docker compose ps --status running -q ingest)" ] || fail "ingest is not running after a restart"
+echo "ok   three migrations recorded, and ingest came back"
 
 echo "== unsigned mode, and the name prefix"
 docker compose stop ingest >/dev/null
@@ -1150,7 +1168,7 @@ Create `render/Dockerfile`:
 #
 # An argument so an unreleased build can be tried locally:
 #   docker build --build-arg SQLFLOW_IMAGE=turbolytics/sql-flow:<tag> render
-ARG SQLFLOW_IMAGE=turbolytics/sql-flow:SQLFLOW_TAG
+ARG SQLFLOW_IMAGE=turbolytics/sql-flow:v2026.09.18
 FROM ${SQLFLOW_IMAGE}
 
 # psql and pg_isready apply the migrations. curl sends the install events.
@@ -1202,7 +1220,7 @@ services:
     build:
       context: .
       args:
-        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:SQLFLOW_TAG}
+        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18}
     depends_on:
       postgres:
         condition: service_healthy
@@ -1224,7 +1242,7 @@ services:
     build:
       context: .
       args:
-        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:SQLFLOW_TAG}
+        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18}
     entrypoint: /app/bin/serve.sh
     depends_on:
       postgres:
@@ -1774,4 +1792,5 @@ Point the telemetry subdomain, such as `telemetry.turbolytics.io`, at the ingest
 - [ ] `make -C render validate` and `make -C render test` pass locally and in CI.
 - [ ] The collector is live, accepts an unsigned `install.*` metric, drops any other name, and answers `metric_total`.
 - [ ] `git grep -n SQLFLOW_TAG` prints nothing: every placeholder is the real tag.
+- [ ] The test passes from a clean export, not only the working tree: `git archive HEAD | tar -x -C "$TMPDIR/export" && make -C "$TMPDIR/export/render" test`. This is what catches a file the ignore rules kept out of the commit.
 - [ ] The branch is not merged. The telemetry plan lands on it first.
