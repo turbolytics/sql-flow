@@ -211,3 +211,33 @@ func TestSinkRetry_NewWebhookMaxConnections(t *testing.T) {
 	}, zap.NewNop(), nil)
 	assert.Error(t, err)
 }
+
+// The address is the config's. Addr reports the configured address until the
+// source starts, so neither case binds a port.
+func TestSinkRetry_NewWebhookAddr(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	s, err := New(config.Source{
+		Type:    "webhook",
+		Webhook: &config.WebhookSource{Addr: "127.0.0.1:10000"},
+	}, zap.NewNop(), nil)
+	assert.NoError(t, err)
+	src := s.(*webhook.Source)
+	assert.Equal(t, "127.0.0.1:10000", src.Addr())
+	assert.NoError(t, src.Close())
+
+	s, err = New(config.Source{
+		Type:    "webhook",
+		Webhook: &config.WebhookSource{},
+	}, zap.NewNop(), nil)
+	assert.NoError(t, err)
+	src = s.(*webhook.Source)
+	assert.Equal(t, config.DefaultWebhookAddr, src.Addr())
+	assert.NoError(t, src.Close())
+
+	_, err = New(config.Source{
+		Type:    "webhook",
+		Webhook: &config.WebhookSource{Addr: "nonsense"},
+	}, zap.NewNop(), nil)
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "addr"))
+}

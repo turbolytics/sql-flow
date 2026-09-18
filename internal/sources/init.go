@@ -106,13 +106,19 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		if err != nil {
 			return nil, err
 		}
+		addr, err := c.Webhook.ResolvedAddr()
+		if err != nil {
+			return nil, err
+		}
 		l.Info("initializing webhook source",
+			zap.String("addr", addr),
 			zap.Int64("max_body_bytes", maxBody),
 			zap.Int("max_connections", maxConns),
 		)
 		opts := []webhook.Option{
 			webhook.WithLogger(l),
 			webhook.WithMeterProvider(mp),
+			webhook.WithAddr(addr),
 			webhook.WithMaxBodyBytes(maxBody),
 			webhook.WithMaxConnections(maxConns),
 		}
