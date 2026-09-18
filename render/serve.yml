@@ -1,0 +1,241 @@
+# Serves what the pipeline writes, read-only, from the same Postgres.
+#
+#   sqlflow serve -c serve.yml
+#
+# SQLFLOW_POSTGRES_URI     required
+# SQLFLOW_SERVE_CLIENT_ID  required. Sent as ?client_id= on every request. The
+#                          deploy asks for it. bin/serve.sh refuses one that
+#                          would need encoding in a URL.
+# SQLFLOW_SERVE_PORT       default 8080
+#
+# The metric and metric_total grains are written by hand. sqlflow rollup
+# generates a dataset of at most one dimension, folded, and a series here is
+# three columns that cannot fold. Every grain of a dataset is the same
+# statement over another table. CI queries each one.
+#
+# Every grain holds an answer for the same 30 seconds. A coarse grain changes
+# slowly and could be held for minutes, but the first thing a new deploy does
+# is send one metric and ask for it, and an empty answer held for ten minutes
+# reads as a pipeline that does not work.
+commands:
+  - name: pin the session timezone
+    sql: |
+      SET TimeZone='UTC';
+
+  - name: load postgres extension
+    sql: |
+      INSTALL postgres;
+      LOAD postgres;
+
+  # One scan fans out across ctid ranges, each on its own Postgres connection.
+  # The default cap is 64. The Render plan allows far fewer.
+  - name: bound the postgres connections one scan may open
+    sql: |
+      SET pg_connection_limit = 4;
+
+  # READ_ONLY is the guard. A write in a dataset's SQL fails at startup.
+  - name: attach postgres
+    sql: |
+      ATTACH '{{ SQLFLOW_POSTGRES_URI }}' AS pg (TYPE POSTGRES, READ_ONLY);
+
+serve:
+  name: render-metrics-api
+
+  http:
+    addr: "0.0.0.0:{{ SQLFLOW_SERVE_PORT|default('8080') }}"
+
+  clients:
+    - name: default
+      id: "{{ SQLFLOW_SERVE_CLIENT_ID }}"
+
+  pool:
+    size: 4
+
+  metrics:
+    enabled: true
+
+  limits:
+    max_rows: 10000
+    timeout_seconds: 10
+
+  datasets:
+    - name: series
+      description: Every series seen. A series is a name, a type and a set of dimensions. dimensions is a JSON object, as a string.
+      cache: {ttl_seconds: 15}
+      sql: |
+        SELECT name, type, dimensions, first_bucket, last_bucket
+        FROM pg.series
+        ORDER BY name, type, dimensions_key
+
+    - name: metric
+      description: One metric per bucket per series. name is required; without it the answer is empty. dimensions is a JSON object, and the answer holds the series whose dimensions contain every pair in it; a dimensions that is not JSON matches nothing. since and until bound the range, default the last hour, and pick the grain. Read value_sum for a count and value_last for a gauge; value_sum / value_count is the average.
+      params:
+        - name: name
+          type: string
+        - name: dimensions
+          type: string
+        - name: since
+          type: timestamp
+        - name: until
+          type: timestamp
+      cache:
+        ttl_seconds: 30
+      grains:
+        1m:
+          bucket: 1m
+          max_range: 6h
+          sql: |
+            SELECT m.bucket, m.type, s.dimensions,
+                   m.value_sum, m.value_count, m.value_min, m.value_max, m.value_last
+            FROM pg.metrics_1m AS m
+            JOIN pg.series AS s USING (name, type, dimensions_key)
+            WHERE m.name = $name AND s.name = $name
+              AND m.bucket >= $since AND m.bucket < $until
+              AND json_contains(s.dimensions::JSON,
+                    CASE WHEN $dimensions IS NULL THEN '{}'::JSON
+                         ELSE TRY_CAST($dimensions AS JSON) END)
+            ORDER BY m.bucket, m.type, m.dimensions_key
+        5m:
+          bucket: 5m
+          max_range: 1d
+          sql: |
+            SELECT m.bucket, m.type, s.dimensions,
+                   m.value_sum, m.value_count, m.value_min, m.value_max, m.value_last
+            FROM pg.metrics_5m AS m
+            JOIN pg.series AS s USING (name, type, dimensions_key)
+            WHERE m.name = $name AND s.name = $name
+              AND m.bucket >= $since AND m.bucket < $until
+              AND json_contains(s.dimensions::JSON,
+                    CASE WHEN $dimensions IS NULL THEN '{}'::JSON
+                         ELSE TRY_CAST($dimensions AS JSON) END)
+            ORDER BY m.bucket, m.type, m.dimensions_key
+        15m:
+          bucket: 15m
+          max_range: 3d
+          sql: |
+            SELECT m.bucket, m.type, s.dimensions,
+                   m.value_sum, m.value_count, m.value_min, m.value_max, m.value_last
+            FROM pg.metrics_15m AS m
+            JOIN pg.series AS s USING (name, type, dimensions_key)
+            WHERE m.name = $name AND s.name = $name
+              AND m.bucket >= $since AND m.bucket < $until
+              AND json_contains(s.dimensions::JSON,
+                    CASE WHEN $dimensions IS NULL THEN '{}'::JSON
+                         ELSE TRY_CAST($dimensions AS JSON) END)
+            ORDER BY m.bucket, m.type, m.dimensions_key
+        1h:
+          bucket: 1h
+          max_range: 14d
+          sql: |
+            SELECT m.bucket, m.type, s.dimensions,
+                   m.value_sum, m.value_count, m.value_min, m.value_max, m.value_last
+            FROM pg.metrics_1h AS m
+            JOIN pg.series AS s USING (name, type, dimensions_key)
+            WHERE m.name = $name AND s.name = $name
+              AND m.bucket >= $since AND m.bucket < $until
+              AND json_contains(s.dimensions::JSON,
+                    CASE WHEN $dimensions IS NULL THEN '{}'::JSON
+                         ELSE TRY_CAST($dimensions AS JSON) END)
+            ORDER BY m.bucket, m.type, m.dimensions_key
+        6h:
+          bucket: 6h
+          max_range: 90d
+          sql: |
+            SELECT m.bucket, m.type, s.dimensions,
+                   m.value_sum, m.value_count, m.value_min, m.value_max, m.value_last
+            FROM pg.metrics_6h AS m
+            JOIN pg.series AS s USING (name, type, dimensions_key)
+            WHERE m.name = $name AND s.name = $name
+              AND m.bucket >= $since AND m.bucket < $until
+              AND json_contains(s.dimensions::JSON,
+                    CASE WHEN $dimensions IS NULL THEN '{}'::JSON
+                         ELSE TRY_CAST($dimensions AS JSON) END)
+            ORDER BY m.bucket, m.type, m.dimensions_key
+        1d:
+          bucket: 1d
+          max_range: 365d
+          sql: |
+            SELECT m.bucket, m.type, s.dimensions,
+                   m.value_sum, m.value_count, m.value_min, m.value_max, m.value_last
+            FROM pg.metrics_1d AS m
+            JOIN pg.series AS s USING (name, type, dimensions_key)
+            WHERE m.name = $name AND s.name = $name
+              AND m.bucket >= $since AND m.bucket < $until
+              AND json_contains(s.dimensions::JSON,
+                    CASE WHEN $dimensions IS NULL THEN '{}'::JSON
+                         ELSE TRY_CAST($dimensions AS JSON) END)
+            ORDER BY m.bucket, m.type, m.dimensions_key
+      range:
+        since: since
+        until: until
+        default: 1h
+
+    - name: metric_total
+      description: One metric per bucket, across every series of the name. The answer for a name with many series, such as one per user. name is required. It has no value_last, because the last value of many series is no series' value.
+      params:
+        - name: name
+          type: string
+        - name: since
+          type: timestamp
+        - name: until
+          type: timestamp
+      cache:
+        ttl_seconds: 30
+      grains:
+        1m:
+          bucket: 1m
+          max_range: 6h
+          sql: |
+            SELECT bucket, type,
+                   sum(value_sum)::DOUBLE AS value_sum,
+                   sum(value_count)::BIGINT AS value_count,
+                   min(value_min) AS value_min,
+                   max(value_max) AS value_max
+            FROM pg.metrics_1m
+            WHERE name = $name AND bucket >= $since AND bucket < $until
+            GROUP BY bucket, type
+            ORDER BY bucket, type
+        5m:
+          bucket: 5m
+          max_range: 1d
+          sql: |
+            SELECT bucket, type, value_sum, value_count, value_min, value_max
+            FROM pg.metrics_total_5m
+            WHERE name = $name AND bucket >= $since AND bucket < $until
+            ORDER BY bucket, type
+        15m:
+          bucket: 15m
+          max_range: 3d
+          sql: |
+            SELECT bucket, type, value_sum, value_count, value_min, value_max
+            FROM pg.metrics_total_15m
+            WHERE name = $name AND bucket >= $since AND bucket < $until
+            ORDER BY bucket, type
+        1h:
+          bucket: 1h
+          max_range: 14d
+          sql: |
+            SELECT bucket, type, value_sum, value_count, value_min, value_max
+            FROM pg.metrics_total_1h
+            WHERE name = $name AND bucket >= $since AND bucket < $until
+            ORDER BY bucket, type
+        6h:
+          bucket: 6h
+          max_range: 90d
+          sql: |
+            SELECT bucket, type, value_sum, value_count, value_min, value_max
+            FROM pg.metrics_total_6h
+            WHERE name = $name AND bucket >= $since AND bucket < $until
+            ORDER BY bucket, type
+        1d:
+          bucket: 1d
+          max_range: 365d
+          sql: |
+            SELECT bucket, type, value_sum, value_count, value_min, value_max
+            FROM pg.metrics_total_1d
+            WHERE name = $name AND bucket >= $since AND bucket < $until
+            ORDER BY bucket, type
+      range:
+        since: since
+        until: until
+        default: 1h

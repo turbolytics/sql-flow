@@ -1,0 +1,35 @@
+name: render-template
+
+# The Deploy to Render template under render/. Runs when it, the Blueprint or
+# this file changes.
+on:
+  push:
+    branches: [main]
+    paths: ["render/**", "render.yaml", ".github/workflows/render-template.yml"]
+  pull_request:
+    paths: ["render/**", "render.yaml", ".github/workflows/render-template.yml"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Configs, the generated migration, and render.yaml against Render's schema
+        run: make -C render validate
+      - name: A render.yaml that Render would refuse is refused
+        run: |
+          sed 's/plan: 0.5c-512mb/plan: not-a-plan/' render.yaml > "$RUNNER_TEMP/bad.yaml"
+          status=0
+          render/bin/validate-render.py "$RUNNER_TEMP/bad.yaml" || status=$?
+          if [ "$status" != 1 ]; then
+            echo "expected status 1 for an invalid plan, got $status" >&2
+            exit 1
+          fi
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Post metrics and read them back at every grain
+        run: make -C render test

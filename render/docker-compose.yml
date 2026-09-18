@@ -1,0 +1,106 @@
+# The template on one machine: the local run, and what CI tests.
+#
+# The window and flush settings close a minute in seconds, so a test does not
+# wait two minutes for its metric. A deploy leaves them at their defaults.
+#
+# No service here ever calls the maintainers' collector. Every pipeline is
+# pointed at `collector`, which is this same template with signatures off and
+# the install. prefix on: what the real one is. It shares the database, so the
+# test reads install events back through the same API.
+#
+# An idle bound below the window's 60 seconds has a cost the test works
+# around: a minute can close while it is still the current minute, and a
+# metric of that minute that arrives afterwards is dropped as late. A deploy's
+# bound is 60, where a closed minute has always ended. So the test sends each
+# series in one burst, and starts its burst in a fresh minute, after the one
+# install.deployed was sent in.
+#
+# Two pipeline instances, on purpose. Each holds its own window, and the test
+# sends each a share of one minute: what Postgres holds must be the sum. Two
+# instances is also what every deploy runs for a moment, the old beside the
+# new.
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: metrics
+      POSTGRES_PASSWORD: metrics
+      POSTGRES_DB: metrics
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5442}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metrics -d metrics"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  ingest: &ingest
+    build:
+      context: .
+      args:
+        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18.1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SQLFLOW_POSTGRES_URI: postgresql://metrics:metrics@postgres:5432/metrics
+      # No value: passed through when the caller sets it and absent when not,
+      # which is how Render leaves it. The default is the entrypoint's.
+      SQLFLOW_WEBHOOK_AUTH:
+      SQLFLOW_WEBHOOK_HMAC_SECRET: ${SQLFLOW_WEBHOOK_HMAC_SECRET-local-secret}
+      SQLFLOW_WEBHOOK_PORT: "10000"
+      SQLFLOW_METRIC_NAME_PREFIX: ${SQLFLOW_METRIC_NAME_PREFIX:-}
+      # No value: on unless the caller says off, as on Render.
+      SQLFLOW_TELEMETRY:
+      SQLFLOW_TELEMETRY_URL: ${SQLFLOW_TELEMETRY_URL:-http://collector:10000}
+      SQLFLOW_TELEMETRY_POLL_SECONDS: "1"
+      SQLFLOW_WINDOW_GRACE_SECONDS: "3"
+      SQLFLOW_WINDOW_IDLE_SECONDS: "5"
+      SQLFLOW_WINDOW_POLL_SECONDS: "1"
+      SQLFLOW_FLUSH_INTERVAL_SECONDS: "1"
+      SQLFLOW_LOG_LEVEL: INFO
+    ports:
+      - "127.0.0.1:${INGEST_HOST_PORT:-10000}:10000"
+
+  ingest2:
+    <<: *ingest
+    ports:
+      - "127.0.0.1:${INGEST2_HOST_PORT:-10001}:10000"
+
+  collector:
+    build:
+      context: .
+      args:
+        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18.1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SQLFLOW_POSTGRES_URI: postgresql://metrics:metrics@postgres:5432/metrics
+      SQLFLOW_WEBHOOK_AUTH: none
+      SQLFLOW_METRIC_NAME_PREFIX: install.
+      SQLFLOW_WEBHOOK_MAX_BODY_BYTES: "4096"
+      SQLFLOW_WEBHOOK_PORT: "10000"
+      # The collector reports on nobody, itself included.
+      SQLFLOW_TELEMETRY: "off"
+      SQLFLOW_WINDOW_GRACE_SECONDS: "3"
+      SQLFLOW_WINDOW_IDLE_SECONDS: "5"
+      SQLFLOW_WINDOW_POLL_SECONDS: "1"
+      SQLFLOW_FLUSH_INTERVAL_SECONDS: "1"
+      SQLFLOW_LOG_LEVEL: INFO
+
+  api:
+    build:
+      context: .
+      args:
+        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18.1}
+    entrypoint: /app/bin/serve.sh
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SQLFLOW_POSTGRES_URI: postgresql://metrics:metrics@postgres:5432/metrics
+      SQLFLOW_SERVE_CLIENT_ID: local-dev
+      SQLFLOW_LOG_LEVEL: INFO
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"

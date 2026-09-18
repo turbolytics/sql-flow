@@ -1,0 +1,164 @@
+# Accepts metrics over a webhook, aggregates them in a 1-minute tumbling
+# window, and upserts each closed minute into Postgres.
+#
+# SQLFLOW_POSTGRES_URI            required
+# SQLFLOW_WEBHOOK_AUTH            hmac (default) or none. bin/entrypoint.sh
+#                                 refuses anything else, refuses hmac without
+#                                 a secret, and exports the mode it settled
+#                                 on. Anything but exactly none is signed.
+# SQLFLOW_WEBHOOK_HMAC_SECRET     required under hmac
+# SQLFLOW_WEBHOOK_PORT            default 8001
+# SQLFLOW_WEBHOOK_MAX_BODY_BYTES  default 26214400, 25 MiB
+# SQLFLOW_WRITER_ID               required. bin/entrypoint.sh makes one per
+#                                 process start. Never set it by hand: two
+#                                 processes that share one replace each
+#                                 other's minutes.
+# SQLFLOW_METRIC_NAME_PREFIX      default empty. When set, a metric whose name
+#                                 does not start with it is dropped.
+#
+# The four window and flush variables exist so the test closes a minute in
+# seconds. Leave them unset in a deploy.
+commands:
+  - name: pin the session timezone
+    sql: |
+      SET TimeZone='UTC';
+
+  # One request is one row. A request carries one metric in its top-level
+  # keys, or several under metrics. Every scalar is TEXT: StructuredBatch
+  # fails the whole batch on a value that does not fit its column, and one
+  # sender's "value": "abc" must not cost the others their metrics. The
+  # handler casts, and drops what does not cast.
+  - name: declare the request schema
+    sql: |
+      CREATE TABLE IF NOT EXISTS events (
+        name TEXT, type TEXT, value TEXT, dimensions TEXT, timestamp TEXT,
+        metrics STRUCT(name TEXT, type TEXT, value TEXT, dimensions TEXT, timestamp TEXT)[]
+      );
+
+tables:
+  sql:
+    - name: metrics_1m
+      # No unique index, on purpose: in-memory DuckDB never frees rows deleted
+      # from an indexed table, and the engine deletes every closed minute. Each
+      # batch appends its own rows and emit_sql merges them per minute.
+      # See turbolytics/sql-flow#268.
+      sql: |
+        CREATE TABLE IF NOT EXISTS metrics_1m (
+          bucket TIMESTAMPTZ, name TEXT, type TEXT, dimensions_key TEXT,
+          value_sum DOUBLE, value_count BIGINT, value_min DOUBLE, value_max DOUBLE,
+          value_last DOUBLE, last_at TIMESTAMPTZ
+        );
+
+      # late_rows is drop, not reemit. The sink replaces a minute, it does not
+      # merge into one, so a late row republished alone would replace the
+      # minute's values with its own. sqlflow validate refuses reemit with an
+      # upserting sink. A metric whose timestamp is older than the open minutes
+      # is dropped and counted in window_late_rows_total.
+      window:
+        time_column: bucket
+        size_seconds: 60
+        grace_seconds: {{ SQLFLOW_WINDOW_GRACE_SECONDS|default('60') }}
+        idle_close_seconds: {{ SQLFLOW_WINDOW_IDLE_SECONDS|default('60') }}
+        late_rows: drop
+        poll_interval_seconds: {{ SQLFLOW_WINDOW_POLL_SECONDS|default('10') }}
+        # value_last is the value with the latest last_at, not the last row
+        # appended: batches of one minute can arrive out of order.
+        emit_sql: |
+          SELECT bucket, name, type, dimensions_key,
+                 '{{ SQLFLOW_WRITER_ID }}' AS writer,
+                 sum(value_sum) AS value_sum,
+                 sum(value_count)::BIGINT AS value_count,
+                 min(value_min) AS value_min,
+                 max(value_max) AS value_max,
+                 arg_max(value_last, last_at) AS value_last,
+                 max(last_at) AS last_at
+          FROM closed
+          GROUP BY bucket, name, type, dimensions_key
+
+        sink:
+          # upsert on the primary key makes at-least-once delivery survivable:
+          # a minute this process writes twice replaces itself. updated_at is
+          # not in the batch, so a new row takes the column's DEFAULT now().
+          #
+          # The key carries the writer, and the table is metrics_1m_writers,
+          # not metrics_1m. Another process holds its own part of the same
+          # minute, and keyed on the series alone the second to publish would
+          # replace the first. Postgres merges the writers into metrics_1m.
+          # See migrations/0004_writers.sql.
+          type: postgres
+          postgres:
+            dsn: "{{ SQLFLOW_POSTGRES_URI }}"
+            table: metrics_1m_writers
+            mode: upsert
+            key: [bucket, name, type, dimensions_key, writer]
+
+pipeline:
+  name: render-metrics
+  batch_size: 500
+  # A lone curl is a partial batch. It waits this long, then the minute has to
+  # close, so a first metric is readable after one to two minutes.
+  flush_interval_seconds: {{ SQLFLOW_FLUSH_INTERVAL_SECONDS|default('5') }}
+
+  source:
+    type: webhook
+    webhook:
+      addr: "0.0.0.0:{{ SQLFLOW_WEBHOOK_PORT|default('8001') }}"
+      max_body_bytes: {{ SQLFLOW_WEBHOOK_MAX_BODY_BYTES|default('26214400') }}
+{# Signed unless the mode is exactly none. bin/entrypoint.sh exports hmac or
+   none and nothing else, and this test fails closed if it is ever run without
+   it: an unset, empty or misspelt mode gets the signature block. #}
+{% if SQLFLOW_WEBHOOK_AUTH|default('hmac') != 'none' %}
+      signature_type: hmac
+      hmac:
+        header: X-Signature-256
+        sig_key: sha256
+        secret: "{{ SQLFLOW_WEBHOOK_HMAC_SECRET }}"
+{% endif %}
+
+  handler:
+    type: handlers.StructuredBatch
+    table: events
+    # A row is kept when every rule holds and dropped otherwise. The request
+    # was answered 200 before this ran, so nothing here can refuse one.
+    #
+    # dimensions_key is the series' identity: keys sorted, every value a
+    # string, compact JSON. This is its only author. Nothing reads a key back
+    # into this form.
+    #
+    # A timestamp more than a minute ahead is dropped. The window closes
+    # minutes against the newest event time it has seen, so one metric dated
+    # 2030 would close every minute until 2030 and drop all that follows as
+    # late.
+    #
+    # The column is ts, not at: AT is reserved in DuckDB.
+    sql: |
+      INSERT INTO metrics_1m
+      WITH raw AS (
+        SELECT name, type, value, dimensions, timestamp FROM events WHERE metrics IS NULL
+        UNION ALL
+        SELECT m.name, m.type, m.value, m.dimensions, m.timestamp
+        FROM (SELECT unnest(metrics) AS m FROM events WHERE metrics IS NOT NULL)
+      ),
+      parsed AS (
+        SELECT name, type,
+               CASE WHEN value IS NULL THEN 1.0 ELSE TRY_CAST(value AS DOUBLE) END AS value,
+               TRY(from_json(coalesce(dimensions, '{}'), '"MAP(VARCHAR, VARCHAR)"')) AS dims,
+               CASE WHEN timestamp IS NULL THEN now() ELSE TRY_CAST(timestamp AS TIMESTAMPTZ) END AS ts
+        FROM raw
+      )
+      SELECT time_bucket(INTERVAL '1 minute', ts) AS bucket, name, type,
+             to_json(map_from_entries(list_sort(map_entries(dims))))::TEXT AS dimensions_key,
+             sum(value), count(*), min(value), max(value), arg_max(value, ts), max(ts)
+      FROM parsed
+      WHERE name IS NOT NULL AND name <> '' AND strlen(name) <= 200
+        AND starts_with(name, '{{ SQLFLOW_METRIC_NAME_PREFIX|default('') }}')
+        AND type IN ('count', 'gauge')
+        AND value IS NOT NULL AND isfinite(value)
+        AND dims IS NOT NULL AND cardinality(dims) <= 16
+        AND ts IS NOT NULL AND ts <= now() + INTERVAL '60 seconds'
+      GROUP BY ALL
+
+  # The window's sink does the writing. A pipeline sink would write every
+  # batch, which is the opposite of aggregating.
+  sink:
+    type: noop

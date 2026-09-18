@@ -60,11 +60,12 @@ added, and this page changes only when a status does.
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ |
 | `cli.serve` | Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits. | ✅ | ✅ | ✅ |
 | `cli.rollup` | Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted. | ✅ | ✅ | — |
+| `template.render` | The Deploy to Render template's schema keeps the minute table and every rollup exact when several pipeline processes write to one database. | ⚠️ skipped | ✅ | — |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ |
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**41 features declared. 41 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**42 features declared. 41 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -72,7 +73,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**50 invariants declared: 42 safety and 8 liveness. Of 178 (invariant, integration) cells: 94 proven, 50 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
+**51 invariants declared: 43 safety and 8 liveness. Of 180 (invariant, integration) cells: 95 proven, 51 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -115,6 +116,17 @@ until an invariant's `requires` is filled in, and none is yet.
 | `sink.error.classifies` | The sink's errors classify as unreachable, rejected, or a user fault, so the retry ladder retries only the first. A value the sink's client cannot encode is a user fault: it never reaches the network and fails the same way every attempt. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | — exempt | ❌ missing | ❌ missing |
 | `sink.probe.fails_start` | A Prober whose destination is unreachable fails the start once, without retrying. | ✅ i | — exempt | — exempt | ✅ i | — exempt | ✅ i | — exempt |
 | `sink.flush.idempotent_on_key` | Delivering the same batch twice leaves the destination holding it once. The engine promises at-least-once; a sink that identifies rows by key is what turns that into exactly-once for the reader. A sink that declares no key is exempt, with a proof that it declares none. | — exempt | — exempt | — exempt | — exempt | — exempt | ✅ i | — exempt |
+
+These resilience invariants are properties of the consume loop
+rather than of anything a config file names. The columns are
+its configurations, and `internal/conformance` runs each one
+through every path that reaches a batch: the batch filling, the
+flush interval elapsing, the source closing, and a cancel that
+drains. An invariant holds only if it holds on all four.
+
+| Invariant | Claim | `pipeline.stateful` | `pipeline.stateless` |
+| --- | --- | --- | --- |
+| `pipeline.writers.merge_exactly` | When several pipeline processes publish the same window of the same key to one destination, the destination holds the merge of what every process last published: no process's rows replace another's, and a process that republishes replaces only its own. It holds at every grain derived from that window, under concurrent publishes, without deadlock. Proven in internal/rendertemplate against the Deploy to Render template's migrations and the Postgres sink, not by the conformance harness: the property belongs to the destination's schema. | ❌ missing | ✅ i |
 
 ## Safety invariants: checkpoint
 

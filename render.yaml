@@ -1,0 +1,110 @@
+# Render Blueprint for the Deploy to Render button in the README: a Postgres,
+# a web service that accepts metrics over a signed webhook and aggregates them
+# by minute, and a web service that reads them back over HTTP.
+#
+# This file is at the repository root because the button reads it from there.
+# Everything it deploys is under render/.
+#
+# The deploy asks for three values. The first two are yours to choose, so you
+# have them when the deploy finishes. `openssl rand -hex 32` and `openssl rand -hex 16`
+# make good ones.
+#   SQLFLOW_WEBHOOK_HMAC_SECRET  signs what you send. A blank one fails the
+#                                ingest service: the pipeline will not start
+#                                unsigned unless SQLFLOW_WEBHOOK_AUTH is none.
+#   SQLFLOW_SERVE_CLIENT_ID      reads what you sent, as ?client_id=. A blank
+#                                one fails the API service. Letters, digits,
+#                                '.', '_', '~' and '-' only.
+#   SQLFLOW_TELEMETRY            leave it blank, or type off. Blank sends the
+#                                sqlflow maintainers two events, ever: that
+#                                this was deployed, and that it received its
+#                                first metric. render/README.md, "What this
+#                                sends", prints both in full.
+databases:
+  - name: sqlflow-metrics-db
+    plan: 0.1c-256mb
+    # Same region as both services: connectionString is the private-network
+    # URL, which only resolves within one region.
+    region: virginia
+    postgresMajorVersion: "18"
+    diskSizeGB: 5
+    # Off, so storage is watched rather than grown silently. Nothing deletes
+    # from the minute table yet.
+    storageAutoscalingEnabled: false
+
+services:
+  # The pipeline. A web service, not a worker, because only a web service
+  # gets a public URL, and senders need one.
+  - type: web
+    name: sqlflow-metrics-ingest
+    runtime: docker
+    dockerfilePath: ./render/Dockerfile
+    dockerContext: ./render
+    plan: 0.5c-512mb
+    region: virginia
+    # The webhook source answers /healthz on the port it takes deliveries on:
+    # 200 while it admits them, 503 once it is closing. Without this Render
+    # calls a service live when its port opens, cannot tell an instance that
+    # is shutting down from one that is serving, and cannot hold a deploy
+    # until the new instance is ready. It needs no signature.
+    healthCheckPath: /healthz
+    # Off: a copy of this file in someone else's workspace would otherwise
+    # redeploy whenever this repository's main moves. Quoted: unquoted, YAML
+    # reads off as false, and Render's schema wants a trigger name.
+    autoDeployTrigger: "off"
+    envVars:
+      - key: SQLFLOW_POSTGRES_URI
+        fromDatabase:
+          name: sqlflow-metrics-db
+          property: connectionString
+      # Prompted for during the deploy.
+      - key: SQLFLOW_WEBHOOK_HMAC_SECRET
+        sync: false
+      # Prompted for during the deploy, so that it is seen before anything is
+      # sent rather than found afterwards. Blank is on. off sends nothing.
+      # sync: false also means a later sync never touches what was typed.
+      - key: SQLFLOW_TELEMETRY
+        sync: false
+      # SQLFLOW_WEBHOOK_AUTH is not here, on purpose. Unset, the pipeline
+      # requires a signature. To accept unsigned requests, add it to this
+      # service in the dashboard with the value none. Render keeps a variable
+      # this file does not name and rewrites one it does, so a value here
+      # would put a pipeline set to none back to hmac on every sync, and it
+      # would start refusing its senders without anyone having changed it.
+      # SQLFLOW_METRIC_NAME_PREFIX and SQLFLOW_WEBHOOK_MAX_BODY_BYTES are left
+      # out for the same reason.
+      # pipeline.yml listens on SQLFLOW_WEBHOOK_PORT. PORT tells Render the
+      # same port, so it routes there rather than scanning for one.
+      - key: SQLFLOW_WEBHOOK_PORT
+        value: "10000"
+      - key: PORT
+        value: "10000"
+      - key: SQLFLOW_LOG_LEVEL
+        value: INFO
+
+  # The API, from the same image.
+  - type: web
+    name: sqlflow-metrics-api
+    runtime: docker
+    dockerfilePath: ./render/Dockerfile
+    dockerContext: ./render
+    dockerCommand: /app/bin/serve.sh
+    plan: 0.5c-512mb
+    region: virginia
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off"
+    envVars:
+      - key: SQLFLOW_POSTGRES_URI
+        fromDatabase:
+          name: sqlflow-metrics-db
+          property: connectionString
+      # Prompted for during the deploy, not generated. Render's generated
+      # values hold '+', '/' and '=', and one pasted into a URL as it is
+      # answers 401: '+' reads as a space.
+      - key: SQLFLOW_SERVE_CLIENT_ID
+        sync: false
+      - key: SQLFLOW_SERVE_PORT
+        value: "8080"
+      - key: PORT
+        value: "8080"
+      - key: SQLFLOW_LOG_LEVEL
+        value: INFO

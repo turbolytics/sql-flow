@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 dev/volume/
 bin/
+# The Deploy to Render template's scripts are source, not build output.
+!/render/bin/
 dist/
 .claude/
 
