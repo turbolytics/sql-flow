@@ -43,6 +43,9 @@ pipeline:
         header: <string>
         sig_key: <string>
         secret: <string>
+      # Bytes one request body may carry. A larger body is refused with 413
+      # before it is read or its signature checked.
+      max_body_bytes: <integer>
     error:
       policy: <string>
   handler:

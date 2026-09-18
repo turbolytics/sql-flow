@@ -23,6 +23,11 @@ const defaultAddr = "0.0.0.0:8001"
 
 const shutdownTimeout = 5 * time.Second
 
+// DefaultMaxBodyBytes bounds one delivery. GitHub caps a payload at 25 MB,
+// the largest of the senders the examples point at, so the default admits
+// every delivery those senders make and nothing larger.
+const DefaultMaxBodyBytes int64 = 25 << 20
+
 // HMAC configures signature validation of incoming request bodies.
 type HMAC struct {
 	Header string
@@ -31,13 +36,14 @@ type HMAC struct {
 }
 
 type Source struct {
-	addr       string
-	hmac       *HMAC
-	server     *http.Server
-	listener   net.Listener
-	streamChan chan []core.Message
-	done       chan struct{}
-	closeOnce  sync.Once
+	addr         string
+	hmac         *HMAC
+	maxBodyBytes int64
+	server       *http.Server
+	listener     net.Listener
+	streamChan   chan []core.Message
+	done         chan struct{}
+	closeOnce    sync.Once
 	// mu guards closed against in-flight handlers: a request holds it for
 	// read across its send, so the stream is only closed once no handler can
 	// still write to it.
@@ -70,6 +76,15 @@ func WithAddr(addr string) Option {
 	}
 }
 
+// WithMaxBodyBytes bounds a request body. A body past it is refused with 413
+// before it is read, ahead of signature validation, so the bound holds
+// against a sender that cannot sign.
+func WithMaxBodyBytes(n int64) Option {
+	return func(s *Source) {
+		s.maxBodyBytes = n
+	}
+}
+
 // WithMeterProvider records request metrics against the given provider. A nil
 // provider leaves the source recording nothing.
 func WithMeterProvider(mp metric.MeterProvider) Option {
@@ -80,7 +95,8 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 
 func NewSource(opts ...Option) (*Source, error) {
 	s := &Source{
-		addr: defaultAddr,
+		addr:         defaultAddr,
+		maxBodyBytes: DefaultMaxBodyBytes,
 		// A queue of one, as in the Python source: a delivery is accepted
 		// while the pipeline works on the previous one, and the next sender
 		// waits rather than having its event dropped.
@@ -107,6 +123,11 @@ func NewSource(opts ...Option) (*Source, error) {
 // accepted unvalidated.
 func (s *Source) HMACConfig() *HMAC {
 	return s.hmac
+}
+
+// MaxBodyBytes reports the body bound in effect.
+func (s *Source) MaxBodyBytes() int64 {
+	return s.maxBodyBytes
 }
 
 // Handler is the webhook endpoint, exposed so it can be served on a listener
@@ -178,8 +199,22 @@ func (s *Source) Close() error {
 }
 
 func (s *Source) receiveEvents(w http.ResponseWriter, r *http.Request) {
+	// The bound comes before the read and before the signature check: the
+	// body is the allocation, and a signature only proves who sent it after
+	// it is held in full. A declared length past the bound is refused
+	// without reading a byte; a chunked body is cut at the bound.
+	if r.ContentLength > s.maxBodyBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, `{"detail":"Request body too large"}`)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, `{"detail":"Request body too large"}`)
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, `{"detail":"Unable to read request body"}`)
 		return
 	}

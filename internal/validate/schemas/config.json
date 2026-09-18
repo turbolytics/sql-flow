@@ -173,6 +173,11 @@
                     "sig_key",
                     "secret"
                   ]
+                },
+                "max_body_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Bytes one request body may carry. A larger body is refused with 413\nbefore it is read or its signature checked."
                 }
               },
               "additionalProperties": false,

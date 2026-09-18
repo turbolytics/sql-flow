@@ -316,9 +316,28 @@ type WebhookHMAC struct {
 	Secret string `yaml:"secret"`
 }
 
+// DefaultWebhookMaxBodyBytes bounds one delivery. GitHub caps a payload at
+// 25 MB, the largest of the senders the examples point at.
+const DefaultWebhookMaxBodyBytes = 25 << 20
+
 type WebhookSource struct {
 	SignatureType string       `yaml:"signature_type,omitempty" jsonschema:"enum=hmac"`
 	HMAC          *WebhookHMAC `yaml:"hmac,omitempty"`
+	// Bytes one request body may carry. A larger body is refused with 413
+	// before it is read or its signature checked.
+	MaxBodyBytes int64 `yaml:"max_body_bytes,omitempty" jsonschema:"minimum=1"`
+}
+
+// ResolvedMaxBodyBytes is the body bound in effect, defaulted. A nil receiver
+// is the absent block.
+func (w *WebhookSource) ResolvedMaxBodyBytes() (int64, error) {
+	if w == nil || w.MaxBodyBytes == 0 {
+		return DefaultWebhookMaxBodyBytes, nil
+	}
+	if w.MaxBodyBytes < 1 {
+		return 0, errs.New(errs.CodeSourceInvalid, "webhook source: max_body_bytes must be at least 1, got %d", w.MaxBodyBytes)
+	}
+	return w.MaxBodyBytes, nil
 }
 
 // Source

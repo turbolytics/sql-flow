@@ -174,3 +174,22 @@ func TestSourceKafka_NewRejectsAnImpossibleFetchBlock(t *testing.T) {
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "max_partition_bytes"))
 }
+
+// The bound is the config's, and a bound that cannot hold fails at startup.
+func TestSinkRetry_NewWebhookMaxBodyBytes(t *testing.T) {
+	coverage.Covers(t, "sink.retry")
+	s, err := New(config.Source{
+		Type:    "webhook",
+		Webhook: &config.WebhookSource{MaxBodyBytes: 4096},
+	}, zap.NewNop(), nil)
+	assert.NoError(t, err)
+	src := s.(*webhook.Source)
+	assert.Equal(t, int64(4096), src.MaxBodyBytes())
+	assert.NoError(t, src.Close())
+
+	_, err = New(config.Source{
+		Type:    "webhook",
+		Webhook: &config.WebhookSource{MaxBodyBytes: -1},
+	}, zap.NewNop(), nil)
+	assert.Error(t, err)
+}

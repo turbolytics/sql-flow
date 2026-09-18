@@ -292,3 +292,95 @@ func TestSourceWebhook_CloseIsIdempotent(t *testing.T) {
 	assert.NoError(t, s.Close())
 	assert.NoError(t, s.Commit())
 }
+
+// A body past the bound is refused before it is read, so a sender that
+// cannot sign a request still cannot make the process hold its payload.
+func TestSourceWebhook_RefusesDeclaredOversizedBody(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	conf := &HMAC{Header: "X-HMAC-Signature", SigKey: "sha256", Secret: "test_secret"}
+	s, err := NewSource(WithHMAC(conf), WithMaxBodyBytes(16))
+	assert.NoError(t, err)
+	defer s.Close()
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	body := bytes.Repeat([]byte("x"), 17)
+	resp := post(t, srv.URL+"/events", body, "", "")
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	assert.Equal(t, `{"detail":"Request body too large"}`, readBody(t, resp))
+
+	select {
+	case batch := <-s.Stream():
+		t.Fatalf("oversized body reached the stream: %q", batch[0].Value)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A chunked body declares no length, so the bound has to hold on what is
+// read, not on what the sender promised.
+func TestSourceWebhook_RefusesChunkedOversizedBody(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithMaxBodyBytes(16))
+	assert.NoError(t, err)
+	defer s.Close()
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	// An io.Reader that is not a bytes.Reader leaves ContentLength unset,
+	// so the client sends it chunked.
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/events", io.LimitReader(zeros{}, 17))
+	assert.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	assert.Equal(t, `{"detail":"Request body too large"}`, readBody(t, resp))
+
+	select {
+	case batch := <-s.Stream():
+		t.Fatalf("oversized body reached the stream: %q", batch[0].Value)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// The bound is inclusive: a body of exactly the limit is a delivery.
+func TestSourceWebhook_AcceptsBodyAtTheLimit(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithMaxBodyBytes(16))
+	assert.NoError(t, err)
+	defer s.Close()
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	body := bytes.Repeat([]byte("x"), 16)
+	resp := post(t, srv.URL+"/events", body, "", "")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	select {
+	case batch := <-s.Stream():
+		assert.Equal(t, string(body), string(batch[0].Value))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the message")
+	}
+}
+
+func TestSourceWebhook_DefaultsBodyLimitTo25MiB(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource()
+	assert.NoError(t, err)
+	defer s.Close()
+	assert.Equal(t, int64(25<<20), s.MaxBodyBytes())
+}
+
+// zeros is an endless body.
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}

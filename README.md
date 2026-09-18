@@ -768,9 +768,13 @@ source:
       header: 'X-Hub-Signature-256'
       sig_key: 'sha256'
       secret: "{{ SQLFLOW_GITHUB_WEBHOOK_SECRET }}"
+    max_body_bytes: 26214400 # optional, default 25 MiB
 ```
 
-Responds 200 on accept, 400 for a missing signature, 403 for an invalid one.
+Responds 200 on accept, 400 for a missing signature, 403 for an invalid one,
+and 413 for a body over `max_body_bytes`. The bound applies before the body is
+read and before the signature is checked, so an unsigned oversized request
+never holds memory past it. The default is 25 MiB, GitHub's payload ceiling.
 
 > **Known gotcha:** the JSON Schema only enumerates `kafka` and `websocket`, so
 > `sqlflow config validate` **rejects** a webhook config that `sqlflow run`

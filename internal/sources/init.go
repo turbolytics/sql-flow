@@ -98,9 +98,15 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 	},
 
 	"webhook": func(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error) {
+		maxBody, err := c.Webhook.ResolvedMaxBodyBytes()
+		if err != nil {
+			return nil, err
+		}
+		l.Info("initializing webhook source", zap.Int64("max_body_bytes", maxBody))
 		opts := []webhook.Option{
 			webhook.WithLogger(l),
 			webhook.WithMeterProvider(mp),
+			webhook.WithMaxBodyBytes(maxBody),
 		}
 		// Only a configured signature type turns validation on, so a webhook
 		// block that carries an hmac stanza but no signature_type accepts
