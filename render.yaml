@@ -41,6 +41,12 @@ services:
     dockerContext: ./render
     plan: 0.5c-512mb
     region: virginia
+    # The webhook source answers /healthz on the port it takes deliveries on:
+    # 200 while it admits them, 503 once it is closing. Without this Render
+    # calls a service live when its port opens, cannot tell an instance that
+    # is shutting down from one that is serving, and cannot hold a deploy
+    # until the new instance is ready. It needs no signature.
+    healthCheckPath: /healthz
     # Off: a copy of this file in someone else's workspace would otherwise
     # redeploy whenever this repository's main moves. Quoted: unquoted, YAML
     # reads off as false, and Render's schema wants a trigger name.

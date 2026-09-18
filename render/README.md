@@ -47,13 +47,13 @@ of both:
 ```json
 {"name": "install.deployed", "type": "count", "value": 1,
  "dimensions": {"install_id": "3f0c1b7e-…", "source": "render",
-                "template": "render-metrics", "sqlflow_version": "v2026.09.18"}}
+                "template": "render-metrics", "sqlflow_version": "v2026.09.18.1"}}
 ```
 
 ```json
 {"name": "install.first_request", "type": "count", "value": 1,
  "dimensions": {"install_id": "3f0c1b7e-…", "source": "render",
-                "template": "render-metrics", "sqlflow_version": "v2026.09.18"}}
+                "template": "render-metrics", "sqlflow_version": "v2026.09.18.1"}}
 ```
 
 | Field | What it is |
@@ -253,6 +253,13 @@ but `value_last` adds.
 | `1h` | 14 days |
 | `6h` | 90 days |
 | `1d` | 365 days |
+
+## Health
+
+Both services answer `GET` and `HEAD /healthz` without a signature or a client
+id, and Render checks both. Point an uptime monitor at either. The pipeline's
+answers 200 while it admits metrics and 503 once it is shutting down. A
+health check stores nothing and is not counted as a request.
 
 ## Settings
 

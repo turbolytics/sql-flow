@@ -10,7 +10,7 @@ API="http://127.0.0.1:${API_HOST_PORT:-8080}"
 SECRET=local-secret
 # The tag the image is built from, which an install reports as its version.
 # make test passes it. Must match the Dockerfile's default.
-: "${SQLFLOW_IMAGE:=turbolytics/sql-flow:v2026.09.18}"
+: "${SQLFLOW_IMAGE:=turbolytics/sql-flow:v2026.09.18.1}"
 export SQLFLOW_IMAGE
 GRAINS="1m 5m 15m 1h 6h 1d"
 
@@ -100,6 +100,14 @@ sleep $(( 61 - 10#$(date -u +%S) ))
 # One timestamp for every metric. Without it the posts could straddle a
 # minute, and the 1m assertions below would see two buckets.
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+echo "== the pipeline answers a health check with no signature, and nothing else"
+# render.yaml's healthCheckPath, and what an uptime monitor calls. Signatures
+# are on here: the check must not need one, and must not open anything.
+[ "$(curl -s "$INGEST/healthz")" = '{"status":"ok"}' ] || fail "GET /healthz did not answer {\"status\":\"ok\"}"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -I "$INGEST/healthz")" = 200 ] || fail "HEAD /healthz did not answer 200"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$INGEST/healthz")" = 405 ] || fail "POST /healthz did not answer 405"
+echo "ok   GET and HEAD /healthz answer 200 unsigned, and POST is refused"
 
 status 400 unsigned '{"name":"unsigned","type":"count"}'
 status 200 signed '{"name":"checkout","type":"count","timestamp":"'"$TS"'","dimensions":{"region":"us-east","plan":"pro"}}'

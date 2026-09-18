@@ -38,7 +38,7 @@ services:
     build:
       context: .
       args:
-        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18}
+        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18.1}
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,7 +71,7 @@ services:
     build:
       context: .
       args:
-        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18}
+        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18.1}
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,7 +93,7 @@ services:
     build:
       context: .
       args:
-        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18}
+        SQLFLOW_IMAGE: ${SQLFLOW_IMAGE:-turbolytics/sql-flow:v2026.09.18.1}
     entrypoint: /app/bin/serve.sh
     depends_on:
       postgres:
