@@ -37,6 +37,11 @@
 
 ### Added
 
+- `sqlflow rollup` measures: `numeric: double` on a `sum`, and a `last` type.
+  Every sum was cast to `bigint`, so a fractional value was rounded to an
+  integer at every grain. `last` keeps the value of the bucket's latest finer
+  bucket. A declaration that uses neither generates the migration and the
+  serve datasets it did before, byte for byte.
 - `sqlflow serve` can answer a dataset from memory. It is off unless the
   dataset says `cache: {ttl_seconds: N}`, and a dataset without the block is
   served byte for byte as before. An answer is served for at most

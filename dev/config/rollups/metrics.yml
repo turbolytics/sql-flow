@@ -26,7 +26,7 @@ rollups:
       - name: metrics
         dimensions: [name, type, dimensions_key]
         measures:
-          # A gauge of 0.73 summed as an integer is 0.
+          # Summed as an integer, a gauge of 0.73 is 1 and one of 0.25 is 0.
           value_sum: {type: sum, column: value_sum, numeric: double}
           value_count: {type: sum, column: value_count}
           value_min: {type: min, column: value_min}

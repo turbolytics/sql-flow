@@ -539,9 +539,22 @@ finer table, a statement-level trigger locks the coarse buckets it touched and
 recomputes them, in the writer's transaction. A minute written twice replaces
 its count at every grain instead of adding to it.
 
-Measures are `sum`, `min`, `max` and `count_buckets`, which counts the source
-buckets present, such as minutes observed. `avg`, `gauge` and `histogram` are
-reserved.
+Measures are `sum`, `min`, `max`, `last` and `count_buckets`, which counts the
+source buckets present, such as minutes observed. `avg`, `gauge` and
+`histogram` are reserved.
+
+A `sum` is stored as a `bigint`. Add `numeric: double` to store a
+`double precision`, which keeps a fraction: a gauge of `0.73` summed as an
+integer is `1`, and `0.25` is `0`. For an average, keep a sum and a count and divide when you
+read. That is exact at every grain, and an average of averages is not.
+
+`last` keeps the value of a bucket's latest finer bucket, which is what a
+gauge reads as: queue depth now. It takes the source column's type. A `last`
+needs a dimension set that keeps every source dimension, and a generated
+dataset cannot serve it, because the last value of the series folded into
+`other` belongs to none of them. Write that dataset in `serve.yml`.
+[`dev/config/rollups/metrics.yml`](dev/config/rollups/metrics.yml) declares
+both.
 
 What to know before you deploy it:
 
