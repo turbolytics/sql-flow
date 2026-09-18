@@ -820,6 +820,15 @@ body bound applies before the body is read and before the signature is
 checked, so an unsigned oversized request never holds memory past it. The
 default is 25 MiB, GitHub's payload ceiling.
 
+`GET /healthz` on the same address answers `{"status":"ok"}` while the source
+admits deliveries, and 503 once it is closing. It needs no signature and reads
+no body, so a platform's health check or an uptime monitor can call it, and
+`HEAD` works too. A queue that is full is backpressure, not failure, and still
+answers 200. Health checks are not counted in `webhook_requests_total`, which
+counts deliveries. The pipeline's own `/healthz`, on the metrics listener, is
+unchanged: this one exists because a platform that routes a single port to a
+service, as Render does, checks health on that port.
+
 The listener holds at most `max_connections` open connections; past that, a
 new connection waits in the kernel backlog until one closes. Three fixed
 timeouts release a slot: 10s for a connection to send its request headers,
