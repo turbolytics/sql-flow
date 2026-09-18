@@ -81,16 +81,25 @@
                           "sum",
                           "min",
                           "max",
+                          "last",
                           "count_buckets",
                           "avg",
                           "gauge",
                           "histogram"
                         ],
-                        "description": "sum, min, max or count_buckets. avg, gauge and histogram are reserved\nand refused until a later version generates them."
+                        "description": "sum, min, max, last or count_buckets. last keeps the value of the\nlatest finer bucket. avg, gauge and histogram are reserved and refused\nuntil a later version generates them."
                       },
                       "column": {
                         "type": "string",
-                        "description": "The source column the measure reads. Required for sum, min and max;\nrefused for count_buckets, which counts source buckets."
+                        "description": "The source column the measure reads. Required for sum, min, max and\nlast; refused for count_buckets, which counts source buckets."
+                      },
+                      "numeric": {
+                        "type": "string",
+                        "enum": [
+                          "integer",
+                          "double"
+                        ],
+                        "description": "How a sum is stored: integer, the default, is a bigint, and double is\na double precision, which keeps a fraction. Refused on any other type:\nmin, max and last take the source column's type."
                       }
                     },
                     "additionalProperties": false,

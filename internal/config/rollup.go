@@ -67,12 +67,17 @@ type RollupDimensionSet struct {
 
 // RollupMeasure is one kept value and how it merges.
 type RollupMeasure struct {
-	// sum, min, max or count_buckets. avg, gauge and histogram are reserved
-	// and refused until a later version generates them.
-	Type string `yaml:"type" jsonschema:"enum=sum,enum=min,enum=max,enum=count_buckets,enum=avg,enum=gauge,enum=histogram"`
-	// The source column the measure reads. Required for sum, min and max;
-	// refused for count_buckets, which counts source buckets.
+	// sum, min, max, last or count_buckets. last keeps the value of the
+	// latest finer bucket. avg, gauge and histogram are reserved and refused
+	// until a later version generates them.
+	Type string `yaml:"type" jsonschema:"enum=sum,enum=min,enum=max,enum=last,enum=count_buckets,enum=avg,enum=gauge,enum=histogram"`
+	// The source column the measure reads. Required for sum, min, max and
+	// last; refused for count_buckets, which counts source buckets.
 	Column string `yaml:"column,omitempty"`
+	// How a sum is stored: integer, the default, is a bigint, and double is
+	// a double precision, which keeps a fraction. Refused on any other type:
+	// min, max and last take the source column's type.
+	Numeric string `yaml:"numeric,omitempty" jsonschema:"enum=integer,enum=double"`
 }
 
 // RollupServe declares the serve datasets generated from a rollup.

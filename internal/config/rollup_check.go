@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	rollupMeasureTypes         = map[string]bool{"sum": true, "min": true, "max": true, "count_buckets": true}
+	rollupMeasureTypes         = map[string]bool{"sum": true, "min": true, "max": true, "last": true, "count_buckets": true}
 	rollupReservedMeasureTypes = map[string]bool{"avg": true, "gauge": true, "histogram": true}
 	// A filter param may not take a name the generated dataset already uses,
 	// or grain, which serve reserves.
@@ -187,10 +187,10 @@ func checkMeasure(r Rollup, set RollupDimensionSet, name string, path []string, 
 
 	switch {
 	case rollupReservedMeasureTypes[m.Type]:
-		add(at(path, "type"), "rollup %s dimension set %s: measure %s has type %s, which this version does not generate; use sum, min, max or count_buckets",
+		add(at(path, "type"), "rollup %s dimension set %s: measure %s has type %s, which this version does not generate; use sum, min, max, last or count_buckets",
 			r.Name, set.Name, name, m.Type)
 	case !rollupMeasureTypes[m.Type]:
-		add(at(path, "type"), "rollup %s dimension set %s: measure %s has type %q; use sum, min, max or count_buckets",
+		add(at(path, "type"), "rollup %s dimension set %s: measure %s has type %q; use sum, min, max, last or count_buckets",
 			r.Name, set.Name, name, m.Type)
 	case m.Type == "count_buckets" && m.Column != "":
 		add(at(path, "column"), "rollup %s dimension set %s: measure %s counts source buckets and reads no column",
@@ -198,6 +198,23 @@ func checkMeasure(r Rollup, set RollupDimensionSet, name string, path []string, 
 	case m.Type != "count_buckets" && !serveNamePattern.MatchString(m.Column):
 		add(at(path, "column"), "rollup %s dimension set %s: measure %s needs column naming the source column it reads",
 			r.Name, set.Name, name)
+	}
+
+	switch {
+	case m.Numeric == "":
+	case m.Type != "sum":
+		add(at(path, "numeric"), "rollup %s dimension set %s: measure %s is %s, and only a sum takes numeric; the others take the source column's type",
+			r.Name, set.Name, name, m.Type)
+	case m.Numeric != "integer" && m.Numeric != "double":
+		add(at(path, "numeric"), "rollup %s dimension set %s: measure %s has numeric %q; use integer or double",
+			r.Name, set.Name, name, m.Numeric)
+	}
+
+	// The latest finer bucket is one row only while the set's key is the
+	// source's key. Drop a dimension and two series share a bucket.
+	if m.Type == "last" && len(set.Dimensions) != len(r.Source.Dimensions) {
+		add(at(path, "type"), "rollup %s dimension set %s: measure %s is last, which needs a set that keeps every source dimension; this one keeps %d of %d",
+			r.Name, set.Name, name, len(set.Dimensions), len(r.Source.Dimensions))
 	}
 }
 
@@ -253,8 +270,12 @@ func checkRollupDataset(r Rollup, ds RollupDataset, path []string, widths map[st
 				r.Name, ds.Name, ds.Fold.Dimension, dim)
 		}
 		for _, name := range set.MeasureNames() {
-			if set.Measures[name].Type == "count_buckets" {
+			switch set.Measures[name].Type {
+			case "count_buckets":
 				add(at(path, "dimension_set"), "rollup %s dataset %s: measure %s is count_buckets, which cannot be summed across %s values into other",
+					r.Name, ds.Name, name, dim)
+			case "last":
+				add(at(path, "dimension_set"), "rollup %s dataset %s: measure %s is last, and the last value of the %s values folded into other is no series' value; write the dataset in serve.yml",
 					r.Name, ds.Name, name, dim)
 			}
 		}
