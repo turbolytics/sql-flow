@@ -22,7 +22,7 @@ CONFIG="${3:-${CONFIG:-dev/config/examples/benchmark.structured.mem.yml}}"
 # host port-forwarding understates throughput ~10x.
 STATE_PATH="${STATE_PATH:-}"
 NETWORK="dev_default"
-GO_IMAGE="golang:1.25-bookworm"
+GO_IMAGE="golang:1.26-bookworm"
 RUN_IMAGE="debian:bookworm-slim"
 
 echo "=== sqlflow benchmark (in-network) ==="
@@ -49,7 +49,7 @@ docker run --rm \
     -v "$PWD":/src \
     -v "$(go env GOMODCACHE)":/gomod \
     -e GOMODCACHE=/gomod -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false \
-    -e GOTOOLCHAIN=auto \
+    -e GOTOOLCHAIN=local \
     -w /src "$GO_IMAGE" \
     go build -o bin/sqlflow-linux ./cmd/sqlflow/
 echo "Built bin/sqlflow-linux"

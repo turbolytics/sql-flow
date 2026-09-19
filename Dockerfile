@@ -11,15 +11,19 @@
 # manager, plain C and C++ that Debian's cross toolchain compiles. libduckdb
 # is never linked, only dlopened, so the target's copy is downloaded as a
 # file. The runtime stage only copies, so nothing runs under emulation at all.
-ARG GO_IMAGE=golang:1.25-bookworm
+ARG GO_IMAGE=golang:1.26-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS builder
 
-# go.mod asks for a newer Go than the builder image ships, and the official Go
-# images pin GOTOOLCHAIN=local; auto lets the build fetch the toolchain go.mod
-# requires instead of failing.
-ENV GOTOOLCHAIN=auto
+# local, which is what the official Go images already set: GO_IMAGE above is
+# the compiler, and nothing downloads another one. Under auto, a go.mod
+# directive newer than the image silently fetched its own toolchain, so the
+# shipped binary was built by a compiler the pin above did not name -- which
+# is how go1.26.0 reached a release image pinned to golang:1.25. A directive
+# the image cannot satisfy now fails the build, and the fix is to move
+# GO_IMAGE.
+ENV GOTOOLCHAIN=local
 # The source is copied in without its .git, so stamping VCS info would fail.
 ENV GOFLAGS=-buildvcs=false
 

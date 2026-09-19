@@ -41,7 +41,7 @@ DEST_DIR="${1:-dist}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-GO_IMAGE="${GO_IMAGE:-golang:1.25-bookworm}"
+GO_IMAGE="${GO_IMAGE:-golang:1.26-bookworm}"
 GO_MODULE="github.com/turbolytics/sql-flow"
 VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
@@ -84,7 +84,7 @@ build_linux() {
         -e HOME=/tmp \
         -e GOCACHE=/tmp/gocache \
         -e GOMODCACHE=/gomod \
-        -e GOTOOLCHAIN=auto \
+        -e GOTOOLCHAIN=local \
         -e GOFLAGS=-buildvcs=false \
         -e CGO_ENABLED=1 \
         -w /src "$GO_IMAGE" \

@@ -4,9 +4,9 @@
 #   docker build -f dev/bench/leakloop.Dockerfile -t sqlflow-leakloop .
 #
 # dev/bench/leakloops.sh builds it if it is missing.
-FROM golang:1.25-bookworm
+FROM golang:1.26-bookworm
 
-ENV GOTOOLCHAIN=auto
+ENV GOTOOLCHAIN=local
 ENV GOFLAGS=-buildvcs=false
 
 RUN apt-get update \
