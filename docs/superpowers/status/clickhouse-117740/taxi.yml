@@ -1,0 +1,41 @@
+pipeline:
+  name: nyc-taxi-clickhouse
+  batch_size: 20000
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: nyc-taxi
+      auto_offset_reset: earliest
+      topics:
+        - nyc-taxi-trips
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      SELECT
+        CAST(trip_id AS UINTEGER)            AS trip_id,
+        CAST(pickup_datetime AS TIMESTAMP)   AS pickup_datetime,
+        CAST(dropoff_datetime AS TIMESTAMP)  AS dropoff_datetime,
+        pickup_longitude,
+        pickup_latitude,
+        dropoff_longitude,
+        dropoff_latitude,
+        CAST(passenger_count AS UTINYINT)    AS passenger_count,
+        CAST(trip_distance AS FLOAT)         AS trip_distance,
+        CAST(fare_amount AS FLOAT)           AS fare_amount,
+        CAST(extra AS FLOAT)                 AS extra,
+        CAST(tip_amount AS FLOAT)            AS tip_amount,
+        CAST(tolls_amount AS FLOAT)          AS tolls_amount,
+        CAST(total_amount AS FLOAT)          AS total_amount,
+        payment_type,
+        pickup_ntaname,
+        dropoff_ntaname
+      FROM batch
+
+  sink:
+    type: clickhouse
+    clickhouse:
+      dsn: {{ SQLFLOW_CLICKHOUSE_DSN }}
+      table: trips_small
