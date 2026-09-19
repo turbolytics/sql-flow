@@ -1,0 +1,85 @@
+# Log reduction, part 1 of 2: the archive.
+#
+# Every request, parsed, to Parquet on object storage. Full fidelity and cheap,
+# so the questions a rollup cannot answer ("which host hit us at 19:32") stay
+# answerable.
+#
+# This runs as its own instance under its own consumer group, alongside
+# logs.rollup.clickhouse.yml on the same topic. Two instances rather than one
+# config with two sinks: each then replays, fails and scales on its own, and the
+# archive wants large batches for Parquet file size while the rollup is shaped by
+# its window. Note that a second instance on one host cannot bind the same
+# metrics port, so give each one its own.
+#
+# Input is a log shipper's envelope -- the raw line under "message" -- which is
+# how Vector and Fluent Bit forward an unparsed log. Parsing happens in SQL.
+#
+# Verified end to end against the NASA-HTTP traces (https://ita.ee.lbl.gov/,
+# "The traces may be freely redistributed"): 3,461,613 records in, 3,461,613
+# rows out, 373,056,138 bytes of log to 25,521,239 bytes of zstd Parquet, 14.6x.
+commands:
+  - name: Install Extensions
+    sql: |
+      INSTALL httpfs;
+      LOAD httpfs;
+  - name: Configure s3
+    sql: |
+      SET s3_region='{{ SQLFLOW_S3_REGION|default('us-east-1') }}';
+      SET s3_url_style='path';
+      SET s3_endpoint='{{ SQLFLOW_S3_ENDPOINT|default('localhost:9000') }}';
+      SET s3_access_key_id='{{ SQLFLOW_S3_ACCESS_KEY_ID|default('minioadmin') }}';
+      SET s3_secret_access_key='{{ SQLFLOW_S3_SECRET_ACCESS_KEY|default('minioadmin') }}';
+      SET s3_use_ssl=false;
+
+pipeline:
+  name: logs-archive-parquet
+  # Large batches on purpose: one Parquet object per batch, and 50,000 rows is
+  # an object worth reading back.
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(50000) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('logs-archive') }}
+      auto_offset_reset: earliest
+      topics:
+        - {{ SQLFLOW_INPUT_TOPIC|default('nasa-http') }}
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    # try_strptime, not strptime. Real log corpora contain lines that do not
+    # parse: binary garbage from port scanners, empty request paths, and a
+    # truncated final line where the file was cut. strptime raises on those and
+    # fails the whole batch. 71 of the 3,461,613 NASA records are such lines.
+    #
+    # Unparseable lines are kept here in full, under `unparsed`, rather than
+    # dropped. The archive is the copy that is allowed to be messy; the rollup
+    # excludes them.
+    sql: |
+      WITH m AS (
+        SELECT message, regexp_extract(message,
+          '^(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+)[^"]*" (\d{3}) (\S+)$',
+          ['host','ts','method','path','status','bytes']) AS f
+        FROM batch
+      )
+      SELECT
+        try_strptime(f.ts, '%d/%b/%Y:%H:%M:%S %z') AS ts,
+        f.host AS host,
+        f.method AS method,
+        f.path AS path,
+        TRY_CAST(f.status AS SMALLINT) AS status,
+        TRY_CAST(f.bytes AS BIGINT) AS bytes,
+        CASE WHEN f.host = '' THEN message ELSE NULL END AS unparsed
+      FROM m
+
+  sink:
+    type: sqlcommand
+    sqlcommand:
+      substitutions:
+        - var: $sqlflow_uuid
+          type: uuid4
+      sql: |
+        COPY sqlflow_sink_batch
+          TO '{{ SQLFLOW_SINK_BASEPATH|default('s3://sqlflow/nasa-http') }}/$sqlflow_uuid.parquet'
+        (FORMAT 'parquet', COMPRESSION 'zstd');
