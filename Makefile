@@ -282,8 +282,29 @@ RELEASE_LATEST ?= 1
 # nothing.
 RELEASE_OUTPUT ?= --push
 
+# Refuses to cross-compile. Go 1.26 miscompiles the cgo amd64 binary when it
+# cross-compiles from arm64 -- v2026.09.19 segfaulted at package init -- and
+# release-image-verify below runs the foreign half under emulation, which
+# cannot tell. Push the tag and let CI build each architecture on a machine of
+# that architecture. Set RELEASE_ALLOW_CROSS=1 only with the result in hand,
+# run on real hardware of the target.
+RELEASE_ALLOW_CROSS ?= 0
+
 .PHONY: release-image
 release-image:
+	@host=$$(uname -m); \
+	case $$host in x86_64|amd64) host=amd64 ;; aarch64|arm64) host=arm64 ;; esac; \
+	for p in $$(echo "$(RELEASE_PLATFORMS)" | tr ',' ' '); do \
+		a=$${p##*/}; \
+		if [ "$$a" != "$$host" ] && [ "$(RELEASE_ALLOW_CROSS)" != "1" ]; then \
+			echo "release-image: $$p would be cross-compiled on a $$host host." >&2; \
+			echo "               Go 1.26 miscompiles that binary for amd64, and the verify" >&2; \
+			echo "               step runs it under emulation, which passed for v2026.09.19." >&2; \
+			echo "               Push the tag instead: .github/workflows/release.yml builds" >&2; \
+			echo "               each architecture natively. RELEASE_ALLOW_CROSS=1 overrides." >&2; \
+			exit 1; \
+		fi; \
+	done
 	@test -z "$$(git status --porcelain)" || { \
 		echo "release-image: working tree is dirty, so $(VERSION) would not be reproducible" >&2; \
 		echo "               commit or stash, then re-run" >&2; exit 1; }
