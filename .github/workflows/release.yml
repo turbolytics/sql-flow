@@ -1,0 +1,179 @@
+name: release
+
+# Publishes the multi-arch image, one architecture per runner of that
+# architecture, and verifies it before it carries a tag anyone can pull.
+#
+# Nothing here cross-compiles. v2026.09.19 was published from a mac that
+# cross-compiled the amd64 half under Go 1.26; the binary segfaulted at
+# package init, while the identical source built natively on amd64 passed all
+# 19 release tests in CI the same day. A workstation can neither build that
+# half correctly nor run it to find out -- it checks the foreign architecture
+# under emulation, which passed for every release before that one.
+#
+# The order is tag -> build both halves -> assemble -> verify -> tag the
+# manifest. A failure leaves digests in the registry that nothing references,
+# rather than a tag that resolves to a broken binary.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  IMAGE: turbolytics/sql-flow
+
+jobs:
+  # The guards `make release-image` applies on a workstation. A tag is pushed
+  # by a person, so they are checked here rather than assumed: v1.0.5 was
+  # tagged from a feature branch and shipped unmerged commits.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: The tag is on main
+        run: |
+          git fetch -q origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::${GITHUB_REF_NAME} is not on origin/main, so it would ship unmerged commits"
+            exit 1
+          }
+
+  build:
+    needs: preflight
+    strategy:
+      # Both halves are attempted. Learning that one architecture failed while
+      # the other is unknown is the position this workflow exists to end.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # VERSION comes from `git describe`, which needs tags and history.
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build ${{ matrix.platform }} and push by digest
+        id: build
+        run: |
+          make release-image-digest \
+            RELEASE_PLATFORM=${{ matrix.platform }} \
+            VERSION=${GITHUB_REF_NAME} \
+            RELEASE_METADATA_FILE="${RUNNER_TEMP}/metadata.json"
+          digest=$(python3 -c "import json;print(json.load(open('${RUNNER_TEMP}/metadata.json'))['containerimage.digest'])")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "${{ matrix.platform }} -> ${digest}"
+
+      # The digest is the only thing the merge step needs, and an empty file
+      # named for it carries it without a format to parse.
+      - name: Hand the digest to the merge
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${{ steps.build.outputs.digest }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Assembles one manifest list from the two digests. This is the step that
+  # makes the release pullable, so everything that can fail should already
+  # have failed.
+  assemble:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Refuses to proceed on one digest. Without this a matrix leg that never
+      # ran would publish a single-arch image under a release tag, which is
+      # the v1.0.0 failure and looks correct from the machine that made it.
+      - name: Assemble the manifest
+        run: |
+          cd "${RUNNER_TEMP}/digests"
+          count=$(ls -1 | wc -l)
+          [ "$count" = 2 ] || { echo "::error::expected 2 digests, found ${count}"; exit 1; }
+          docker buildx imagetools create -t "${IMAGE}:${GITHUB_REF_NAME}" \
+            $(printf "${IMAGE}@%s " *)
+
+  # The check that v2026.09.19 never had: the published binary, run on real
+  # hardware of its own architecture.
+  verify:
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # REQUIRED_PLATFORMS narrows the script to this runner's own
+      # architecture, so the binary runs natively and no emulator is in the
+      # answer. Each job still asserts the manifest carries its platform.
+      - name: Verify ${{ matrix.platform }}
+        env:
+          REQUIRED_PLATFORMS: ${{ matrix.platform }}
+        run: ./scripts/verify-release-image.sh "${IMAGE}:${GITHUB_REF_NAME}"
+
+  # Only now, and only for a tag that is not a prerelease. `latest` is what a
+  # reader gets who types no tag at all, so it moves last and only once both
+  # architectures have run.
+  latest:
+    needs: verify
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Point latest at ${{ github.ref_name }}
+        run: |
+          docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${GITHUB_REF_NAME}"
+
+      # Only this runner's own platform: whether latest points at this release
+      # is a manifest-list digest comparison, which is the same answer from
+      # either architecture, and the verify job above already ran both halves
+      # natively. Asking for arm64 here would run it under emulation.
+      - name: Verify latest resolves to this release
+        env:
+          REQUIRED_PLATFORMS: linux/amd64
+        run: |
+          ./scripts/verify-release-image.sh "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}:latest"

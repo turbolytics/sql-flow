@@ -1527,21 +1527,34 @@ standalone. See [Installation](#installation).
 
 # Publishing the release image
 
-`make sqlflow-image` builds for the host architecture only, which is fine for
-local testing and wrong for publishing. Releases go out through
-`make release-image`, which builds `linux/amd64` and `linux/arm64` and pushes
-both under one manifest:
+**Pushing the tag publishes the release.** `.github/workflows/release.yml` runs
+on any `v*` tag: it builds `linux/amd64` on an amd64 runner and `linux/arm64`
+on an arm64 one, pushes each by digest, assembles one manifest, runs the
+published binary on real hardware of each architecture, and only then moves
+`latest`.
 
 ```
-git tag -a v1.0.4 -m "..." && git push origin v1.0.4
 make test-image        # functional tests against the image
-make release-image     # multi-arch build + push, tags latest too
-make release-image-verify
+git tag -a v1.0.4 -m "..." && git push origin v1.0.4
 ```
 
-Tag first: `VERSION` comes from `git describe`, so an untagged `main` yields
-`v1.0.3-1-gabc1234` rather than a release version. The target refuses to run on
-a dirty tree or an untagged `HEAD` for that reason.
+Tag first and tag on `main`: `VERSION` comes from `git describe`, and the
+workflow refuses a tag that is not an ancestor of `origin/main` — v1.0.5 was
+tagged from a feature branch and shipped unmerged commits.
+
+**Nothing in a release is cross-compiled, and that is not a preference.**
+v2026.09.19 was published from a mac whose amd64 half was cross-compiled under
+Go 1.26; the binary segfaulted at package init, while the identical source
+built natively on amd64 passed all 19 release tests the same day. A workstation
+can neither build that half correctly nor run it to find out: it checks the
+foreign architecture under emulation, which passed for every release before
+that one. Each architecture is now built and run on its own machine.
+
+`make release-image` still exists for a dry run
+(`RELEASE_OUTPUT=--output=type=cacheonly`) and for an emergency publish from a
+workstation. Prefer the workflow; a workstation publish must be followed by
+`make release-image-verify`, and on an arm64 host that check cannot tell a
+working amd64 binary from a broken one.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -1557,14 +1570,17 @@ architectures, `latest` resolves to the identical manifest digest, and
 `latest` left on an older release, or an emulated build that never actually
 ran all look fine locally and are only visible from outside.
 
-The foreign architecture builds under QEMU emulation, so expect the `amd64`
-`go build` to take several minutes on an arm64 host — `CGO_ENABLED=1` is
-required for the ADBC driver manager, which rules out cross-compiling. Each
-platform fetches its own libduckdb, because `scripts/install-libduckdb.sh`
-branches on `uname -m` and sees the target architecture.
+In the workflow each platform is native, so neither emulation nor
+cross-compilation is involved. `make release-image` on one host is different:
+it builds the foreign architecture with Debian's cross toolchain, because
+`CGO_ENABLED=1` is required for the ADBC driver manager and an emulated build
+takes far longer. **That path is known-broken for `linux/amd64` under Go
+1.26** — see above. Each platform fetches its own libduckdb either way,
+because `scripts/install-libduckdb.sh` branches on the target architecture.
 
-Publishing is a manual step from a workstation; CI builds and tests the image
-on every push but does not push to the registry.
+Publishing happens in CI, on the tag. A workstation can still publish in an
+emergency, and `scripts/verify-release-image.sh` is what checks either — it
+reads the registry back rather than the local daemon.
 
 > **Why this target exists:** `v1.0.0` was published by hand from a mac with a
 > plain `docker build`, so it went out **arm64-only** and did not run on amd64

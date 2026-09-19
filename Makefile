@@ -313,6 +313,38 @@ release-image:
 		$(if $(filter 1,$(RELEASE_LATEST)),-t turbolytics/sql-flow:latest) \
 		$(RELEASE_OUTPUT) .
 
+# One architecture, built for the machine it runs on, pushed by digest and
+# carrying no tag. .github/workflows/release.yml runs this on a runner of that
+# architecture and assembles the manifest from the digests, so no slice of a
+# release is ever cross-compiled.
+#
+# That is not a preference. v2026.09.19's amd64 half was cross-compiled from
+# arm64 by Go 1.26 and segfaulted at package init, while the same source built
+# natively on amd64 passed all 19 release tests the same day. The corruption
+# is only visible by running the binary, which a workstation can only do under
+# emulation.
+#
+# No tag is applied here on purpose: a tag that appeared before both
+# architectures existed would be pullable and half-published.
+RELEASE_PLATFORM ?=
+RELEASE_METADATA_FILE ?= .release/metadata.json
+
+.PHONY: release-image-digest
+release-image-digest:
+	@test -n "$(RELEASE_PLATFORM)" || { \
+		echo "release-image-digest: set RELEASE_PLATFORM, e.g. linux/amd64" >&2; exit 1; }
+	@mkdir -p $(dir $(RELEASE_METADATA_FILE))
+	docker buildx build \
+		--platform $(RELEASE_PLATFORM) \
+		-f Dockerfile \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(GIT_COMMIT) \
+		--label org.opencontainers.image.version=$(VERSION) \
+		--label org.opencontainers.image.revision=$(GIT_COMMIT) \
+		--label io.turbolytics.duckdb.version=$(DUCKDB_VERSION) \
+		--metadata-file $(RELEASE_METADATA_FILE) \
+		--output type=image,name=turbolytics/sql-flow,push-by-digest=true,name-canonical=true,push=true .
+
 # Reads the registry back, because a single-arch publish looks identical to a
 # good one locally, and so does a `latest` still pointing at an older release.
 .PHONY: release-image-verify
