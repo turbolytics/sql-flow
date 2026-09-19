@@ -19,29 +19,49 @@ LATEST="${2:-}"
 
 REQUIRED_PLATFORMS="${REQUIRED_PLATFORMS:-linux/amd64 linux/arm64}"
 
-# The buildx bundled with older Docker Desktop ignores --format, so the digest
-# is read off the human-readable output instead. The first Digest line is the
-# index digest, which is the one that identifies the multi-arch image.
-digest_of() {
-    docker buildx imagetools inspect "$1" 2>/dev/null | awk '/^Digest:/ { print $2; exit }'
-}
-
-platforms_of() {
-    docker buildx imagetools inspect "$1" 2>/dev/null |
-        awk '/^[[:space:]]*Platform:/ { print $2 }' | sort -u
-}
-
 fail() {
     echo "verify-release-image: $*" >&2
     exit 1
 }
 
-image_digest="$(digest_of "$IMAGE")"
-[ -n "$image_digest" ] || fail "$IMAGE not found in the registry"
+# One read of the registry, kept, so the digest and the platforms come from the
+# same answer and the registry's own words survive.
+#
+# stderr used to go to /dev/null, which made every registry failure look
+# identical and silent: under `set -e` the failing command substitution ended
+# the script at the assignment below, before the "not found" message written
+# for exactly that case could run. A release job failed this way in 1 second
+# with an exit code and no output, and what the registry actually said -- 401,
+# 429, no such tag -- is the whole of what a reader needs.
+inspect_of() {
+    local out
+    if ! out="$(docker buildx imagetools inspect "$1" 2>&1)"; then
+        echo "verify-release-image: cannot read $1 from the registry:" >&2
+        printf '%s\n' "$out" | sed 's/^/  /' >&2
+        return 1
+    fi
+    printf '%s\n' "$out"
+}
+
+# The buildx bundled with older Docker Desktop ignores --format, so the digest
+# is read off the human-readable output instead. The first Digest line is the
+# index digest, which is the one that identifies the multi-arch image.
+digest_of() {
+    printf '%s\n' "$1" | awk '/^Digest:/ { print $2; exit }'
+}
+
+platforms_of() {
+    printf '%s\n' "$1" | awk '/^[[:space:]]*Platform:/ { print $2 }' | sort -u
+}
+
+image_inspect="$(inspect_of "$IMAGE")" ||
+    fail "$IMAGE could not be read; the registry's error is above"
+image_digest="$(digest_of "$image_inspect")"
+[ -n "$image_digest" ] || fail "$IMAGE carries no index digest, so it is not a manifest list"
 echo "$IMAGE"
 echo "  digest:    $image_digest"
 
-image_platforms="$(platforms_of "$IMAGE")"
+image_platforms="$(platforms_of "$image_inspect")"
 
 # A single-arch publish has no manifest list, so it lists no platforms at all.
 # That is the v1.0.0 failure exactly, and it deserves its own message rather
@@ -59,8 +79,10 @@ done
 [ -z "$missing" ] || fail "$IMAGE is missing platform(s):$missing"
 
 if [ -n "$LATEST" ]; then
-    latest_digest="$(digest_of "$LATEST")"
-    [ -n "$latest_digest" ] || fail "$LATEST not found in the registry"
+    latest_inspect="$(inspect_of "$LATEST")" ||
+        fail "$LATEST could not be read; the registry's error is above"
+    latest_digest="$(digest_of "$latest_inspect")"
+    [ -n "$latest_digest" ] || fail "$LATEST carries no index digest"
     echo "$LATEST"
     echo "  digest:    $latest_digest"
 

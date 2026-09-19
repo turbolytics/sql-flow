@@ -1,0 +1,55 @@
+name: promote-latest
+
+# Points :latest at an existing release tag, then proves it landed.
+#
+# Two uses, both from the same day. A release whose every other job passed
+# left :latest unmoved because its own last job failed, and finishing it by
+# hand needs a workstation credential that no longer has to exist. And when a
+# release had to be withdrawn, :latest was rolled back to the previous tag
+# from a laptop while the registry served a segfaulting binary under it --
+# unaudited, and gated on someone being awake with docker login.
+#
+# Moving :latest is not a build. It copies a manifest that is already
+# published, which is also why `docker tag` + `docker push` must never be used
+# for it: that flattens a manifest list to one architecture, which is how
+# v1.0.0 shipped arm64-only.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag that :latest should point at
+        required: true
+        type: string
+
+env:
+  IMAGE: turbolytics/sql-flow
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Before, not after. :latest is what a reader gets who names no tag, so
+      # a tag that cannot be read, is not a manifest list, or does not run
+      # must not become it. Native amd64 here: the runner's own architecture,
+      # so the binary is actually executed rather than emulated.
+      - name: The target is a real, runnable release
+        env:
+          REQUIRED_PLATFORMS: linux/amd64
+        run: ./scripts/verify-release-image.sh "${IMAGE}:${{ inputs.tag }}"
+
+      - name: Point latest at ${{ inputs.tag }}
+        run: docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${{ inputs.tag }}"
+
+      - name: latest resolves to ${{ inputs.tag }}
+        env:
+          REQUIRED_PLATFORMS: linux/amd64
+        run: ./scripts/verify-release-image.sh "${IMAGE}:${{ inputs.tag }}" "${IMAGE}:latest"
