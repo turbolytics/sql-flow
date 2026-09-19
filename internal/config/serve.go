@@ -467,6 +467,10 @@ type Violation struct {
 	// indexes, the form validate resolves to a line.
 	Path    []string
 	Message string
+	// InSchema marks a rule the JSON Schema states too. validate leaves such
+	// a finding to the schema check when that check already reported it; run
+	// has no schema pass and reports it itself.
+	InSchema bool
 }
 
 var (

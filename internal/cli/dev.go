@@ -14,6 +14,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/handlers"
 	"github.com/turbolytics/sql-flow/internal/logging"
 	"github.com/turbolytics/sql-flow/internal/sinks"
@@ -82,6 +83,19 @@ func devInvoke(
 	conf, err := config.Load(configPath, map[string]string{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// The same rules run and validate apply, then one of dev invoke's own:
+	// the fixture is JSONL, and a registry-backed source reads framed
+	// records. Inferring types from the file would give the SQL different
+	// types than the run gives it. #321 is the typed fixture mode.
+	if vs := conf.CheckSchemaRegistry(); len(vs) > 0 {
+		return nil, errs.New(vs[0].Code, "%s: %s", vs[0].Key(), vs[0].Message)
+	}
+	if src := conf.Pipeline.Source.Kafka; src != nil && src.Value.RegistryBacked() {
+		return nil, errs.New(errs.CodeConfigInvalid,
+			"pipeline.source.kafka.value.format: dev invoke reads a JSONL fixture, and a %s source reads framed records. Run it with sqlflow run against a broker, or set the format to json for the fixture",
+			src.Value.ResolvedFormat())
 	}
 
 	// Commands and tables are created before the handler is built: a

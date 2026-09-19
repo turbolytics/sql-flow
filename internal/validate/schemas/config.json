@@ -12,6 +12,59 @@
           "type": "string",
           "description": "Description of the pipeline."
         },
+        "schema_registry": {
+          "properties": {
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The registry's base URL."
+            },
+            "auth": {
+              "properties": {
+                "username": {
+                  "type": "string"
+                },
+                "password": {
+                  "type": "string"
+                },
+                "bearer_token": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "description": "Credentials, when the registry asks for them."
+            },
+            "ssl": {
+              "properties": {
+                "ca_location": {
+                  "type": "string"
+                },
+                "certificate_location": {
+                  "type": "string"
+                },
+                "key_location": {
+                  "type": "string"
+                },
+                "key_password": {
+                  "type": "string"
+                },
+                "endpoint_identification_algorithm": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "description": "TLS material, the same shape as kafka.ssl."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "description": "The schema registry a source reads schemas from and a sink registers\nthem with. Needed when any value block names a format other than json."
+        },
         "source": {
           "properties": {
             "type": {
@@ -123,6 +176,49 @@
                   "additionalProperties": false,
                   "type": "object",
                   "description": "Bounds how far the consumer reads ahead of the pipeline. Omit the\nblock to accept the defaults, which bound a backlog replay to a few\nfetches rather than the backlog."
+                },
+                "value": {
+                  "properties": {
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "json",
+                        "json_schema",
+                        "avro"
+                      ],
+                      "description": "json, json_schema or avro. Absent means json. Anything but json needs\npipeline.schema_registry."
+                    },
+                    "subject": {
+                      "type": "string",
+                      "description": "Sink only. The registry subject. Absent means \u003ctopic\u003e-value."
+                    },
+                    "schema": {
+                      "properties": {
+                        "version": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "integer"
+                            }
+                          ],
+                          "description": "latest, or a version number of at least 1. Written as the word\nlatest or as a number.",
+                          "minimum": 1,
+                          "pattern": "^(latest|[1-9][0-9]*)$"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": [
+                        "version"
+                      ],
+                      "description": "Sink only. A registered version to write against. Absent means the\nsink generates a schema from its output and registers it."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "description": "How the record's value is encoded. Absent means json."
                 }
               },
               "additionalProperties": false,
@@ -332,6 +428,49 @@
                     "username",
                     "password"
                   ]
+                },
+                "value": {
+                  "properties": {
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "json",
+                        "json_schema",
+                        "avro"
+                      ],
+                      "description": "json, json_schema or avro. Absent means json. Anything but json needs\npipeline.schema_registry."
+                    },
+                    "subject": {
+                      "type": "string",
+                      "description": "Sink only. The registry subject. Absent means \u003ctopic\u003e-value."
+                    },
+                    "schema": {
+                      "properties": {
+                        "version": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "integer"
+                            }
+                          ],
+                          "description": "latest, or a version number of at least 1. Written as the word\nlatest or as a number.",
+                          "minimum": 1,
+                          "pattern": "^(latest|[1-9][0-9]*)$"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": [
+                        "version"
+                      ],
+                      "description": "Sink only. A registered version to write against. Absent means the\nsink generates a schema from its output and registers it."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "description": "How the record's value is encoded. Absent means json."
                 }
               },
               "additionalProperties": false,
@@ -613,6 +752,49 @@
                         "username",
                         "password"
                       ]
+                    },
+                    "value": {
+                      "properties": {
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "json",
+                            "json_schema",
+                            "avro"
+                          ],
+                          "description": "json, json_schema or avro. Absent means json. Anything but json needs\npipeline.schema_registry."
+                        },
+                        "subject": {
+                          "type": "string",
+                          "description": "Sink only. The registry subject. Absent means \u003ctopic\u003e-value."
+                        },
+                        "schema": {
+                          "properties": {
+                            "version": {
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer"
+                                }
+                              ],
+                              "description": "latest, or a version number of at least 1. Written as the word\nlatest or as a number.",
+                              "minimum": 1,
+                              "pattern": "^(latest|[1-9][0-9]*)$"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "version"
+                          ],
+                          "description": "Sink only. A registered version to write against. Absent means the\nsink generates a schema from its output and registers it."
+                        }
+                      },
+                      "additionalProperties": false,
+                      "type": "object",
+                      "description": "How the record's value is encoded. Absent means json."
                     }
                   },
                   "additionalProperties": false,
@@ -924,6 +1106,49 @@
                               "username",
                               "password"
                             ]
+                          },
+                          "value": {
+                            "properties": {
+                              "format": {
+                                "type": "string",
+                                "enum": [
+                                  "json",
+                                  "json_schema",
+                                  "avro"
+                                ],
+                                "description": "json, json_schema or avro. Absent means json. Anything but json needs\npipeline.schema_registry."
+                              },
+                              "subject": {
+                                "type": "string",
+                                "description": "Sink only. The registry subject. Absent means \u003ctopic\u003e-value."
+                              },
+                              "schema": {
+                                "properties": {
+                                  "version": {
+                                    "oneOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "integer"
+                                      }
+                                    ],
+                                    "description": "latest, or a version number of at least 1. Written as the word\nlatest or as a number.",
+                                    "minimum": 1,
+                                    "pattern": "^(latest|[1-9][0-9]*)$"
+                                  }
+                                },
+                                "additionalProperties": false,
+                                "type": "object",
+                                "required": [
+                                  "version"
+                                ],
+                                "description": "Sink only. A registered version to write against. Absent means the\nsink generates a schema from its output and registers it."
+                              }
+                            },
+                            "additionalProperties": false,
+                            "type": "object",
+                            "description": "How the record's value is encoded. Absent means json."
                           }
                         },
                         "additionalProperties": false,

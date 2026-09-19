@@ -20,8 +20,13 @@ user.config.serve_reserved
 user.config.template_undefined
 user.data.invalid
 user.data.malformed
+user.data.schema_unknown
 user.sink.encode_failed
 user.sink.invalid
+user.sink.name_invalid
+user.sink.schema_incompatible
+user.sink.schema_mismatch
+user.sink.schema_unregistered
 user.sink.type_unsupported
 user.source.invalid
 user.source.security_invalid

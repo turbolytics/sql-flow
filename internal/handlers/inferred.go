@@ -11,6 +11,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/buger/jsonparser"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"go.uber.org/zap"
@@ -513,7 +514,7 @@ func withMetadataFields(schema *arrow.Schema, withMetadata bool) *arrow.Schema {
 }
 
 func isMetadataField(name string) bool {
-	return name == "kafka_topic" || name == "kafka_partition" || name == "kafka_offset"
+	return config.IsReservedSourceColumn(name)
 }
 
 func buildRecord(alloc memory.Allocator, schema *arrow.Schema, msgs [][]byte, meta []core.Message) (arrow.Record, error) {

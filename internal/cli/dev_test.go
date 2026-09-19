@@ -11,6 +11,7 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
 
@@ -244,4 +245,78 @@ func TestCliDevInvoke_FixtureOfOnlyBlankLines(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Nil(t, table)
 	assert.Equal(t, "", out.String())
+}
+
+// writeDevConfig writes a pipeline config into a temp dir and returns its
+// path. sourceValue is the source's value block at six spaces, or empty.
+func writeDevConfig(t *testing.T, registry, sourceValue string) string {
+	t.Helper()
+	cfg := "pipeline:\n" + registry + `
+  source:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: ["orders"]
+` + sourceValue + `
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT properties.city AS city, count(*) AS city_count FROM batch GROUP BY city
+  sink:
+    type: console
+`
+	path := filepath.Join(t.TempDir(), "p.yml")
+	if err := os.WriteFile(path, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// dev invoke reads a JSONL fixture. A registry-backed source reads framed
+// records, and inferring types from JSONL would give the SQL different
+// types than the run gives it. Refused, with the config code.
+func TestCliDevInvoke_RefusesARegistryBackedSource(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	path := writeDevConfig(t,
+		"  schema_registry:\n    url: http://localhost:8081",
+		"      value:\n        format: avro")
+	var out bytes.Buffer
+	_, err := devInvoke(context.Background(), conn, path, "../../dev/fixtures/basic.agg.jsonl", &out)
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
+	assert.That(t, strings.Contains(err.Error(), "pipeline.source.kafka.value.format"))
+	assert.That(t, strings.Contains(err.Error(), "JSONL"))
+	assert.Equal(t, "", out.String())
+}
+
+// The rules run here too: a config validate refuses, dev invoke refuses.
+func TestCliDevInvoke_RefusesASchemaRegistryRule(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	path := writeDevConfig(t, "", "      value:\n        format: avro")
+	var out bytes.Buffer
+	_, err := devInvoke(context.Background(), conn, path, "../../dev/fixtures/basic.agg.jsonl", &out)
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
+	assert.That(t, strings.Contains(err.Error(), "needs pipeline.schema_registry"))
+}
+
+// A json source with a value block spelled out is the default, and runs.
+func TestCliDevInvoke_JsonValueBlockRuns(t *testing.T) {
+	coverage.Covers(t, "cli.dev_invoke")
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	path := writeDevConfig(t, "", "      value:\n        format: json")
+	var out bytes.Buffer
+	table, err := devInvoke(context.Background(), conn, path, "../../dev/fixtures/basic.agg.jsonl", &out)
+	assert.NoError(t, err)
+	defer table.Release()
+	assert.Equal(t, int64(2), table.NumRows())
 }

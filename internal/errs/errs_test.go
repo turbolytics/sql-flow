@@ -315,3 +315,38 @@ func TestLifecycleExitCodes_DrainIncompleteExitsFifteen(t *testing.T) {
 	assert.That(t, ok)
 	assert.That(t, strings.Contains(def.Action, "drain_deadline_seconds"))
 }
+
+// The schema registry codes are user errors: a record nobody registered, a
+// schema the registry refused, a version that is not there, a shape the SQL
+// does not match, a name the schema language cannot spell. Each exits 10 and
+// is never retried; a restart fails the same way.
+func TestErrorTaxonomy_SchemaRegistryCodesAreUserErrors(t *testing.T) {
+	coverage.Covers(t, "error.taxonomy")
+	codes := []Code{
+		CodeDataSchemaUnknown,
+		CodeSinkSchemaIncompatible,
+		CodeSinkSchemaUnregistered,
+		CodeSinkSchemaMismatch,
+		CodeSinkNameInvalid,
+	}
+	assert.Equal(t, Code("user.data.schema_unknown"), codes[0])
+	assert.Equal(t, Code("user.sink.schema_incompatible"), codes[1])
+	assert.Equal(t, Code("user.sink.schema_unregistered"), codes[2])
+	assert.Equal(t, Code("user.sink.schema_mismatch"), codes[3])
+	assert.Equal(t, Code("user.sink.name_invalid"), codes[4])
+	for _, c := range codes {
+		d, ok := Lookup(c)
+		assert.True(t, ok)
+		assert.That(t, d.Summary != "")
+		assert.That(t, d.Action != "")
+		exit := ExitCode(New(c, "x"))
+		assert.Equal(t, ExitUserError, exit)
+		assert.False(t, Retryable(exit))
+	}
+
+	// security_invalid keeps its code and now names the registry too.
+	d, ok := Lookup(CodeSourceSecurityInvalid)
+	assert.True(t, ok)
+	assert.That(t, strings.Contains(d.Summary, "schema registry"))
+	assert.That(t, strings.Contains(d.Action, "schema_registry"))
+}

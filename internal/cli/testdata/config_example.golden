@@ -4,6 +4,23 @@ pipeline:
   name: <string>
   # Description of the pipeline.
   description: <string>
+  # The schema registry a source reads schemas from and a sink registers
+  # them with. Needed when any value block names a format other than json.
+  schema_registry:
+    # The registry's base URL.
+    url: <string>
+    # Credentials, when the registry asks for them.
+    auth:
+      username: <string>
+      password: <string>
+      bearer_token: <string>
+    # TLS material, the same shape as kafka.ssl.
+    ssl:
+      ca_location: <string>
+      certificate_location: <string>
+      key_location: <string>
+      key_password: <string>
+      endpoint_identification_algorithm: <string>
   # Configuration for the data source.
   source:
     type: kafka | webhook | websocket
@@ -35,6 +52,19 @@ pipeline:
         max_partition_bytes: <integer>
         # Fetches held ahead of the pipeline.
         prefetch: <integer>
+      # How the record's value is encoded. Absent means json.
+      value:
+        # json, json_schema or avro. Absent means json. Anything but json needs
+        # pipeline.schema_registry.
+        format: json | json_schema | avro
+        # Sink only. The registry subject. Absent means <topic>-value.
+        subject: <string>
+        # Sink only. A registered version to write against. Absent means the
+        # sink generates a schema from its output and registers it.
+        schema:
+          # latest, or a version number of at least 1. Written as the word
+          # latest or as a number.
+          version: <unknown>
     websocket:
       uri: <string>
     webhook:
@@ -84,6 +114,19 @@ pipeline:
         mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
         username: <string>
         password: <string>
+      # How the record's value is encoded. Absent means json.
+      value:
+        # json, json_schema or avro. Absent means json. Anything but json needs
+        # pipeline.schema_registry.
+        format: json | json_schema | avro
+        # Sink only. The registry subject. Absent means <topic>-value.
+        subject: <string>
+        # Sink only. A registered version to write against. Absent means the
+        # sink generates a schema from its output and registers it.
+        schema:
+          # latest, or a version number of at least 1. Written as the word
+          # latest or as a number.
+          version: <unknown>
     # Console output sink configuration.
     console:
     # SQL-command sink configuration.
@@ -180,6 +223,19 @@ pipeline:
           mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
           username: <string>
           password: <string>
+        # How the record's value is encoded. Absent means json.
+        value:
+          # json, json_schema or avro. Absent means json. Anything but json needs
+          # pipeline.schema_registry.
+          format: json | json_schema | avro
+          # Sink only. The registry subject. Absent means <topic>-value.
+          subject: <string>
+          # Sink only. A registered version to write against. Absent means the
+          # sink generates a schema from its output and registers it.
+          schema:
+            # latest, or a version number of at least 1. Written as the word
+            # latest or as a number.
+            version: <unknown>
       # Console output sink configuration.
       console:
       # SQL-command sink configuration.
@@ -286,6 +342,19 @@ tables:
               mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
               username: <string>
               password: <string>
+            # How the record's value is encoded. Absent means json.
+            value:
+              # json, json_schema or avro. Absent means json. Anything but json needs
+              # pipeline.schema_registry.
+              format: json | json_schema | avro
+              # Sink only. The registry subject. Absent means <topic>-value.
+              subject: <string>
+              # Sink only. A registered version to write against. Absent means the
+              # sink generates a schema from its output and registers it.
+              schema:
+                # latest, or a version number of at least 1. Written as the word
+                # latest or as a number.
+                version: <unknown>
           # Console output sink configuration.
           console:
           # SQL-command sink configuration.

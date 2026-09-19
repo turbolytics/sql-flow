@@ -165,6 +165,13 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 
+			// Before the database opens: a config error needs nothing
+			// closed. The code is already user.config.invalid, so it is
+			// returned as-is.
+			if err := checkSchemaRegistry(conf); err != nil {
+				return err
+			}
+
 			// A pipeline that declares a state path gets a DuckDB backed by
 			// that file, so window state and the offsets that produced it
 			// survive a crash. Without one, state is in memory and is lost --
