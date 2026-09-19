@@ -358,6 +358,64 @@ def test_cli_serve_answers_requests_from_the_image(image):
     assert refused.json()["error"]["code"] == "unauthorized"
 
 
+@pytest.mark.covers("cli.serve")
+def test_cli_serve_answers_a_second_request_from_the_cache(image):
+    """A cached dataset answers a second request from memory.
+
+    Driven against the image because `dev/config/serve/local.cached.yml` is a
+    shipped example the README points at, and nothing else ever serves a
+    request against it. The unit suite proves the cache over a counting
+    executor. What it cannot see is the cache failing to engage in the
+    artifact users pull.
+    """
+    client_id = "release-client"
+    container = DockerContainer(image) \
+        .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+        .with_env("SQLFLOW_SERVE_CLIENT_ID", client_id) \
+        .with_exposed_ports(8080) \
+        .with_command("serve /tmp/conf/config/serve/local.cached.yml")
+    container.start()
+    try:
+        wait_for_logs(container, "serving", timeout=60)
+        base = f"http://localhost:{container.get_exposed_port(8080)}"
+        client = {"client_id": client_id}
+        totals = f"{base}/v1/datasets/event_totals"
+
+        miss = requests.get(totals, params=client, timeout=10)
+        # Slept rather than asked straight back. age is measured from the
+        # fill's start, so a hit inside the same millisecond reports 0 and
+        # proves nothing about which clock the field reads.
+        time.sleep(1.2)
+        hit = requests.get(totals, params=client, timeout=10)
+
+        # city_events ships with no cache block. local.cached.yml says why.
+        window = {"city": "Baltimore",
+                  "since": "2026-09-10T00:00:00Z", "until": "2026-09-12T00:00:00Z"}
+        uncached = requests.get(
+            f"{base}/v1/datasets/city_events",
+            params={"grain": "1d", **window, **client}, timeout=10)
+    finally:
+        container.stop()
+
+    assert miss.status_code == 200, miss.text
+    assert miss.json()["cache"] == "miss"
+    # The caller that fills reads its own result as new.
+    assert miss.json()["age_ms"] == 0, miss.text
+
+    assert hit.status_code == 200, hit.text
+    assert hit.json()["cache"] == "hit"
+    assert hit.json()["age_ms"] >= 1000, hit.text
+
+    # A hit carries the rows the fill returned rather than a second query's.
+    for field in ("columns", "rows", "row_count"):
+        assert hit.json()[field] == miss.json()[field], field
+
+    # The opt-in: no cache block, so neither key is present at all.
+    assert uncached.status_code == 200, uncached.text
+    assert "cache" not in uncached.json(), uncached.text
+    assert "age_ms" not in uncached.json(), uncached.text
+
+
 @pytest.mark.covers("config.templating")
 @pytest.mark.covers("config.validation")
 def test_config_validation_accepts_a_shipped_example(image):
