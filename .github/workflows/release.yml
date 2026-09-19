@@ -206,6 +206,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # This job only reads a public image, so it needs no credential to be
+      # correct -- but an anonymous read is rate limited per source address,
+      # and these runners are a large shared pool. v2026.09.19.1 failed here
+      # on amd64 and passed on a re-run, having already proven the same binary
+      # twice. A release must not turn on how busy the pool is.
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # REQUIRED_PLATFORMS narrows the script to this runner's own
       # architecture, so the binary runs natively. Each job still asserts the
       # manifest carries its platform.
@@ -228,16 +238,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Prints what it read and what it decided. The first version of this
+      # step exited 1 in under a second with no output at all on
+      # v2026.09.19.1, and left `latest` unmoved on a release that had passed
+      # every other job. A step that decides something must say what it
+      # decided, or its failure is a guess.
+      #
+      # The checkout above brings the tags; the fetch only refreshes them and
+      # cannot fail the step. `git tag --sort=-v:refname` is git's own version
+      # sort, so no pipeline of grep and sort decides a release.
       - name: This tag is the newest release
         id: newest
         run: |
-          git fetch -q --tags origin
-          newest=$(git tag -l 'v*' | grep -v -- '-' | sort -V | tail -1)
+          git fetch --tags --force origin ||
+            echo "::warning::could not refresh tags; using the ones the checkout brought"
+          tags="$(git tag -l 'v*' --sort=-v:refname)"
+          echo "release tags, newest first:"
+          printf '%s\n' "$tags" | head -5 | sed 's/^/  /'
+          newest="$(printf '%s\n' "$tags" | awk '!/-/ { print; exit }')"
+          echo "newest: ${newest:-<none>}   this tag: ${GITHUB_REF_NAME}"
           if [ "$newest" = "$GITHUB_REF_NAME" ]; then
             echo "move=true" >> "$GITHUB_OUTPUT"
           else
             echo "move=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::${newest} is newer than ${GITHUB_REF_NAME}; leaving latest where it is"
+            echo "::notice::${newest:-a newer tag} is newer than ${GITHUB_REF_NAME}; leaving latest where it is"
           fi
 
       - uses: docker/setup-buildx-action@v3

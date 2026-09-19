@@ -45,6 +45,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # An anonymous registry read is rate limited per source address, and
+      # these runners are a large shared pool. Reading a public image needs no
+      # credential to be correct, only to be reliable.
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # REQUIRED_PLATFORMS narrows the script to this runner's own
       # architecture, so `sqlflow version` runs on real hardware rather than
       # through qemu. Each job still asserts the manifest carries its own
