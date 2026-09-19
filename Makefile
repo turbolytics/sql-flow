@@ -282,8 +282,29 @@ RELEASE_LATEST ?= 1
 # nothing.
 RELEASE_OUTPUT ?= --push
 
+# Refuses to cross-compile. Go 1.26 miscompiles the cgo amd64 binary when it
+# cross-compiles from arm64 -- v2026.09.19 segfaulted at package init -- and
+# release-image-verify below runs the foreign half under emulation, which
+# cannot tell. Push the tag and let CI build each architecture on a machine of
+# that architecture. Set RELEASE_ALLOW_CROSS=1 only with the result in hand,
+# run on real hardware of the target.
+RELEASE_ALLOW_CROSS ?= 0
+
 .PHONY: release-image
 release-image:
+	@host=$$(uname -m); \
+	case $$host in x86_64|amd64) host=amd64 ;; aarch64|arm64) host=arm64 ;; esac; \
+	for p in $$(echo "$(RELEASE_PLATFORMS)" | tr ',' ' '); do \
+		a=$${p##*/}; \
+		if [ "$$a" != "$$host" ] && [ "$(RELEASE_ALLOW_CROSS)" != "1" ]; then \
+			echo "release-image: $$p would be cross-compiled on a $$host host." >&2; \
+			echo "               Go 1.26 miscompiles that binary for amd64, and the verify" >&2; \
+			echo "               step runs it under emulation, which passed for v2026.09.19." >&2; \
+			echo "               Push the tag instead: .github/workflows/release.yml builds" >&2; \
+			echo "               each architecture natively. RELEASE_ALLOW_CROSS=1 overrides." >&2; \
+			exit 1; \
+		fi; \
+	done
 	@test -z "$$(git status --porcelain)" || { \
 		echo "release-image: working tree is dirty, so $(VERSION) would not be reproducible" >&2; \
 		echo "               commit or stash, then re-run" >&2; exit 1; }
@@ -312,6 +333,38 @@ release-image:
 		-t $(SQLFLOW_IMAGE) \
 		$(if $(filter 1,$(RELEASE_LATEST)),-t turbolytics/sql-flow:latest) \
 		$(RELEASE_OUTPUT) .
+
+# One architecture, built for the machine it runs on, pushed by digest and
+# carrying no tag. .github/workflows/release.yml runs this on a runner of that
+# architecture and assembles the manifest from the digests, so no slice of a
+# release is ever cross-compiled.
+#
+# That is not a preference. v2026.09.19's amd64 half was cross-compiled from
+# arm64 by Go 1.26 and segfaulted at package init, while the same source built
+# natively on amd64 passed all 19 release tests the same day. The corruption
+# is only visible by running the binary, which a workstation can only do under
+# emulation.
+#
+# No tag is applied here on purpose: a tag that appeared before both
+# architectures existed would be pullable and half-published.
+RELEASE_PLATFORM ?=
+RELEASE_METADATA_FILE ?= .release/metadata.json
+
+.PHONY: release-image-digest
+release-image-digest:
+	@test -n "$(RELEASE_PLATFORM)" || { \
+		echo "release-image-digest: set RELEASE_PLATFORM, e.g. linux/amd64" >&2; exit 1; }
+	@mkdir -p $(dir $(RELEASE_METADATA_FILE))
+	docker buildx build \
+		--platform $(RELEASE_PLATFORM) \
+		-f Dockerfile \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(GIT_COMMIT) \
+		--label org.opencontainers.image.version=$(VERSION) \
+		--label org.opencontainers.image.revision=$(GIT_COMMIT) \
+		--label io.turbolytics.duckdb.version=$(DUCKDB_VERSION) \
+		--metadata-file $(RELEASE_METADATA_FILE) \
+		--output type=image,name=turbolytics/sql-flow,push-by-digest=true,name-canonical=true,push=true .
 
 # Reads the registry back, because a single-arch publish looks identical to a
 # good one locally, and so does a `latest` still pointing at an older release.

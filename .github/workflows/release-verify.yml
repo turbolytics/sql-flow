@@ -1,0 +1,64 @@
+name: release-verify
+
+# Runs the release check on native runners, which is the one thing a
+# workstation cannot do. A mac verifies the amd64 half of a multi-arch image
+# under emulation, and an emulator that works is indistinguishable from a
+# binary that works -- until it is not.
+#
+# v2026.09.19 was published with an amd64 binary that segfaulted at package
+# init. It was cross-compiled from arm64 by Go 1.26; the identical source
+# built natively on amd64 passed all 19 release tests in CI the same day. The
+# image CI tests and the image that ships were built by different paths, and
+# only the shipped one was broken.
+#
+# Dispatched rather than triggered by the tag: the tag is pushed before
+# `make release-image` publishes, so a tag-triggered run would check an image
+# that does not exist yet. Run this immediately after publishing, and treat a
+# failure as a release to unpublish rather than a flake to re-run.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The published tag to verify, such as v2026.09.19.1
+        required: true
+        type: string
+      check_latest:
+        description: Also require that :latest points at this tag
+        type: boolean
+        default: true
+
+jobs:
+  verify:
+    name: ${{ matrix.platform }}
+    strategy:
+      # Both halves are reported. A failure on one architecture leaves the
+      # other unknown, and the two are produced by different builds, so
+      # stopping at the first tells you least when it matters most.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # REQUIRED_PLATFORMS narrows the script to this runner's own
+      # architecture, so `sqlflow version` runs on real hardware rather than
+      # through qemu. Each job still asserts the manifest carries its own
+      # platform and that :latest resolves to the same digest, so the two jobs
+      # together cover everything the workstation script checks.
+      - name: Verify turbolytics/sql-flow:${{ inputs.tag }} on ${{ matrix.platform }}
+        env:
+          REQUIRED_PLATFORMS: ${{ matrix.platform }}
+          TAG: ${{ inputs.tag }}
+          CHECK_LATEST: ${{ inputs.check_latest }}
+        run: |
+          if [ "$CHECK_LATEST" = "true" ]; then
+            ./scripts/verify-release-image.sh \
+              "turbolytics/sql-flow:$TAG" turbolytics/sql-flow:latest
+          else
+            ./scripts/verify-release-image.sh "turbolytics/sql-flow:$TAG"
+          fi
