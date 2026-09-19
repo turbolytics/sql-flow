@@ -1,0 +1,143 @@
+# Log reduction, part 2 of 2: the rollup.
+#
+# Hourly request and byte counts per route class and status, into ClickHouse.
+# Runs as its own instance under its own consumer group, alongside
+# logs.archive.parquet.yml on the same topic.
+#
+# Verified end to end against the NASA-HTTP traces (https://ita.ee.lbl.gov/):
+# 3,461,613 records in, 84,329 rows out, 373,056,138 bytes of log to 1,035,798
+# bytes in ClickHouse. 360x smaller, 41x fewer rows. Throughput about 180k
+# messages a second; the regex is what costs.
+#
+# The rollup is lossy by construction. It cannot answer which host made a
+# request or when inside the hour, which is what the archive is for.
+#
+# The target table:
+#
+#   CREATE TABLE nasa_http_rollup (
+#       bucket      DateTime,
+#       route_class String,
+#       status      UInt16,
+#       requests    UInt64,
+#       bytes       UInt64
+#   ) ENGINE = MergeTree() ORDER BY (bucket, route_class, status);
+#
+# Read it with sum(requests), not requests -- see late_rows below.
+tables:
+  sql:
+    - name: agg_logs_rollup
+      # No UNIQUE INDEX, on purpose. DuckDB never frees rows deleted from an
+      # indexed table, and the engine deletes every closed window, so an index
+      # grows memory without bound. Each batch appends its own partial counts
+      # and emit_sql sums them. See #268.
+      sql: |
+        CREATE TABLE agg_logs_rollup (
+          bucket TIMESTAMPTZ,
+          route_class VARCHAR,
+          status SMALLINT,
+          requests BIGINT,
+          bytes BIGINT
+        );
+
+      window:
+        time_column: bucket
+        size_seconds: 3600
+        grace_seconds: 7200
+        idle_close_seconds: 10
+        # reemit, not drop, and this is the setting to understand.
+        #
+        # With `drop` this pipeline silently lost 1,060 of 3,461,542 requests
+        # (0.031%), all in one bucket, while logging only "dropped late rows:
+        # 48" -- 48 is a count of aggregate rows, each carrying many requests.
+        #
+        # The source was in perfect event-time order, so the lateness was
+        # manufactured here: one 50,000-row batch spans many hours of traffic,
+        # and that batch's own newest bucket closes earlier buckets in the same
+        # batch. Raising grace_seconds does NOT fix it -- 7200 dropped exactly
+        # the same 1,060 -- and smaller batches only scale it down (batch 1000
+        # still lost 603).
+        #
+        # reemit publishes the late rows as their own row instead of discarding
+        # them. The count then balances exactly: 3,461,542 requests in
+        # ClickHouse against 3,461,613 published less 71 unparseable. The cost
+        # is that a bucket can appear more than once, so every reader must
+        # SUM(requests) rather than read a single row.
+        late_rows: reemit
+        emit_sql: |
+          SELECT
+            strftime(bucket, '%Y-%m-%d %H:%M:%S') AS bucket,
+            route_class,
+            status,
+            sum(requests)::BIGINT AS requests,
+            sum(bytes)::BIGINT AS bytes
+          FROM closed
+          GROUP BY ALL
+        sink:
+          type: clickhouse
+          clickhouse:
+            dsn: {{ SQLFLOW_CLICKHOUSE_DSN|default('clickhouse://localhost:8123/test') }}
+            table: {{ SQLFLOW_CLICKHOUSE_TABLE|default('nasa_http_rollup') }}
+
+pipeline:
+  name: logs-rollup-clickhouse
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(50000) }}
+
+  source:
+    type: kafka
+    kafka:
+      brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
+      group_id: {{ SQLFLOW_GROUP_ID|default('logs-rollup') }}
+      auto_offset_reset: earliest
+      topics:
+        - {{ SQLFLOW_INPUT_TOPIC|default('nasa-http') }}
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    # Cardinality control is where the reduction comes from, and it is the whole
+    # trick. Grouping by raw path barely reduces anything: the NASA July trace
+    # alone holds 21,214 distinct paths, most of them near-unique. The route
+    # class drops the filename, keeps two directory segments, folds digit runs
+    # to N, and classifies by extension -- 21,214 paths become 3,423 classes,
+    # and /shuttle/missions/sts-73/mission-sts-73.html becomes
+    # /shuttle/missions/*.html.
+    #
+    # The trailing '^//' replacement is not cosmetic: a path with a single
+    # segment has no directory left once the filename is dropped, which would
+    # otherwise render as //*.html.
+    #
+    # Rows whose timestamp did not parse are excluded here and kept in full by
+    # the archive pipeline. A NULL bucket would corrupt the watermark.
+    sql: |
+      WITH m AS (
+        SELECT regexp_extract(message,
+          '^(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+)[^"]*" (\d{3}) (\S+)$',
+          ['host','ts','method','path','status','bytes']) AS f
+        FROM batch
+      ),
+      s AS (
+        SELECT f.*,
+          string_split(trim(f.path,'/'),'/') AS segs,
+          lower(regexp_extract(f.path,'\.([a-zA-Z0-9]+)$',1)) AS ext,
+          try_strptime(f.ts,'%d/%b/%Y:%H:%M:%S %z') AS ets
+        FROM m
+      )
+      INSERT INTO agg_logs_rollup BY NAME
+      SELECT
+        date_trunc('hour', ets) AS bucket,
+        regexp_replace(
+          regexp_replace(
+            '/'||array_to_string(list_slice(
+              CASE WHEN ext<>'' THEN list_slice(segs,1,len(segs)-1) ELSE segs END,1,2),'/'),
+            '[0-9]+','N','g'),
+          '^//','/') AS route_class,
+        TRY_CAST(status AS SMALLINT) AS status,
+        count(*) AS requests,
+        sum(TRY_CAST(bytes AS BIGINT)) AS bytes
+      FROM s
+      WHERE ets IS NOT NULL
+      GROUP BY 1,2,3
+
+  # The handler's statement is an INSERT into the windowed table, so it returns
+  # no rows for a sink to write. The window has its own sink, above.
+  sink:
+    type: noop
