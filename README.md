@@ -116,7 +116,7 @@ environment variable is needed.
 
 ### From source
 
-Requires Go 1.25+, a C toolchain (cgo is mandatory), and libduckdb.
+Requires Go 1.26+, a C toolchain (cgo is mandatory), and libduckdb.
 
 ```
 # macOS
@@ -664,7 +664,7 @@ sqlflow tail -c <config>
 $ sqlflow version
 sqlflow v1.0.4
 commit: 55c3129
-go:     go1.25.5
+go:     go1.26.8
 ```
 
 # Configuration
