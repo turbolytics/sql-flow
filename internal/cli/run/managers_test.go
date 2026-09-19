@@ -80,6 +80,44 @@ func TestLifecycleDrain_ACleanFinalPollReportsNothing(t *testing.T) {
 	assert.NoError(t, group.wait())
 }
 
+// A stop that no manager caused reports no manager error, whatever cancelled
+// the run.
+//
+// run used to infer the failure from the run context's cause: any cause that
+// was not context.Canceled meant a manager had failed. Go 1.26 made
+// signal.NotifyContext cancel with a cause naming the signal instead, and
+// that cause propagates into the run context -- so every SIGTERM matched the
+// inference, a clean drain was logged as a failed manager, and the process
+// exited 1 where it had exited 0. This is the shape run builds, with the
+// signal arriving and no manager having failed.
+func TestLifecycleDrain_ASignalStopIsNotAManagerFailure(t *testing.T) {
+	coverage.Covers(t, "lifecycle.drain")
+	db, conn := rowsTestDB(t)
+	rowsTestExec(t, conn, "CREATE TABLE agg (bucket TIMESTAMPTZ, id BIGINT)")
+	assert.NoError(t, managers.NewStore(conn).Init(context.Background()))
+
+	m := newTestWindow(t, db, hangingSink{})
+
+	signalCtx, signalled := context.WithCancelCause(context.Background())
+	runCtx, failRun := context.WithCancelCause(signalCtx)
+	defer failRun(nil)
+
+	var group managerGroup
+	managerCtx, stopManagers := context.WithCancel(context.Background())
+	group.start(managerCtx, m, func(err error) { failRun(err) })
+
+	// What the stdlib now does on SIGTERM, and what it does to runCtx.
+	signalled(errors.New("terminated signal received"))
+	<-runCtx.Done()
+	assert.That(t, context.Cause(runCtx) != context.Canceled)
+
+	// No manager failed, so the run has nothing to exit non-zero with.
+	assert.NoError(t, group.err())
+
+	stopManagers()
+	assert.NoError(t, group.wait())
+}
+
 // newTestWindow builds a one-minute window over agg on a connection of its
 // own, the way buildManagedTables does.
 func newTestWindow(t *testing.T, db *duckdb.DB, sink core.Sink, opts ...managers.Option) *managers.Watermark {

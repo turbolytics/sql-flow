@@ -174,6 +174,20 @@ func (g *managerGroup) start(ctx context.Context, m *managers.Watermark, onFail 
 	}()
 }
 
+// err reports the first manager failure so far, without waiting for the rest
+// to return. A manager records its error before it cancels the run, so a
+// loop that stopped because of one can read it the moment it returns.
+//
+// run asks this rather than reading the run context's cause. Go 1.26 made
+// signal.NotifyContext cancel with a cause naming the signal, so "a cause
+// other than context.Canceled" stopped meaning "a manager failed": every
+// SIGTERM carried one, and a clean drain exited 1.
+func (g *managerGroup) err() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.first
+}
+
 // wait blocks until every manager has returned and reports the first error.
 func (g *managerGroup) wait() error {
 	g.wg.Wait()

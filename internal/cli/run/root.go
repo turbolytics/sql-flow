@@ -531,11 +531,18 @@ func NewCommand() *cobra.Command {
 			// installed would swallow a second SIGTERM, so an operator could
 			// not interrupt a drain that hangs.
 			stopSignals()
-			// A cause other than plain cancellation is a manager's error. It
-			// outranks whatever the loop returned: the loop was stopped on
-			// purpose, and the manager's error carries the code a supervisor
-			// reads.
-			if cause := context.Cause(runCtx); cause != nil && cause != context.Canceled {
+			// A manager that failed cancelled the run, and its error outranks
+			// whatever the loop returned: the loop was stopped on purpose,
+			// and the manager's error carries the code a supervisor reads.
+			//
+			// Asked of the group, not inferred from runCtx's cause. Go 1.26
+			// made signal.NotifyContext cancel with a cause naming the signal
+			// ("terminated signal received"), and that cause propagates into
+			// runCtx. The old test -- a cause that is not context.Canceled --
+			// then matched every SIGTERM, so a clean drain was reported as a
+			// failed manager and exited 1, the unclassified internal code a
+			// supervisor retries forever.
+			if cause := group.err(); cause != nil {
 				l.Error("table manager failed, pipeline stopped", zap.Error(cause))
 				return cause
 			}
