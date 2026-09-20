@@ -1,0 +1,98 @@
+package wire
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+func mustMarshal(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// A section's presence says what the process does. A run bundle carries no
+// serve key at all, not an empty one.
+func TestBundle_AbsentSectionsLeaveNoKey(t *testing.T) {
+	b := Bundle{V: Version, Pipeline: &Pipeline{MessageCount: 1}}
+	raw := mustMarshal(t, b)
+	for _, key := range []string{`"serve"`, `"commands"`, `"exit"`,
+		`"last_activity_at"`, `"interval_seconds"`} {
+		if strings.Contains(raw, key) {
+			t.Fatalf("bundle carries %s: %s", key, raw)
+		}
+	}
+	if !strings.Contains(raw, `"pipeline"`) {
+		t.Fatalf("bundle lost its pipeline section: %s", raw)
+	}
+}
+
+// The activity timestamps live inside their sections. Only the denormalized
+// copy sits at the top level.
+func TestBundle_SectionTimestampsLiveInTheirSections(t *testing.T) {
+	at := time.Date(2026, 9, 19, 19, 59, 58, 0, time.UTC)
+	b := Bundle{
+		V:              Version,
+		LastActivityAt: &at,
+		Pipeline:       &Pipeline{LastMessageAt: &at},
+		Serve:          &Serve{LastRequestAt: &at},
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(mustMarshal(t, b)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc["last_message_at"]; ok {
+		t.Fatal("last_message_at is still at the top level")
+	}
+	if !strings.Contains(string(doc["pipeline"]), "last_message_at") {
+		t.Fatalf("pipeline lost last_message_at: %s", doc["pipeline"])
+	}
+	if !strings.Contains(string(doc["serve"]), "last_request_at") {
+		t.Fatalf("serve lost last_request_at: %s", doc["serve"])
+	}
+	if _, ok := doc["last_activity_at"]; !ok {
+		t.Fatal("last_activity_at is missing")
+	}
+}
+
+// An absent cache and an empty cache are different facts.
+func TestServe_CacheIsAbsentWithoutOne(t *testing.T) {
+	raw := mustMarshal(t, Serve{RequestCount: 3})
+	if strings.Contains(raw, "cache") {
+		t.Fatalf("serve carries a cache it does not have: %s", raw)
+	}
+}
+
+// instance.pipeline became instance.name: serve has no pipeline.
+func TestInstance_NameReplacesPipeline(t *testing.T) {
+	raw := mustMarshal(t, Instance{Name: "bluesky-firehose"})
+	if !strings.Contains(raw, `"name":"bluesky-firehose"`) {
+		t.Fatalf("instance has no name: %s", raw)
+	}
+	if strings.Contains(raw, `"pipeline"`) {
+		t.Fatalf("instance still carries pipeline: %s", raw)
+	}
+}
+
+// A reader ignores what it does not know. This is the rule that keeps a new
+// section, and the day commands ship, from breaking a deployed reader.
+func TestBundleAndResponse_IgnoreUnknownFields(t *testing.T) {
+	var b Bundle
+	err := json.Unmarshal([]byte(`{"v":1,"future_section":{"x":1},"process":{"new_field":2}}`), &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r Response
+	err = json.Unmarshal([]byte(`{"v":1,"commands":[{"id":"c1","verb":"x"}],"later":true}`), &r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.V != 1 || len(r.Commands) != 1 {
+		t.Fatalf("response parsed wrong: %+v", r)
+	}
+}
