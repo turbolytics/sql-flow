@@ -10,7 +10,7 @@ API="http://127.0.0.1:${API_HOST_PORT:-8080}"
 SECRET=local-secret
 # The tag the image is built from, which an install reports as its version.
 # make test passes it. Must match the Dockerfile's default.
-: "${SQLFLOW_IMAGE:=turbolytics/sql-flow:v2026.09.18.1}"
+: "${SQLFLOW_IMAGE:=turbolytics/sql-flow:v2026.09.19.1}"
 export SQLFLOW_IMAGE
 GRAINS="1m 5m 15m 1h 6h 1d"
 
@@ -209,9 +209,29 @@ for g in $GRAINS; do
     '[.rows[] | [.value_sum, .value_count, .value_min, .value_max]] == [[9,4,1,5]]' "$total"
 done
 
+# A grain coarser than the window answers rather than erroring. Whether the
+# answer is empty depends on the clock, which is why this no longer asserts
+# that it is: the default window is one hour, and a 1d bucket falls inside it
+# only when a day begins during that hour. For the hour after UTC midnight one
+# does, the range covers that day, and the fixtures written seconds earlier
+# match. The old assertion -- since == until, no rows -- was a claim about the
+# clock wearing a claim about the API, and it failed on main as readily as
+# here.
+#
+# The invariant that holds at every hour: the grain asked for is the grain
+# answered, the range is never inverted, and a row is returned only for a
+# bucket inside it. Checked against the midnight response and against a
+# zero-width one, and it rejects a bucket outside the range either way.
 narrow="$(get metric name=checkout grain=1d)"
-expect "a pinned 1d grain with the default hour is an empty range, not an error" \
-  '(.range.since == .range.until) and (.rows | type) == "array" and (.rows | length) == 0' "$narrow"
+expect "a pinned 1d grain answers within its own range, whatever the hour" \
+  '. as $r
+   | ($r.grain == "1d")
+     and (($r.rows | type) == "array")
+     and ($r.range.since <= $r.range.until)
+     and (if $r.range.since == $r.range.until
+          then ($r.rows | length) == 0
+          else all($r.rows[]; .bucket >= $r.range.since and .bucket < $r.range.until)
+          end)' "$narrow"
 auto="$(get metric name=checkout)"
 expect "without a grain the API picks the finest that covers the range" '.grain == "1m" and (.rows | length) == 3' "$auto"
 
