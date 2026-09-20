@@ -86,11 +86,25 @@ jobs:
       # goroutine while another was sending on it. The second panicked a CI run
       # outright, and neither reproduced by re-running. The detector found both
       # on the first pass.
+      # -count=1 defeats the test result cache, not the build cache, so the
+      # compile stays warm and every test still runs.
+      #
+      # It is needed because of the cache above. `go test` caches the result
+      # of a package whose inputs have not changed, and a frozen build cache
+      # had nothing to serve, so this suite always ran everything: 0 cached
+      # packages in run 35480115049. With a working cache it served 11 of 26
+      # packages from the last run -- 208 tests that did not execute,
+      # including internal/serve (74) and internal/cli/run (48). Go is within
+      # its contract there, and for a deterministic test it is the same
+      # answer. These are not all deterministic: -race is a sampler, and the
+      # timing tests in serve and websocket pass or fail on a schedule. A gate
+      # that runs a third fewer tests depending on what a cache holds is not a
+      # gate anyone can reason about.
       - name: Test Unit
         run: |
           mkdir -p .coverage
           set -o pipefail
-          go test -short -race -json ./... | tee .coverage/go.json
+          go test -short -race -count=1 -json ./... | tee .coverage/go.json
 
       # always(): a failing suite is exactly when the matrix needs this report,
       # so it can name the feature that broke rather than reporting nothing.
@@ -159,11 +173,15 @@ jobs:
       - name: Install libduckdb
         run: ./scripts/install-libduckdb.sh bin
 
+      # -count=1 for the same reason as the unit suite: the result cache
+      # skipped internal/kafka's 8 integration tests and internal/serve's on
+      # the first warm run. These talk to real containers, which is the one
+      # place a cached pass says least about the next one.
       - name: Test Integration
         run: |
           mkdir -p .coverage
           set -o pipefail
-          go test -json -run '^TestIntegration' ./... | tee .coverage/go-integration.json
+          go test -count=1 -json -run '^TestIntegration' ./... | tee .coverage/go-integration.json
 
       - name: Upload the integration report
         if: always()
