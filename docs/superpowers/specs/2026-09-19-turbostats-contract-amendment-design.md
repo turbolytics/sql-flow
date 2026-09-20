@@ -33,10 +33,10 @@ one field and renames another, and stays v1:
 - `last_message_at` moves from the top level into `pipeline`.
 - `instance.pipeline` becomes `instance.name`.
 
-The rule protects receivers. No receiver exists: the only reader is a cron
-`curl` on the Bluesky host. The window closes when the control plane ships.
-After that, the rule holds without exception. Fix the cron parser in the same
-change.
+The rule protects receivers, and no receiver exists. The 2026-09-10 spec
+proposed a cron `curl` on the Bluesky host as a stopgap reader, and nobody
+built it. The window closes when the control plane ships. After that, the rule
+holds without exception.
 
 ## Decisions
 

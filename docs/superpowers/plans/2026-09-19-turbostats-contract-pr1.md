@@ -1149,8 +1149,8 @@ carries, so `run` reports `pipeline` and nothing reports an empty section.
 `last_activity_at` is the latest section timestamp.
 
 The 2026-09-10 spec calls a moved field v2. The amendment takes that
-exception once: the only reader is a cron curl. If a second reader exists,
-this breaks it, and the release test pins the new shape.
+exception once, because no receiver exists. If one does, this breaks it, and
+the release test pins the new shape.
 EOF
 ```
 
@@ -2185,5 +2185,5 @@ Open the PR against `main`. The body names the spec, lists the two moved fields 
 | The public package and `testdata/vectors.json` | 1, 2 |
 | Release test for `serve` | 6 |
 | Feature registry: `observability.turbostats.serve` | 4 |
-| Fix the cron parser | Not code in this repository. The PR body must remind the operator to update the Bluesky host's cron parser before deploying. |
+| Fix the cron parser | Dropped. The spec named a cron reader that the 2026-09-10 spec proposed and nobody built, so nothing reads the old paths. |
 | The reporter, its config, response handling rules, `observability.turbostats.reporter` | PR 2, a separate plan |
