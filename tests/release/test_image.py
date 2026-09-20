@@ -466,7 +466,6 @@ def test_handler_inferred_mem_aggregates_every_message(image, stack):
 
 
 
-@pytest.mark.covers("source.websocket", "handler.structured")
 @pytest.mark.covers("observability.turbostats.serve")
 def test_turbostats_serve_bundle_carries_a_serve_section(image):
     """`sqlflow serve --turbostats` answers /turbostats/v1 with a serve
@@ -521,6 +520,7 @@ def test_turbostats_serve_bundle_carries_a_serve_section(image):
     assert "latency" not in json.dumps(bundle)
 
 
+@pytest.mark.covers("source.websocket", "handler.structured")
 @pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):
     """Arrays, unioned struct fields and decoded JSON escapes, via the image.
