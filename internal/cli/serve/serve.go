@@ -20,9 +20,11 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/logging"
 	api "github.com/turbolytics/sql-flow/internal/serve"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"go.uber.org/zap"
 )
 
@@ -123,15 +125,23 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 	if conf.Serve.MetricsEnabled() {
 		opts = append(opts, api.WithMetrics(prom.NewRegistry()))
 	}
-	if serveTurbostats {
-		opts = append(opts, api.WithTurbostats(turbostats.Static{
-			Name:       conf.Serve.Name,
-			Version:    buildinfo.Version,
-			Commit:     buildinfo.Commit,
-			ConfigHash: turbostats.HashConfig(rendered),
-			StartedAt:  startedAt,
-		}))
+	ts := conf.Serve.TurboStats
+	static := turbostats.Static{
+		Name:       conf.Serve.Name,
+		Version:    buildinfo.Version,
+		Commit:     buildinfo.Commit,
+		ConfigHash: turbostats.HashConfig(rendered),
+		StartedAt:  startedAt,
 	}
+	if ts.Enabled() {
+		static.ID = ts.ID
+		// The receiver needs the interval to tell a late heartbeat from a
+		// normal one, and only the reporter knows it.
+		static.IntervalSeconds = int(ts.Interval().Seconds())
+	}
+	// Always: the reporter reads the same builder, and a fleet instance
+	// reports without serving anything.
+	opts = append(opts, api.WithTurbostats(static, serveTurbostats))
 
 	srv, err := api.New(ctx, conf, ex, opts...)
 	if err != nil {
@@ -155,5 +165,39 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 		onListen(ln.Addr())
 	}
 
-	return srv.Serve(ctx, ln)
+	// The reporter reads the same bundle builder the route serves, so a
+	// server with the route off still reports. Started before Serve blocks,
+	// so an instance appears on a fleet page as soon as it is listening.
+	var reporter *turbostats.Reporter
+	if ts.Enabled() {
+		key, err := wire.ParseCredential(ts.Key)
+		if err != nil {
+			return errs.New(errs.CodeConfigInvalid, "turbostats.key is not a credential")
+		}
+		reporter, err = turbostats.NewReporter(turbostats.ReporterConfig{
+			ReportTo: ts.ReportTo, Key: key, Interval: ts.Interval(),
+			Collect: srv.CollectBundle, Log: l.Named("turbostats"),
+		})
+		if err != nil {
+			return err
+		}
+		go reporter.Run(ctx)
+	}
+
+	serveErr := srv.Serve(ctx, ln)
+
+	// After the server drains, so the last bundle counts every request it
+	// answered. A crash never reaches this line, which is how a receiver
+	// tells a clean stop from one.
+	if reporter != nil {
+		final, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
+		reporter.Final(final, turbostats.Exit{Reason: "stopped", Code: errs.ExitCode(serveErr)})
+		cancel()
+	}
+	return serveErr
 }
+
+// shutdownGrace bounds the last bundle. The reporter has its own timeout; this
+// is the outer bound on the whole step, so a stop is never held open by a
+// control plane that stopped answering.
+const shutdownGrace = 15 * time.Second

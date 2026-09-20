@@ -383,7 +383,7 @@ func TestObservabilityTurbostats_ManualReaderLeavesExportedNamesAlone(t *testing
 // nothing unless Prometheus was on.
 func TestObservabilityTurbostats_ProviderExistsWithoutAnExporter(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
-	mp, err := newMeterProvider("", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
+	mp, _, err := newMeterProvider("", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
 	assert.NoError(t, err)
 	assert.That(t, mp != nil)
 
@@ -394,6 +394,6 @@ func TestObservabilityTurbostats_ProviderExistsWithoutAnExporter(t *testing.T) {
 
 func TestObservabilityTurbostats_RejectsAnUnknownExporter(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	_, err := newMeterProvider("statsd", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
+	_, _, err := newMeterProvider("statsd", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
 	assert.Error(t, err)
 }

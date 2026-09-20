@@ -28,6 +28,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -342,8 +343,8 @@ func NewCommand() *cobra.Command {
 				startDebugServer(conn, lock, l)
 			}
 
-			// What the bundle says this process is. ID stays empty until the
-			// pipeline.turbostats config block lands with the reporter.
+			// What the bundle says this process is.
+			ts := conf.Pipeline.TurboStats
 			static := turbostats.Static{
 				Name:       conf.Pipeline.Name,
 				Version:    buildinfo.Version,
@@ -351,11 +352,44 @@ func NewCommand() *cobra.Command {
 				ConfigHash: turbostats.HashConfig(rendered),
 				StartedAt:  startedAt,
 			}
+			if ts.Enabled() {
+				static.ID = ts.ID
+				// The receiver needs the interval to tell a late heartbeat
+				// from a normal one, and only the reporter knows it.
+				static.IntervalSeconds = int(ts.Interval().Seconds())
+			}
 
-			meterProvider, err := newMeterProvider(metricsExporter, serveTurbostats, static, l,
-				statsFn, progressFn, hs.Snapshot, flushInterval)
+			meterProvider, collectBundle, err := newMeterProvider(metricsExporter, serveTurbostats,
+				static, l, statsFn, progressFn, hs.Snapshot, flushInterval)
 			if err != nil {
 				return err
+			}
+
+			// The reporter runs on its own goroutine with its own timeout, so
+			// nothing it does can block the consume loop. It is started here
+			// rather than later so an instance appears on a fleet page while
+			// the pipeline is still connecting to its source.
+			var reporter *turbostats.Reporter
+			if ts.Enabled() {
+				key, err := wire.ParseCredential(ts.Key)
+				if err != nil {
+					// Validation already refuses this. Reaching it means a
+					// config bypassed validate, and reporting nowhere is
+					// worse discovered from a silent page.
+					return errs.New(errs.CodeConfigInvalid,
+						"turbostats.key is not a credential")
+				}
+				reporter, err = turbostats.NewReporter(turbostats.ReporterConfig{
+					ReportTo: ts.ReportTo, Key: key, Interval: ts.Interval(),
+					Collect: collectBundle, Log: l.Named("turbostats"),
+				})
+				if err != nil {
+					return err
+				}
+				// The command's context, not the pipeline's: a run that
+				// failed is exactly when someone wants telemetry, and the
+				// reporter should keep going until the process exits.
+				go reporter.Run(ctx)
 			}
 			pipelineMetrics, err := core.NewMetrics(meterProvider)
 			if err != nil {
@@ -505,6 +539,20 @@ func NewCommand() *cobra.Command {
 				if managerErr != nil && runErr == nil {
 					runErr = managerErr
 				}
+
+				// Last, after the managers stop and the final sync, so the
+				// bundle reports state that is actually committed. It runs on
+				// the drain budget, so a receiver that hangs cannot hold a
+				// shutdown past the deadline a supervisor is waiting on.
+				//
+				// A process that crashes never reaches this line, which is
+				// the whole signal: the receiver tells a clean stop from a
+				// crash by whether this bundle arrived.
+				if reporter != nil {
+					reporter.Final(drainCtx, turbostats.Exit{
+						Reason: exitReasonOf(runErr), Code: errs.ExitCode(runErr),
+					})
+				}
 			}()
 
 			// Cancelled before the reader connection closes. Left running, a
@@ -581,4 +629,17 @@ func NewCommand() *cobra.Command {
 		"Serve GET /turbostats/v1 on "+metricsPort+": the process's own state as one document")
 
 	return cmd
+}
+
+// exitReasonOf names how a run ended, for the last bundle.
+//
+// A supervisor reads the exit code; a person reads this. "max-msgs" and a
+// signal are both clean stops and say different things about why.
+func exitReasonOf(err error) string {
+	switch {
+	case err == nil:
+		return "stopped"
+	default:
+		return string(errs.CodeOf(err))
+	}
 }
