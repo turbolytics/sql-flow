@@ -1,0 +1,88 @@
+name: CLA
+
+# A contributor signs once, by leaving one comment on their first pull
+# request. The signature is a row in signatures/v1/cla.json on the
+# cla-signatures branch, which this workflow commits through the contents
+# API. That branch must already exist and must be an orphan carrying nothing
+# but the signatures: the action writes to it and does not create it, and
+# ci.yml is `on: [push]`. A push runs only the workflows present on the ref
+# it pushed, so a branch with no .github/workflows costs no CI per signature
+# and a branch forked from main costs a full run of it.
+#
+# The record is the GitHub account, its numeric id, the comment id, the pull
+# request number and the timestamp, which is what CLA.md says it is. The
+# action deletes the comment body before it writes the file, so anything a
+# contributor types beyond the sentence is not kept here. Do not ask them for
+# a name, an email or a country in the comment: it would not be stored, and
+# the document would be promising a record that does not exist.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, synchronize, closed]
+
+permissions:
+  actions: write # re-runs the failed run once a signature lands
+  contents: write # commits the signature to cla-signatures
+  pull-requests: write # posts and updates the bot's comment
+  statuses: write # upstream asks for it; the action never writes a status
+
+jobs:
+  cla:
+    name: CLA
+    # issue_comment fires on issues too, and on every comment on both. Only a
+    # pull request comment that is a signature or a recheck has work to do.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request != null &&
+       (contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA') ||
+        github.event.comment.body == 'recheck'))
+    runs-on: ubuntu-latest
+    steps:
+      # pull_request_target hands this job a write token scoped to sql-flow
+      # itself, not to the fork. Never add a checkout step here. This job
+      # builds and tests nothing, and checking out the pull request would run
+      # a stranger's code with permission to push to this repository.
+      - name: Check the contributor has signed
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          branch: cla-signatures
+          path-to-signatures: signatures/v1/cla.json
+          path-to-document: https://github.com/turbolytics/sql-flow/blob/main/CLA.md
+
+          # Bots cannot agree to anything, and turbolytics owns the work
+          # already. A pattern containing * is matched as a regular
+          # expression against the GitHub login.
+          allowlist: turbolytics,*[bot]
+
+          # $pullRequestNo is commented out upstream and will not expand.
+          # $contributorName, $owner and $repo do.
+          create-file-commit-message: "cla: open the signature file"
+          signed-commit-message: "cla: $contributorName signed the CLA for $owner/$repo"
+
+          # Locks the conversation on every merged pull request, so a
+          # signature comment cannot be deleted after the work is in. It also
+          # means nobody can comment on a merged pull request again. Set it to
+          # false if that trade is wrong for this repo.
+          #
+          # The gate is this job failing, not a commit status: the action
+          # calls no status API. Require the "CLA" check on main.
+          lock-pullrequest-aftermerge: true
+
+          # The sentence is matched against the comment lowercased and
+          # trimmed, as a single line. A newline breaks the match, so this
+          # asks for the sentence on its own and nothing else.
+          custom-notsigned-prcomment: >-
+            Thanks for the pull request. sql-flow asks every contributor to
+            sign the <a href="https://github.com/turbolytics/sql-flow/blob/main/CLA.md">Contributor
+            License Agreement</a> once. You keep your copyright; the agreement
+            grants Turbolytics and everyone downstream a license to ship what
+            you wrote, and the patent grant that goes with it.<br/><br/>
+            To sign, post this as a comment on this pull request, on one line
+            and on its own:<br/><br/>
+            <code>I have read the CLA Document and I hereby sign the CLA</code>
+            <br/><br/>
+            One signature covers everything you contribute from here.<br/><br/>
