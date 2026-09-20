@@ -242,7 +242,27 @@ jobs:
       # buildkit-cache-dance does. It has to be actions/cache and not the
       # restore/save pair: post steps run in reverse, so this one's save lands
       # after the extract, which is the only order that saves anything.
+      # Two steps, differing in one thing: whether a save happens at the end.
+      # They have to be separate because injecting is destructive -- the
+      # action deletes the local directory once its contents are inside the
+      # mount, and only the extraction puts it back. So a run that skips
+      # extraction and still saves writes an empty directory over a good
+      # entry. That is not a hypothetical: it took a 464MB cache down to
+      # 143MB in one run, and the run after it spent 218s building again.
       - name: Restore the image's Go caches
+        if: github.ref != 'refs/heads/main'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            image-go-build
+            image-go-mod
+          key: image-go-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            image-go-${{ hashFiles('**/go.sum') }}-
+            image-go-
+
+      - name: Restore and refresh the image's Go caches
+        if: github.ref == 'refs/heads/main'
         uses: actions/cache@v4
         with:
           path: |
@@ -260,18 +280,13 @@ jobs:
               "image-go-build": "/root/.cache/go-build",
               "image-go-mod": "/go/pkg/mod"
             }
-          # Injecting is cheap and extracting is not: 27s in, 90s back out,
+          # Injecting is cheap and extracting is not: 26s in, 90s back out,
           # against the 104s that caching `go build` saves. Paying both on
           # every run would be a wash. So only main copies the mounts back and
           # refreshes the entry; everywhere else injects what main last wrote
           # and keeps the saving. Same division as the Go jobs make -- one
-          # branch writes, every branch reads.
-          #
-          # The redundant part is what actions/cache does above afterwards: on
-          # a branch the directories still hold exactly what was restored, and
-          # it re-uploads them under a new key, 13s and 464MB. Small enough to
-          # leave alone; if the repository's 10GB of cache starts thrashing,
-          # this is the thing to gate.
+          # branch writes, every branch reads -- and it is why the step above
+          # is split in two.
           skip-extraction: ${{ github.ref != 'refs/heads/main' }}
 
       # Builds the image, then runs tests/release against it. The Kafka-backed
