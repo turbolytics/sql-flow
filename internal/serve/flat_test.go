@@ -9,37 +9,41 @@ import (
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"github.com/zeebo/assert"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// flatOf reads every dimensionless int64 point, the way turbostats.Collect
-// does.
-func flatOf(t *testing.T, r *sdkmetric.ManualReader) map[string]int64 {
+// bundleOf reads the instruments the way a bundle does: through
+// turbostats.Collect and its real reader. A copy of that reader here would
+// keep passing after the real one broke, and the flat series exist for the
+// bundle alone, so the bundle is what these tests assert on.
+func bundleOf(t *testing.T, r *sdkmetric.ManualReader, withCache bool) *turbostats.Serve {
+	t.Helper()
+	src := &turbostats.ServeSource{Sessions: func() (int, int) { return 0, 1 }}
+	if withCache {
+		src.Cache = func() (int64, int) { return 0, 0 }
+	}
+	b, err := turbostats.Collect(context.Background(), turbostats.Source{Reader: r, Serve: src})
+	assert.NoError(t, err)
+	assert.That(t, b.Serve != nil)
+	return b.Serve
+}
+
+// instrumentNames lists what the provider holds, by name alone. One test asks
+// whether an instrument exists at all, which no bundle field can say.
+func instrumentNames(t *testing.T, r *sdkmetric.ManualReader) []string {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
 	assert.NoError(t, r.Collect(context.Background(), &rm))
-	out := map[string]int64{}
+	var names []string
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			switch data := m.Data.(type) {
-			case metricdata.Sum[int64]:
-				for _, dp := range data.DataPoints {
-					if dp.Attributes.Len() == 0 {
-						out[m.Name] = dp.Value
-					}
-				}
-			case metricdata.Gauge[int64]:
-				for _, dp := range data.DataPoints {
-					if dp.Attributes.Len() == 0 {
-						out[m.Name] = dp.Value
-					}
-				}
-			}
+			names = append(names, m.Name)
 		}
 	}
-	return out
+	return names
 }
 
 func noStats() Stats { return Stats{Size: 1} }
@@ -56,10 +60,10 @@ func TestServeFlat_A5xxIsAnErrorAndA4xxIsNot(t *testing.T) {
 	m.observeRequest("d", "1h", "internal", http.StatusInternalServerError, 0, false, time.Millisecond)
 	m.observeRequest("d", "1h", "timeout", http.StatusGatewayTimeout, 0, false, time.Millisecond)
 
-	flat := flatOf(t, reader)
-	assert.Equal(t, int64(4), flat["serve_requests"])
-	assert.Equal(t, int64(2), flat["serve_request_errors"])
-	assert.That(t, flat["serve_last_request_timestamp"] > 0)
+	sv := bundleOf(t, reader, false)
+	assert.Equal(t, int64(4), sv.RequestCount)
+	assert.Equal(t, int64(2), sv.RequestErrorCount)
+	assert.That(t, sv.LastRequestAt != nil)
 }
 
 func TestServeFlat_CacheOutcomesAndEvictionsEachHaveATotal(t *testing.T) {
@@ -74,11 +78,12 @@ func TestServeFlat_CacheOutcomesAndEvictionsEachHaveATotal(t *testing.T) {
 	m.observeEviction("size")
 	m.observeEviction("expired")
 
-	flat := flatOf(t, reader)
-	assert.Equal(t, int64(2), flat["serve_cache_hits"])
-	assert.Equal(t, int64(1), flat["serve_cache_misses"])
-	assert.Equal(t, int64(1), flat["serve_cache_shared"])
-	assert.Equal(t, int64(2), flat["serve_cache_evicted"])
+	c := bundleOf(t, reader, true).Cache
+	assert.That(t, c != nil)
+	assert.Equal(t, int64(2), c.HitCount)
+	assert.Equal(t, int64(1), c.MissCount)
+	assert.Equal(t, int64(1), c.SharedCount)
+	assert.Equal(t, int64(2), c.EvictionCount)
 }
 
 // A server without a cache publishes nothing about one.
@@ -89,8 +94,9 @@ func TestServeFlat_NoCacheInstrumentsWithoutACache(t *testing.T) {
 	m.observeCache("d", cacheHit)
 	m.observeEviction("size")
 
-	for name := range flatOf(t, reader) {
+	for _, name := range instrumentNames(t, reader) {
 		assert.That(t, !strings.HasPrefix(name, "serve_cache_"))
+		assert.That(t, !strings.HasPrefix(name, "sqlflow_serve_cache_"))
 	}
 }
 
@@ -103,9 +109,9 @@ func TestServeFlat_RecordsWithMetricsOff(t *testing.T) {
 	assert.Equal(t, http.StatusOK, ts.get(t, "/v1/datasets/status").status)
 	assert.Equal(t, http.StatusNotFound, ts.do(t, http.MethodGet, "/metrics", nil).status)
 
-	flat := flatOf(t, ts.srv.reader)
-	assert.Equal(t, int64(1), flat["serve_requests"])
-	assert.Equal(t, int64(0), flat["serve_request_errors"])
+	sv := bundleOf(t, ts.srv.reader, false)
+	assert.Equal(t, int64(1), sv.RequestCount)
+	assert.Equal(t, int64(0), sv.RequestErrorCount)
 }
 
 // One instrument feeds both readers. The flat names must not collide with the
