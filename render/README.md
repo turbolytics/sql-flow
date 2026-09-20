@@ -47,13 +47,13 @@ of both:
 ```json
 {"name": "install.deployed", "type": "count", "value": 1,
  "dimensions": {"install_id": "3f0c1b7e-…", "source": "render",
-                "template": "render-metrics", "sqlflow_version": "v2026.09.18.1"}}
+                "template": "render-metrics", "sqlflow_version": "v2026.09.19.1"}}
 ```
 
 ```json
 {"name": "install.first_request", "type": "count", "value": 1,
  "dimensions": {"install_id": "3f0c1b7e-…", "source": "render",
-                "template": "render-metrics", "sqlflow_version": "v2026.09.18.1"}}
+                "template": "render-metrics", "sqlflow_version": "v2026.09.19.1"}}
 ```
 
 | Field | What it is |

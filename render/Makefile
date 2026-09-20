@@ -1,5 +1,5 @@
 # Must match the Dockerfile and docker-compose.yml.
-SQLFLOW_IMAGE ?= turbolytics/sql-flow:v2026.09.18.1
+SQLFLOW_IMAGE ?= turbolytics/sql-flow:v2026.09.19.1
 
 .PHONY: validate rollups up test psql clean
 

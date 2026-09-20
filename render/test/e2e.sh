@@ -10,7 +10,7 @@ API="http://127.0.0.1:${API_HOST_PORT:-8080}"
 SECRET=local-secret
 # The tag the image is built from, which an install reports as its version.
 # make test passes it. Must match the Dockerfile's default.
-: "${SQLFLOW_IMAGE:=turbolytics/sql-flow:v2026.09.18.1}"
+: "${SQLFLOW_IMAGE:=turbolytics/sql-flow:v2026.09.19.1}"
 export SQLFLOW_IMAGE
 GRAINS="1m 5m 15m 1h 6h 1d"
 
