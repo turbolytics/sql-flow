@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"go.uber.org/zap"
 )
 
@@ -29,6 +30,12 @@ func (s *Server) Handler() http.Handler {
 		// public. It is absent unless the config turns it on, because the
 		// labels name every dataset and grain.
 		mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
+	}
+	if s.turbostats != nil {
+		// No client id, for the reason /metrics has none: it carries no row
+		// data. It is absent unless the command asks, because it names the
+		// build and the process's memory on a listener that is public.
+		mux.Handle("/turbostats/v1", turbostats.Handler(s.collectBundle))
 	}
 	mux.HandleFunc("/v1/datasets", s.authed(s.listDatasets))
 	mux.HandleFunc("/v1/datasets/{name}", s.authed(s.queryDataset))

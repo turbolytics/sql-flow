@@ -12,20 +12,24 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/spf13/cobra"
+	"github.com/turbolytics/sql-flow/internal/buildinfo"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/turbolytics/sql-flow/internal/logging"
 	api "github.com/turbolytics/sql-flow/internal/serve"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"go.uber.org/zap"
 )
 
 func NewCommand() *cobra.Command {
 	var configPath string
 	var enablePprof bool
+	var serveTurbostats bool
 
 	cmd := &cobra.Command{
 		Use:   "serve [config]",
@@ -63,20 +67,26 @@ func NewCommand() *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			return serveConfig(ctx, path, l, nil)
+			return serveConfig(ctx, path, l, nil, serveTurbostats)
 		},
 	}
 
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to the serve config (or pass it positionally)")
 	cmd.Flags().BoolVar(&enablePprof, "pprof", false, "Enable pprof profiling server on :6060")
+	cmd.Flags().BoolVar(&serveTurbostats, "turbostats", false,
+		"Serve GET /turbostats/v1 on the serve address: the process's own state as one document")
 	return cmd
 }
 
 // serveConfig loads a serve config, attaches its data, and answers requests
 // until ctx ends. onListen, when set, receives the bound address; tests bind
 // port 0 and need to learn which port that was.
-func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(net.Addr)) error {
-	conf, _, err := config.LoadServeRendered(path, nil)
+func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(net.Addr), serveTurbostats bool) error {
+	// Taken here, once. It is the bundle's started_at, and a restart is a
+	// receiver noticing it changed.
+	startedAt := time.Now()
+
+	conf, rendered, err := config.LoadServeRendered(path, nil)
 	if err != nil {
 		return err
 	}
@@ -112,6 +122,15 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 	opts := []api.Option{api.WithLogger(l)}
 	if conf.Serve.MetricsEnabled() {
 		opts = append(opts, api.WithMetrics(prom.NewRegistry()))
+	}
+	if serveTurbostats {
+		opts = append(opts, api.WithTurbostats(turbostats.Static{
+			Name:       conf.Serve.Name,
+			Version:    buildinfo.Version,
+			Commit:     buildinfo.Commit,
+			ConfigHash: turbostats.HashConfig(rendered),
+			StartedAt:  startedAt,
+		}))
 	}
 
 	srv, err := api.New(ctx, conf, ex, opts...)

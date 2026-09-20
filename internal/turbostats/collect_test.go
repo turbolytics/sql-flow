@@ -274,3 +274,124 @@ func TestCollect_LeavesCommandsUnset(t *testing.T) {
 	assert.NoError(t, err)
 	assert.That(t, !strings.Contains(string(raw), "commands"))
 }
+
+// serveProvider registers the flat serve instruments by name. The names are
+// the contract between internal/serve, which records them, and Collect, which
+// reads them; this package cannot import internal/serve to get the real ones.
+func serveProvider(t *testing.T) (*sdkmetric.ManualReader, metric.Meter) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	return reader, mp.Meter("sqlflow/serve")
+}
+
+func addCounter(t *testing.T, m metric.Meter, name string, n int64) {
+	t.Helper()
+	c, err := m.Int64Counter(name)
+	assert.NoError(t, err)
+	c.Add(context.Background(), n)
+}
+
+func TestCollect_AServeBundleCarriesServeAndNoPipeline(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.serve")
+	reader, meter := serveProvider(t)
+	addCounter(t, meter, "serve_requests", 40)
+	addCounter(t, meter, "serve_request_errors", 2)
+	last, err := meter.Int64Gauge("serve_last_request_timestamp")
+	assert.NoError(t, err)
+	last.Record(context.Background(), 1757570000)
+
+	b, err := Collect(context.Background(), Source{
+		Static: static,
+		Reader: reader,
+		Serve:  &ServeSource{Sessions: func() (int, int) { return 2, 8 }},
+	})
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline == nil)
+	assert.That(t, b.Serve != nil)
+	assert.Equal(t, int64(40), b.Serve.RequestCount)
+	assert.Equal(t, int64(2), b.Serve.RequestErrorCount)
+	assert.Equal(t, 2, b.Serve.SessionsInUse)
+	assert.Equal(t, 8, b.Serve.SessionsTotal)
+	assert.Equal(t, int64(1757570000), b.Serve.LastRequestAt.Unix())
+	assert.Equal(t, int64(1757570000), b.LastActivityAt.Unix())
+	// An absent cache and an empty cache are different facts.
+	assert.That(t, b.Serve.Cache == nil)
+}
+
+func TestCollect_TheCacheSectionReadsTotalsAndCurrentSize(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.serve")
+	reader, meter := serveProvider(t)
+	addCounter(t, meter, "serve_cache_hits", 30)
+	addCounter(t, meter, "serve_cache_misses", 7)
+	addCounter(t, meter, "serve_cache_shared", 3)
+	addCounter(t, meter, "serve_cache_evicted", 5)
+
+	b, err := Collect(context.Background(), Source{
+		Static: static,
+		Reader: reader,
+		Serve: &ServeSource{
+			Sessions: func() (int, int) { return 0, 1 },
+			Cache:    func() (int64, int) { return 4096, 12 },
+		},
+	})
+	assert.NoError(t, err)
+	c := b.Serve.Cache
+	assert.That(t, c != nil)
+	assert.Equal(t, int64(30), c.HitCount)
+	assert.Equal(t, int64(7), c.MissCount)
+	assert.Equal(t, int64(3), c.SharedCount)
+	assert.Equal(t, int64(5), c.EvictionCount)
+	assert.Equal(t, int64(4096), c.Bytes)
+	assert.Equal(t, 12, c.Entries)
+}
+
+// A process with two sections reports whichever moved last.
+func TestCollect_LastActivityIsTheLaterSectionTimestamp(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, meter := provider(t)
+	ctx := context.Background()
+	m.PipelineLastMessage.Record(ctx, 1757570000)
+	last, err := meter.Int64Gauge("serve_last_request_timestamp")
+	assert.NoError(t, err)
+	last.Record(ctx, 1757570500)
+
+	b, err := Collect(ctx, Source{
+		Static:   static,
+		Reader:   reader,
+		Pipeline: &PipelineSource{},
+		Serve:    &ServeSource{Sessions: func() (int, int) { return 0, 1 }},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1757570500), b.LastActivityAt.Unix())
+}
+
+func TestCollect_TheServeBundleIsUnderOneKiB(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.serve")
+	reader, meter := serveProvider(t)
+	for _, name := range []string{"serve_requests", "serve_cache_hits", "serve_cache_misses"} {
+		addCounter(t, meter, name, 184203311)
+	}
+	for _, name := range []string{"serve_request_errors", "serve_cache_shared", "serve_cache_evicted"} {
+		addCounter(t, meter, name, 1842033)
+	}
+	last, err := meter.Int64Gauge("serve_last_request_timestamp")
+	assert.NoError(t, err)
+	last.Record(context.Background(), 1757570000)
+
+	src := Source{
+		Static: static,
+		Reader: reader,
+		Serve: &ServeSource{
+			Sessions: func() (int, int) { return 64, 64 },
+			Cache:    func() (int64, int) { return 1 << 30, 100000 },
+		},
+	}
+	src.Static.IntervalSeconds = 60
+	b, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	b.Exit = &Exit{Reason: "SIGTERM", Code: 0}
+	raw, err := json.Marshal(b)
+	assert.NoError(t, err)
+	assert.That(t, len(raw) < 1024)
+}

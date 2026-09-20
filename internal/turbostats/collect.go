@@ -54,6 +54,11 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 		b.Pipeline = p
 		b.LastActivityAt = later(b.LastActivityAt, p.LastMessageAt)
 	}
+	if src.Serve != nil {
+		sv := serveSection(flat, src.Serve)
+		b.Serve = sv
+		b.LastActivityAt = later(b.LastActivityAt, sv.LastRequestAt)
+	}
 	return b, nil
 }
 
@@ -79,6 +84,31 @@ func pipelineSection(flat map[string]int64, src *PipelineSource) (*Pipeline, err
 		}
 	}
 	return p, nil
+}
+
+// serveSection reads the flat series internal/serve records. The names are
+// the contract between the two packages, and a test on each side pins them.
+func serveSection(flat map[string]int64, src *ServeSource) *Serve {
+	sv := &Serve{
+		RequestCount:      flat["serve_requests"],
+		RequestErrorCount: flat["serve_request_errors"],
+		LastRequestAt:     unixTime(flat["serve_last_request_timestamp"]),
+	}
+	if src.Sessions != nil {
+		sv.SessionsInUse, sv.SessionsTotal = src.Sessions()
+	}
+	if src.Cache != nil {
+		bytes, entries := src.Cache()
+		sv.Cache = &ServeCache{
+			HitCount:      flat["serve_cache_hits"],
+			MissCount:     flat["serve_cache_misses"],
+			SharedCount:   flat["serve_cache_shared"],
+			EvictionCount: flat["serve_cache_evicted"],
+			Bytes:         bytes,
+			Entries:       entries,
+		}
+	}
+	return sv
 }
 
 // unixTime is nil for zero: nothing has happened yet, and zero is not a time.

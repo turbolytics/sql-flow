@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/zap"
 )
@@ -55,6 +56,8 @@ type Server struct {
 	// reads the manual reader.
 	metrics *metrics
 	reader  *sdkmetric.ManualReader
+	// turbostats is nil unless the caller asked for /turbostats/v1.
+	turbostats *turbostats.Static
 	// now is when a request arrived: the until a ranged request does not
 	// give. A test fixes it.
 	now func() time.Time
@@ -135,6 +138,13 @@ func WithLogger(l *zap.Logger) Option {
 // session counts, and installs the wait hook on the executor afterwards.
 func WithMetrics(reg *prom.Registry) Option {
 	return func(s *Server) { s.registry = reg }
+}
+
+// WithTurbostats serves the process's TurboStats bundle at /turbostats/v1.
+// static is what only the command knows: the build's stamp, the config's
+// hash, and when the process started.
+func WithTurbostats(static turbostats.Static) Option {
+	return func(s *Server) { s.turbostats = &static }
 }
 
 // waitObserver is an executor whose pool can report how long an Acquire
@@ -360,4 +370,23 @@ func newSpan(dc config.ServeDataset) (*span, error) {
 		sp.grains = append(sp.grains, spanGrain{name: name, max: max, bucket: bucket})
 	}
 	return sp, nil
+}
+
+// collectBundle builds this server's bundle: the serve section, and no
+// pipeline section.
+func (s *Server) collectBundle(ctx context.Context) (turbostats.Bundle, error) {
+	src := &turbostats.ServeSource{
+		Sessions: func() (int, int) {
+			st := s.exec.Stats()
+			return st.InUse, st.Size
+		},
+	}
+	if s.cache != nil {
+		src.Cache = s.cache.stats
+	}
+	return turbostats.Collect(ctx, turbostats.Source{
+		Static: *s.turbostats,
+		Reader: s.reader,
+		Serve:  src,
+	})
 }

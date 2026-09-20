@@ -50,7 +50,7 @@ func TestCliServe_ServesAConfigUntilItsContextEnds(t *testing.T) {
 	addrs := make(chan net.Addr, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- serveConfig(ctx, path, zap.NewNop(), func(a net.Addr) { addrs <- a })
+		done <- serveConfig(ctx, path, zap.NewNop(), func(a net.Addr) { addrs <- a }, false)
 	}()
 
 	var base string
@@ -99,7 +99,7 @@ func TestCliServe_RefusesARateLimitWithExit10(t *testing.T) {
 
 	err := serveConfig(context.Background(), path, zap.NewNop(), func(net.Addr) {
 		t.Fatal("serve listened on a config it must refuse")
-	})
+	}, false)
 	assert.Error(t, err)
 	assert.Equal(t, errs.CodeConfigServeReserved, errs.CodeOf(err))
 	assert.Equal(t, errs.ExitUserError, errs.ExitCode(err))
@@ -113,7 +113,7 @@ func TestCliServe_RefusesAnEmptyClientIDAtStart(t *testing.T) {
 	path := writeConfig(t, strings.Replace(cliServe,
 		"id: test-id", `id: "{{ SQLFLOW_SERVE_CLIENT_ID_UNSET_IN_THIS_TEST }}"`, 1))
 
-	err := serveConfig(context.Background(), path, zap.NewNop(), nil)
+	err := serveConfig(context.Background(), path, zap.NewNop(), nil, false)
 	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
 	assert.Equal(t, errs.ExitUserError, errs.ExitCode(err))
 }
