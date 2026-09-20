@@ -55,7 +55,8 @@
 - `sqlflow serve --turbostats` serves `GET /turbostats/v1` on the serve
   address. The bundle carries a `serve` section: request and 5xx totals, the
   pool's sessions, and the cache's outcomes and size. The flag is off by
-  default.
+  default, and the config has no key for it: the route is for local
+  inspection and tests. A deployed instance reports by pushing.
 - `github.com/turbolytics/sql-flow/turbostats/wire`: the TurboStats bundle
   types and Ed25519 request signing, as a public package with no dependencies
   outside the standard library.
