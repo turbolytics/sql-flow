@@ -467,6 +467,60 @@ def test_handler_inferred_mem_aggregates_every_message(image, stack):
 
 
 @pytest.mark.covers("source.websocket", "handler.structured")
+@pytest.mark.covers("observability.turbostats.serve")
+def test_turbostats_serve_bundle_carries_a_serve_section(image):
+    """`sqlflow serve --turbostats` answers /turbostats/v1 with a serve
+    section, and no pipeline section.
+
+    Driven against the image because what ships is the flag, the route on the
+    serve listener, and the link-time stamp together. The cached config is
+    used so the cache block is present.
+    """
+    client_id = "release-client"
+    container = DockerContainer(image) \
+        .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+        .with_env("SQLFLOW_SERVE_CLIENT_ID", client_id) \
+        .with_exposed_ports(8080) \
+        .with_command("serve /tmp/conf/config/serve/local.cached.yml --turbostats")
+    container.start()
+    try:
+        wait_for_logs(container, "serving", timeout=60)
+        base = f"http://localhost:{container.get_exposed_port(8080)}"
+        listing = requests.get(
+            f"{base}/v1/datasets", params={"client_id": client_id}, timeout=10)
+        name = listing.json()["datasets"][0]["name"]
+        first = requests.get(
+            f"{base}/v1/datasets/{name}", params={"client_id": client_id}, timeout=10)
+        resp = requests.get(f"{base}/turbostats/v1", timeout=10)
+    finally:
+        container.stop()
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["Content-Type"] == \
+        "application/vnd.turbolytics.turbostats.v1+json"
+
+    bundle = resp.json()
+    assert bundle["v"] == 1
+    assert "pipeline" not in bundle
+    assert bundle["instance"]["name"]
+    assert bundle["instance"]["config_hash"].startswith("sha256:")
+
+    stdout, _ = run_docker_container(image, "version")
+    stamped = stdout.splitlines()[0].split()[1]
+    assert bundle["instance"]["version"] == stamped
+
+    serve = bundle["serve"]
+    assert serve["sessions_total"] >= 1
+    assert "cache" in serve, "local.cached.yml opts a dataset into the cache"
+
+    assert first.status_code == 200, first.text
+    assert serve["request_count"] == 1
+    assert serve["request_error_count"] == 0
+    assert "last_request_at" in serve
+    assert bundle["last_activity_at"] == serve["last_request_at"]
+    assert "latency" not in json.dumps(bundle)
+
+
 @pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):
     """Arrays, unioned struct fields and decoded JSON escapes, via the image.

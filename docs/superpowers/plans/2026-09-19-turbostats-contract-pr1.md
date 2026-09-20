@@ -44,6 +44,7 @@
 | `internal/cli/serve/serve.go` (modify) | The `--turbostats` flag and the `Static` |
 | `internal/cli/run/metrics.go`, `root.go` (modify) | The new `Collect` call |
 | `tests/release/test_image.py` (modify) | The moved field, and a `serve` bundle test |
+| `Dockerfile` (modify) | Copy `turbostats/` into the build. It copies `cmd` and `internal` by name, so a new top-level package is invisible to the image build until it is listed. |
 | `docs/coverage/features.yml`, `CHANGELOG.md`, the 2026-09-10 spec (modify) | Registry entry, release note, pointer to the amendment |
 
 ---
@@ -2051,6 +2052,16 @@ def test_turbostats_serve_bundle_carries_a_serve_section(image):
     assert "last_request_at" in serve
     assert bundle["last_activity_at"] == serve["last_request_at"]
     assert "latency" not in json.dumps(bundle)
+```
+
+- [ ] **Step 2a: Copy `turbostats/` in the Dockerfile**
+
+The Dockerfile lists source directories by name. Without this step the image build fails, and no Go test catches it, because `go test` reads the working tree. After `COPY internal ./internal`, add:
+
+```dockerfile
+# The public TurboStats contract. It sits outside internal/ so a control plane
+# in another module can import it, and internal/turbostats imports it.
+COPY turbostats ./turbostats
 ```
 
 - [ ] **Step 2: Build the image and run the two TurboStats release tests**

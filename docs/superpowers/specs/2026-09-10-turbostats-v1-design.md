@@ -1,5 +1,10 @@
 # TurboStats v1: design
 
+> **Amended 2026-09-19.** `2026-09-19-turbostats-contract-amendment-design.md`
+> reshapes the bundle into sections, moves `last_message_at` into `pipeline`,
+> renames `instance.pipeline` to `instance.name`, and replaces the bearer
+> token with signed requests. Where the two disagree, the amendment wins.
+
 A sqlflow process reports its own state as one small, versioned document:
 what it is, when it started, how much memory it holds, and the totals every
 instrument has counted since it started. The document is TurboStats. The

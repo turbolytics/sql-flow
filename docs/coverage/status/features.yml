@@ -22,6 +22,7 @@ manager.window: {unit: covered, integration: not_required, release: covered}
 observability.debug_api: {unit: covered, integration: not_required, release: not_required}
 observability.metrics: {unit: covered, integration: not_required, release: not_required}
 observability.turbostats: {unit: covered, integration: not_required, release: covered}
+observability.turbostats.serve: {unit: covered, integration: not_required, release: covered}
 sink.clickhouse: {unit: covered, integration: covered, release: covered}
 sink.console: {unit: covered, integration: not_required, release: covered}
 sink.iceberg: {unit: covered, integration: not_required, release: covered}
