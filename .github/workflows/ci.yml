@@ -21,6 +21,38 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+      # setup-go's own cache is keyed on go.sum alone, and on a hit it declines
+      # to write a new one: "Cache hit occurred on the primary key, not saving
+      # cache". So the compiled objects in it are frozen at whatever the first
+      # run with that go.sum happened to produce, and this repo's own packages
+      # recompiled from nothing on every push -- 91 seconds of the Test Unit
+      # step before a single test ran. A dependency bump missed the key
+      # outright and cost a fully cold run: Build 113s instead of 7s, the job
+      # 342s instead of 208s. The cache below holds the same two directories
+      # under a key that rolls forward.
+          cache: false
+
+      - name: Restore the Go caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          # The commit in the key makes every run a miss on the primary key,
+          # so the save at the end always writes a fresh entry; the
+          # restore-keys are what actually match, newest first. The last one
+          # drops go.sum, which is what turns a dependency bump from a cold
+          # build into a partial one -- only the modules that actually moved
+          # recompile.
+          #
+          # "unit-race" is not decoration. This suite compiles with -race, and
+          # race-instrumented objects are different cache entries from the
+          # integration job's. One shared entry would have each job evicting
+          # the other's work.
+          key: go-unit-race-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-unit-race-${{ hashFiles('**/go.sum') }}-
+            go-unit-race-
 
       - name: Install libduckdb
         run: ./scripts/install-libduckdb.sh bin
@@ -69,6 +101,22 @@ jobs:
           name: report-unit
           path: .coverage/go.json
 
+      # always(), because a failing suite compiled the same objects a passing
+      # one would have, and the next run should not pay for them again.
+      #
+      # main only: a save is a few hundred megabytes into a 10 GB repository
+      # budget, and if every branch wrote one they would evict each other and
+      # the entry every branch reads. Pull requests restore from main and are
+      # the faster for it.
+      - name: Save the Go caches
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-unit-race-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
   # The Go tests that need a real service. They start their own containers, so
   # this job installs nothing beyond the toolchain.
   integration:
@@ -84,6 +132,29 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+      # setup-go's own cache is keyed on go.sum alone, and on a hit it declines
+      # to write a new one: "Cache hit occurred on the primary key, not saving
+      # cache". So the compiled objects in it are frozen at whatever the first
+      # run with that go.sum happened to produce, and this repo's own packages
+      # recompiled from nothing on every push -- 91 seconds of the Test Unit
+      # step before a single test ran. A dependency bump missed the key
+      # outright and cost a fully cold run: Build 113s instead of 7s, the job
+      # 342s instead of 208s. The cache below holds the same two directories
+      # under a key that rolls forward.
+          cache: false
+
+      - name: Restore the Go caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          # Its own namespace: this suite builds without -race, so none of its
+          # objects are interchangeable with the unit job's.
+          key: go-integration-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-integration-${{ hashFiles('**/go.sum') }}-
+            go-integration-
 
       - name: Install libduckdb
         run: ./scripts/install-libduckdb.sh bin
@@ -100,6 +171,15 @@ jobs:
         with:
           name: report-integration
           path: .coverage/go-integration.json
+
+      - name: Save the Go caches
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-integration-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
   # The coverage matrix generator. It gates every merge, so a wrong generator
   # is a wrong gate. Pure Python: no Docker, no image, seconds to run.
@@ -147,9 +227,57 @@ jobs:
       - name: Install python dependencies
         run: uv sync --locked
 
+      - uses: docker/setup-buildx-action@v3
+
+      # The Dockerfile already mounts a Go build cache at /root/.cache/go-build
+      # and a module cache at /go/pkg/mod, which is why a rebuild on a laptop
+      # recompiles only what changed. On a runner both start empty every time,
+      # so the `go build` layer took 105.8s of the build's 134s with nothing to
+      # reuse, and not one of the 29 layers was cached.
+      #
+      # BuildKit does not export cache mounts as part of a layer cache -- only
+      # layers -- so the two mounts are carried across runs by hand: restored
+      # into directories here, injected into the mounts before the build, and
+      # extracted back into the directories after it. That is all
+      # buildkit-cache-dance does. It has to be actions/cache and not the
+      # restore/save pair: post steps run in reverse, so this one's save lands
+      # after the extract, which is the only order that saves anything.
+      - name: Restore the image's Go caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            image-go-build
+            image-go-mod
+          key: image-go-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            image-go-${{ hashFiles('**/go.sum') }}-
+            image-go-
+
+      - uses: reproducible-containers/buildkit-cache-dance@v3.4.0
+        with:
+          cache-map: |
+            {
+              "image-go-build": "/root/.cache/go-build",
+              "image-go-mod": "/go/pkg/mod"
+            }
+
       # Builds the image, then runs tests/release against it. The Kafka-backed
       # case brings its own broker up through testcontainers.
       - name: Test image
+        env:
+          # --load because the builder set up above uses the docker-container
+          # driver, which leaves its result in the builder rather than in the
+          # daemon. The release suite runs `docker run` against this tag, so
+          # it has to reach the daemon.
+          #
+          # The layer cache covers everything ahead of `go build`: the apt
+          # install, the module download, the libduckdb fetch. The `go build`
+          # layer itself misses on every push, by design -- its input is the
+          # source -- which is what the cache mounts above are for.
+          DOCKER_BUILD_EXTRA: >-
+            --load
+            --cache-from type=gha,scope=image
+            --cache-to type=gha,mode=max,scope=image
         run: make test-release
 
       - name: Upload the release report

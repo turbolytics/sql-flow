@@ -189,7 +189,7 @@ test-release: sqlflow-image
 	SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
 	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 	TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
-	$(PY) pytest tests/release
+	$(PY) pytest tests/release --durations=15
 
 # The memory gate a pull request has to pass. See CONTRIBUTING.md.
 #
@@ -250,9 +250,14 @@ release-binaries:
 
 # The build reads DUCKDB_VERSION itself; the label records which DuckDB ended up
 # in the image so it can be read back off a pulled tag.
+# Extra buildx flags. Empty locally, where the daemon's own cache is already
+# warm; CI passes --cache-from/--cache-to here because its builder starts
+# empty on every run.
+DOCKER_BUILD_EXTRA ?=
+
 .PHONY: sqlflow-image
 sqlflow-image:
-	DOCKER_BUILDKIT=1 docker build \
+	DOCKER_BUILDKIT=1 docker build $(DOCKER_BUILD_EXTRA) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(GIT_COMMIT) \
 		--label org.opencontainers.image.version=$(VERSION) \
