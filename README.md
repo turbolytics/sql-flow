@@ -1714,6 +1714,10 @@ publishes on every run.
 including the ten-minute memory soak (`make soak`) required of any change that
 allocates per message or per request.
 
+[**Contributor License Agreement**](CLA.md) — one comment on your first pull
+request. You keep your copyright; the agreement grants the license that lets
+the project ship your work, and the patent grant that goes with it.
+
 `make test-go` and `make test-image` are what CI runs on every push.
 Kafka-backed integration tests are deliberately excluded from `test-go`; they
 run from the dev stack. Backing services for local development:

@@ -1,5 +1,16 @@
 # Contributing
 
+## The agreement
+
+Sign the [Contributor License Agreement](CLA.md) before your first pull
+request merges. A bot comments on the pull request with the sentence to
+reply with. It is one comment, once, and it covers everything you contribute
+after it.
+
+You keep the copyright in what you write. The agreement grants Turbolytics
+and everyone downstream a license to ship it, and carries a patent grant, so
+the project never has to come back and ask.
+
 ## Verification conventions
 
 A pull request carries evidence, not assertions. "Tests pass" is not evidence;
