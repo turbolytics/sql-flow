@@ -64,6 +64,8 @@ type Serve struct {
 	Pool *ServePool `yaml:"pool,omitempty"`
 	// Whether to serve Prometheus metrics at /metrics.
 	Metrics *ServeMetrics `yaml:"metrics,omitempty"`
+	// Where this instance reports itself, the same block `run` takes.
+	TurboStats *TurboStats `yaml:"turbostats,omitempty"`
 	// Bounds the response cache. It does not enable it: a dataset opts in
 	// with its own cache block.
 	Cache *ServeCache `yaml:"cache,omitempty"`
@@ -479,7 +481,7 @@ var (
 // in document order. validate reports each with a position; serve refuses to
 // start on any.
 func (c *ServeConf) Check() []Violation {
-	var out []Violation
+	out := c.Serve.TurboStats.Check()
 	add := func(code errs.Code, path []string, format string, args ...any) {
 		out = append(out, Violation{Code: code, Path: path, Message: fmt.Sprintf(format, args...)})
 	}

@@ -68,6 +68,25 @@ serve:
     # token. Off by default: that listener is public, and the metric labels
     # name every dataset and grain.
     enabled: <boolean>
+  # Where this instance reports itself, the same block `run` takes.
+  turbostats:
+    # ID is the operator's name for this instance. The receiver files a
+    # bundle under it, so reporting without one cannot be filed at all.
+    id: <string>
+    # ReportTo is where bundles are posted. Empty means reporting is off,
+    # which is the ordinary case for an instance with no control plane.
+    report_to: <string>
+    # Key is the credential the control plane issued. It is the private half
+    # of an Ed25519 keypair and belongs in an environment variable, which the
+    # template renders in.
+    key: <string>
+    # IntervalSeconds is how often to report. Absent means the default.
+    interval_seconds: <integer>
+    # Allow is the scopes this instance permits. It is a ceiling the instance
+    # sets, so a control plane cannot grant itself more than the operator
+    # wrote here.
+    allow:
+      - <array>
   # Bounds the response cache. It does not enable it: a dataset opts in
   # with its own cache block.
   cache:

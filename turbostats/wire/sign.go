@@ -20,6 +20,18 @@ const (
 	HeaderSignature = "X-Turbostats-Signature"
 )
 
+// The scopes a credential may carry. A scope names what a control plane may
+// do with an instance that signs with it, and both sides need the same
+// spelling: the instance lists what it permits, and the receiver refuses a
+// request whose credential does not hold what the route needs.
+//
+// v1 issues ScopeRead. ScopeExecute is reserved, so the column and the config
+// key are a set from the start and a later spec defines what it permits.
+const (
+	ScopeRead    = "read"
+	ScopeExecute = "execute"
+)
+
 // CredentialPrefix marks a credential string, so a scanner can find a leaked
 // one and an operator can tell it from any other secret.
 const CredentialPrefix = "sfc_"

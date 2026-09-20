@@ -771,6 +771,36 @@
             "policy"
           ],
           "description": "Global error handling strategy for the pipeline."
+        },
+        "turbostats": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "ID is the operator's name for this instance. The receiver files a\nbundle under it, so reporting without one cannot be filed at all."
+            },
+            "report_to": {
+              "type": "string",
+              "description": "ReportTo is where bundles are posted. Empty means reporting is off,\nwhich is the ordinary case for an instance with no control plane."
+            },
+            "key": {
+              "type": "string",
+              "description": "Key is the credential the control plane issued. It is the private half\nof an Ed25519 keypair and belongs in an environment variable, which the\ntemplate renders in."
+            },
+            "interval_seconds": {
+              "type": "integer",
+              "description": "IntervalSeconds is how often to report. Absent means the default."
+            },
+            "allow": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "description": "Allow is the scopes this instance permits. It is a ceiling the instance\nsets, so a control plane cannot grant itself more than the operator\nwrote here."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "description": "Where this instance reports itself. Absent means it reports nowhere,\nwhich is the ordinary case for a pipeline with no control plane."
         }
       },
       "additionalProperties": false,
