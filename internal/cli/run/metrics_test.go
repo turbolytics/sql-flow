@@ -342,9 +342,9 @@ func TestObservabilityTurbostats_RouteAbsentWithoutACollector(t *testing.T) {
 
 func TestObservabilityTurbostats_RouteServesTheBundle(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
-	mux := newHTTPMux(nil, nil, func(context.Context) (turbostats.Bundle, error) {
+	mux := newHTTPMux(nil, nil, turbostats.Handler(func(context.Context) (turbostats.Bundle, error) {
 		return turbostats.Bundle{V: turbostats.Version}, nil
-	}, nil, nil, 30*time.Second, time.Now)
+	}, nil), nil, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/turbostats/v1", nil))
