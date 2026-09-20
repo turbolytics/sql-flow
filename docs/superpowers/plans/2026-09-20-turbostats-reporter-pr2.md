@@ -308,7 +308,35 @@ func testReporter(t *testing.T, url string, key ed25519.PrivateKey) *Reporter {
 // The first bundle goes at start, not one interval later. An instance that
 // waited would be missing from a fleet page for its first minute, which is
 // exactly when someone is watching a deploy.
-func TestReporter_PostsAtStartAndOnTheInterval(t *testing.T) {
+//
+// The interval is an hour on purpose. A short one would let this pass
+// whether or not the first post is immediate, which is what a shorter
+// version of this test did.
+func TestReporter_PostsAtStart(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.reporter")
+	rc := newReceiver()
+	srv := httptest.NewServer(rc)
+	defer srv.Close()
+
+	r, err := NewReporter(ReporterConfig{
+		ReportTo: srv.URL, Key: testKey(t), Interval: time.Hour,
+		Collect: func(context.Context) (Bundle, error) {
+			return Bundle{V: Version, Instance: Instance{ID: "one"}}, nil
+		},
+		Log: zap.NewNop(),
+	})
+	assert.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	waitFor(t, func() bool { return rc.count() >= 1 })
+}
+
+// And it keeps posting. One bundle would leave a page frozen at whatever the
+// instance looked like when it started.
+func TestReporter_PostsOnTheInterval(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats.reporter")
 	rc := newReceiver()
 	srv := httptest.NewServer(rc)

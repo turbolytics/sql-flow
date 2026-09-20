@@ -217,3 +217,42 @@ func TestSign_RefusesAWrongSizedKeyWithoutPanicking(t *testing.T) {
 		}
 	}
 }
+
+// A URL with no path signs what the wire carries, which is "/".
+//
+// Without this a reporter pointed at https://control.example signs the empty
+// string while the receiver verifies against the "/" its own server reports,
+// and every heartbeat is refused with a good key and an intact body.
+func TestSignRequest_NormalizesAnEmptyPath(t *testing.T) {
+	_, priv, pub, _ := loadVectors(t)
+	body := []byte(`{"v":1}`)
+
+	req, err := http.NewRequest(http.MethodPost, "https://control.example", strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.Path != "" {
+		t.Fatalf("this test is pointless: the path is %q", req.URL.Path)
+	}
+	if err := SignRequest(req, priv, body, time.Unix(1789848000, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, ts, sig, err := ParseHeaders(req.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What a receiver verifies: its own request's path, which is never empty.
+	if !Verify(pub, http.MethodPost, "/", ts, body, sig) {
+		t.Fatal("a pathless URL does not verify against the path the server sees")
+	}
+}
+
+func TestRequestPath_LeavesARealPathAlone(t *testing.T) {
+	if RequestPath("") != "/" {
+		t.Fatal("an empty path is /")
+	}
+	if RequestPath("/v1/turbostats") != "/v1/turbostats" {
+		t.Fatal("a real path is itself")
+	}
+}
