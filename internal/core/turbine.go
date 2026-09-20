@@ -254,6 +254,11 @@ type Turbine struct {
 	progressWrittenAt time.Time
 	progressEvery     time.Duration
 
+	// windowReadsProgress is whether any table declares a window, which is
+	// the only thing that reads sqlflow_progress.last_arrival. When nothing
+	// does, a new arrival need not force a write and the interval governs.
+	windowReadsProgress bool
+
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
 	// so a scrape cannot stall the pipeline. Nil when there is no state
@@ -342,6 +347,15 @@ func WithProgressStore(s progressSaver) TurbineOption {
 	return func(t *Turbine) { t.progress = s }
 }
 
+// WithWindowReadsProgress declares that a tumbling window predicate reads
+// sqlflow_progress.last_arrival. Then a new arrival must reach the table on
+// the commit that sees it, because a last_arrival older than the truth
+// closes a window early. Without a window nothing reads the column and the
+// write interval alone keeps the table current.
+func WithWindowReadsProgress() TurbineOption {
+	return func(t *Turbine) { t.windowReadsProgress = true }
+}
+
 // WithProgressWriteInterval bounds how often the progress table is written.
 // Zero writes on every commit, which is what a test wants when it is
 // checking what gets recorded rather than how often. Production leaves it at
@@ -385,11 +399,14 @@ const progressWriteInterval = time.Second
 // today only the tumbling window predicate, and it costs a statement on the
 // commit path.
 //
-// The table is written on every pipeline even where nothing reads it. That is
-// deliberate: a table that exists but silently stops being maintained is a
-// worse trap than one that costs a little, and a window can be managed
-// without a state path, so "has state" is not the test for whether anyone
-// reads it.
+// The table is written on every pipeline, including those where nothing reads
+// it: a table that exists but silently stops being maintained is a worse trap
+// than one that costs a little. What varies is only how often. A window is
+// owed the newest arrival on the commit that sees it; without one the
+// interval alone keeps the table current, so it is never more than
+// progressWriteInterval stale. A window can be managed without a state path,
+// so "has state" is not the test for whether anyone reads it -- "has window"
+// is.
 //
 // A batch since the last commit moves the arrival clock; an idle tick moves
 // the commit clock only.
@@ -423,7 +440,11 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	// Comparing now.Sub(written) >= interval is false forever after a jump
 	// back, which would stop the table being written at all.
 	elapsed := now.Sub(t.progressWrittenAt)
-	owed := !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
+	// Only a window reads last_arrival, so only a window is owed a write
+	// ahead of the interval. On a pipeline without one this term fired on
+	// every batch that carried a new message, which is every batch under
+	// load, and turned a once-a-second write into a statement per commit.
+	owed := t.windowReadsProgress && !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
 	due := owed || elapsed >= t.progressEvery || elapsed < 0
 	if due {
 		t.progressWrittenAt = now
@@ -436,12 +457,13 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	// writing it on every commit costs a few percent of throughput.
 	// BenchmarkCommitState is where that number comes from.
 	//
-	// So idle ticks that change nothing but the commit clock are skipped
-	// until the interval has passed. An arrival is never skipped: owed
-	// above forces the write, because the table's last_arrival is what
-	// decides when a window closes, and a value older than the truth closes
-	// it early. Early is the dangerous direction, since that is the
-	// window-splitting behaviour the stream clock exists to prevent.
+	// So ticks that change nothing the reader needs are skipped until the
+	// interval has passed. Where a window reads the table an arrival is
+	// never skipped: owed above forces the write, because last_arrival is
+	// what decides when a window closes, and a value older than the truth
+	// closes it early. Early is the dangerous direction, since that is the
+	// window-splitting behaviour the stream clock exists to prevent. Where
+	// no window reads it there is no such reader to be early for.
 	if !due {
 		return
 	}

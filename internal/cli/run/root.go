@@ -273,6 +273,11 @@ func NewCommand() *cobra.Command {
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)
+			// Only a window reads sqlflow_progress.last_arrival, so only a
+			// window is owed that column ahead of the write interval.
+			if anyWindow(conf) {
+				turbineOpts = append(turbineOpts, core.WithWindowReadsProgress())
+			}
 			if statePath != "" {
 				// Both calls are returned as-is. They already carry a code, and
 				// the outermost code wins: re-wrapping either as

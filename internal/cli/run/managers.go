@@ -36,15 +36,26 @@ func windowDeclaration(table config.TableSQL) managers.Declaration {
 // under autocommit, so the DDL commits on its own the way the offsets and
 // progress tables' does. Nothing to do for a pipeline with no window.
 func initWindowStores(ctx context.Context, conf *config.Conf, conn adbc.Connection) error {
-	if conf.Tables == nil {
+	if !anyWindow(conf) {
 		return nil
+	}
+	return managers.NewStore(conn).Init(ctx)
+}
+
+// anyWindow reports whether any table declares a window. It is the test for
+// whether anything reads sqlflow_progress.last_arrival: the tumbling window
+// predicate is that column's only reader, so a pipeline without a window is
+// not owed a progress write ahead of the interval.
+func anyWindow(conf *config.Conf) bool {
+	if conf.Tables == nil {
+		return false
 	}
 	for _, table := range conf.Tables.SQL {
 		if table.Window != nil {
-			return managers.NewStore(conn).Init(ctx)
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
 // buildManagedTables constructs a watermark manager per table that declares

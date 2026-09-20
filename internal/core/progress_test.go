@@ -233,9 +233,15 @@ func TestStateDurability_ProgressNeverReportsAnArrivalOlderThanTheNewest(t *test
 
 	// An interval far longer than the test, so nothing after the first
 	// write is ever due on the clock alone.
+	// The guarantee under test belongs to the window predicate, which is
+	// last_arrival's only reader, so the pipeline declares a window. Without
+	// one nothing reads the column and there is no reader to close early;
+	// that case is pinned by
+	// TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForAWindow.
 	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 20*time.Millisecond,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithProgressStore(rec), WithProgressWriteInterval(time.Hour))
+		WithProgressStore(rec), WithProgressWriteInterval(time.Hour),
+		WithWindowReadsProgress())
 	done := make(chan struct{})
 	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
 
@@ -297,4 +303,54 @@ func TestCoreConsumeLoop_ProgressRecordsTheLastError(t *testing.T) {
 	assert.Equal(t, int64(1), p.Errors)
 	assert.That(t, !p.LastError.Before(before))
 	assert.That(t, !p.LastError.After(time.Now().UTC()))
+}
+
+// Only a tumbling window reads sqlflow_progress.last_arrival, so only a
+// pipeline that has one is owed a write ahead of the interval. Without a
+// window a fresh arrival must not force a statement onto the commit path:
+// that is what turned a once-a-second write into one per batch, and it cost
+// about a fifth of the throughput at batch 5000.
+func TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForAWindow(t *testing.T) {
+	coverage.Covers(t, "core.consume_loop")
+
+	// A long interval, so the interval itself can never be what makes a
+	// write due. The first call is always due because the write clock
+	// starts at zero; everything after it is owed or nothing.
+	newTurbine := func(windowed bool) (*Turbine, *progressRecorder) {
+		rec := &progressRecorder{}
+		opts := []TurbineOption{WithProgressStore(rec), WithProgressWriteInterval(time.Hour)}
+		if windowed {
+			opts = append(opts, WithWindowReadsProgress())
+		}
+		tb := NewTurbine(newBlockingSource(messages(1)), &fakeHandler{}, &fakeSink{},
+			1000, 30*time.Millisecond, &sync.Mutex{}, PipelineErrorPolicies{}, opts...)
+		return tb, rec
+	}
+
+	for _, tc := range []struct {
+		name     string
+		windowed bool
+		want     int
+	}{
+		{"a window is owed the newest arrival", true, 2},
+		{"without one the interval governs", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			tb, rec := newTurbine(tc.windowed)
+
+			tb.arrivedAt = time.Now().UTC()
+			tb.recordProgress(ctx) // always due: the write clock starts at zero
+			if _, n := rec.last(); n != 1 {
+				t.Fatalf("first commit should always write, got %d records", n)
+			}
+
+			// A newer arrival, well inside the write interval.
+			tb.arrivedAt = tb.arrivedAt.Add(time.Millisecond)
+			tb.recordProgress(ctx)
+
+			_, n := rec.last()
+			assert.Equal(t, tc.want, n)
+		})
+	}
 }
