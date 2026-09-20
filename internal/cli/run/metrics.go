@@ -185,7 +185,11 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 	var collect func(context.Context) (turbostats.Bundle, error)
 	if serveTurbostats {
 		collect = func(ctx context.Context) (turbostats.Bundle, error) {
-			return turbostats.Collect(ctx, static, reader, stats)
+			return turbostats.Collect(ctx, turbostats.Source{
+				Static:   static,
+				Reader:   reader,
+				Pipeline: &turbostats.PipelineSource{Stats: stats},
+			})
 		}
 	}
 	mux := newHTTPMux(registry, stats, collect, progress, health, interval, time.Now)

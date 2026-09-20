@@ -1123,8 +1123,14 @@ def test_turbostats_endpoint_serves_the_bundle(image, stack):
     # Nothing has been produced to the topic, so the pipeline has received no
     # messages and has no last message. Zero is not a time, so the field is
     # absent rather than 1970.
-    assert "last_message_at" not in bundle
+    assert "last_message_at" not in bundle["pipeline"]
+    assert "last_activity_at" not in bundle
     assert bundle["pipeline"]["message_count"] == 0
+
+    # A section's presence says what the process does.
+    assert "serve" not in bundle
+    assert bundle["instance"]["name"]
+    assert "pipeline" not in bundle["instance"]
 
 
 @pytest.mark.covers("lifecycle.health")

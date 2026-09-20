@@ -28,11 +28,17 @@ func provider(t *testing.T) (*sdkmetric.ManualReader, *core.Metrics, metric.Mete
 
 var static = Static{
 	ID:         "pi-01",
-	Pipeline:   "demo",
+	Name:       "demo",
 	Version:    "v1.2.3",
 	Commit:     "abc1234",
 	ConfigHash: "sha256:00",
 	StartedAt:  time.Date(2026, 9, 1, 8, 12, 44, 0, time.UTC),
+}
+
+// runSource is what the run command hands Collect: a pipeline section, and
+// no serve section.
+func runSource(r *sdkmetric.ManualReader, stats func() (*core.StateStats, error)) Source {
+	return Source{Static: static, Reader: r, Pipeline: &PipelineSource{Stats: stats}}
 }
 
 func TestCollect_CountersAreTotalsSinceStart(t *testing.T) {
@@ -43,7 +49,7 @@ func TestCollect_CountersAreTotalsSinceStart(t *testing.T) {
 	m.MessageCount.Add(ctx, 4)
 	m.PipelineErrors.Add(ctx, 1)
 
-	b, err := Collect(ctx, static, reader, nil)
+	b, err := Collect(ctx, runSource(reader, nil))
 	assert.NoError(t, err)
 	assert.Equal(t, int64(7), b.Pipeline.MessageCount)
 	assert.Equal(t, int64(1), b.Pipeline.ErrorCount)
@@ -65,7 +71,7 @@ func TestCollect_ADimensionedSeriesIsNotTheBundles(t *testing.T) {
 	// The same name with an attribute: a different series, and not ours.
 	flushes.Add(ctx, 99, metric.WithAttributes(attribute.String("result", "error")))
 
-	b, err := Collect(ctx, static, reader, nil)
+	b, err := Collect(ctx, runSource(reader, nil))
 	assert.NoError(t, err)
 	assert.Equal(t, int64(3), b.Pipeline.SinkFlushCount)
 }
@@ -81,7 +87,7 @@ func TestCollect_ReadsTheFlatSeries(t *testing.T) {
 	m.PipelineRowsAccepted.Add(ctx, 5)
 	m.PipelineRowsWritten.Add(ctx, 6)
 
-	b, err := Collect(ctx, static, reader, nil)
+	b, err := Collect(ctx, runSource(reader, nil))
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), b.Pipeline.ErrorCount)
 	assert.Equal(t, int64(3), b.Pipeline.SinkFlushCount)
@@ -99,10 +105,14 @@ func TestCollect_CarriesWhenMessagesLastArrived(t *testing.T) {
 	ctx := context.Background()
 	m.PipelineLastMessage.Record(ctx, 1757570000)
 
-	b, err := Collect(ctx, static, reader, nil)
+	b, err := Collect(ctx, runSource(reader, nil))
 	assert.NoError(t, err)
-	assert.That(t, b.LastMessageAt != nil)
-	assert.Equal(t, int64(1757570000), b.LastMessageAt.Unix())
+	assert.That(t, b.Pipeline.LastMessageAt != nil)
+	assert.Equal(t, int64(1757570000), b.Pipeline.LastMessageAt.Unix())
+	// The top-level field is a copy of the section's, so a receiver reads
+	// staleness without knowing which sections exist.
+	assert.That(t, b.LastActivityAt != nil)
+	assert.Equal(t, int64(1757570000), b.LastActivityAt.Unix())
 }
 
 // A pipeline that has received nothing has no last message, and zero is not a
@@ -111,12 +121,14 @@ func TestCollect_OmitsTheLastMessageBeforeAnyArrive(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, _, _ := provider(t)
 
-	b, err := Collect(context.Background(), static, reader, nil)
+	b, err := Collect(context.Background(), runSource(reader, nil))
 	assert.NoError(t, err)
-	assert.That(t, b.LastMessageAt == nil)
+	assert.That(t, b.Pipeline.LastMessageAt == nil)
+	assert.That(t, b.LastActivityAt == nil)
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
 	assert.That(t, !strings.Contains(string(raw), "last_message_at"))
+	assert.That(t, !strings.Contains(string(raw), "last_activity_at"))
 }
 
 func TestCollect_HistogramsAreNotInTheBundle(t *testing.T) {
@@ -125,7 +137,7 @@ func TestCollect_HistogramsAreNotInTheBundle(t *testing.T) {
 	ctx := context.Background()
 	m.SinkFlushLatency.Record(ctx, 0.25)
 
-	b, err := Collect(ctx, static, reader, nil)
+	b, err := Collect(ctx, runSource(reader, nil))
 	assert.NoError(t, err)
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
@@ -139,7 +151,7 @@ func TestCollect_StateSizeIsOmittedWithoutAStateDatabase(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, _, _ := provider(t)
 
-	b, err := Collect(context.Background(), static, reader, nil)
+	b, err := Collect(context.Background(), runSource(reader, nil))
 	assert.NoError(t, err)
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
@@ -153,7 +165,7 @@ func TestCollect_StateSizeComesFromTheStatsFunction(t *testing.T) {
 		return &core.StateStats{SizeBytes: 4096}, nil
 	}
 
-	b, err := Collect(context.Background(), static, reader, stats)
+	b, err := Collect(context.Background(), runSource(reader, stats))
 	assert.NoError(t, err)
 	assert.That(t, b.Pipeline.StateDBSizeBytes != nil)
 	assert.Equal(t, int64(4096), *b.Pipeline.StateDBSizeBytes)
@@ -166,7 +178,7 @@ func TestCollect_AStatsFailureFailsTheBundle(t *testing.T) {
 	reader, _, _ := provider(t)
 	stats := func() (*core.StateStats, error) { return nil, errors.New("unreadable") }
 
-	_, err := Collect(context.Background(), static, reader, stats)
+	_, err := Collect(context.Background(), runSource(reader, stats))
 	assert.Error(t, err)
 }
 
@@ -174,11 +186,11 @@ func TestCollect_CarriesTheStaticFactsAndTheRuntime(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, _, _ := provider(t)
 
-	b, err := Collect(context.Background(), static, reader, nil)
+	b, err := Collect(context.Background(), runSource(reader, nil))
 	assert.NoError(t, err)
 	assert.Equal(t, 1, b.V)
 	assert.Equal(t, "pi-01", b.Instance.ID)
-	assert.Equal(t, "demo", b.Instance.Pipeline)
+	assert.Equal(t, "demo", b.Instance.Name)
 	assert.Equal(t, "v1.2.3", b.Instance.Version)
 	assert.Equal(t, "abc1234", b.Instance.Commit)
 	assert.Equal(t, "sha256:00", b.Instance.ConfigHash)
@@ -207,10 +219,58 @@ func TestCollect_TheBundleIsUnderOneKiB(t *testing.T) {
 	size := int64(4194304)
 	stats := func() (*core.StateStats, error) { return &core.StateStats{SizeBytes: size}, nil }
 
-	b, err := Collect(ctx, static, reader, stats)
+	b, err := Collect(ctx, runSource(reader, stats))
 	assert.NoError(t, err)
 	b.Exit = &Exit{Reason: "SIGTERM", Code: 0}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
 	assert.That(t, len(raw) < 1024)
+}
+
+// A section's presence says what the process does. A run bundle has no serve
+// section, and a source with neither has neither.
+func TestCollect_ARunBundleCarriesPipelineAndNoServe(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline != nil)
+	assert.That(t, b.Serve == nil)
+
+	bare, err := Collect(context.Background(), Source{Static: static, Reader: reader})
+	assert.NoError(t, err)
+	assert.That(t, bare.Pipeline == nil)
+	assert.That(t, bare.Serve == nil)
+}
+
+// The receiver needs the interval to tell late from normal. Without a
+// reporter there is no interval, and zero is not one.
+func TestCollect_CarriesTheIntervalOnlyWhenThereIsOne(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	raw, err := json.Marshal(b)
+	assert.NoError(t, err)
+	assert.That(t, !strings.Contains(string(raw), "interval_seconds"))
+
+	src := runSource(reader, nil)
+	src.Static.IntervalSeconds = 60
+	b, err = Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.Equal(t, 60, b.IntervalSeconds)
+}
+
+// v1 never populates the reserved name.
+func TestCollect_LeavesCommandsUnset(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	raw, err := json.Marshal(b)
+	assert.NoError(t, err)
+	assert.That(t, !strings.Contains(string(raw), "commands"))
 }

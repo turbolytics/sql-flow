@@ -6,22 +6,17 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/turbolytics/sql-flow/internal/core"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // Collect builds one bundle. It is the only function that does.
 //
 // It allocates one bundle and touches nothing shared, so the HTTP handler and
-// the reporter can call it at once. stats may be nil for a pipeline with no
-// state path; a stats error is the bundle's error, because a document with a
-// field quietly missing reads as healthy.
-func Collect(ctx context.Context, s Static, r *sdkmetric.ManualReader,
-	stats func() (*core.StateStats, error)) (Bundle, error) {
-
+// the reporter can call it at once. A stats error is the bundle's error,
+// because a document with a field quietly missing reads as healthy.
+func Collect(ctx context.Context, src Source) (Bundle, error) {
 	var rm metricdata.ResourceMetrics
-	if err := r.Collect(ctx, &rm); err != nil {
+	if err := src.Reader.Collect(ctx, &rm); err != nil {
 		return Bundle{}, fmt.Errorf("turbostats: collecting instruments: %w", err)
 	}
 	flat := scalars(rm)
@@ -31,12 +26,14 @@ func Collect(ctx context.Context, s Static, r *sdkmetric.ManualReader,
 		return Bundle{}, fmt.Errorf("turbostats: reading resident memory: %w", err)
 	}
 
+	s := src.Static
 	b := Bundle{
-		V:      Version,
-		SentAt: time.Now().UTC().Truncate(time.Second),
+		V:               Version,
+		SentAt:          time.Now().UTC().Truncate(time.Second),
+		IntervalSeconds: s.IntervalSeconds,
 		Instance: Instance{
 			ID:         s.ID,
-			Pipeline:   s.Pipeline,
+			Name:       s.Name,
 			Version:    s.Version,
 			Commit:     s.Commit,
 			Arch:       runtime.GOOS + "/" + runtime.GOARCH,
@@ -47,36 +44,65 @@ func Collect(ctx context.Context, s Static, r *sdkmetric.ManualReader,
 			RSSBytes:   rss,
 			Goroutines: runtime.NumGoroutine(),
 		},
-		Pipeline: Pipeline{
-			MessageCount:     flat["message_count"],
-			HandlerRowsRead:  flat["handler_rows_read"],
-			ErrorCount:       flat["pipeline_errors"],
-			SinkFlushCount:   flat["pipeline_flushes"],
-			SinkRowsAccepted: flat["pipeline_rows_accepted"],
-			SinkRowsWritten:  flat["pipeline_rows_written"],
-			StateCommitCount: flat["pipeline_commits"],
-		},
 	}
 
-	// Zero means no messages yet, which is not a time. The control plane
-	// derives staleness as sent_at minus this, both from the instance's own
-	// clock, so the difference carries no skew.
-	if ts := flat["pipeline_last_message_timestamp"]; ts > 0 {
-		at := time.Unix(ts, 0).UTC()
-		b.LastMessageAt = &at
-	}
-
-	if stats != nil {
-		st, err := stats()
+	if src.Pipeline != nil {
+		p, err := pipelineSection(flat, src.Pipeline)
 		if err != nil {
-			return Bundle{}, fmt.Errorf("turbostats: reading state stats: %w", err)
+			return Bundle{}, err
+		}
+		b.Pipeline = p
+		b.LastActivityAt = later(b.LastActivityAt, p.LastMessageAt)
+	}
+	return b, nil
+}
+
+func pipelineSection(flat map[string]int64, src *PipelineSource) (*Pipeline, error) {
+	p := &Pipeline{
+		MessageCount:     flat["message_count"],
+		HandlerRowsRead:  flat["handler_rows_read"],
+		ErrorCount:       flat["pipeline_errors"],
+		SinkFlushCount:   flat["pipeline_flushes"],
+		SinkRowsAccepted: flat["pipeline_rows_accepted"],
+		SinkRowsWritten:  flat["pipeline_rows_written"],
+		StateCommitCount: flat["pipeline_commits"],
+		LastMessageAt:    unixTime(flat["pipeline_last_message_timestamp"]),
+	}
+	if src.Stats != nil {
+		st, err := src.Stats()
+		if err != nil {
+			return nil, fmt.Errorf("turbostats: reading state stats: %w", err)
 		}
 		if st != nil {
 			size := st.SizeBytes
-			b.Pipeline.StateDBSizeBytes = &size
+			p.StateDBSizeBytes = &size
 		}
 	}
-	return b, nil
+	return p, nil
+}
+
+// unixTime is nil for zero: nothing has happened yet, and zero is not a time.
+// A receiver derives staleness as sent_at minus this, both from the
+// instance's own clock, so the difference carries no skew.
+func unixTime(seconds int64) *time.Time {
+	if seconds <= 0 {
+		return nil
+	}
+	at := time.Unix(seconds, 0).UTC()
+	return &at
+}
+
+// later returns the later of two optional times. last_activity_at is the
+// latest section timestamp, so a process with two sections reports whichever
+// moved last.
+func later(a, b *time.Time) *time.Time {
+	if a == nil {
+		return b
+	}
+	if b == nil || a.After(*b) {
+		return a
+	}
+	return b
 }
 
 // scalars reads the dimensionless point of every int64 instrument, by name.
