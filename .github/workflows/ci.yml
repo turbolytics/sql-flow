@@ -265,17 +265,11 @@ jobs:
       # case brings its own broker up through testcontainers.
       - name: Test image
         env:
-          # --load because the builder set up above uses the docker-container
-          # driver, which leaves its result in the builder rather than in the
-          # daemon. The release suite runs `docker run` against this tag, so
-          # it has to reach the daemon.
-          #
           # The layer cache covers everything ahead of `go build`: the apt
           # install, the module download, the libduckdb fetch. The `go build`
           # layer itself misses on every push, by design -- its input is the
           # source -- which is what the cache mounts above are for.
           DOCKER_BUILD_EXTRA: >-
-            --load
             --cache-from type=gha,scope=image
             --cache-to type=gha,mode=max,scope=image
         run: make test-release

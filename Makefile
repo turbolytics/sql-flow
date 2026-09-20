@@ -255,9 +255,24 @@ release-binaries:
 # empty on every run.
 DOCKER_BUILD_EXTRA ?=
 
+# `docker buildx build`, not `DOCKER_BUILDKIT=1 docker build`. The two are not
+# the same command: the second runs on the "default" instance -- BuildKit
+# inside dockerd -- whatever builder buildx has selected. That is invisible
+# until something needs the two to agree. In CI they did: the Dockerfile's
+# cache mounts filled up inside dockerd while the step trying to read them
+# back talked to the buildx builder, so it copied out an empty directory and
+# saved 331 bytes, and --cache-to went to a driver that cannot export cache
+# at all.
+#
+# --load because the selected builder is usually a docker-container one --
+# `make release-image` creates one, and a dev box tends to have a multiarch
+# builder selected already -- and that driver leaves its result in the builder
+# rather than in the daemon. `make test-image` then runs `docker run` against
+# this tag, so it has to reach the daemon. On a docker-driver builder the flag
+# is what happens anyway.
 .PHONY: sqlflow-image
 sqlflow-image:
-	DOCKER_BUILDKIT=1 docker build $(DOCKER_BUILD_EXTRA) \
+	docker buildx build --load $(DOCKER_BUILD_EXTRA) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(GIT_COMMIT) \
 		--label org.opencontainers.image.version=$(VERSION) \
