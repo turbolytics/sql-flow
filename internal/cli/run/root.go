@@ -345,7 +345,7 @@ func NewCommand() *cobra.Command {
 			// What the bundle says this process is. ID stays empty until the
 			// pipeline.turbostats config block lands with the reporter.
 			static := turbostats.Static{
-				Pipeline:   conf.Pipeline.Name,
+				Name:       conf.Pipeline.Name,
 				Version:    buildinfo.Version,
 				Commit:     buildinfo.Commit,
 				ConfigHash: turbostats.HashConfig(rendered),

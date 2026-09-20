@@ -70,6 +70,9 @@ RUN ./scripts/install-libduckdb.sh /out/duckdb
 
 COPY cmd ./cmd
 COPY internal ./internal
+# The public TurboStats contract. It sits outside internal/ so a control plane
+# in another module can import it, and internal/turbostats imports it.
+COPY turbostats ./turbostats
 
 # CGO_ENABLED=1 is required: the ADBC driver manager reaches libduckdb through
 # cgo, so a static pure-Go build cannot talk to DuckDB at all. The build cache

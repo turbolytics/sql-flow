@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"go.uber.org/zap"
 )
 
@@ -24,11 +25,19 @@ const (
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
-	if s.metrics != nil {
+	if s.serveMetrics {
 		// No client id: it carries no row data, and the listener is already
 		// public. It is absent unless the config turns it on, because the
 		// labels name every dataset and grain.
 		mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
+	}
+	if s.turbostats != nil {
+		// No client id, for the reason /metrics has none: it carries no row
+		// data. It is absent unless the command asks, because it names the
+		// build and the process's memory on a listener that is public.
+		mux.Handle("/turbostats/v1", turbostats.Handler(s.collectBundle, func(err error) {
+			s.logger.Error("building turbostats bundle", zap.String("error", Redact(err.Error())))
+		}))
 	}
 	mux.HandleFunc("/v1/datasets", s.authed(s.listDatasets))
 	mux.HandleFunc("/v1/datasets/{name}", s.authed(s.queryDataset))
@@ -443,7 +452,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			if code == "" {
 				code = "ok"
 			}
-			s.metrics.observeRequest(entry.dataset, entry.grain, code, entry.queryDur, entry.ran, time.Since(start))
+			s.metrics.observeRequest(entry.dataset, entry.grain, code, entry.status, entry.queryDur, entry.ran, time.Since(start))
 		}
 	})
 }

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/zap"
 )
 
@@ -44,11 +46,18 @@ type Server struct {
 	origins map[string]bool
 	// healthTimeout bounds /healthz, which waits for a session like a query.
 	healthTimeout time.Duration
-	// registry and metrics are nil unless the config asks for /metrics. Every
-	// metrics method tolerates a nil receiver, so the request path records
-	// unconditionally.
-	registry *prom.Registry
-	metrics  *metrics
+	// registry is nil unless the caller passed WithMetrics. serveMetrics is
+	// whether /metrics is mounted: the caller handed a registry and the
+	// config asked for the endpoint. The config decides, not the caller.
+	registry     *prom.Registry
+	serveMetrics bool
+	// metrics and reader always exist after New. The instruments record
+	// whether or not anything scrapes them, because the TurboStats bundle
+	// reads the manual reader.
+	metrics *metrics
+	reader  *sdkmetric.ManualReader
+	// turbostats is nil unless the caller asked for /turbostats/v1.
+	turbostats *turbostats.Static
 	// now is when a request arrived: the until a ranged request does not
 	// give. A test fixes it.
 	now func() time.Time
@@ -131,6 +140,13 @@ func WithMetrics(reg *prom.Registry) Option {
 	return func(s *Server) { s.registry = reg }
 }
 
+// WithTurbostats serves the process's TurboStats bundle at /turbostats/v1.
+// static is what only the command knows: the build's stamp, the config's
+// hash, and when the process started.
+func WithTurbostats(static turbostats.Static) Option {
+	return func(s *Server) { s.turbostats = &static }
+}
+
 // waitObserver is an executor whose pool can report how long an Acquire
 // waited. The DuckDB one does; a future one need not, and then the wait
 // histogram is simply empty rather than the server failing to start.
@@ -175,22 +191,25 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 	// The instruments read the executor's session counts, so they are built
 	// here rather than by the caller, and the wait hook is installed on the
 	// pool before the server listens.
-	if s.registry != nil && conf.Serve.MetricsEnabled() {
-		var cacheStats func() (int64, int)
-		if s.cache != nil {
-			cacheStats = s.cache.stats
-		}
-		m, err := newMetrics(s.registry, ex.Stats, cacheStats)
-		if err != nil {
-			return nil, err
-		}
-		s.metrics = m
-		if s.cache != nil {
-			s.cache.onEvict = m.observeEviction
-		}
-		if wo, ok := ex.(waitObserver); ok {
-			wo.setOnWait(m.observeWait)
-		}
+	s.serveMetrics = s.registry != nil && conf.Serve.MetricsEnabled()
+	var exportTo *prom.Registry
+	if s.serveMetrics {
+		exportTo = s.registry
+	}
+	var cacheStats func() (int64, int)
+	if s.cache != nil {
+		cacheStats = s.cache.stats
+	}
+	m, reader, err := newMetrics(exportTo, ex.Stats, cacheStats)
+	if err != nil {
+		return nil, err
+	}
+	s.metrics, s.reader = m, reader
+	if s.cache != nil {
+		s.cache.onEvict = m.observeEviction
+	}
+	if wo, ok := ex.(waitObserver); ok {
+		wo.setOnWait(m.observeWait)
 	}
 
 	health, err := ex.Prepare(ctx, StatementSpec{Dataset: "healthz", SQL: "SELECT 1"})
@@ -351,4 +370,23 @@ func newSpan(dc config.ServeDataset) (*span, error) {
 		sp.grains = append(sp.grains, spanGrain{name: name, max: max, bucket: bucket})
 	}
 	return sp, nil
+}
+
+// collectBundle builds this server's bundle: the serve section, and no
+// pipeline section.
+func (s *Server) collectBundle(ctx context.Context) (turbostats.Bundle, error) {
+	src := &turbostats.ServeSource{
+		Sessions: func() (int, int) {
+			st := s.exec.Stats()
+			return st.InUse, st.Size
+		},
+	}
+	if s.cache != nil {
+		src.Cache = s.cache.stats
+	}
+	return turbostats.Collect(ctx, turbostats.Source{
+		Static: *s.turbostats,
+		Reader: s.reader,
+		Serve:  src,
+	})
 }

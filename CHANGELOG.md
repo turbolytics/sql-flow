@@ -4,6 +4,16 @@
 
 ### Changed
 
+- The TurboStats bundle is sectioned. `last_message_at` moved from the top
+  level into `pipeline`, and `instance.pipeline` is now `instance.name`. A new
+  top-level `last_activity_at` carries the latest section timestamp. The
+  document stays v1: no receiver existed when the fields moved. Anything that
+  parses `/turbostats/v1` output must read the new paths.
+- `sqlflow serve` exports seven new Prometheus series without labels, beside
+  the labeled ones: `serve_requests_total`, `serve_request_errors_total`,
+  `serve_last_request_timestamp_seconds`, `serve_cache_hits_total`,
+  `serve_cache_misses_total`, `serve_cache_shared_total`, and
+  `serve_cache_evicted_total`.
 - `sqlflow serve` takes the caller's id as `?client_id=<id>`, and the config
   declares callers under `serve.clients`, each with a `name` and an `id`. The
   id was an `Authorization: Bearer` token under `serve.auth.tokens`. It never
@@ -42,6 +52,14 @@
 
 ### Added
 
+- `sqlflow serve --turbostats` serves `GET /turbostats/v1` on the serve
+  address. The bundle carries a `serve` section: request and 5xx totals, the
+  pool's sessions, and the cache's outcomes and size. The flag is off by
+  default, and the config has no key for it: the route is for local
+  inspection and tests. A deployed instance reports by pushing.
+- `github.com/turbolytics/sql-flow/turbostats/wire`: the TurboStats bundle
+  types and Ed25519 request signing, as a public package with no dependencies
+  outside the standard library.
 - A Deploy to Render button. `render.yaml` and `render/` deploy a Postgres, a
   webhook pipeline that aggregates a generic metric by minute, and a
   `sqlflow serve` API over a six-grain rollup ladder. See `render/README.md`.

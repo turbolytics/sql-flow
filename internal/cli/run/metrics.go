@@ -48,7 +48,7 @@ const stuckIntervals = 3
 // Each route is registered only when its provider is non-nil, so a route that
 // would answer with nothing is absent rather than half-working.
 func newHTTPMux(registry *prom.Registry, stats statsFunc,
-	collect func(context.Context) (turbostats.Bundle, error),
+	bundle http.Handler,
 	progress progressFunc, health healthFunc, interval time.Duration,
 	now func() time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
@@ -136,8 +136,8 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 		})
 	}
 
-	if collect != nil {
-		mux.Handle("/turbostats/v1", turbostats.Handler(collect))
+	if bundle != nil {
+		mux.Handle("/turbostats/v1", bundle)
 	}
 
 	return mux
@@ -182,13 +182,23 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 		return mp, nil
 	}
 
-	var collect func(context.Context) (turbostats.Bundle, error)
+	// Built here rather than in newHTTPMux because a failure is logged, and
+	// this is where the logger is. The response never carries the error: the
+	// route is unauthenticated, and a state backend's error can name its
+	// connection string.
+	var bundle http.Handler
 	if serveTurbostats {
-		collect = func(ctx context.Context) (turbostats.Bundle, error) {
-			return turbostats.Collect(ctx, static, reader, stats)
-		}
+		bundle = turbostats.Handler(func(ctx context.Context) (turbostats.Bundle, error) {
+			return turbostats.Collect(ctx, turbostats.Source{
+				Static:   static,
+				Reader:   reader,
+				Pipeline: &turbostats.PipelineSource{Stats: stats},
+			})
+		}, func(err error) {
+			l.Error("building turbostats bundle", zap.Error(err))
+		})
 	}
-	mux := newHTTPMux(registry, stats, collect, progress, health, interval, time.Now)
+	mux := newHTTPMux(registry, stats, bundle, progress, health, interval, time.Now)
 
 	go func() {
 		routes := []string{}

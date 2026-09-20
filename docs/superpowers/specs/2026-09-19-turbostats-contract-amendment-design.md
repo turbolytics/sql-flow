@@ -33,10 +33,10 @@ one field and renames another, and stays v1:
 - `last_message_at` moves from the top level into `pipeline`.
 - `instance.pipeline` becomes `instance.name`.
 
-The rule protects receivers. No receiver exists: the only reader is a cron
-`curl` on the Bluesky host. The window closes when the control plane ships.
-After that, the rule holds without exception. Fix the cron parser in the same
-change.
+The rule protects receivers, and no receiver exists. The 2026-09-10 spec
+proposed a cron `curl` on the Bluesky host as a stopgap reader, and nobody
+built it. The window closes when the control plane ships. After that, the rule
+holds without exception.
 
 ## Decisions
 
@@ -50,6 +50,7 @@ change.
 | Command channel | The heartbeat response. Its envelope is fixed now and its contents are reserved. | Defining verbs now: nobody has used a command, so any shape is a guess. |
 | Scope ceiling | The instance config lists the scopes it allows. The reporter drops anything outside them. | Trusting the control plane's scopes alone: a compromised control plane could grant itself `execute`. |
 | Shared code | A public Go package in this repository holds the bundle types and the signing functions. | Copies in both repositories: the two would drift. |
+| The HTTP route | `GET /turbostats/v1` stays behind a CLI flag, for local inspection, tests, and the memory soak. The system is push-based, and no deployed instance turns it on. | A config key for it, in the `turbostats` block or anywhere else: a permanent surface for a route nothing in production calls. |
 
 ## The document
 
