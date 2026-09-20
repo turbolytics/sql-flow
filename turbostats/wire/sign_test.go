@@ -106,7 +106,10 @@ func TestCanonicalString_IsTheFiveLines(t *testing.T) {
 
 func TestSign_MatchesTheVectorAndVerifies(t *testing.T) {
 	v, priv, pub, want := loadVectors(t)
-	got := Sign(priv, v.Method, v.Path, v.Timestamp, []byte(v.Body))
+	got, err := Sign(priv, v.Method, v.Path, v.Timestamp, []byte(v.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(got) != string(want) {
 		t.Fatalf("signature is %s", base64.StdEncoding.EncodeToString(got))
 	}
@@ -149,7 +152,9 @@ func TestSignRequest_SetsTheHeadersAndIgnoresTheQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	SignRequest(req, priv, body, time.Unix(v.Timestamp, 0))
+	if err := SignRequest(req, priv, body, time.Unix(v.Timestamp, 0)); err != nil {
+		t.Fatal(err)
+	}
 
 	keyID, ts, sig, err := ParseHeaders(req.Header)
 	if err != nil {
@@ -167,7 +172,9 @@ func TestParseHeaders_RefusesMissingOrMalformed(t *testing.T) {
 	v, priv, _, _ := loadVectors(t)
 	good := func() http.Header {
 		req, _ := http.NewRequest(v.Method, "https://control.example"+v.Path, nil)
-		SignRequest(req, priv, []byte(v.Body), time.Unix(v.Timestamp, 0))
+		if err := SignRequest(req, priv, []byte(v.Body), time.Unix(v.Timestamp, 0)); err != nil {
+			t.Fatal(err)
+		}
 		return req.Header
 	}
 	breakers := map[string]func(http.Header){
@@ -185,6 +192,28 @@ func TestParseHeaders_RefusesMissingOrMalformed(t *testing.T) {
 		breakIt(h)
 		if _, _, _, err := ParseHeaders(h); err == nil {
 			t.Fatalf("%s: ParseHeaders did not fail", name)
+		}
+	}
+}
+
+// Verify refuses a wrong-sized key, and Sign must too. ed25519.Sign panics on
+// one, and PrivateKey.Public slices out of range. ParseCredential cannot
+// produce such a key, but this package is public: a caller holding key bytes
+// from its own store gets an error, not a panic in its reporter.
+func TestSign_RefusesAWrongSizedKeyWithoutPanicking(t *testing.T) {
+	for _, priv := range []ed25519.PrivateKey{nil, {}, {1, 2, 3}, make([]byte, ed25519.SeedSize)} {
+		if _, err := Sign(priv, "POST", "/v1/turbostats", 1, nil); err == nil {
+			t.Fatalf("Sign accepted a %d-byte key", len(priv))
+		}
+		req, _ := http.NewRequest("POST", "https://control.example/v1/turbostats", nil)
+		if err := SignRequest(req, priv, nil, time.Unix(1, 0)); err == nil {
+			t.Fatalf("SignRequest accepted a %d-byte key", len(priv))
+		}
+		// A refused request must not go out half-signed.
+		for _, h := range []string{HeaderKeyID, HeaderTimestamp, HeaderSignature} {
+			if req.Header.Get(h) != "" {
+				t.Fatalf("a refused SignRequest set %s", h)
+			}
 		}
 	}
 }

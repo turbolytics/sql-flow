@@ -28,6 +28,10 @@ const CredentialPrefix = "sfc_"
 // clock. The replay defense proper is the bundle's sent_at, which the
 // receiver checks against the last one it stored; this bounds how long a
 // captured request is even a candidate.
+//
+// Nothing in this package enforces it. Verify checks a signature and has no
+// clock; the receiver compares the timestamp ParseHeaders returns against its
+// own. It is exported so every receiver uses the same window.
 const MaxClockSkew = 5 * time.Minute
 
 // keyIDLen is 16 hex characters: 64 bits of the public key's SHA-256. It
@@ -40,6 +44,18 @@ const keyIDLen = 16
 // path excludes the query, so a proxy that appends one does not break the
 // signature. The body is hashed rather than included so the string stays five
 // short lines that a shell can rebuild.
+//
+// Two things follow from what the string leaves out, and a receiver must hold
+// to both:
+//
+//   - The query is unauthenticated. A receiver must not read a query
+//     parameter on a signed route, because anyone on the path can set one.
+//   - The host is unbound, so a signature is valid at any receiver that knows
+//     the key. A request captured on its way to one control plane replays
+//     against another within MaxClockSkew, if the same key is registered at
+//     both. Register a key at one control plane only. The host is left out
+//     because a receiver behind a reverse proxy often cannot know the name the
+//     sender used, and a signature that fails there fails for every request.
 func CanonicalString(method, path string, timestamp int64, body []byte) string {
 	sum := sha256.Sum256(body)
 	return "v1\n" + method + "\n" + path + "\n" +
@@ -84,8 +100,15 @@ func ParseCredential(s string) (ed25519.PrivateKey, error) {
 }
 
 // Sign signs one request.
-func Sign(priv ed25519.PrivateKey, method, path string, timestamp int64, body []byte) []byte {
-	return ed25519.Sign(priv, []byte(CanonicalString(method, path, timestamp, body)))
+//
+// It returns an error for a private key of the wrong size rather than
+// panicking, as ed25519.Sign would. ParseCredential never yields such a key,
+// but a caller outside this module may hold key bytes from its own store.
+func Sign(priv ed25519.PrivateKey, method, path string, timestamp int64, body []byte) ([]byte, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("wire: a private key is %d bytes, not %d", ed25519.PrivateKeySize, len(priv))
+	}
+	return ed25519.Sign(priv, []byte(CanonicalString(method, path, timestamp, body))), nil
 }
 
 // Verify reports whether sig signs the request under pub. It checks the
@@ -102,12 +125,19 @@ func Verify(pub ed25519.PublicKey, method, path string, timestamp int64, body, s
 // SignRequest sets the three headers on req. body must be the bytes the
 // request sends: the caller holds them, and reading req.Body here would
 // consume it.
-func SignRequest(req *http.Request, priv ed25519.PrivateKey, body []byte, now time.Time) {
+//
+// On error it sets no header, so a refused request cannot go out half-signed.
+func SignRequest(req *http.Request, priv ed25519.PrivateKey, body []byte, now time.Time) error {
 	ts := now.Unix()
-	sig := Sign(priv, req.Method, req.URL.Path, ts, body)
+	// Sign checks the key's size, which is also what makes Public safe below.
+	sig, err := Sign(priv, req.Method, req.URL.Path, ts, body)
+	if err != nil {
+		return err
+	}
 	req.Header.Set(HeaderKeyID, KeyID(priv.Public().(ed25519.PublicKey)))
 	req.Header.Set(HeaderTimestamp, strconv.FormatInt(ts, 10))
 	req.Header.Set(HeaderSignature, base64.StdEncoding.EncodeToString(sig))
+	return nil
 }
 
 // ParseHeaders reads the three headers. A receiver calls it first, looks the

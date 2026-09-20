@@ -14,7 +14,9 @@
 //     does, so there is no kind field.
 //   - Every reader ignores unknown sections and unknown fields. A new one is
 //     additive and stays v1.
-//   - A removed or renamed field is v2, at a new path and media type.
+//   - A removed or renamed field is v2, at a new path and media type. The rule
+//     holds from the first receiver onward. One move and one rename happened
+//     inside v1 before any receiver existed; the contract records both.
 package wire
 
 import (
