@@ -260,6 +260,19 @@ jobs:
               "image-go-build": "/root/.cache/go-build",
               "image-go-mod": "/go/pkg/mod"
             }
+          # Injecting is cheap and extracting is not: 27s in, 90s back out,
+          # against the 104s that caching `go build` saves. Paying both on
+          # every run would be a wash. So only main copies the mounts back and
+          # refreshes the entry; everywhere else injects what main last wrote
+          # and keeps the saving. Same division as the Go jobs make -- one
+          # branch writes, every branch reads.
+          #
+          # The redundant part is what actions/cache does above afterwards: on
+          # a branch the directories still hold exactly what was restored, and
+          # it re-uploads them under a new key, 13s and 464MB. Small enough to
+          # leave alone; if the repository's 10GB of cache starts thrashing,
+          # this is the thing to gate.
+          skip-extraction: ${{ github.ref != 'refs/heads/main' }}
 
       # Builds the image, then runs tests/release against it. The Kafka-backed
       # case brings its own broker up through testcontainers.
