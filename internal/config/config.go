@@ -243,13 +243,30 @@ type KafkaSource struct {
 	Fetch *KafkaFetch `yaml:"fetch,omitempty"`
 }
 
-// Defaults for KafkaFetch. The two byte values are what the source set
-// before the block existed. The prefetch default is measured: the smallest
-// depth within 5% of unbounded throughput on a 3M message backlog. See
+// Defaults for KafkaFetch.
+//
+// The prefetch default is measured: the smallest depth within 5% of unbounded
+// throughput on a 3M message backlog. See
 // docs/superpowers/specs/2026-09-10-kafka-fetch-bound-design.md.
+//
+// The two byte values were 100 MiB and 10 MiB, which were never chosen -- they
+// were what the source happened to set before the fetch block existed, kept as
+// defaults so #252 changed only prefetch. They cost far more than they were
+// worth. Read-ahead buffers, not the pipeline, were most of a log pipeline's
+// memory. Measured on dev/config/examples/logs.rollup.clickhouse.yml over 3.46M
+// records, in-container cgroup peak, output byte-identical in every row:
+//
+//	max_bytes / max_partition_bytes / prefetch	peak	throughput
+//	100 MiB / 10 MiB / 2  (the old defaults)	985 MiB	201k/s
+//	 16 MiB /  4 MiB / 2                    	460 MiB	207k/s
+//	  4 MiB /  1 MiB / 2  (these)           	193 MiB	206k/s
+//	  4 MiB /  1 MiB / 1                    	185 MiB	214k/s
+//
+// prefetch stays 2 because the sweep above measured it on a different
+// workload and found 2 fastest there; only the byte bounds move.
 const (
-	DefaultKafkaFetchMaxBytes          = 100 << 20
-	DefaultKafkaFetchMaxPartitionBytes = 10 << 20
+	DefaultKafkaFetchMaxBytes          = 4 << 20
+	DefaultKafkaFetchMaxPartitionBytes = 1 << 20
 	DefaultKafkaFetchPrefetch          = 2
 )
 

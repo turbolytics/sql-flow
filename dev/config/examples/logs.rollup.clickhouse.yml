@@ -88,6 +88,13 @@ pipeline:
       brokers: [{{ SQLFLOW_KAFKA_BROKERS|default('localhost:9092') }}]
       group_id: {{ SQLFLOW_GROUP_ID|default('logs-rollup') }}
       auto_offset_reset: earliest
+      fetch:
+        # The byte bounds are the defaults and are left alone. Only the depth
+        # moves: one fetch ahead rather than two, measured on the NASA corpus
+        # at 185 MiB container peak and 214k msgs/sec against 193 MiB and 206k
+        # at the default depth, with byte-identical output. A single-partition
+        # log stream gains little from the extra fetch in flight.
+        prefetch: 1
       topics:
         - {{ SQLFLOW_INPUT_TOPIC|default('nasa-http') }}
 

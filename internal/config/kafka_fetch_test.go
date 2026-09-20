@@ -55,16 +55,16 @@ func TestConfigTemplating_Load_KafkaFetchAbsentIsTheDefault(t *testing.T) {
 	resolved, err := absent.Resolved()
 	assert.NoError(t, err)
 	assert.Equal(t, KafkaFetch{
-		MaxBytes:          100 << 20,
-		MaxPartitionBytes: 10 << 20,
+		MaxBytes:          DefaultKafkaFetchMaxBytes,
+		MaxPartitionBytes: DefaultKafkaFetchMaxPartitionBytes,
 		Prefetch:          DefaultKafkaFetchPrefetch,
 	}, resolved)
 
 	partial := &KafkaFetch{Prefetch: 1}
 	resolved, err = partial.Resolved()
 	assert.NoError(t, err)
-	assert.Equal(t, 100<<20, resolved.MaxBytes)
-	assert.Equal(t, 10<<20, resolved.MaxPartitionBytes)
+	assert.Equal(t, DefaultKafkaFetchMaxBytes, resolved.MaxBytes)
+	assert.Equal(t, DefaultKafkaFetchMaxPartitionBytes, resolved.MaxPartitionBytes)
 	assert.Equal(t, 1, resolved.Prefetch)
 }
 
