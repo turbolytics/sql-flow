@@ -1,0 +1,190 @@
+package wire
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+type vectors struct {
+	SeedHex      string `json:"seed_hex"`
+	Credential   string `json:"credential"`
+	PublicKeyHex string `json:"public_key_hex"`
+	KeyID        string `json:"key_id"`
+	Method       string `json:"method"`
+	Path         string `json:"path"`
+	Timestamp    int64  `json:"timestamp"`
+	Body         string `json:"body"`
+	BodySHA256   string `json:"body_sha256"`
+	SignatureB64 string `json:"signature_b64"`
+}
+
+func loadVectors(t *testing.T) (vectors, ed25519.PrivateKey, ed25519.PublicKey, []byte) {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v vectors
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := hex.DecodeString(v.SeedHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	sig, err := base64.StdEncoding.DecodeString(v.SignatureB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v, priv, priv.Public().(ed25519.PublicKey), sig
+}
+
+// The control plane derives the key id at registration and the instance
+// derives it from its own key. If the two disagree, every heartbeat is
+// rejected, so the vector pins it.
+func TestKeyID_MatchesTheVector(t *testing.T) {
+	v, _, pub, _ := loadVectors(t)
+	if hex.EncodeToString(pub) != v.PublicKeyHex {
+		t.Fatalf("public key is %x", pub)
+	}
+	if got := KeyID(pub); got != v.KeyID {
+		t.Fatalf("KeyID is %q, want %q", got, v.KeyID)
+	}
+}
+
+func TestCredential_RoundTripsTheVector(t *testing.T) {
+	v, priv, _, _ := loadVectors(t)
+	got, err := FormatCredential(priv.Seed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != v.Credential {
+		t.Fatalf("FormatCredential is %q, want %q", got, v.Credential)
+	}
+	parsed, err := ParseCredential(v.Credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsed.Equal(priv) {
+		t.Fatal("ParseCredential rebuilt a different key")
+	}
+}
+
+func TestParseCredential_RefusesWhatIsNotOne(t *testing.T) {
+	for _, s := range []string{
+		"",
+		"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", // no prefix
+		"sfc_",             // no seed
+		"sfc_AAEC",         // short seed
+		"sfc_not base64!!", // not base64url
+	} {
+		if _, err := ParseCredential(s); err == nil {
+			t.Fatalf("ParseCredential(%q) did not fail", s)
+		}
+	}
+	if _, err := FormatCredential([]byte{1, 2, 3}); err == nil {
+		t.Fatal("FormatCredential accepted a short seed")
+	}
+}
+
+func TestCanonicalString_IsTheFiveLines(t *testing.T) {
+	v, _, _, _ := loadVectors(t)
+	got := CanonicalString(v.Method, v.Path, v.Timestamp, []byte(v.Body))
+	want := "v1\nPOST\n/v1/turbostats\n1789848000\n" + v.BodySHA256
+	if got != want {
+		t.Fatalf("canonical string is %q, want %q", got, want)
+	}
+}
+
+func TestSign_MatchesTheVectorAndVerifies(t *testing.T) {
+	v, priv, pub, want := loadVectors(t)
+	got := Sign(priv, v.Method, v.Path, v.Timestamp, []byte(v.Body))
+	if string(got) != string(want) {
+		t.Fatalf("signature is %s", base64.StdEncoding.EncodeToString(got))
+	}
+	if !Verify(pub, v.Method, v.Path, v.Timestamp, []byte(v.Body), want) {
+		t.Fatal("the vector's signature does not verify")
+	}
+}
+
+// Each part of the canonical string is covered: change any one and the
+// signature fails.
+func TestVerify_RefusesAnyTamperedPart(t *testing.T) {
+	v, _, pub, sig := loadVectors(t)
+	body := []byte(v.Body)
+	otherSeed := make([]byte, ed25519.SeedSize)
+	otherSeed[0] = 0xff
+	otherPub := ed25519.NewKeyFromSeed(otherSeed).Public().(ed25519.PublicKey)
+
+	cases := map[string]bool{
+		"tampered body":      Verify(pub, v.Method, v.Path, v.Timestamp, []byte(`{"v":2}`), sig),
+		"tampered path":      Verify(pub, v.Method, "/v1/other", v.Timestamp, body, sig),
+		"tampered method":    Verify(pub, "PUT", v.Path, v.Timestamp, body, sig),
+		"tampered timestamp": Verify(pub, v.Method, v.Path, v.Timestamp+1, body, sig),
+		"wrong key":          Verify(otherPub, v.Method, v.Path, v.Timestamp, body, sig),
+		"short signature":    Verify(pub, v.Method, v.Path, v.Timestamp, body, sig[:10]),
+		"short public key":   Verify(pub[:5], v.Method, v.Path, v.Timestamp, body, sig),
+	}
+	for name, verified := range cases {
+		if verified {
+			t.Fatalf("%s verified", name)
+		}
+	}
+}
+
+// The query is not part of the path: a proxy that appends one must not break
+// the signature, and the receiver signs the same thing the sender did.
+func TestSignRequest_SetsTheHeadersAndIgnoresTheQuery(t *testing.T) {
+	v, priv, pub, want := loadVectors(t)
+	body := []byte(v.Body)
+	req, err := http.NewRequest(v.Method, "https://control.example"+v.Path+"?x=1", strings.NewReader(v.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	SignRequest(req, priv, body, time.Unix(v.Timestamp, 0))
+
+	keyID, ts, sig, err := ParseHeaders(req.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keyID != v.KeyID || ts != v.Timestamp || string(sig) != string(want) {
+		t.Fatalf("headers are %q %d %x", keyID, ts, sig)
+	}
+	if !Verify(pub, req.Method, req.URL.Path, ts, body, sig) {
+		t.Fatal("the signed request does not verify")
+	}
+}
+
+func TestParseHeaders_RefusesMissingOrMalformed(t *testing.T) {
+	v, priv, _, _ := loadVectors(t)
+	good := func() http.Header {
+		req, _ := http.NewRequest(v.Method, "https://control.example"+v.Path, nil)
+		SignRequest(req, priv, []byte(v.Body), time.Unix(v.Timestamp, 0))
+		return req.Header
+	}
+	breakers := map[string]func(http.Header){
+		"no key id":       func(h http.Header) { h.Del(HeaderKeyID) },
+		"short key id":    func(h http.Header) { h.Set(HeaderKeyID, "abc") },
+		"non-hex key id":  func(h http.Header) { h.Set(HeaderKeyID, "zzzzzzzzzzzzzzzz") },
+		"no timestamp":    func(h http.Header) { h.Del(HeaderTimestamp) },
+		"bad timestamp":   func(h http.Header) { h.Set(HeaderTimestamp, "yesterday") },
+		"no signature":    func(h http.Header) { h.Del(HeaderSignature) },
+		"bad signature":   func(h http.Header) { h.Set(HeaderSignature, "!!!") },
+		"short signature": func(h http.Header) { h.Set(HeaderSignature, "AAAA") },
+	}
+	for name, breakIt := range breakers {
+		h := good()
+		breakIt(h)
+		if _, _, _, err := ParseHeaders(h); err == nil {
+			t.Fatalf("%s: ParseHeaders did not fail", name)
+		}
+	}
+}

@@ -1,0 +1,12 @@
+{
+  "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "credential": "sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "public_key_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "key_id": "56475aa75463474c",
+  "method": "POST",
+  "path": "/v1/turbostats",
+  "timestamp": 1789848000,
+  "body": "{\"v\":1}",
+  "body_sha256": "afbf9d0f3560b0fd7795e81c42a0a79ee6b6fc67e064f77826aee642cad28d91",
+  "signature_b64": "ikTk4Yy0tf8pEHExJFgNqWg4MRJc7TioFHBiEfQsaDr+vky+kg2A7BJUl85niojmb4ZqDpul+Ia29WnbKnS9AQ=="
+}

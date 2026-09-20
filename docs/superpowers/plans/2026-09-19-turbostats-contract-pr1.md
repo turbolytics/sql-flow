@@ -735,8 +735,8 @@ Expected: PASS, and `go vet` prints nothing.
 
 - [ ] **Step 6: Confirm the package imports only the standard library**
 
-Run: `go list -deps ./turbostats/wire | grep '\.' | grep -v '^vendor/'`
-Expected: one line, `github.com/turbolytics/sql-flow/turbostats/wire`. A standard-library path has no dot, and the `vendor/` lines are the standard library's own vendored copies. Any other line is a non-standard import and fails this step.
+Run: `go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./turbostats/wire`
+Expected: one line, `github.com/turbolytics/sql-flow/turbostats/wire`. Any other line is a non-standard import and fails this step. Do not grep for dots: `crypto/internal/entropy/v1.0.0` is standard and has one.
 
 - [ ] **Step 7: Commit**
 
