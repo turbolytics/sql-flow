@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/zap"
 )
 
@@ -44,11 +45,16 @@ type Server struct {
 	origins map[string]bool
 	// healthTimeout bounds /healthz, which waits for a session like a query.
 	healthTimeout time.Duration
-	// registry and metrics are nil unless the config asks for /metrics. Every
-	// metrics method tolerates a nil receiver, so the request path records
-	// unconditionally.
-	registry *prom.Registry
-	metrics  *metrics
+	// registry is nil unless the caller passed WithMetrics. serveMetrics is
+	// whether /metrics is mounted: the caller handed a registry and the
+	// config asked for the endpoint. The config decides, not the caller.
+	registry     *prom.Registry
+	serveMetrics bool
+	// metrics and reader always exist after New. The instruments record
+	// whether or not anything scrapes them, because the TurboStats bundle
+	// reads the manual reader.
+	metrics *metrics
+	reader  *sdkmetric.ManualReader
 	// now is when a request arrived: the until a ranged request does not
 	// give. A test fixes it.
 	now func() time.Time
@@ -175,22 +181,25 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 	// The instruments read the executor's session counts, so they are built
 	// here rather than by the caller, and the wait hook is installed on the
 	// pool before the server listens.
-	if s.registry != nil && conf.Serve.MetricsEnabled() {
-		var cacheStats func() (int64, int)
-		if s.cache != nil {
-			cacheStats = s.cache.stats
-		}
-		m, err := newMetrics(s.registry, ex.Stats, cacheStats)
-		if err != nil {
-			return nil, err
-		}
-		s.metrics = m
-		if s.cache != nil {
-			s.cache.onEvict = m.observeEviction
-		}
-		if wo, ok := ex.(waitObserver); ok {
-			wo.setOnWait(m.observeWait)
-		}
+	s.serveMetrics = s.registry != nil && conf.Serve.MetricsEnabled()
+	var exportTo *prom.Registry
+	if s.serveMetrics {
+		exportTo = s.registry
+	}
+	var cacheStats func() (int64, int)
+	if s.cache != nil {
+		cacheStats = s.cache.stats
+	}
+	m, reader, err := newMetrics(exportTo, ex.Stats, cacheStats)
+	if err != nil {
+		return nil, err
+	}
+	s.metrics, s.reader = m, reader
+	if s.cache != nil {
+		s.cache.onEvict = m.observeEviction
+	}
+	if wo, ok := ex.(waitObserver); ok {
+		wo.setOnWait(m.observeWait)
 	}
 
 	health, err := ex.Prepare(ctx, StatementSpec{Dataset: "healthz", SQL: "SELECT 1"})

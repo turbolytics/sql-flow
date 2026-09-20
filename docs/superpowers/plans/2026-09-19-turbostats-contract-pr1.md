@@ -1383,7 +1383,7 @@ func newMetrics(reg *prom.Registry, stats func() Stats, cacheStats func() (int64
 	m := mp.Meter(meterName)
 ```
 
-3. Every `return nil, err` inside `newMetrics` becomes `return nil, nil, err`. The final `return &mm, nil` becomes `return &mm, reader, nil`.
+3. Every `return nil, err` inside `newMetrics` becomes `return nil, nil, err`. The final `return &mm, nil` becomes `return &mm, reader, nil`. The old code declared `err` with the exporter at function scope. That declaration now sits inside `if reg != nil`, so add `var err error` directly under `var mm metrics`.
 
 4. After the `sessionWait` histogram is created and before the `inUse` gauge, add:
 

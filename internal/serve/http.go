@@ -24,7 +24,7 @@ const (
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
-	if s.metrics != nil {
+	if s.serveMetrics {
 		// No client id: it carries no row data, and the listener is already
 		// public. It is absent unless the config turns it on, because the
 		// labels name every dataset and grain.
@@ -443,7 +443,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			if code == "" {
 				code = "ok"
 			}
-			s.metrics.observeRequest(entry.dataset, entry.grain, code, entry.queryDur, entry.ran, time.Since(start))
+			s.metrics.observeRequest(entry.dataset, entry.grain, code, entry.status, entry.queryDur, entry.ran, time.Since(start))
 		}
 	})
 }
