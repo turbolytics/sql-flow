@@ -461,6 +461,9 @@ type Pipeline struct {
 	State *StateConf `yaml:"state,omitempty"`
 	// Global error handling strategy for the pipeline.
 	OnError *OnError `yaml:"on_error,omitempty"`
+	// Where this instance reports itself. Absent means it reports nowhere,
+	// which is the ordinary case for a pipeline with no control plane.
+	TurboStats *TurboStats `yaml:"turbostats,omitempty"`
 }
 
 // Conf is a whole pipeline file.

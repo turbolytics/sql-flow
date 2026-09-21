@@ -39,7 +39,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 		Offsets:   []core.OffsetStat{{Topic: "events", Partition: 0, Offset: 999, LeaderEpoch: 7}},
 	}
 
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return want, nil }, nil, nil, nil, 30*time.Second, time.Now)
+	mux := newHTTPMux(nil, func(context.Context) (*core.StateStats, error) { return want, nil }, nil, nil, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -66,7 +66,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 // endpoint stays useful for the counters even when nothing is durable.
 func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return nil, nil }, nil, nil, nil, 30*time.Second, time.Now)
+	mux := newHTTPMux(nil, func(context.Context) (*core.StateStats, error) { return nil, nil }, nil, nil, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -82,7 +82,7 @@ func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *tes
 // blank.
 func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) {
+	mux := newHTTPMux(nil, func(context.Context) (*core.StateStats, error) {
 		return nil, errors.New("state database unreadable")
 	}, nil, nil, nil, 30*time.Second, time.Now)
 
@@ -383,7 +383,7 @@ func TestObservabilityTurbostats_ManualReaderLeavesExportedNamesAlone(t *testing
 // nothing unless Prometheus was on.
 func TestObservabilityTurbostats_ProviderExistsWithoutAnExporter(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
-	mp, err := newMeterProvider("", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
+	mp, _, err := newMeterProvider("", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
 	assert.NoError(t, err)
 	assert.That(t, mp != nil)
 
@@ -394,6 +394,6 @@ func TestObservabilityTurbostats_ProviderExistsWithoutAnExporter(t *testing.T) {
 
 func TestObservabilityTurbostats_RejectsAnUnknownExporter(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	_, err := newMeterProvider("statsd", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
+	_, _, err := newMeterProvider("statsd", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
 	assert.Error(t, err)
 }

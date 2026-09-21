@@ -520,6 +520,134 @@ def test_turbostats_serve_bundle_carries_a_serve_section(image):
     assert "latency" not in json.dumps(bundle)
 
 
+# A receiver that records each POST as one JSON line on stdout, so the test
+# reads what arrived from the container's log. Inline and dependency-free: the
+# image under test is sqlflow's, not this one's.
+RECEIVER = r"""
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        print(json.dumps({
+            "path": self.path,
+            "content_type": self.headers.get("Content-Type"),
+            "key_id": self.headers.get("X-Turbostats-Key-Id"),
+            "timestamp": self.headers.get("X-Turbostats-Timestamp"),
+            "signature": self.headers.get("X-Turbostats-Signature"),
+            "body": json.loads(body),
+        }), flush=True)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.turbolytics.turbostats.v1+json")
+        self.end_headers()
+        self.wfile.write(b'{"v":1,"commands":[]}')
+
+    def log_message(self, *args):
+        pass
+
+HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+"""
+
+
+@pytest.mark.covers("observability.turbostats.reporter")
+def test_turbostats_reporter_posts_signed_bundles(image, stack):
+    """The shipped image reports itself to a control plane, signed.
+
+    Driven against the image because what ships is the config block, the
+    reporter's goroutine and the link-time stamp together, and a unit test
+    proves none of them in the artifact users pull.
+
+    The pipeline shares the receiver's network namespace rather than sitting
+    beside it on the test network, so it reports to 127.0.0.1. That is not a
+    convenience: `report_to` refuses plaintext to anything but the loopback,
+    because a signed bundle still crosses the wire in the clear. Posting to a
+    network alias made this test evidence for a config `sqlflow validate`
+    rejects, which is evidence of nothing.
+
+    The signature is not verified here. Doing it in Python would be a second
+    implementation of the thing under test; the wire vectors cover the math,
+    and running against the real control plane covers the rest.
+    """
+    receiver = DockerContainer("python:3.12-alpine") \
+        .with_network(stack.network) \
+        .with_network_aliases("control") \
+        .with_command(["python", "-u", "-c", RECEIVER])
+    receiver.start()
+    try:
+        config = f"""
+pipeline:
+  name: reporting_pipeline
+  turbostats:
+    id: release-01
+    report_to: http://127.0.0.1:8080/v1/turbostats
+    key: sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+    interval_seconds: 1
+  source:
+    type: webhook
+    webhook:
+      addr: 0.0.0.0:8081
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1 AS n
+  sink:
+    type: noop
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "pipeline.yml")
+            with open(path, "w") as f:
+                f.write(config)
+            os.chmod(tmp, 0o755)
+            os.chmod(path, 0o644)
+
+            pipeline = DockerContainer(image) \
+                .with_volume_mapping(tmp, "/conf") \
+                .with_kwargs(network_mode=(
+                    f"container:{receiver.get_wrapped_container().id}")) \
+                .with_command("run /conf/pipeline.yml")
+            pipeline.start()
+            try:
+                posts = wait_for_posts(receiver, 2, timeout=60)
+            finally:
+                pipeline.stop()
+    finally:
+        receiver.stop()
+
+    first = posts[0]
+    assert first["path"] == "/v1/turbostats"
+    assert first["content_type"] == "application/vnd.turbolytics.turbostats.v1+json"
+    # Present and well formed. What they prove is covered elsewhere.
+    assert len(first["key_id"]) == 16
+    assert first["timestamp"].isdigit()
+    assert len(first["signature"]) > 80
+
+    bundle = first["body"]
+    assert bundle["v"] == 1
+    assert bundle["instance"]["id"] == "release-01"
+    assert bundle["instance"]["name"] == "reporting_pipeline"
+    assert bundle["interval_seconds"] == 1
+    assert "pipeline" in bundle
+    assert "serve" not in bundle
+
+    # The version in the bundle is the one stamped into the image.
+    stdout, _ = run_docker_container(image, "version")
+    stamped = stdout.splitlines()[0].split()[1]
+    assert bundle["instance"]["version"] == stamped
+
+
+def wait_for_posts(receiver, count, timeout):
+    """Read what the receiver logged until count posts have arrived."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out, _ = receiver.get_logs()
+        posts = [json.loads(line) for line in out.decode().splitlines()
+                 if line.startswith("{")]
+        if len(posts) >= count:
+            return posts
+        time.sleep(0.5)
+    raise AssertionError(f"only {len(posts)} of {count} posts arrived in {timeout}s")
+
+
 @pytest.mark.covers("source.websocket", "handler.structured")
 @pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):

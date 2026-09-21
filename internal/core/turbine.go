@@ -258,7 +258,7 @@ type Turbine struct {
 	// connection dedicated to reading, never the one batches are written on,
 	// so a scrape cannot stall the pipeline. Nil when there is no state
 	// database.
-	stateStats func() (*StateStats, error)
+	stateStats func(context.Context) (*StateStats, error)
 
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
@@ -453,7 +453,7 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 // WithStateStats supplies the snapshot function backing the state gauges. It
 // must read a connection dedicated to reading; passing the pipeline's writer
 // would let a scrape contend with batch processing.
-func WithStateStats(fn func() (*StateStats, error)) TurbineOption {
+func WithStateStats(fn func(context.Context) (*StateStats, error)) TurbineOption {
 	return func(t *Turbine) {
 		t.stateStats = fn
 	}
@@ -557,7 +557,7 @@ func (t *Turbine) recordStateGauges(ctx context.Context) {
 		return
 	}
 
-	stats, err := t.stateStats()
+	stats, err := t.stateStats(ctx)
 	if err != nil {
 		// Never fatal: the pipeline keeps running and keeps serving its
 		// other metrics even when state cannot be read.

@@ -37,7 +37,7 @@ func TestServeTurbostats_IsOffUnlessAsked(t *testing.T) {
 // catches the two packages disagreeing about an instrument name.
 func TestServeTurbostats_ServesAServeSection(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats.serve")
-	ts := newTestServerWith(t, testServe, WithTurbostats(testStatic))
+	ts := newTestServerWith(t, testServe, WithTurbostats(testStatic, true))
 
 	assert.Equal(t, http.StatusOK, ts.get(t, "/v1/datasets/status").status)
 
@@ -93,7 +93,7 @@ serve:
       sql: SELECT bucket, lang, posts FROM posts WHERE lang = coalesce($lang, lang)
 `))
 	assert.NoError(t, err)
-	srv, err := New(context.Background(), conf, ex, WithTurbostats(testStatic))
+	srv, err := New(context.Background(), conf, ex, WithTurbostats(testStatic, true))
 	assert.NoError(t, err)
 	t.Cleanup(srv.Close)
 	handler := srv.Handler()
@@ -144,7 +144,7 @@ serve:
 	}
 
 	// The run above is only evidence if the bundles counted it.
-	b, err := srv.collectBundle(context.Background())
+	b, err := srv.CollectBundle(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, int64(warmup+iters), b.Serve.RequestCount)
 }

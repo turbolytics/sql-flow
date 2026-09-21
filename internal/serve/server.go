@@ -9,6 +9,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"sync"
@@ -56,8 +57,10 @@ type Server struct {
 	// reads the manual reader.
 	metrics *metrics
 	reader  *sdkmetric.ManualReader
-	// turbostats is nil unless the caller asked for /turbostats/v1.
-	turbostats *turbostats.Static
+	// turbostats is nil unless the caller supplied the process's identity.
+	// serveTurbostatsRoute is whether to mount the route for it.
+	turbostats           *turbostats.Static
+	serveTurbostatsRoute bool
 	// now is when a request arrived: the until a ranged request does not
 	// give. A test fixes it.
 	now func() time.Time
@@ -140,11 +143,18 @@ func WithMetrics(reg *prom.Registry) Option {
 	return func(s *Server) { s.registry = reg }
 }
 
-// WithTurbostats serves the process's TurboStats bundle at /turbostats/v1.
-// static is what only the command knows: the build's stamp, the config's
-// hash, and when the process started.
-func WithTurbostats(static turbostats.Static) Option {
-	return func(s *Server) { s.turbostats = &static }
+// WithTurbostats gives the server the facts a bundle carries: the build's
+// stamp, the config's hash, and when the process started, which only the
+// command knows.
+//
+// serveRoute decides whether /turbostats/v1 is mounted. The two are separate
+// because a fleet instance reports outbound and has no reason to listen: the
+// control plane cannot reach it, so a route would open a port for nobody.
+func WithTurbostats(static turbostats.Static, serveRoute bool) Option {
+	return func(s *Server) {
+		s.turbostats = &static
+		s.serveTurbostatsRoute = serveRoute
+	}
 }
 
 // waitObserver is an executor whose pool can report how long an Acquire
@@ -372,9 +382,16 @@ func newSpan(dc config.ServeDataset) (*span, error) {
 	return sp, nil
 }
 
-// collectBundle builds this server's bundle: the serve section, and no
+// CollectBundle builds this server's bundle: the serve section, and no
 // pipeline section.
-func (s *Server) collectBundle(ctx context.Context) (turbostats.Bundle, error) {
+//
+// Exported because the reporter calls it. One builder, two transports, is the
+// property the contract exists for: a second one would let what an operator
+// curls and what a control plane stores drift apart.
+func (s *Server) CollectBundle(ctx context.Context) (turbostats.Bundle, error) {
+	if s.turbostats == nil {
+		return turbostats.Bundle{}, errors.New("serve: no instance identity was supplied")
+	}
 	src := &turbostats.ServeSource{
 		Sessions: func() (int, int) {
 			st := s.exec.Stats()

@@ -20,9 +20,11 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/logging"
 	api "github.com/turbolytics/sql-flow/internal/serve"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"go.uber.org/zap"
 )
 
@@ -64,7 +66,14 @@ func NewCommand() *cobra.Command {
 
 			// A supervisor stops the server with SIGTERM. Without the handler
 			// the process dies mid-request and the deferred close never runs.
-			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			// The command's own context is the parent, for the reason run
+			// gives: cobra supplies Background here, and an embedding caller
+			// gets a command it can stop.
+			parent := cmd.Context()
+			if parent == nil {
+				parent = context.Background()
+			}
+			ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
 			return serveConfig(ctx, path, l, nil, serveTurbostats)
@@ -123,15 +132,23 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 	if conf.Serve.MetricsEnabled() {
 		opts = append(opts, api.WithMetrics(prom.NewRegistry()))
 	}
-	if serveTurbostats {
-		opts = append(opts, api.WithTurbostats(turbostats.Static{
-			Name:       conf.Serve.Name,
-			Version:    buildinfo.Version,
-			Commit:     buildinfo.Commit,
-			ConfigHash: turbostats.HashConfig(rendered),
-			StartedAt:  startedAt,
-		}))
+	ts := conf.Serve.TurboStats
+	static := turbostats.Static{
+		Name:       conf.Serve.Name,
+		Version:    buildinfo.Version,
+		Commit:     buildinfo.Commit,
+		ConfigHash: turbostats.HashConfig(rendered),
+		StartedAt:  startedAt,
 	}
+	if ts.Enabled() {
+		static.ID = ts.ID
+		// The receiver needs the interval to tell a late heartbeat from a
+		// normal one, and only the reporter knows it.
+		static.IntervalSeconds = int(ts.Interval().Seconds())
+	}
+	// Always: the reporter reads the same builder, and a fleet instance
+	// reports without serving anything.
+	opts = append(opts, api.WithTurbostats(static, serveTurbostats))
 
 	srv, err := api.New(ctx, conf, ex, opts...)
 	if err != nil {
@@ -155,5 +172,49 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 		onListen(ln.Addr())
 	}
 
-	return srv.Serve(ctx, ln)
+	// The reporter reads the same bundle builder the route serves, so a
+	// server with the route off still reports. Started before Serve blocks,
+	// so an instance appears on a fleet page as soon as it is listening.
+	var serveErr error
+	if ts.Enabled() {
+		key, err := wire.ParseCredential(ts.Key)
+		if err != nil {
+			return errs.New(errs.CodeConfigInvalid, "turbostats.key is not a credential")
+		}
+		reporter, err := turbostats.NewReporter(turbostats.ReporterConfig{
+			ReportTo: ts.ReportTo, Key: key, Interval: ts.Interval(),
+			Collect: srv.CollectBundle, Log: l.Named("turbostats"),
+		})
+		if err != nil {
+			return err
+		}
+		stopReporter := turbostats.StartReporter(ctx, reporter)
+
+		// A defer, so the goroutine is stopped and waited for however this
+		// function returns. It runs after Serve, so the last bundle counts
+		// every request the server answered. A crash never reaches it, which
+		// is how a receiver tells a clean stop from one.
+		//
+		// The reason is derived rather than hardcoded. It used to say
+		// "stopped" whatever Serve returned, so a server that fell over
+		// reported the exit code of a crash and the reason of a clean stop --
+		// and the reason is the field whose whole job is telling those apart.
+		defer func() {
+			final, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), shutdownGrace)
+			defer cancel()
+			stopReporter(final, turbostats.Exit{
+				Reason: turbostats.ExitReason(serveErr, ctx.Err()),
+				Code:   errs.ExitCode(serveErr),
+			})
+		}()
+	}
+
+	serveErr = srv.Serve(ctx, ln)
+	return serveErr
 }
+
+// shutdownGrace bounds the last bundle. The reporter has its own timeout; this
+// is the outer bound on the whole step, so a stop is never held open by a
+// control plane that stopped answering.
+const shutdownGrace = 15 * time.Second

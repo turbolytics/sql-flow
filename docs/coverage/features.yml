@@ -185,6 +185,10 @@ features:
     description: Reports `sqlflow serve`'s totals as the bundle's serve section, served at /turbostats/v1.
     requires: [unit, release]
 
+  - id: observability.turbostats.reporter
+    description: Posts the process's own state to a control plane on an interval, signed.
+    requires: [unit, release]
+
   - id: observability.debug_api
     description: Serves ad-hoc SQL against the live DuckDB connection.
     requires: [unit]

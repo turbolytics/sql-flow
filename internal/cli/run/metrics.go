@@ -22,9 +22,12 @@ import (
 // endpoint, so dashboards and scrape configs carry over unchanged.
 const metricsPort = ":8000"
 
+// collectFunc builds one bundle. The route and the reporter share it.
+type collectFunc func(context.Context) (turbostats.Bundle, error)
+
 // statsFunc reports a snapshot of the pipeline's durable state. It returns a
 // nil snapshot, and no error, for a pipeline that has no state database.
-type statsFunc func() (*core.StateStats, error)
+type statsFunc func(context.Context) (*core.StateStats, error)
 
 // progressFunc reports the pipeline's liveness snapshot: when the newest
 // batch arrived, when state last committed, and how many messages have been
@@ -79,7 +82,7 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 			out := map[string]any{"state": nil}
 
 			if stats != nil {
-				state, err := stats()
+				state, err := stats(r.Context())
 				if err != nil {
 					// A monitoring system must see the failure, not a
 					// healthy-looking blank.
@@ -152,10 +155,14 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 // which is the property the design exists for. Before this, the provider
 // existed only for Prometheus, and without it every counter recorded into
 // nothing -- so there was nothing for a bundle to read.
+// It also returns the bundle builder, because the reporter needs the same one
+// the route serves. One builder, two transports, is the property the contract
+// exists for: a second one here would let what an operator curls and what a
+// control plane stores drift apart.
 func newMeterProvider(exporter string, serveTurbostats bool,
 	static turbostats.Static, l *zap.Logger, stats statsFunc,
 	progress progressFunc, health healthFunc,
-	interval time.Duration) (metric.MeterProvider, error) {
+	interval time.Duration) (metric.MeterProvider, collectFunc, error) {
 
 	reader := sdkmetric.NewManualReader()
 	opts := []sdkmetric.Option{sdkmetric.WithReader(reader)}
@@ -167,19 +174,29 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 		registry = prom.NewRegistry()
 		exp, err := prometheus.New(prometheus.WithRegisterer(registry))
 		if err != nil {
-			return nil, fmt.Errorf("prometheus exporter: %w", err)
+			return nil, nil, fmt.Errorf("prometheus exporter: %w", err)
 		}
 		opts = append(opts, sdkmetric.WithReader(exp))
 	default:
-		return nil, fmt.Errorf("unsupported --metrics exporter: %q (supported: prometheus)", exporter)
+		return nil, nil, fmt.Errorf("unsupported --metrics exporter: %q (supported: prometheus)", exporter)
 	}
 
 	mp := sdkmetric.NewMeterProvider(opts...)
 
+	// Built whether or not anything serves it: the reporter reads the same
+	// one, and it has no HTTP server of its own.
+	collect := func(ctx context.Context) (turbostats.Bundle, error) {
+		return turbostats.Collect(ctx, turbostats.Source{
+			Static:   static,
+			Reader:   reader,
+			Pipeline: &turbostats.PipelineSource{Stats: stats},
+		})
+	}
+
 	// Nothing to serve: the provider still exists, so the instruments record
 	// and a later reporter can read them without an HTTP server.
 	if registry == nil && !serveTurbostats && progress == nil {
-		return mp, nil
+		return mp, collect, nil
 	}
 
 	// Built here rather than in newHTTPMux because a failure is logged, and
@@ -188,13 +205,7 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 	// connection string.
 	var bundle http.Handler
 	if serveTurbostats {
-		bundle = turbostats.Handler(func(ctx context.Context) (turbostats.Bundle, error) {
-			return turbostats.Collect(ctx, turbostats.Source{
-				Static:   static,
-				Reader:   reader,
-				Pipeline: &turbostats.PipelineSource{Stats: stats},
-			})
-		}, func(err error) {
+		bundle = turbostats.Handler(collect, func(err error) {
 			l.Error("building turbostats bundle", zap.Error(err))
 		})
 	}
@@ -217,7 +228,7 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 		}
 	}()
 
-	return mp, nil
+	return mp, collect, nil
 }
 
 // flushIntervalFor is the one place the flush interval is decided. Absent,

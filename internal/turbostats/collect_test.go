@@ -37,7 +37,7 @@ var static = Static{
 
 // runSource is what the run command hands Collect: a pipeline section, and
 // no serve section.
-func runSource(r *sdkmetric.ManualReader, stats func() (*core.StateStats, error)) Source {
+func runSource(r *sdkmetric.ManualReader, stats func(context.Context) (*core.StateStats, error)) Source {
 	return Source{Static: static, Reader: r, Pipeline: &PipelineSource{Stats: stats}}
 }
 
@@ -161,7 +161,7 @@ func TestCollect_StateSizeIsOmittedWithoutAStateDatabase(t *testing.T) {
 func TestCollect_StateSizeComesFromTheStatsFunction(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, _, _ := provider(t)
-	stats := func() (*core.StateStats, error) {
+	stats := func(context.Context) (*core.StateStats, error) {
 		return &core.StateStats{SizeBytes: 4096}, nil
 	}
 
@@ -176,7 +176,7 @@ func TestCollect_StateSizeComesFromTheStatsFunction(t *testing.T) {
 func TestCollect_AStatsFailureFailsTheBundle(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, _, _ := provider(t)
-	stats := func() (*core.StateStats, error) { return nil, errors.New("unreadable") }
+	stats := func(context.Context) (*core.StateStats, error) { return nil, errors.New("unreadable") }
 
 	_, err := Collect(context.Background(), runSource(reader, stats))
 	assert.Error(t, err)
@@ -217,7 +217,7 @@ func TestCollect_TheBundleIsUnderOneKiB(t *testing.T) {
 	m.PipelineLastMessage.Record(ctx, 1757570000)
 	_ = meter
 	size := int64(4194304)
-	stats := func() (*core.StateStats, error) { return &core.StateStats{SizeBytes: size}, nil }
+	stats := func(context.Context) (*core.StateStats, error) { return &core.StateStats{SizeBytes: size}, nil }
 
 	b, err := Collect(ctx, runSource(reader, stats))
 	assert.NoError(t, err)
