@@ -4,6 +4,21 @@
 
 ### Changed
 
+- `source.kafka.fetch.max_bytes` defaults to 4 MiB, from 100 MiB, and
+  `max_partition_bytes` to 1 MiB, from 10 MiB. Neither old value was chosen:
+  they were what the source set before the fetch block existed. Read-ahead
+  buffers are most of a log pipeline's memory, and on a log pipeline over 3.46
+  million records the peak fell from 985 MiB to 193 MiB while throughput rose
+  from 201k to 206k messages a second. A record larger than the bound is still
+  fetched. Set the two keys to keep the old values.
+- `consumer_lag` covers the partitions this instance holds. The source reports
+  each rebalance, and a partition revoked to another instance leaves the
+  series. It stayed at its last value, and a fleet summing lag counted it on
+  both instances. A partition's last reading survives a clean stop and a
+  broker outage, where leaving the group or a lost session emptied it.
+- `window_closed_total` is present at 0 from the moment a windowed pipeline
+  starts. It was absent until the first close, so a pipeline configured to
+  drop late rows read as one without windows.
 - The TurboStats bundle is sectioned. `last_message_at` moved from the top
   level into `pipeline`, and `instance.pipeline` is now `instance.name`. A new
   top-level `last_activity_at` carries the latest section timestamp. The
@@ -34,6 +49,14 @@
 
 ### Fixed
 
+- `window_late_rows_total` counted rows twice when a close failed after
+  counting them. The count was taken before the close committed, so a close
+  that lost a write conflict rolled its delete back and kept its count, and
+  the next close counted the same rows again. It now counts after the commit.
+- On macOS the TurboStats bundle's `rss_bytes` was the peak resident size
+  since the process started, which never falls, so a chart of it rose like a
+  leak. It is now the physical footprint, which falls when memory is freed. A
+  failed read omits the field rather than failing the whole document.
 - `StructuredBatch` stored a JSON object read into a `TEXT` column with the
   escapes inside it decoded, so `{"q":"say \"hi\""}` became
   `{"q":"say "hi""}`, which is not JSON, and `from_json` failed on it. Only a
@@ -52,6 +75,30 @@
 
 ### Added
 
+- The TurboStats reporter. A `turbostats` block under `pipeline` or `serve`,
+  with `id`, `report_to`, `key` and `interval_seconds` (default 60), makes the
+  process post a bundle about itself, signed with Ed25519: at start, every
+  interval with ten percent jitter, and once more on a clean stop carrying how
+  it ended. `report_to` must be https unless it is the loopback, and `run` and
+  `serve` refuse a plaintext address at startup, as `validate` does. A failed
+  post never touches the pipeline: there is no retry and no queue.
+- The bundle's `pipeline` section says whether the pipeline is keeping up:
+  `lag_max_messages`, `lag_total_messages`, `lag_partitions` and
+  `lag_observed_at`; `late_rows_dropped`, `late_rows_reemitted` and
+  `window_closed_count`; `window_lag_seconds`, how far the windows' closes
+  trail their data in event time; `window_newest_bucket_at`, event time for a
+  receiver to compare with a clock it trusts; `sink_retry_count`; and
+  `message_payload_bytes`, the bytes of every message received. Absent and
+  zero are different facts: a pipeline with no Kafka source reports no lag.
+- Prometheus series `consumer_lag_observed_timestamp_seconds`,
+  `message_payload_bytes_total`, `window_close_lag_seconds` and
+  `window_newest_bucket_start_seconds`.
+- The enforced invariant `manager.late.counted_once`: a late row counts once,
+  when the close that settled it commits.
+- Two log-reduction examples on one topic, `logs.archive.parquet.yml` and
+  `logs.rollup.clickhouse.yml`: every request to Parquet, and hourly counts
+  into ClickHouse. `dev/bench/publish-logs` streams a log file into Kafka for
+  them.
 - `sqlflow serve --turbostats` serves `GET /turbostats/v1` on the serve
   address. The bundle carries a `serve` section: request and 5xx totals, the
   pool's sessions, and the cache's outcomes and size. The flag is off by
