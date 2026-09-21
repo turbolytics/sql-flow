@@ -44,8 +44,8 @@
   aborts that transaction; see Fixed.
 - The shutdown drain now forces the `sqlflow_progress` write. The managers'
   final poll runs after it, and a write the interval had skipped, or one that
-  failed moments before the signal, would otherwise leave that poll reading a
-  stale `last_arrival` and closing open buckets early on the way out.
+  failed moments before the signal, would otherwise leave the quiet up to the
+  signal unconfirmed and that poll leaving buckets open.
 
 ### Deprecated
 
@@ -57,6 +57,17 @@
 
 ### Fixed
 
+- A window with `idle_close_seconds` could close every open bucket on a stream
+  that was still live. The idle rule compared the manager's clock with
+  `sqlflow_progress.last_arrival`, and that gap grows by itself whenever the
+  row stops being written: the write is failing, or the pipeline is held in a
+  sink's retries with messages still waiting at the source. Rows still
+  arriving then reopened the same buckets, which published a second time. The
+  rule now acts on what the row confirms, `last_commit - last_arrival`: a
+  commit made that long after the newest arrival. A row that has stopped moving
+  confirms nothing, and its buckets wait. A quiet stream now closes on the
+  first commit past the bound rather than the first poll, so the close can
+  trail `idle_close_seconds` by up to one `flush_interval_seconds`.
 - A pipeline with a state path and a source that has no offsets, such as a
   webhook, could discard a whole batch without an error. The `sqlflow_progress`
   write runs inside the batch's transaction, and a write DuckDB refused aborted

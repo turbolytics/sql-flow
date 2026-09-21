@@ -1168,9 +1168,19 @@ pipeline:
 arrives the watermark is the newest bucket start the table holds, less
 `grace_seconds`: a bucket closes once the stream has moved past it, so a
 replay and a live run produce the same rows. The newest bucket start is what
-the table holds, so a grace shorter than one bucket rounds up to one. After
-`idle_close_seconds` with nothing arriving, the watermark moves past the newest
-bucket and every open bucket closes. Wall clock appears nowhere in the close.
+the table holds, so a grace shorter than one bucket rounds up to one. Once the
+engine has confirmed `idle_close_seconds` with nothing arriving, the watermark
+moves past the newest bucket and every open bucket closes.
+
+The confirmation is the engine's own: a commit that late which still reports
+the same newest arrival. With nothing arriving those commits are idle ticks,
+one `flush_interval_seconds` apart, so the close can trail `idle_close_seconds`
+by up to one flush interval; lower it for a tighter idle close. The manager's
+clock appears nowhere in the rule. A pipeline that cannot commit, because a
+sink is retrying or its progress write is failing, confirms nothing, and its
+open buckets stay open rather than closing on a stream that may still be live.
+On shutdown the drain commits first, so the final poll sees the quiet up to the
+signal.
 
 **Late rows.** A row for a bucket below the watermark arrived after that
 bucket was published. `late_rows` is required, because the two policies are

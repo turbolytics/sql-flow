@@ -812,7 +812,7 @@
                   "idle_close_seconds": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "How long the stream may be quiet before every open bucket closes.\nAbsent means never: a stream that stops leaves its last bucket open."
+                    "description": "How long the stream may be quiet before every open bucket closes.\nAbsent means never: a stream that stops leaves its last bucket open.\nThe quiet is the engine's to confirm, by a commit that late, so the\nclose can trail this by up to one flush interval."
                   },
                   "late_rows": {
                     "type": "string",

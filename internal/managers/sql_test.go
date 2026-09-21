@@ -29,8 +29,8 @@ func TestManagerWindow_GeneratedSQL(t *testing.T) {
 		`SELECT epoch_us(max("bucket")) FROM "posts_per_minute"`,
 		d.newestSQL())
 	assert.Equal(t,
-		`SELECT epoch_us(last_arrival) FROM sqlflow_progress`,
-		lastArrivalSQL())
+		`SELECT epoch_us(last_commit) - epoch_us(last_arrival) FROM sqlflow_progress`,
+		confirmedQuietSQL())
 	assert.Equal(t,
 		`SELECT count(*)::BIGINT FROM "posts_per_minute" WHERE "bucket" + INTERVAL '60' SECOND <= TIMESTAMPTZ '2026-09-13 10:05:00+00:00'`,
 		d.countClosedSQL(at))

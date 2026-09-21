@@ -332,10 +332,22 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 // nextWatermark computes where the watermark stands, and whether it moved.
 //
 // While data arrives it is the newest bucket start less the grace: a bucket
-// closes once the stream has moved past its end by the grace. After the
-// idle bound with nothing arriving it is the newest bucket's end: a stream
-// that stops closes everything it has. It never moves backwards, so a delete
-// that lowers the newest bucket changes nothing.
+// closes once the stream has moved past its end by the grace. Once the engine
+// has confirmed the idle bound with nothing arriving it is the newest bucket's
+// end: a stream that stops closes everything it has. It never moves backwards,
+// so a delete that lowers the newest bucket changes nothing.
+//
+// Confirmed is the operative word. The idle rule acts on what the progress
+// row proves, a commit made the idle bound after the newest arrival, and not
+// on how old the row looks from here. A row that has stopped moving closes
+// nothing, which is the late direction: late leaves rows in the table for the
+// next poll, early splits a bucket and publishes it twice.
+//
+// The price is that a quiet stream closes on the first commit past the bound
+// rather than the first poll. With nothing arriving those commits are idle
+// ticks one flush interval apart, so the close can trail the bound by up to
+// that much. On shutdown the drain forces the write, so the final poll sees
+// the quiet up to the moment of the signal.
 func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPrevious bool) (time.Time, bool, error) {
 	newestMicros, hasRows, err := queryInt64(ctx, w.conn, w.decl.newestSQL())
 	if err != nil {
@@ -348,11 +360,13 @@ func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPr
 
 	candidate := newest.Add(-w.decl.Grace)
 	if w.decl.IdleClose > 0 {
-		arrivalMicros, arrived, err := queryInt64(ctx, w.conn, lastArrivalSQL())
+		// A row the engine has not written yet is NULL, which reads as no
+		// quiet confirmed at all.
+		quietMicros, _, err := queryInt64(ctx, w.conn, confirmedQuietSQL())
 		if err != nil {
-			return time.Time{}, false, fmt.Errorf("reading the last arrival: %w", err)
+			return time.Time{}, false, fmt.Errorf("reading the progress row: %w", err)
 		}
-		if arrived && w.now().Sub(time.UnixMicro(arrivalMicros)) >= w.decl.IdleClose {
+		if time.Duration(quietMicros)*time.Microsecond >= w.decl.IdleClose {
 			if end := newest.Add(w.decl.Size); end.After(candidate) {
 				candidate = end
 			}

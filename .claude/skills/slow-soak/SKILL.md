@@ -67,7 +67,7 @@ so no mapping is needed.
 | offset lag after the surge | Offsets are not committing per flush. `state_commit_count_commits_total` against the sample count. |
 | working set ended above the start | Something was held from the surge. Switch to the memory-soak skill, which decomposes it. |
 | state file grew through a silence | Empty commits are not empty. Check what the idle tick writes. |
-| windows still unpublished after the silence | The idleness branch of the window predicate did not fire. Read `sqlflow_progress` through /debug: a frozen `last_arrival` is the engine, a moving one is the predicate. |
+| windows still unpublished after the silence | The idleness branch of the window predicate did not fire. It fires when `last_commit - last_arrival` reaches `idle_close_seconds`. Read `sqlflow_progress` through /debug: a `last_commit` that has stopped moving is the engine, which is not committing idle ticks or is failing the write (`system.state.progress_write_failed`); a moving `last_arrival` means the stream is not quiet; a gap past the bound with buckets still open is the predicate. |
 | healthz not 200 | The commit clock stopped. That is a real stall, not a quiet stream. |
 | landed below produced | Messages were lost, which no other rule here would catch on its own. |
 

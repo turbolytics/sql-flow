@@ -467,6 +467,11 @@ func (t *Turbine) recordProgress(ctx context.Context, force bool) error {
 	// on every batch that carries a new message, which is every batch under
 	// load: a statement per commit. Elsewhere the interval governs.
 	owed := !t.progressReadersAbsent && !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
+	// The clock term is load-bearing for windows, not only housekeeping. An
+	// idle tick is due on it alone, and that write, a later last_commit
+	// against the same last_arrival, is the only thing that confirms to a
+	// window manager that the stream is quiet. Without it no window would
+	// ever close on idleness.
 	due := owed || elapsed >= t.progressEvery || elapsed < 0
 
 	// The snapshot above is exact and free. The table is not.
@@ -1173,10 +1178,11 @@ func (t *Turbine) commitState(ctx context.Context, forceProgress bool) error {
 	if t.offsets == nil || t.stateTx == nil {
 		if progressErr != nil {
 			// The write autocommitted by itself, so the batch is untouched
-			// and the pipeline carries on. What is at risk is last_arrival:
-			// frozen, it makes the idle-close branch read a live stream as
-			// quiet. It gets its own code so an alert can tell it from a
-			// state commit that failed, which means the pipeline is stopping.
+			// and the pipeline carries on. What stops is the idle close: it
+			// acts on what this row confirms, so while the write fails no
+			// window closes on idleness and a quiet stream's last buckets
+			// wait. It gets its own code so an alert can tell it from a state
+			// commit that failed, which means the pipeline is stopping.
 			t.recordError(ctx, errs.Wrap(errs.CodeProgressWriteFailed, progressErr,
 				"sqlflow_progress not written"), phaseStateCommit, "sqlflow_progress not written")
 		}
@@ -1247,8 +1253,8 @@ func (t *Turbine) SyncState(ctx context.Context) error {
 	// The drain forces the progress write. root.go calls this before the
 	// managers' final poll so that poll sees a current arrival clock, and a
 	// write that the throttle would skip -- or that failed moments before
-	// the signal -- would leave the poll evaluating a stale one and closing
-	// open buckets early on the way out.
+	// the signal -- would leave the quiet since then unconfirmed, and the
+	// poll would leave buckets open that a clean shutdown should close.
 	return t.commitState(ctx, true)
 }
 

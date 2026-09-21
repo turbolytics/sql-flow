@@ -80,9 +80,10 @@ const (
 	// CodeProgressWriteFailed is the liveness row failing to write on a
 	// pipeline with no state path, where the write autocommits by itself: the
 	// batch is not rolled back and the pipeline keeps running. It matters
-	// because a stale last_arrival makes the watermark predicate close open
-	// buckets early. With a state path the same failure aborts the batch's
-	// transaction and is reported as CodeStateCommitFailed instead.
+	// because the idle close acts on what this row confirms, so while the
+	// write fails no window closes on idleness. With a state path the same
+	// failure aborts the batch's transaction and is reported as
+	// CodeStateCommitFailed instead.
 	CodeProgressWriteFailed Code = "system.state.progress_write_failed"
 	CodeStateInternal       Code = "system.state.internal"
 
@@ -244,7 +245,7 @@ var registry = map[Code]Definition{
 	CodeProgressWriteFailed: {
 		CodeProgressWriteFailed,
 		"The liveness row could not be written on a pipeline with no state path, so last_arrival is stale.",
-		"The batch is unaffected: without a state path the write commits by itself. While this persists, a window with idle_close_seconds may close open buckets early. With a state path this failure is reported as system.state.commit_failed.",
+		"The batch is unaffected: without a state path the write commits by itself. While this persists, a window with idle_close_seconds does not close on idleness, because the engine cannot confirm the stream is quiet; its buckets wait. With a state path this failure is reported as system.state.commit_failed.",
 	},
 	CodeStateInternal: {
 		CodeStateInternal,
