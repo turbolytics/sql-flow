@@ -243,8 +243,9 @@ type Turbine struct {
 	// stamping it with the commit clock would place the arrival wherever the
 	// write landed. Guarded by lock.
 	arrivedAt time.Time
-	// writtenArrival is the arrival the table already holds, so a skipped
-	// write is retried on the next one rather than lost. Guarded by lock.
+	// writtenArrival is the arrival the table already holds, so a write that
+	// was skipped or that failed is retried on the next commit rather than
+	// lost. It advances only after Record returns nil. Guarded by lock.
 	writtenArrival time.Time
 	// commits counts successful state commits, for tests that wait on ticks.
 	// Guarded by lock.
@@ -254,10 +255,12 @@ type Turbine struct {
 	progressWrittenAt time.Time
 	progressEvery     time.Duration
 
-	// windowReadsProgress is whether any table declares a window, which is
-	// the only thing that reads sqlflow_progress.last_arrival. When nothing
-	// does, a new arrival need not force a write and the interval governs.
-	windowReadsProgress bool
+	// progressReadersAbsent says nothing reads sqlflow_progress.last_arrival,
+	// so a new arrival need not force a write ahead of the interval. It is
+	// an opt-out on purpose: the default keeps the liveness guarantee, so a
+	// Turbine built without the run command's wiring is correct and merely
+	// pays for a write, rather than silently closing windows early.
+	progressReadersAbsent bool
 
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
@@ -347,13 +350,17 @@ func WithProgressStore(s progressSaver) TurbineOption {
 	return func(t *Turbine) { t.progress = s }
 }
 
-// WithWindowReadsProgress declares that a tumbling window predicate reads
-// sqlflow_progress.last_arrival. Then a new arrival must reach the table on
-// the commit that sees it, because a last_arrival older than the truth
-// closes a window early. Without a window nothing reads the column and the
-// write interval alone keeps the table current.
-func WithWindowReadsProgress() TurbineOption {
-	return func(t *Turbine) { t.windowReadsProgress = true }
+// WithProgressReadersAbsent declares that nothing reads
+// sqlflow_progress.last_arrival, which today means the pipeline has no
+// tumbling window. A new arrival then need not force a write ahead of the
+// interval, and the per-commit UPDATE that costs is skipped.
+//
+// It is the opt-out rather than the opt-in because the two mistakes are not
+// equal. Forgetting it costs a statement per commit. Its inverse, had the
+// guarantee been opt-in, would be a window closing early on a stale
+// last_arrival, which splits buckets and emits partial rollups, silently.
+func WithProgressReadersAbsent() TurbineOption {
+	return func(t *Turbine) { t.progressReadersAbsent = true }
 }
 
 // WithProgressWriteInterval bounds how often the progress table is written.
@@ -402,11 +409,15 @@ const progressWriteInterval = time.Second
 // The table is written on every pipeline, including those where nothing reads
 // it: a table that exists but silently stops being maintained is a worse trap
 // than one that costs a little. What varies is only how often. A window is
-// owed the newest arrival on the commit that sees it; without one the
-// interval alone keeps the table current, so it is never more than
-// progressWriteInterval stale. A window can be managed without a state path,
-// so "has state" is not the test for whether anyone reads it -- "has window"
-// is.
+// owed the newest arrival on the commit that sees it. Where nothing reads the
+// column the interval governs instead, and the bound is the interval or the
+// spacing of commits, whichever is longer: recordProgress only runs from a
+// commit, and once a stream goes quiet those are idle ticks one flush
+// interval apart, 30 seconds by default. That is why the opt-out is scoped to
+// last_arrival having no reader rather than to the write being cheap.
+//
+// A window can be managed without a state path, so "has state" is not the
+// test for whether anyone reads it -- "has window" is.
 //
 // A batch since the last commit moves the arrival clock; an idle tick moves
 // the commit clock only.
@@ -441,15 +452,11 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	// back, which would stop the table being written at all.
 	elapsed := now.Sub(t.progressWrittenAt)
 	// Only a window reads last_arrival, so only a window is owed a write
-	// ahead of the interval. On a pipeline without one this term fired on
-	// every batch that carried a new message, which is every batch under
-	// load, and turned a once-a-second write into a statement per commit.
-	owed := t.windowReadsProgress && !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
+	// ahead of the interval. Where one is, this term fired on every batch
+	// that carried a new message, which is every batch under load, and
+	// turned a once-a-second write into a statement per commit.
+	owed := !t.progressReadersAbsent && !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
 	due := owed || elapsed >= t.progressEvery || elapsed < 0
-	if due {
-		t.progressWrittenAt = now
-		t.writtenArrival = t.arrivedAt
-	}
 
 	// The snapshot above is exact and free. The table is not: one UPDATE
 	// through ADBC measures about 112 microseconds, and a batch of 5000 at a
@@ -468,8 +475,16 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 		return
 	}
 	if err := t.progress.Record(ctx, p); err != nil {
+		// The write clocks are not advanced: a failed write leaves the
+		// arrival owed, so the next commit carries it rather than the table
+		// keeping a value it never got. Advancing them here dropped the
+		// arrival exactly as a skip would, which is the one thing owed
+		// exists to prevent.
 		t.logger.Warn("recording progress", zap.Error(err))
+		return
 	}
+	t.progressWrittenAt = now
+	t.writtenArrival = t.arrivedAt
 }
 
 // WithStateStats supplies the snapshot function backing the state gauges. It

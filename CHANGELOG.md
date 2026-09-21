@@ -23,6 +23,15 @@
   request, so a browser no longer sends a preflight before it. `client_id`
   reaches neither the SQL nor the cache key, and a dataset cannot declare a
   param of that name. The request log's `token` field is now `client`.
+- A pipeline with no tumbling window no longer writes `sqlflow_progress` on
+  every commit. The row is still maintained on the write interval, so
+  `last_arrival` is at most one interval, or one idle tick, behind; the
+  tumbling window predicate is its only reader and pipelines that have one
+  are unchanged. The per-commit `UPDATE` cost about a fifth of the throughput
+  at batch 5000 and more at smaller batches.
+- A failed `sqlflow_progress` write no longer counts as a successful one. The
+  write clocks advance only after the statement succeeds, so the arrival it
+  carried is retried on the next commit instead of being dropped.
 
 ### Deprecated
 

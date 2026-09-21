@@ -233,15 +233,9 @@ func TestStateDurability_ProgressNeverReportsAnArrivalOlderThanTheNewest(t *test
 
 	// An interval far longer than the test, so nothing after the first
 	// write is ever due on the clock alone.
-	// The guarantee under test belongs to the window predicate, which is
-	// last_arrival's only reader, so the pipeline declares a window. Without
-	// one nothing reads the column and there is no reader to close early;
-	// that case is pinned by
-	// TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForAWindow.
 	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 20*time.Millisecond,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithProgressStore(rec), WithProgressWriteInterval(time.Hour),
-		WithWindowReadsProgress())
+		WithProgressStore(rec), WithProgressWriteInterval(time.Hour))
 	done := make(chan struct{})
 	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
 
@@ -305,52 +299,61 @@ func TestCoreConsumeLoop_ProgressRecordsTheLastError(t *testing.T) {
 	assert.That(t, !p.LastError.After(time.Now().UTC()))
 }
 
-// Only a tumbling window reads sqlflow_progress.last_arrival, so only a
-// pipeline that has one is owed a write ahead of the interval. Without a
-// window a fresh arrival must not force a statement onto the commit path:
-// that is what turned a once-a-second write into one per batch, and it cost
-// about a fifth of the throughput at batch 5000.
-func TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForAWindow(t *testing.T) {
+// last_arrival has one reader, the tumbling window predicate, and a pipeline
+// without a window has none. The arrival then need not force a write ahead of
+// the interval, which is what turned a once-a-second UPDATE into one per
+// commit and cost about a fifth of the throughput at batch 5000.
+//
+// Both halves matter and neither is "no writes ever": the default must carry
+// every arrival, and the opt-out must still keep the table current on the
+// interval. A long interval would prove only the first, so this one is short
+// enough that the loop crosses it.
+func TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForItsReader(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 
-	// A long interval, so the interval itself can never be what makes a
-	// write due. The first call is always due because the write clock
-	// starts at zero; everything after it is owed or nothing.
-	newTurbine := func(windowed bool) (*Turbine, *progressRecorder) {
+	const interval = 60 * time.Millisecond
+
+	run := func(t *testing.T, optOut bool) *progressRecorder {
+		t.Helper()
 		rec := &progressRecorder{}
-		opts := []TurbineOption{WithProgressStore(rec), WithProgressWriteInterval(time.Hour)}
-		if windowed {
-			opts = append(opts, WithWindowReadsProgress())
+		// A paced source, so arrivals land across several commits rather
+		// than all inside one: the whole question is what a *new* arrival
+		// does to a write that the interval has not yet made due.
+		src := newPacedSource(6, 10*time.Millisecond)
+		opts := []TurbineOption{WithProgressStore(rec), WithProgressWriteInterval(interval)}
+		if optOut {
+			opts = append(opts, WithProgressReadersAbsent())
 		}
-		tb := NewTurbine(newBlockingSource(messages(1)), &fakeHandler{}, &fakeSink{},
-			1000, 30*time.Millisecond, &sync.Mutex{}, PipelineErrorPolicies{}, opts...)
-		return tb, rec
+		tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1, 5*time.Millisecond,
+			&sync.Mutex{}, PipelineErrorPolicies{}, opts...)
+		done := make(chan struct{})
+		go func() { _, _ = tb.ConsumeLoop(context.Background(), 6); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the consume loop did not finish")
+		}
+		return rec
 	}
 
-	for _, tc := range []struct {
-		name     string
-		windowed bool
-		want     int
-	}{
-		{"a window is owed the newest arrival", true, 2},
-		{"without one the interval governs", false, 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			tb, rec := newTurbine(tc.windowed)
+	t.Run("a reader is owed every arrival", func(t *testing.T) {
+		rec := run(t, false)
+		last, n := rec.last()
+		// Six arrivals paced past the interval: the table must hold the
+		// newest, and must have been written more than the interval alone
+		// would account for.
+		assert.That(t, n > 2)
+		assert.That(t, !last.LastArrival.IsZero())
+	})
 
-			tb.arrivedAt = time.Now().UTC()
-			tb.recordProgress(ctx) // always due: the write clock starts at zero
-			if _, n := rec.last(); n != 1 {
-				t.Fatalf("first commit should always write, got %d records", n)
-			}
-
-			// A newer arrival, well inside the write interval.
-			tb.arrivedAt = tb.arrivedAt.Add(time.Millisecond)
-			tb.recordProgress(ctx)
-
-			_, n := rec.last()
-			assert.Equal(t, tc.want, n)
-		})
-	}
+	t.Run("without one the interval governs", func(t *testing.T) {
+		rec := run(t, true)
+		_, n := rec.last()
+		assert.That(t, n >= 1) // still maintained, never abandoned
+		// The arrivals no longer force a write, so the count is bounded by
+		// the interval rather than by the number of commits.
+		if n > 3 {
+			t.Fatalf("opting out still wrote %d times: the arrival is still forcing it", n)
+		}
+	})
 }

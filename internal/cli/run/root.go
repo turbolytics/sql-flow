@@ -274,9 +274,12 @@ func NewCommand() *cobra.Command {
 				storedMarks *core.Marks
 			)
 			// Only a window reads sqlflow_progress.last_arrival, so only a
-			// window is owed that column ahead of the write interval.
-			if anyWindow(conf) {
-				turbineOpts = append(turbineOpts, core.WithWindowReadsProgress())
+			// window is owed that column ahead of the write interval. The
+			// default keeps the guarantee; this opts out of it, so losing
+			// this wiring costs a statement per commit rather than closing
+			// windows early.
+			if !anyWindow(conf) {
+				turbineOpts = append(turbineOpts, core.WithProgressReadersAbsent())
 			}
 			if statePath != "" {
 				// Both calls are returned as-is. They already carry a code, and
