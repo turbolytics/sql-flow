@@ -697,6 +697,14 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		}
 		t.metrics.SourceReadLatency.Record(ctx, readLatency.Seconds())
 		t.metrics.MessageCount.Add(ctx, int64(len(msgBatch)))
+		// Over the same messages message_count just counted, received rather
+		// than processed, so bytes over count is a true average. One integer
+		// add per message and one record per batch.
+		var payload int64
+		for i := range msgBatch {
+			payload += int64(len(msgBatch[i].Value))
+		}
+		t.metrics.MessagePayloadBytes.Add(ctx, payload)
 		// Once per batch, not per message: the cost is one gauge record
 		// against a whole batch, and a reader asking "is it still doing
 		// anything" cannot tell the two apart.

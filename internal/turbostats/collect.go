@@ -74,14 +74,15 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 func pipelineSection(ctx context.Context, flat map[string]int64, dim *dimensional,
 	sentAt time.Time, src *PipelineSource) (*Pipeline, error) {
 	p := &Pipeline{
-		MessageCount:     flat["message_count"],
-		HandlerRowsRead:  flat["handler_rows_read"],
-		ErrorCount:       flat["pipeline_errors"],
-		SinkFlushCount:   flat["pipeline_flushes"],
-		SinkRowsAccepted: flat["pipeline_rows_accepted"],
-		SinkRowsWritten:  flat["pipeline_rows_written"],
-		StateCommitCount: flat["pipeline_commits"],
-		LastMessageAt:    unixTime(flat["pipeline_last_message_timestamp"]),
+		MessageCount:        flat["message_count"],
+		MessagePayloadBytes: int64Ptr(flat["message_payload_bytes"]),
+		HandlerRowsRead:     flat["handler_rows_read"],
+		ErrorCount:          flat["pipeline_errors"],
+		SinkFlushCount:      flat["pipeline_flushes"],
+		SinkRowsAccepted:    flat["pipeline_rows_accepted"],
+		SinkRowsWritten:     flat["pipeline_rows_written"],
+		StateCommitCount:    flat["pipeline_commits"],
+		LastMessageAt:       unixTime(flat["pipeline_last_message_timestamp"]),
 		// Always sent, zero included: a pipeline always has a sink.
 		SinkRetryCount: &dim.sinkRetries,
 	}
@@ -253,6 +254,9 @@ type dimensional struct {
 	closeLagMax       int64
 	newestStartNewest int64
 }
+
+// int64Ptr takes a copy, so a field never aliases a map entry.
+func int64Ptr(v int64) *int64 { return &v }
 
 func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
 	switch name {

@@ -321,6 +321,36 @@ func TestWire_AnOlderEnginesRetriesDecodeAsUnknown(t *testing.T) {
 	assert.That(t, p.SinkRetryCount == nil)
 }
 
+// --- payload bytes -----------------------------------------------------
+
+// Payload bytes travel with the message count, and zero is sent.
+func TestCollect_CarriesPayloadBytes(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	m.MessageCount.Add(context.Background(), 4)
+	m.MessagePayloadBytes.Add(context.Background(), 4096)
+
+	p := pipelineOf(t, reader)
+	assert.Equal(t, int64(4), p.MessageCount)
+	assert.Equal(t, int64(4096), *p.MessagePayloadBytes)
+
+	reader, _, _ = provider(t)
+	quiet, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	raw, err := json.Marshal(quiet)
+	assert.NoError(t, err)
+	assert.That(t, strings.Contains(string(raw), `"message_payload_bytes":0`))
+}
+
+// An engine that predates message_payload_bytes reads as unknown, not as a
+// pipeline that received nothing.
+func TestWire_AnOlderEnginesPayloadBytesDecodeAsUnknown(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	var p wire.Pipeline
+	assert.NoError(t, json.Unmarshal([]byte(`{"message_count": 12}`), &p))
+	assert.That(t, p.MessagePayloadBytes == nil)
+}
+
 // --- shape and size ----------------------------------------------------
 
 // No field's presence or repetition depends on data cardinality.
@@ -382,7 +412,7 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 		},
 		Process: wire.Process{StartedAt: at, RSSBytes: big, Goroutines: n},
 		Pipeline: &wire.Pipeline{
-			MessageCount: big, HandlerRowsRead: big, ErrorCount: big,
+			MessageCount: big, MessagePayloadBytes: &big, HandlerRowsRead: big, ErrorCount: big,
 			SinkFlushCount: big, SinkRowsAccepted: big, SinkRowsWritten: big,
 			StateCommitCount: big, StateDBSizeBytes: &big, LastMessageAt: &at,
 			SinkRetryCount: &big, LagMaxMessages: &big, LagTotalMessages: &big,
