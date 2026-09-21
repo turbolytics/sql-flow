@@ -106,16 +106,14 @@ func pipelineSection(ctx context.Context, flat map[string]int64, dim *dimensiona
 			p.LateRowsReemitted = &dim.lateReemitted
 		}
 	}
-	if dim.timesSeen {
-		// Neither is clamped to hide a fault. Below zero, the next close is
-		// not yet due, which is a window keeping up and reads as no lag. Rows
-		// stamped in the future are the other field's to report, and below
-		// zero there means they are not.
-		lag := nonNegative(sentAt.Unix() - dim.dueOldest)
-		ahead := nonNegative(dim.newestStartNewest - sentAt.Unix())
+	if dim.closeLagSeen {
+		lag := dim.closeLagMax
 		p.WindowLagSeconds = &lag
-		p.WindowAheadSeconds = &ahead
 	}
+	// A timestamp, not an age. Whether rows are stamped in the future is a
+	// comparison with a clock someone trusts, and on a gateway with no
+	// real-time clock this host's is not it.
+	p.WindowNewestBucketAt = unixTime(dim.newestStartNewest)
 	if src.Stats != nil {
 		st, err := src.Stats(ctx)
 		if err != nil {
@@ -247,21 +245,13 @@ type dimensional struct {
 	lateUnknownPolicy bool
 	windowClosed      int64
 
-	// The most overdue close and the newest bucket across windows. Seen
-	// flags rather than zeros, because zero here is the Unix epoch and an
-	// unset value would read as fifty years of lag.
-	timesSeen         bool
-	dueSeen           bool
-	dueOldest         int64
-	startSeen         bool
+	// The most behind window's close lag, with a seen flag because zero lag
+	// is a reading. And the newest bucket across windows, a Unix second that
+	// unixTime reads as absent while it is zero -- the rule every timestamp
+	// in the bundle follows, so an unset one never reports 1970.
+	closeLagSeen      bool
+	closeLagMax       int64
 	newestStartNewest int64
-}
-
-func nonNegative(v int64) int64 {
-	if v < 0 {
-		return 0
-	}
-	return v
 }
 
 func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
@@ -294,20 +284,17 @@ func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
 			// either count without making that count false.
 			d.lateUnknownPolicy = true
 		}
-	case "window_close_due_seconds":
-		// The earliest due close is the most overdue window.
+	case "window_close_lag_seconds":
+		// Already a duration in event time; the most behind window wins.
 		d.windowSeen = true
-		if !d.dueSeen || v < d.dueOldest {
-			d.dueOldest = v
+		if !d.closeLagSeen || v > d.closeLagMax {
+			d.closeLagMax = v
 		}
-		d.dueSeen = true
-		d.timesSeen = d.dueSeen && d.startSeen
+		d.closeLagSeen = true
 	case "window_newest_bucket_start_seconds":
 		d.windowSeen = true
-		if !d.startSeen || v > d.newestStartNewest {
+		if v > d.newestStartNewest {
 			d.newestStartNewest = v
 		}
-		d.startSeen = true
-		d.timesSeen = d.dueSeen && d.startSeen
 	}
 }

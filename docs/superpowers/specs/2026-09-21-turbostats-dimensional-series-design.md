@@ -2,7 +2,8 @@
 
 This spec amends `2026-09-19-turbostats-contract-amendment-design.md`. It adds
 ten fields to the `pipeline` section, summaries of series the engine records
-under attributes, and two window gauges the bundle needs to read them. It changes no existing field, so it
+under attributes, and three gauges the bundle needs to read them: when lag
+was observed, and each window's close lag and newest bucket. It changes no existing field, so it
 is additive and stays v1.
 
 It also retires the 1 KiB bundle bound as a design constraint. Measurement
@@ -72,7 +73,7 @@ mistake the original argument warned about.
 | Which aggregate | `max` and `sum` for lag, named in the field. | One of them: `max` alone hides a uniform backlog, `sum` alone hides one stuck partition. |
 | Where it is computed | `Collect`, from the points the reader already returns. | The recording site: the per-message path is 22 ns/op and a second instrument is a cost the operator never asked for. |
 | Lag as a gauge | Allowed, and the one exception stated. | Deriving it from counters: the high watermark is the broker's, and the engine holds no counter for it. |
-| Bundle size | A 4 KiB ceiling, as a smoke alarm against accidental bloat. | The old 1 KiB bound. It was believed to protect storage. It does not — see below. A bound that shapes the contract should be measured first. |
+| Bundle size | A realistic run bundle stays under 1 KiB, tested, because a constrained link pays for it every interval. A 4 KiB ceiling on every field at its widest guards the shape. | A 4 KiB ceiling alone: a bundle could grow fourfold on a metered link and pass CI. The old 1 KiB bound's storage rationale was wrong -- see below -- but the link rationale is right. |
 | Histograms | Still out, and for their own reasons. | Folding them in here: distributions are a different problem from dimensions, and mixing them makes one amendment nobody can review. |
 
 ## New fields
@@ -93,11 +94,21 @@ healthiest value when the pipeline is in trouble.**
   stops receiving -- cut off from its brokers, fenced out of its group, stuck
   in a rebalance -- keeps its last reading, usually zero, while the backlog
   grows.
-- **Lag covers only the partitions this instance holds.** The source reports
-  each rebalance, and a partition that moves away leaves the lag table. A
-  synchronous gauge never forgets an attribute set, so the partition used to
-  stay at the lag it had when it left, and a fleet summing lag counted it on
-  two instances.
+- **Lag covers the partitions this instance holds or last held.** Three
+  events take a partition away, and they are different facts:
+  - A **rebalance revocation** means another member holds it. It leaves the
+    lag table: a synchronous gauge never forgets an attribute set, so it used
+    to stay at its last lag here, and fleet sums counted it on two instances.
+  - **Closing** leaves the group, and leaving revokes every partition. That is
+    this consumer stopping, not another taking over, so the lag stays for the
+    exit bundle. Treated as a rebalance, it emptied the table first, and every
+    exit reported lag 0 over 0 partitions.
+  - A **loss** is this process's session failing: a broker outage, a fence.
+    Who holds the partition is unknown, so its lag stays, frozen at the last
+    reading and dated by `lag_observed_at`, until the next assignment says
+    whether it came back. Treated as a rebalance, an instance cut off from its
+    broker reported the same document as an idle standby.
+
 - **The three window counters travel together, from startup.** The window
   manager records a zero at construction, so a windowed pipeline reports them
   before its first close. `late_rows_dropped` counts data the engine deleted,
@@ -105,8 +116,9 @@ healthiest value when the pipeline is in trouble.**
   drops rows". It counts only after the close that dropped the rows commits;
   counted before, a close that lost a write conflict rolled the delete back,
   kept the count, and counted the same rows again next poll.
-- **The two window times travel together.** Both are present once any window
-  has both closed and held rows.
+- **Each window time is present once measured.** `window_lag_seconds` after a
+  window's first poll, including the first after a restart;
+  `window_newest_bucket_at` once any window has held a row.
 - **`sink_retry_count` is always sent by an engine that has it, and absent
   from one that does not.** A pointer, so an older engine in a mixed fleet
   reads as unknown rather than decoding to zero retries.
@@ -121,8 +133,8 @@ healthiest value when the pipeline is in trouble.**
 | `late_rows_dropped` | int64 | `window_late_rows{policy=drop}` | sum over `window` |
 | `late_rows_reemitted` | int64 | `window_late_rows{policy=reemit}` | sum over `window` |
 | `window_closed_count` | int64 | `window_closed` | sum over `window` |
-| `window_lag_seconds` | int64 | `window_close_due_seconds` | max over windows of `sent_at − due`, floored at 0 |
-| `window_ahead_seconds` | int64 | `window_newest_bucket_start_seconds` | max over windows of `newest − sent_at`, floored at 0 |
+| `window_lag_seconds` | int64 | `window_close_lag_seconds` | max over windows |
+| `window_newest_bucket_at` | time | `window_newest_bucket_start_seconds` | latest over windows, as event time |
 
 A policy with no field of its own leaves both late counts absent. Adding it to
 neither would report the known counts as complete while some rows went
@@ -134,34 +146,47 @@ one stuck partition among many.
 
 ### The window times
 
-`window_lag_seconds` is how overdue the most overdue window's next close is.
-The manager records `window_close_due_seconds` as `watermark + size + grace`
-whenever a close commits: the bucket after the watermark closes once rows
-arrive a grace period past its end, so at the wall clock's pace that is when
-the next close is due. The bundle subtracts it from `sent_at`.
+`window_lag_seconds` is how far the most behind window's closes trail the data
+it holds, in event seconds. Each poll computes where the watermark should be,
+given the rows the window holds; the manager records the candidate minus the
+watermark that actually committed as `window_close_lag_seconds`. That is zero
+whenever a close commits, zero after an idle close has closed everything, and
+grows while rows arrive and closes fail. After a restart the first poll
+measures from the stored watermark, and a window that has never closed
+measures from the oldest bucket's end, where its first close was due.
 
-Two readings were tried and rejected, and the reasons are the design:
+No clock enters it. Three readings were tried and rejected, each by a review,
+and the reasons are the design:
 
-- **The watermark's age**, as the first version of this spec had it. A
-  watermark trails the newest bucket by size and grace by design, so a healthy
-  hourly window read 3,600 to 7,200 seconds behind while fully caught up, and
-  a one-minute window stuck for half an hour hid behind it.
-- **The newest bucket's end.** Zero while rows arrive, whatever the size --
-  but also zero while closes have stopped committing, because rows keep
+- **The watermark's age.** It trails the newest bucket by size and grace by
+  design, so a healthy hourly window read an hour or two behind while fully
+  caught up, and a one-minute window stuck for half an hour hid behind it.
+- **The newest bucket's end against the wall clock.** Zero while rows arrive
+  -- including while closes have stopped committing, because rows keep
   arriving. The window looked healthy while nothing it held was published.
+- **Wall time past the next due close.** Right for a stalled close, wrong for
+  a sparse stream: after an idle close it grew for as long as the stream was
+  quiet, so a store-and-forward device looked stalled all the time. It was
+  only recorded on a commit, so a process restarted into a stall never
+  reported one. And it subtracted event time from this host's clock, which on
+  a gateway with no real-time clock is the thing most likely to be wrong.
 
-Measured from the close that is due, the lag is zero while closes keep up and
-grows when either the stream or the close stops.
+A stream going quiet is the source's to report, as `last_message_at` does. The
+window reports whether it keeps up with the data it has.
 
-`window_ahead_seconds` is how far the newest bucket starts beyond now. It is
-recorded on every poll that finds rows, even one whose close fails, and it is
-not clamped as a clock artefact. A watermark is event time from the data: one
-device with a clock a day fast moves it a day ahead, and every correctly-timed
-row after that is late and, under `late_rows: drop`, deleted.
+`window_newest_bucket_at` is the start of the newest bucket any window holds,
+as a timestamp from the data. Ahead of a trusted clock means rows are stamped
+in the future: one device with a clock a day fast moves the watermark past
+every correctly-timed row, and under `late_rows: drop` each is then late and
+deleted. The engine does not compute the age itself, because this host's clock
+is not the one to trust on the fleets that need this most. A receiver compares
+it with its own clock at receipt. The gauge is recorded on every poll that
+finds rows, even one whose close fails, and it keeps its last value after an
+idle close empties the table, so a future bucket that closed stays visible.
 
-`lag_*` and the window times are levels, not counters. The high watermark and
-the wall clock belong to something other than this process, so no counter
-derives them. Every other number in the bundle stays a counter the receiver
+`lag_*` and `window_lag_seconds` are levels, not counters. The high
+watermark and the window's own data belong to something other than a counter
+this process keeps, so no counter derives them. Every other number in the bundle stays a counter the receiver
 subtracts.
 
 ## The document
@@ -187,9 +212,9 @@ subtracts.
     "late_rows_reemitted": 14,
     "window_closed_count": 288,
 
-    // Present together once a window has closed and held rows.
+    // Present once measured. The newest bucket is event time.
     "window_lag_seconds": 0,
-    "window_ahead_seconds": 0
+    "window_newest_bucket_at": "2026-09-21T09:00:00Z"
   }
 }
 ```
@@ -205,8 +230,8 @@ storage. Measured against the running control plane, it does not:
 | `run` bundle, websocket source, no windows | 721 |
 | Average raw JSON across 3,576 stored bundles | 485 |
 | Average **stored** size of the same `doc` column | **588** |
-| `run` bundle with these fields: 32 partitions, windows, a retrying sink | 868 |
-| Every field of both sections at its widest value | 1,803 |
+| `run` bundle with these fields: 32 partitions, windows, a retrying sink | 885 |
+| Every field of both sections at its widest value | 1,816 |
 
 The last two are measured by tests, not estimated. The 32-partition bundle is
 no wider than a one-partition bundle, which is the shape invariant doing its
@@ -236,16 +261,18 @@ Three consequences, none of which belong in this contract:
   changes nothing about the row.
 
 There is one reader for whom bytes per heartbeat is the real cost, and it is
-not the control plane: an instance on a metered or constrained link. At 868
-bytes the default 60s interval costs about 1.2 MB a day and a 10s interval
-about 7.5 MB, before HTTP and TLS overhead of the same order. That is the
+not the control plane: an instance on a metered or constrained link. At 885
+bytes the default 60s interval costs about 1.3 MB a day and a 10s interval
+about 7.6 MB, before HTTP and TLS overhead of the same order. That is the
 strongest argument for the shape invariant below, stronger than storage ever
 was: a map keyed by partition would have put the broker's partition count on
 that link every interval. It also makes compressing the *request* worthwhile
 where compressing the row was not, since a JSON document repeats its keys.
 The interval remains the lever that matters most.
 
-So the contract keeps a ceiling only to catch accidents. 4 KiB, tested. The
+So the realistic run bundle is held under 1 KiB by a test, and growing past
+it is a decision rather than a drift found on a bill. A 4 KiB ceiling on every
+field at its widest guards the shape. The
 invariant that matters is not a byte count but a shape: **no field's presence
 or repetition depends on data cardinality.** A reviewer can check that by
 reading the struct, which a byte count cannot.
@@ -258,7 +285,8 @@ reading the struct, which a byte count cannot.
 - A test that the bundle struct has no map, slice, or repeated field whose
   length depends on topic, partition, window, or sink count. This is the
   invariant; the byte ceiling is the smoke alarm.
-- A test that a full bundle with every new field stays under 4 KiB.
+- A test that a realistic run bundle stays under 1 KiB, and one that every
+  field at its widest stays under 4 KiB.
 - A test that a pipeline with no Kafka source omits all three `lag_*` fields,
   because absent lag and zero lag are different facts.
 - A mutation check on the rule: change `max` to `sum` in the lag aggregate and
@@ -269,10 +297,16 @@ reading the struct, which a byte count cannot.
   away, and a rolled-back close.
 - A reproduction of the rebalance against a real broker: two consumers in one
   group, and the first must stop reporting what the second took.
-- A mutation per rule. Seventeen mutations, each failing the test written for
-  it, including the three the review found surviving: the clamp on a
-  future-dated watermark, late rows counting as a window, and the guard that
-  keeps an unset reading from subtracting the epoch.
+- Reproductions against a real broker: a rebalance, where the first consumer
+  must stop reporting what the second took; a close, which must keep the lag;
+  and an outage, made by pausing the broker past a short session timeout,
+  which must keep it too. The close and the outage both failed before the fix.
+- A release test that sends SIGTERM to a Kafka pipeline and reads its exit
+  bundle. Against the image before the fix it reported 0 partitions after
+  consuming 200 messages.
+- A mutation per rule. Twenty-three, and twenty-two fail the test written for
+  them. The survivor is equivalent: it removed a guard that `unixTime` already
+  enforced, so the guard went instead.
 - The memory soak, because this touches the collect path of a process that
   runs for weeks. It ran, candidate beside baseline, and both plateau in the
   same band. A soak sees about a thousand collects and cannot resolve a slow

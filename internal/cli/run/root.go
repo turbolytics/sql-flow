@@ -465,7 +465,8 @@ func NewCommand() *cobra.Command {
 			// holds, so a partition taken away in a rebalance stops being
 			// reported here while another instance reports it too.
 			if owner, ok := src.(core.PartitionOwner); ok {
-				owner.OnPartitions(pipelineMetrics.Lag.Assigned, pipelineMetrics.Lag.Released)
+				owner.OnPartitions(pipelineMetrics.Lag.Assigned,
+					pipelineMetrics.Lag.Released, pipelineMetrics.Lag.Lost)
 			}
 
 			// Resume where the durable state left off. The state database is

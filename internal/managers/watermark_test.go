@@ -236,12 +236,8 @@ func TestManagerWindow_LateRowsAreCountedOnlyWhenTheCloseCommits(t *testing.T) {
 }
 
 // The newest bucket is reported on every poll that finds rows, including one
-// whose close fails; the close that is due moves only when a close commits.
-//
-// Rows stamped in the future are therefore visible the moment they arrive,
-// even while the sink the close publishes to is down. And a close that keeps
-// failing leaves its due time where it was, so the bundle's window lag grows
-// rather than reading healthy while nothing is published.
+// whose close fails. Rows stamped in the future are therefore visible the
+// moment they arrive, even while the sink the close publishes to is down.
 func TestManagerWindow_TheNewestBucketIsReportedEvenWhenTheCloseFails(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
@@ -250,22 +246,137 @@ func TestManagerWindow_TheNewestBucketIsReportedEvenWhenTheCloseFails(t *testing
 	now := live(d, t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	decl := testDecl()
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
-	failing := newTestWatermark(t, d, decl, &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
 	assert.Error(t, failing.Poll(ctx))
-
 	assert.Equal(t, bucket(2).Unix(), gaugeValue(t, reader, "window_newest_bucket_start_seconds"))
-	_, due := metricValue(t, reader, "window_close_due_seconds")
-	assert.That(t, !due)
+}
 
-	ok := newTestWatermark(t, d, decl, &recordingSink{}, now, WithMeterProvider(mp))
+// closeLag runs a window whose closes stall while rows keep arriving: one
+// close commits, two more buckets arrive, and the next close fails. The host
+// clock is offset from event time by skew, and every clock the host keeps --
+// the manager's and the arrival it records -- moves with it.
+func closeLag(t *testing.T, skew time.Duration) int64 {
+	t.Helper()
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	arrivedAt(t, d.pipeline, t0.Add(skew))
+	clock := func() time.Time { return t0.Add(skew + time.Second) }
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	ok := newTestWatermark(t, d, testDecl(), &recordingSink{}, clock, WithMeterProvider(mp))
 	assert.NoError(t, ok.Poll(ctx))
-	watermark := gaugeValue(t, reader, "window_watermark_seconds")
-	assert.Equal(t, watermark+int64((decl.Size+decl.Grace).Seconds()),
-		gaugeValue(t, reader, "window_close_due_seconds"))
+	assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
+
+	insertBucket(t, d.pipeline, 3, "NYC", 1)
+	insertBucket(t, d.pipeline, 4, "NYC", 1)
+	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, clock, WithMeterProvider(mp))
+	assert.Error(t, failing.Poll(ctx))
+	return gaugeValue(t, reader, "window_close_lag_seconds")
+}
+
+// Closes that stall while rows keep arriving show as lag, in event time.
+//
+// The watermark committed at bucket 1; bucket 4 has arrived, so it should be
+// at bucket 3. Two minutes of closes are overdue.
+func TestManagerWindow_AStalledCloseIsLagInEventTime(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	assert.Equal(t, int64(120), closeLag(t, 0))
+}
+
+// Close lag is the same on a host whose clock is a day wrong.
+//
+// It compares the window's data with its own watermark, both event time, so
+// a gateway that booted without a real-time clock reports it correctly. The
+// earlier readings subtracted event time from this host's clock and did not.
+func TestManagerWindow_CloseLagIgnoresTheHostClock(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	assert.Equal(t, closeLag(t, 0), closeLag(t, 24*time.Hour))
+}
+
+// A stall that began before a restart is reported by the first poll after
+// it, with no close needed.
+//
+// Lag used to be recorded only when a close committed. A process restarted
+// into a stalled window never committed one, so the stall never appeared. The
+// stored watermark says where the window is, and the rows say where it should
+// be.
+func TestManagerWindow_AStallIsReportedByTheFirstPollAfterARestart(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	now := live(d, t)
+
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	before := newTestWatermark(t, d, testDecl(), &recordingSink{}, now)
+	assert.NoError(t, before.Poll(ctx))
+	insertBucket(t, d.pipeline, 4, "NYC", 1)
+
+	// A new process: fresh metrics, the same database, a sink that is down.
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	after := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	assert.Error(t, after.Poll(ctx))
+	assert.Equal(t, int64(120), gaugeValue(t, reader, "window_close_lag_seconds"))
+}
+
+// A window whose sink was down from the start reports lag before its first
+// close, measured from when that close was due.
+func TestManagerWindow_ANeverClosedWindowReportsLag(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	now := live(d, t)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	// Bucket 0 was due to close once the watermark reached its end, bucket 1;
+	// bucket 4 has arrived, so the watermark should be at bucket 3.
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	insertBucket(t, d.pipeline, 4, "NYC", 1)
+	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	assert.Error(t, failing.Poll(ctx))
+	assert.Equal(t, int64(120), gaugeValue(t, reader, "window_close_lag_seconds"))
+}
+
+// A sparse stream is not a stalled window.
+//
+// After an idle close has closed everything, nothing is overdue however long
+// the stream stays quiet. Measured against the wall clock, the window read an
+// hour behind an hour later, so a store-and-forward device that reports once
+// an hour looked stalled all the time.
+func TestManagerWindow_AQuietStreamAfterAnIdleCloseIsNotLag(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	arrivedAt(t, d.pipeline, t0)
+	clock := t0.Add(time.Second)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	w := newTestWatermark(t, d, testDecl(), &recordingSink{}, func() time.Time { return clock }, WithMeterProvider(mp))
+
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	insertBucket(t, d.pipeline, 1, "SF", 1)
+	assert.NoError(t, w.Poll(ctx))
+
+	clock = t0.Add(5 * time.Minute) // the idle close
+	assert.NoError(t, w.Poll(ctx))
+	assert.Equal(t, int64(0), countRows(t, d.pipeline, testTable))
+	assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
+
+	clock = t0.Add(time.Hour) // an hour of silence
+	assert.NoError(t, w.Poll(ctx))
+	assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
 }
 
 // A window reports that it exists before its first close.

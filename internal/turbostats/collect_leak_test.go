@@ -63,7 +63,7 @@ func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 			attribute.String("window", name), attribute.String("policy", string(managers.LateReemit))))
 		window.Closed.Add(ctx, 1, w)
 		window.NewestStart.Record(ctx, 1757570000, w)
-		window.CloseDue.Record(ctx, 1757577200, w)
+		window.CloseLag.Record(ctx, 0, w)
 	}
 	failed := errors.New("refused")
 	sinks.RetryCounter(mp, "postgres")(1, failed)

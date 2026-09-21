@@ -205,13 +205,16 @@ func TestCollect_CarriesTheStaticFactsAndTheRuntime(t *testing.T) {
 	assert.Equal(t, 0, b.SentAt.Nanosecond())
 }
 
-// A realistic run bundle, through the real collector: a Kafka pipeline with
-// windows and a retrying sink, a year into the Bluesky firehose.
+// A realistic run bundle, through the real collector, stays under 1 KiB: a
+// Kafka pipeline with windows and a retrying sink, a year into the Bluesky
+// firehose.
 //
-// The ceiling is 4 KiB. It was 1 KiB until measurement showed that bound
-// protected nothing, and this test logs the size so the number the contract's
-// spec only estimated is one anybody can read.
-func TestCollect_ARunBundleStaysUnderTheCeiling(t *testing.T) {
+// This is the guard a constrained link needs. The bundle is paid for every
+// interval, and on a metered or satellite link its size is the cost of
+// telemetry. It measures 885 bytes. A contract-wide 4 KiB ceiling let this
+// grow fourfold without failing anything; at 1 KiB, growing past it is a
+// decision someone makes, not a drift someone finds on a bill.
+func TestCollect_ARealisticRunBundleStaysUnderOneKiB(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -229,7 +232,7 @@ func TestCollect_ARunBundleStaysUnderTheCeiling(t *testing.T) {
 		attribute.String("window", "posts_by_lang"), attribute.String("policy", "reemit")))
 	window.Closed.Add(ctx, 1842033, w)
 	window.NewestStart.Record(ctx, 1757570000, w)
-	window.CloseDue.Record(ctx, 1757577200, w)
+	window.CloseLag.Record(ctx, 0, w)
 	sinks.RetryCounter(mp, "postgres")(1, errors.New("refused"))
 	// Nine-digit totals, the size a year of the Bluesky firehose reaches.
 	m.MessageCount.Add(ctx, 184203311)
@@ -251,7 +254,7 @@ func TestCollect_ARunBundleStaysUnderTheCeiling(t *testing.T) {
 	t.Logf("a realistic run bundle with lag, windows and retries is %d bytes", len(raw))
 	// Thirty-two partitions went in, and the bundle is no wider for them.
 	assert.Equal(t, 32, *b.Pipeline.LagPartitions)
-	assert.That(t, len(raw) < 4<<10)
+	assert.That(t, len(raw) < 1<<10)
 }
 
 // A section's presence says what the process does. A run bundle has no serve

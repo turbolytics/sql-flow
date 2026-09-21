@@ -155,6 +155,42 @@ func TestObservabilityMetrics_AQueuedRecordDoesNotReviveAReleasedPartition(t *te
 	assert.Equal(t, int64(12), m.Lag.Snapshot()["events"][1])
 }
 
+// A lost partition keeps its last lag until the next assignment settles it.
+//
+// A loss is this process's session failing -- a broker outage, a fence -- and
+// says nothing about who holds the partition. Dropping its lag then made an
+// instance cut off from its broker report lag 0 over 0 partitions, the same
+// document as an idle standby. Once the session recovers, the assignment it
+// rejoins with is everything it holds: a lost partition in it is back, and
+// one outside it went elsewhere.
+func TestObservabilityMetrics_ALostPartitionKeepsItsLagUntilReassigned(t *testing.T) {
+	coverage.Covers(t, "observability.metrics")
+	m, err := NewMetrics(nil)
+	assert.NoError(t, err)
+
+	m.Lag.Assigned(map[string][]int32{"events": {0, 1}})
+	m.Lag.Set("events", 0, 40)
+	m.Lag.Set("events", 1, 7)
+
+	m.Lag.Lost(map[string][]int32{"events": {0, 1}})
+	got := m.Lag.Snapshot()["events"]
+	assert.Equal(t, 2, len(got))
+	assert.Equal(t, int64(40), got[0])
+
+	// A record queued before the loss does not move a frozen reading.
+	m.Lag.Set("events", 0, 39)
+	assert.Equal(t, int64(40), m.Lag.Snapshot()["events"][0])
+
+	// The session recovers holding partition 1 only; 0 went elsewhere.
+	m.Lag.Assigned(map[string][]int32{"events": {1}})
+	got = m.Lag.Snapshot()["events"]
+	assert.Equal(t, 1, len(got))
+	_, zeroStayed := got[0]
+	assert.That(t, !zeroStayed)
+	m.Lag.Set("events", 1, 3)
+	assert.Equal(t, int64(3), m.Lag.Snapshot()["events"][1])
+}
+
 // A source that never reports ownership reports every partition it reads.
 func TestObservabilityMetrics_UntrackedLagReportsEveryPartition(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")

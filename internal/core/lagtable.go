@@ -12,12 +12,16 @@ import (
 // another instance. It reports each change so the lag of a partition this
 // process no longer holds stops being reported as if it did.
 //
-// Both functions receive topic to partitions. assigned is called at once with
-// whatever the source already holds, because a group can assign partitions
-// before anything has subscribed, and a missed first assignment would make
-// every later revocation read as the loss of everything.
+// Each function receives topic to partitions:
+//
+//   - assigned: this process holds these now. Called at once with whatever
+//     the source already holds, because a group can assign partitions before
+//     anything subscribes, and a missed first assignment would make every
+//     later change read as the loss of everything.
+//   - released: another member holds these now, after a rebalance.
+//   - lost: this process's session failed, and who holds these is unknown.
 type PartitionOwner interface {
-	OnPartitions(assigned, released func(map[string][]int32))
+	OnPartitions(assigned, released, lost func(map[string][]int32))
 }
 
 // LagTable is the current consumer lag of each partition, observed by the
@@ -43,6 +47,10 @@ type LagTable struct {
 type lagEntry struct {
 	value int64
 	attrs metric.ObserveOption
+	// lost is set when the session holding the partition failed. The entry
+	// keeps its last value, which lag_observed_at dates, until the next
+	// assignment says whether the partition came back.
+	lost bool
 }
 
 func newLagTable() *LagTable {
@@ -71,18 +79,54 @@ func (l *LagTable) Set(topic string, partition int32, lag int64) {
 }
 
 // Assigned notes partitions this process now holds.
+//
+// It also settles every partition a failed session left behind. After a loss
+// this process holds nothing, so the next assignment is everything it holds:
+// a lost partition in it is back, and one outside it went to another member
+// and leaves the table.
 func (l *LagTable) Assigned(parts map[string][]int32) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.tracked = true
 	for topic, ps := range parts {
 		for _, p := range ps {
-			l.owned[lagKey{topic: topic, partition: p}] = true
+			key := lagKey{topic: topic, partition: p}
+			l.owned[key] = true
+			if entry, ok := l.lag[key]; ok && entry.lost {
+				entry.lost = false
+				l.lag[key] = entry
+			}
+		}
+	}
+	for key, entry := range l.lag {
+		if entry.lost {
+			delete(l.lag, key)
 		}
 	}
 }
 
-// Released drops partitions this process no longer holds, and their lag.
+// Lost notes partitions whose session failed. Their lag stays, frozen at the
+// last reading, because nothing else holds them yet as far as this process
+// knows. Removed instead, an instance cut off from its broker reported lag 0
+// over 0 partitions -- the same document as an idle standby. The reading is
+// only as current as lag_observed_at, and a receiver reads the two together.
+func (l *LagTable) Lost(parts map[string][]int32) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tracked = true
+	for topic, ps := range parts {
+		for _, p := range ps {
+			key := lagKey{topic: topic, partition: p}
+			delete(l.owned, key)
+			if entry, ok := l.lag[key]; ok {
+				entry.lost = true
+				l.lag[key] = entry
+			}
+		}
+	}
+}
+
+// Released drops partitions another member holds now, and their lag.
 func (l *LagTable) Released(parts map[string][]int32) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

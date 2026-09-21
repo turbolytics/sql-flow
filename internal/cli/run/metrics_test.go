@@ -159,7 +159,7 @@ func exportedNames(t *testing.T) []string {
 	win.Closed.Add(ctx, 1)
 	win.Late.Add(ctx, 1)
 	win.NewestStart.Record(ctx, 1)
-	win.CloseDue.Record(ctx, 1)
+	win.CloseLag.Record(ctx, 1)
 
 	// The row counters are declared in internal/sinks, not core.NewMetrics, so
 	// a core-only sweep would miss them and let the README document series no
@@ -231,7 +231,7 @@ func TestExportedSeriesNames(t *testing.T) {
 		"state_table_rows",
 		"webhook_request_duration_seconds",
 		"webhook_requests_total",
-		"window_close_due_seconds",
+		"window_close_lag_seconds",
 		"window_closed_total",
 		"window_late_rows_total",
 		"window_newest_bucket_start_seconds",

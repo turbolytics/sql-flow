@@ -1396,11 +1396,101 @@ def test_turbostats_bundle_reports_consumer_lag(image, stack):
         assert name in pipeline, (name, pipeline)
     assert pipeline["late_rows_dropped"] == 0, pipeline
 
-    # The window times travel together.
-    assert ("window_lag_seconds" in pipeline) == ("window_ahead_seconds" in pipeline), pipeline
+    # The newest bucket is event time from the data, never an age this host
+    # computed, so a receiver can compare it with a clock it trusts.
+    if "window_newest_bucket_at" in pipeline:
+        assert pipeline["window_newest_bucket_at"].endswith("Z"), pipeline
 
     # No field is wider for the partitions behind it.
     assert not any(isinstance(v, (list, dict)) for v in pipeline.values()), pipeline
+
+
+@pytest.mark.covers("observability.turbostats.reporter")
+def test_turbostats_exit_bundle_keeps_kafka_lag(image, stack):
+    """A Kafka pipeline stopped with SIGTERM reports the partitions it held.
+
+    Closing the consumer leaves its group, and leaving revokes every
+    partition. Handled as a rebalance, that emptied the lag table before the
+    final bundle was collected, so every exit reported lag 0 over 0
+    partitions: a consumer stopped with a backlog read as one that had caught
+    up, in the one bundle a receiver reads to learn how a process ended.
+
+    Driven against the image because the order that decides it -- the source
+    closing, the lag table, the final bundle -- is wired in the run command,
+    which the broker tests in internal/kafka do not execute.
+    """
+    topic = f"turbostats-exit-{int(time.time())}"
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
+    for i in range(200):
+        producer.produce(topic, json.dumps({"i": i}).encode("utf-8"))
+    producer.flush()
+
+    receiver = DockerContainer("python:3.12-alpine") \
+        .with_network(stack.network) \
+        .with_command(["python", "-u", "-c", RECEIVER])
+    receiver.start()
+    try:
+        config = f"""
+pipeline:
+  name: exit_lag
+  turbostats:
+    id: exit-01
+    report_to: http://127.0.0.1:8080/v1/turbostats
+    key: sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+    interval_seconds: 1
+  source:
+    type: kafka
+    kafka:
+      brokers: [kafka:9092]
+      group_id: {topic}
+      auto_offset_reset: earliest
+      topics: [{topic}]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT count(*) AS n FROM batch
+  sink:
+    type: noop
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "pipeline.yml")
+            with open(path, "w") as f:
+                f.write(config)
+            os.chmod(tmp, 0o755)
+            os.chmod(path, 0o644)
+
+            pipeline = DockerContainer(image) \
+                .with_volume_mapping(tmp, "/conf") \
+                .with_kwargs(network_mode=(
+                    f"container:{receiver.get_wrapped_container().id}")) \
+                .with_command("run /conf/pipeline.yml")
+            pipeline.start()
+            try:
+                deadline = time.time() + 60
+                held = False
+                while time.time() < deadline and not held:
+                    posts = wait_for_posts(receiver, 1, timeout=60)
+                    held = any(p["body"].get("pipeline", {}).get("lag_partitions", 0) >= 1
+                               for p in posts)
+                    time.sleep(0.5)
+                assert held, "no bundle reported a held partition before the stop"
+                # SIGTERM, then the drain. testcontainers' stop() force-removes,
+                # which is SIGKILL and skips the final bundle entirely.
+                pipeline.get_wrapped_container().stop(timeout=30)
+            finally:
+                pipeline.stop()
+            posts = wait_for_posts(receiver, 1, timeout=10)
+    finally:
+        receiver.stop()
+
+    exits = [p["body"] for p in posts if "exit" in p["body"]]
+    assert exits, "no bundle carried an exit"
+    final = exits[-1]
+    assert final["exit"]["reason"] == "signal", final["exit"]
+    assert final["exit"]["code"] == 0, final["exit"]
+    lag = final["pipeline"]
+    assert lag.get("lag_partitions", 0) >= 1, (
+        f"the exit bundle says this consumer held no partitions: {lag}")
+    assert "lag_observed_at" in lag, lag
 
 
 @pytest.mark.covers("lifecycle.health")

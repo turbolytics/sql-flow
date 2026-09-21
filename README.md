@@ -1310,7 +1310,7 @@ joins, with or without a state path:
 | `window_watermark_seconds` | `window_watermark_seconds` | gauge | `window` |
 | `window_closed` | `window_closed_total` | counter | `window` |
 | `window_late_rows` | `window_late_rows_total` | counter | `window`, `policy` |
-| `window_close_due_seconds` | `window_close_due_seconds` | gauge | `window` |
+| `window_close_lag_seconds` | `window_close_lag_seconds` | gauge | `window` |
 | `window_newest_bucket_start_seconds` | `window_newest_bucket_start_seconds` | gauge | `window` |
 
 `window_closed_total` is present from startup at zero, so a windowed pipeline
@@ -1318,13 +1318,15 @@ is never mistaken for one without windows before its first close.
 `window_late_rows_total` counts only after the close that dropped or reemitted
 the rows commits.
 
-Wall time past `window_close_due_seconds` is how overdue the window's next
-close is: zero while closes keep up, whatever the window's size, and growing
-when the stream's clock stands still or closes stop committing. It is the
-number to alert on. `window_newest_bucket_start_seconds` ahead of wall time
-means rows are stamped in the future, which moves the watermark past every
-correctly-timed row and, under `late_rows: drop`, deletes them; it is updated
-on every poll that finds rows, even one whose close fails.
+`window_close_lag_seconds` is how far the window's closes trail the data it
+holds, in event time, and it is the number to alert on: zero while closes keep
+up, zero after an idle close, growing while rows arrive and closes fail. It
+uses no clock, so a sparse stream does not read as stalled and a host whose
+clock is wrong reports it correctly; a stream going quiet shows in
+`pipeline_last_message_timestamp` instead. `window_newest_bucket_start_seconds`
+ahead of a trusted clock means rows are stamped in the future, which moves the
+watermark past every correctly-timed row and, under `late_rows: drop`, deletes
+them. It is updated on every poll that finds rows, even one whose close fails.
 `window_watermark_seconds` trails the newest bucket by `grace_seconds` by
 design, which makes its age the number to size `grace_seconds` from rather
 than one to alert on.

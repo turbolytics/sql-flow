@@ -154,25 +154,31 @@ type Pipeline struct {
 	LateRowsReemitted *int64 `json:"late_rows_reemitted,omitempty"`
 	WindowClosedCount *int64 `json:"window_closed_count,omitempty"`
 
-	// WindowLagSeconds and WindowAheadSeconds place the windows against this
-	// process's clock. Both are present once any window has closed or held
-	// rows, and both clocks are this process's, so neither carries skew.
+	// WindowLagSeconds is how far the most behind window's closes trail the
+	// data it holds, in event seconds: where its watermark should be, given
+	// its rows, minus where it is. It is zero while closes keep up, zero
+	// after an idle close has closed everything, and it grows while rows
+	// arrive and closes fail. Present once any window has polled.
 	//
-	// WindowLagSeconds is how overdue the most overdue window's next close
-	// is: wall time minus the watermark, the window's size and its grace
-	// period. It is zero while closes keep up, whatever the window's size,
-	// and it grows when the stream's clock stands still or when closes stop
-	// committing. The watermark's plain age could not say this: it trails by
-	// size and grace by design, so a healthy hourly window read an hour or
-	// two behind, and a stalled one-minute window hid behind it.
+	// No clock enters it, so it carries no skew and a sparse stream does not
+	// read as stalled. A stream going quiet is the source's to report, as
+	// last_message_at does. Two earlier readings measured against this
+	// host's clock and got both wrong: the watermark's age trailed by size
+	// and grace by design, and wall time past the next close grew for any
+	// stream that paused.
+	WindowLagSeconds *int64 `json:"window_lag_seconds,omitempty"`
+
+	// WindowNewestBucketAt is the start of the newest bucket any window
+	// holds, in event time: a timestamp from the data, not from this host.
 	//
-	// WindowAheadSeconds is how far the newest bucket starts beyond now, for
-	// the window furthest ahead. It is zero unless rows are stamped in the
-	// future. That is a fault and never an artefact: one device with a fast
-	// clock moves the watermark ahead of every honest row, and under a drop
-	// policy each of those is then late and deleted.
-	WindowLagSeconds   *int64 `json:"window_lag_seconds,omitempty"`
-	WindowAheadSeconds *int64 `json:"window_ahead_seconds,omitempty"`
+	// Ahead of now means rows are stamped in the future. That is a fault,
+	// not an artefact: one device with a fast clock moves the watermark past
+	// every correctly-timed row, and under a drop policy each of those is
+	// then late and deleted. The engine does not subtract this host's clock
+	// from it, because on a gateway without a real-time clock that clock is
+	// the thing most likely to be wrong. A receiver compares it with its own
+	// clock at receipt.
+	WindowNewestBucketAt *time.Time `json:"window_newest_bucket_at,omitempty"`
 }
 
 // Serve carries the dataset API's totals since Process.StartedAt.

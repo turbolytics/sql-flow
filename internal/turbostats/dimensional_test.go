@@ -193,7 +193,7 @@ func TestCollect_WindowCountersArePresentBeforeTheFirstClose(t *testing.T) {
 	assert.That(t, plain.LateRowsReemitted == nil)
 	assert.That(t, plain.WindowClosedCount == nil)
 	assert.That(t, plain.WindowLagSeconds == nil)
-	assert.That(t, plain.WindowAheadSeconds == nil)
+	assert.That(t, plain.WindowNewestBucketAt == nil)
 }
 
 // A policy the contract has no field for leaves both late counts out.
@@ -216,113 +216,68 @@ func TestCollect_AnUnknownLatePolicyReportsNeitherCount(t *testing.T) {
 
 // --- window times ------------------------------------------------------
 
-// window reports one window's state as the manager records it: the newest
-// bucket it holds, and when its next close is due. A window keeping up has
-// its watermark a grace period behind the newest bucket, so the next close is
-// due at the newest bucket's end.
-func windowAt(w managers.WindowMetrics, name string, newest time.Time, due time.Time) {
-	ctx := context.Background()
-	w.NewestStart.Record(ctx, newest.Unix(), win(name))
-	w.CloseDue.Record(ctx, due.Unix(), win(name))
-}
-
-// A window that is keeping up reports no lag, whatever its size.
+// A window keeping up reports no lag, whatever its size, and the most behind
+// window is the one reported.
 //
-// The field used to be now minus the oldest watermark, and a watermark trails
-// the newest bucket by the grace period and moves only on a close. A healthy
-// hourly window read 3,600 to 7,200 seconds behind while fully caught up.
-func TestCollect_AWindowKeepingUpReportsNoLagWhateverItsSize(t *testing.T) {
-	coverage.Covers(t, "observability.turbostats")
-	reader, mp := windowed()
-	hourly := managers.NewWindowMetrics(mp, "hourly")
-	current := time.Now().UTC().Truncate(time.Hour)
-	windowAt(hourly, "hourly", current, current.Add(time.Hour))
-
-	p := pipelineOf(t, reader)
-	assert.Equal(t, int64(0), *p.WindowLagSeconds)
-	assert.Equal(t, int64(0), *p.WindowAheadSeconds)
-}
-
-// A stalled small window shows through a healthy large one.
-//
-// Under the old field the hourly window's watermark was always the oldest, so
-// a one-minute window stuck for half an hour never appeared.
-func TestCollect_AStalledSmallWindowShowsThroughAHealthyLargeOne(t *testing.T) {
+// The field used to be now minus the oldest watermark, so a healthy hourly
+// window read an hour or two behind and a stalled one-minute window hid
+// behind it. The manager now measures each window's overdue close in event
+// time; the bundle takes the worst.
+func TestCollect_WindowLagIsTheMostBehindWindow(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, mp := windowed()
 	hourly := managers.NewWindowMetrics(mp, "hourly")
 	minute := managers.NewWindowMetrics(mp, "minute")
-	now := time.Now().UTC()
-	windowAt(hourly, "hourly", now.Truncate(time.Hour), now.Truncate(time.Hour).Add(time.Hour))
-	stuck := now.Add(-31 * time.Minute).Truncate(time.Minute)
-	windowAt(minute, "minute", stuck, stuck.Add(time.Minute))
+	hourly.CloseLag.Record(context.Background(), 0, win("hourly"))
+	minute.CloseLag.Record(context.Background(), 1800, win("minute"))
 
-	lag := *pipelineOf(t, reader).WindowLagSeconds
-	assert.That(t, lag >= 29*60 && lag <= 31*60)
+	assert.Equal(t, int64(1800), *pipelineOf(t, reader).WindowLagSeconds)
 }
 
-// A close that stops committing shows even while rows keep arriving.
+// Rows stamped in the future are reported as the event time they claim, not
+// as an age this host computed.
 //
-// Measured from the newest bucket, this read zero: rows were current, so the
-// window looked healthy while nothing it held was being published. Measured
-// from the close that is due, it grows.
-func TestCollect_AStalledCloseShowsWhileRowsKeepArriving(t *testing.T) {
+// This used to be an age clamped to zero as "a clock artefact". A watermark is
+// event time from the data, and one device with a fast clock moves it past
+// every correctly-timed row. Whether a bucket is ahead is a comparison with a
+// clock someone trusts, and on a gateway with no real-time clock this host's
+// is not it, so the bundle carries the timestamp and the receiver compares.
+func TestCollect_RowsStampedInTheFutureArriveAsTheirEventTime(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, mp := windowed()
-	w := managers.NewWindowMetrics(mp, "minute")
-	now := time.Now().UTC()
-	windowAt(w, "minute", now.Truncate(time.Minute), now.Add(-20*time.Minute))
-
-	lag := *pipelineOf(t, reader).WindowLagSeconds
-	assert.That(t, lag >= 19*60 && lag <= 21*60)
-}
-
-// Rows stamped in the future are reported, not hidden.
-//
-// This used to be clamped to zero as "a clock artefact", but a watermark is
-// event time from the data. One device whose clock is a day fast moves it a
-// day ahead, and every correctly-timed row after that is late; under a drop
-// policy each is deleted. The bundle showed its best possible reading.
-func TestCollect_RowsStampedInTheFutureReportHowFarAhead(t *testing.T) {
-	coverage.Covers(t, "observability.turbostats")
-	reader, mp := windowed()
-	w := managers.NewWindowMetrics(mp, "hourly")
+	early := managers.NewWindowMetrics(mp, "hourly")
+	late := managers.NewWindowMetrics(mp, "minute")
 	tomorrow := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Hour)
-	windowAt(w, "hourly", tomorrow, tomorrow.Add(time.Hour))
+	early.NewestStart.Record(context.Background(), time.Now().Unix(), win("hourly"))
+	late.NewestStart.Record(context.Background(), tomorrow.Unix(), win("minute"))
 
 	p := pipelineOf(t, reader)
-	ahead := *p.WindowAheadSeconds
-	assert.That(t, ahead >= 22*3600 && ahead <= 25*3600)
-	assert.Equal(t, int64(0), *p.WindowLagSeconds)
+	assert.That(t, p.WindowNewestBucketAt != nil)
+	assert.Equal(t, tomorrow, *p.WindowNewestBucketAt)
 }
 
-// The window times need both readings, and travel together.
+// Each window time is present when it has been measured, and absent until
+// then.
 //
-// Each is a subtraction from a Unix second, and an unset one is zero: the
-// epoch. With the guard removed, a window that had recorded neither reported
-// 1.79 billion seconds of lag and every test still passed.
-func TestCollect_WindowTimesArePresentTogetherOrNotAtAll(t *testing.T) {
+// Close lag needs its own seen flag, because zero lag is a reading. The newest
+// bucket is a Unix second, and an unset one must not report 1970: under the
+// earlier watermark field, a window that had recorded nothing reported 1.79
+// billion seconds of lag and every test still passed.
+func TestCollect_WindowTimesArePresentOnlyOnceMeasured(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 
 	reader, mp := windowed()
-	managers.NewWindowMetrics(mp, "hourly") // no rows, no close
+	managers.NewWindowMetrics(mp, "hourly") // constructed, never polled
 	none := pipelineOf(t, reader)
 	assert.That(t, none.WindowLagSeconds == nil)
-	assert.That(t, none.WindowAheadSeconds == nil)
+	assert.That(t, none.WindowNewestBucketAt == nil)
 
 	reader, mp = windowed()
-	half := managers.NewWindowMetrics(mp, "hourly")
-	half.CloseDue.Record(context.Background(), time.Now().Unix(), win("hourly"))
-	onlyDue := pipelineOf(t, reader)
-	assert.That(t, onlyDue.WindowLagSeconds == nil)
-	assert.That(t, onlyDue.WindowAheadSeconds == nil)
-
-	reader, mp = windowed()
-	other := managers.NewWindowMetrics(mp, "hourly")
-	other.NewestStart.Record(context.Background(), time.Now().Unix(), win("hourly"))
-	onlyNewest := pipelineOf(t, reader)
-	assert.That(t, onlyNewest.WindowLagSeconds == nil)
-	assert.That(t, onlyNewest.WindowAheadSeconds == nil)
+	emptied := managers.NewWindowMetrics(mp, "hourly")
+	emptied.CloseLag.Record(context.Background(), 0, win("hourly")) // polled, table empty
+	lagOnly := pipelineOf(t, reader)
+	assert.That(t, lagOnly.WindowLagSeconds != nil)
+	assert.That(t, lagOnly.WindowNewestBucketAt == nil)
 }
 
 // --- sink retries ------------------------------------------------------
@@ -408,7 +363,11 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 	assert.Equal(t, 0, len(bad))
 }
 
-// A bundle with every field set stays under the ceiling.
+// A bundle with every field at its widest value stays under 4 KiB.
+//
+// A smoke alarm for the shape, not the budget: 64-character ids and 2^62 in
+// every counter are not a bundle anyone sends. The budget is the realistic
+// run bundle's 1 KiB guard.
 func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	big := int64(1) << 62
@@ -429,7 +388,7 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 			SinkRetryCount: &big, LagMaxMessages: &big, LagTotalMessages: &big,
 			LagPartitions: &n, LagObservedAt: &at, LateRowsDropped: &big,
 			LateRowsReemitted: &big, WindowClosedCount: &big,
-			WindowLagSeconds: &big, WindowAheadSeconds: &big,
+			WindowLagSeconds: &big, WindowNewestBucketAt: &at,
 		},
 		Serve: &wire.Serve{
 			RequestCount: big, RequestErrorCount: big, SessionsInUse: n,

@@ -96,11 +96,11 @@ func (k *Source) ChannelBuffer() int {
 // every rebalance. It implements core.PartitionOwner; a source built without
 // the relay reports nothing, and the pipeline then reports every partition
 // it reads, as it did before ownership was tracked.
-func (k *Source) OnPartitions(assigned, released func(map[string][]int32)) {
+func (k *Source) OnPartitions(assigned, released, lost func(map[string][]int32)) {
 	if k.partitions == nil {
 		return
 	}
-	k.partitions.Subscribe(assigned, released)
+	k.partitions.Subscribe(assigned, released, lost)
 }
 
 func (k *Source) Start() error {
@@ -113,6 +113,11 @@ func (k *Source) Close() error {
 	k.closeOnce.Do(func() {
 		close(k.done)
 	})
+	// Before the client closes, because closing leaves the group and
+	// leaving revokes every partition.
+	if k.partitions != nil {
+		k.partitions.Closing()
+	}
 	k.client.Close()
 	return nil
 }

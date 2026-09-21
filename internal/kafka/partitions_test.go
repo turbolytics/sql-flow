@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"sort"
 	"testing"
 	"time"
@@ -41,13 +42,18 @@ type consumer struct {
 func startConsumer(t *testing.T, broker, topic, group string) *consumer {
 	t.Helper()
 	events := NewPartitionEvents()
-	client := newTestClient(t, broker, topic, group, events.ClientOptions()...)
+	return startConsumerWith(t, broker, topic, group, events, events.ClientOptions()...)
+}
+
+func startConsumerWith(t *testing.T, broker, topic, group string, events *PartitionEvents, opts ...kgo.Opt) *consumer {
+	t.Helper()
+	client := newTestClient(t, broker, topic, group, opts...)
 	src, err := NewSource(client, WithPartitionEvents(events))
 	assert.NoError(t, err)
 	m, err := core.NewMetrics(nil)
 	assert.NoError(t, err)
 	c := &consumer{src: src, lag: m.Lag}
-	src.OnPartitions(m.Lag.Assigned, m.Lag.Released)
+	src.OnPartitions(m.Lag.Assigned, m.Lag.Released, m.Lag.Lost)
 	// Drain the stream as the consume loop would, publishing lag as it goes,
 	// including for records queued before a revocation.
 	go func() {
@@ -135,4 +141,95 @@ func waitUntil(t *testing.T, limit time.Duration, what string, cond func() bool)
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting until %s", what)
+}
+
+// Closing the source keeps the lag it last saw.
+//
+// Close leaves the group, and leaving revokes every partition first. Handled
+// as a rebalance, that emptied the lag table before the final bundle was
+// collected, so every exit reported lag 0 over 0 partitions -- a consumer
+// stopped with a backlog read as one that had caught up.
+func TestIntegrationSourceKafka_ClosingKeepsTheLastLag(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	broker := brokerOrFail(t)
+	topic := fmt.Sprintf("turbine-close-%d", time.Now().UnixNano())
+	createTopic(t, broker, topic, 2)
+
+	producer, err := kgo.NewClient(kgo.SeedBrokers(broker),
+		kgo.RecordPartitioner(kgo.ManualPartitioner()))
+	assert.NoError(t, err)
+	defer producer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for p := int32(0); p < 2; p++ {
+		for i := 0; i < 5; i++ {
+			res := producer.ProduceSync(ctx, &kgo.Record{Topic: topic, Partition: p, Value: []byte(`{"i":1}`)})
+			assert.NoError(t, res.FirstErr())
+		}
+	}
+
+	c := startConsumer(t, broker, topic, topic)
+	waitUntil(t, 60*time.Second, "the consumer reads both partitions", func() bool {
+		return len(c.partitions(topic)) == 2
+	})
+
+	assert.NoError(t, c.src.Close())
+	assert.Equal(t, 2, len(c.partitions(topic)))
+}
+
+// A broker outage keeps the lag it last saw, dated.
+//
+// When heartbeats fail the client reports every partition lost. Handled as a
+// rebalance, that emptied the lag table, so an instance cut off from its
+// broker reported lag 0 over 0 partitions -- the same document as an idle
+// standby, at exactly the moment its backlog was growing unseen.
+//
+// The broker is paused, not stopped, so its address survives, and the test
+// needs to own it: an external broker named by SQLFLOW_KAFKA_BROKERS cannot
+// be paused from here.
+func TestIntegrationSourceKafka_ABrokerOutageKeepsTheLastLag(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	broker := brokerOrFail(t)
+	if brokerCtr == nil {
+		t.Skip("needs the package's own broker container to pause; SQLFLOW_KAFKA_BROKERS names an external one")
+	}
+	topic := fmt.Sprintf("turbine-outage-%d", time.Now().UnixNano())
+	createTopic(t, broker, topic, 2)
+
+	producer, err := kgo.NewClient(kgo.SeedBrokers(broker),
+		kgo.RecordPartitioner(kgo.ManualPartitioner()))
+	assert.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	for p := int32(0); p < 2; p++ {
+		res := producer.ProduceSync(ctx, &kgo.Record{Topic: topic, Partition: p, Value: []byte(`{"i":1}`)})
+		assert.NoError(t, res.FirstErr())
+	}
+	cancel()
+	producer.Close()
+
+	events := NewPartitionEvents()
+	opts := append(events.ClientOptions(),
+		kgo.SessionTimeout(6*time.Second), kgo.HeartbeatInterval(time.Second))
+	c := startConsumerWith(t, broker, topic, topic, events, opts...)
+	defer c.src.Close()
+	waitUntil(t, 60*time.Second, "the consumer reads both partitions", func() bool {
+		return len(c.partitions(topic)) == 2
+	})
+
+	id := brokerCtr.GetContainerID()
+	assert.NoError(t, exec.Command("docker", "pause", id).Run())
+	unpaused := false
+	unpause := func() {
+		if !unpaused {
+			_ = exec.Command("docker", "unpause", id).Run()
+			unpaused = true
+		}
+	}
+	defer unpause()
+
+	// Past the session timeout, so the client has given the partitions up.
+	time.Sleep(20 * time.Second)
+	held := len(c.partitions(topic))
+	unpause()
+	assert.Equal(t, 2, held)
 }
