@@ -13,7 +13,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // progressRecorder is the test double for the store: it keeps every record.
@@ -356,20 +359,44 @@ func TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForItsReader(t *testing.
 	})
 
 	t.Run("and the interval still keeps the row current", func(t *testing.T) {
-		tb, rec := run(t, time.Millisecond, WithProgressReadersAbsent())
+		_, rec := run(t, time.Millisecond, WithProgressReadersAbsent())
 		// Opting out is not abandoning the table: the clock alone keeps
 		// writing it, well past the first commit.
 		if _, n := rec.last(); n < 2 {
 			t.Fatalf("a 1ms interval over six paced batches produced %d writes", n)
 		}
-		// What it does not promise is that the newest arrival is there the
-		// instant the loop ends: a commit inside the interval of the write
-		// before it is skipped, and nothing is owed. That is the staleness
-		// bound, and the drain is what closes it on the way out.
-		assert.NoError(t, tb.SyncState(context.Background()))
-		last, _ := rec.last()
-		assert.That(t, last.LastArrival.Equal(tb.Progress().LastArrival))
 	})
+}
+
+// Opting out leaves a staleness bound: a commit inside the interval of the
+// write before it is skipped, and nothing is owed, so the newest arrival can
+// be missing from the table when the stream stops. The drain closes that
+// bound on the way out. Driven commit by commit, so the skip is certain
+// rather than a matter of timing.
+func TestStateDurability_TheDrainWritesAnArrivalTheIntervalSkipped(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(time.Hour), WithProgressReadersAbsent())
+
+	ctx := context.Background()
+	first := time.Now().UTC()
+	tb.arrivedAt = first
+	assert.NoError(t, tb.commitState(ctx, false)) // always due: writes `first`
+
+	newest := first.Add(time.Second)
+	tb.arrivedAt = newest
+	assert.NoError(t, tb.commitState(ctx, false)) // inside the interval, not owed
+
+	last, n := rec.last()
+	assert.Equal(t, 1, n)
+	assert.That(t, last.LastArrival.Equal(first)) // the table is behind
+
+	assert.NoError(t, tb.SyncState(ctx))
+	last, n = rec.last()
+	assert.Equal(t, 2, n)
+	assert.That(t, last.LastArrival.Equal(newest))
 }
 
 // flakyProgress fails its first failFirst writes, then records the rest.
@@ -397,36 +424,97 @@ func (f *flakyProgress) state() (attempts int, recs []Progress) {
 	return f.attempts, append([]Progress(nil), f.recs...)
 }
 
-// A store that keeps failing is retried on the write interval, not on every
-// commit. Record runs under the connection lock the window managers poll
-// under, so a slow failure retried per commit starves the polls and the
-// pipeline stops publishing. The reader is present here on purpose: that is
-// the arm where an owed arrival would otherwise keep forcing the retry.
-func TestStateDurability_AFailingProgressStoreIsRetriedOnTheIntervalNotEveryCommit(t *testing.T) {
+// errorCodes returns how many errors error_count recorded under each code.
+func errorCodes(t *testing.T, r *sdkmetric.ManualReader) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, r.Collect(context.Background(), &rm))
+	codes := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "error_count" {
+				continue
+			}
+			data, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, dp := range data.DataPoints {
+				if v, ok := dp.Attributes.Value("code"); ok {
+					codes[v.AsString()] += dp.Value
+				}
+			}
+		}
+	}
+	return codes
+}
+
+// With a reader for last_arrival, a failing store is retried on every commit
+// that sees a newer arrival, and the table has the newest arrival again on the
+// first write that succeeds. That costs nothing a healthy store does not
+// already cost, since a healthy one takes the same statement on the same
+// commits, and pacing the retry instead would only leave the reader blind for
+// longer: the window managers poll on connections of their own, so a failing
+// write on the pipeline's connection starves nobody.
+//
+// Without a state path the write autocommits by itself, so the failure does
+// not touch the batch. It is recorded under its own code, so an alert can tell
+// a frozen arrival clock from a state commit that failed.
+func TestStateDurability_AFailingProgressStoreRecoversOnItsFirstSuccessfulWrite(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	r := sdkmetric.NewManualReader()
+	m, err := NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)))
+	assert.NoError(t, err)
+
+	store := &flakyProgress{failFirst: 3}
+	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithMetrics(m), WithProgressStore(store), WithProgressWriteInterval(time.Hour))
+
+	ctx := context.Background()
+	var newest time.Time
+	for i := 0; i < 6; i++ {
+		newest = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
+		tb.arrivedAt = newest
+		// Stateless, so the commit itself succeeds whatever the write did.
+		assert.NoError(t, tb.commitState(ctx, false))
+	}
+
+	attempts, recs := store.state()
+	assert.Equal(t, 6, attempts) // every commit tried: none was paced away
+	assert.Equal(t, 3, len(recs))
+	assert.That(t, recs[len(recs)-1].LastArrival.Equal(newest))
+
+	codes := errorCodes(t, r)
+	assert.Equal(t, int64(3), codes[string(errs.CodeProgressWriteFailed)])
+	assert.Equal(t, int64(0), codes[string(errs.CodeStateCommitFailed)])
+	assert.Equal(t, int64(3), tb.Progress().Errors)
+}
+
+// Where nothing in the engine reads last_arrival no arrival is owed, so the
+// write interval is all that paces a failing store.
+func TestStateDurability_WithoutAReaderAFailingProgressStoreIsRetriedOnTheInterval(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	store := &flakyProgress{failFirst: 1 << 30}
 	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithProgressStore(store), WithProgressWriteInterval(time.Hour))
+		WithProgressStore(store), WithProgressWriteInterval(time.Hour), WithProgressReadersAbsent())
 
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
-		// Every commit carries a newer arrival, which is what makes a write
-		// owed and what a live pipeline always looks like.
 		tb.arrivedAt = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
-		tb.recordProgress(ctx, false)
+		assert.NoError(t, tb.commitState(ctx, false))
 	}
 	if n, _ := store.state(); n != 1 {
 		t.Fatalf("a failing store was attempted %d times in 50 commits inside one interval", n)
 	}
-	// And the failure is a recorded error, not only a log line.
-	assert.Equal(t, int64(1), tb.Progress().Errors)
 }
 
 // A batch, a failed write, then silence and shutdown: no newer arrival is
-// coming, so nothing on the commit path will ever carry the one the failed
-// write had. The drain forces the write so the managers' final poll reads a
-// current arrival clock instead of closing open buckets early on the way out.
+// coming, so no later commit is owed and none will carry the arrival the
+// failed write had. The drain forces the write, so the managers' final poll
+// reads a current arrival clock instead of closing open buckets early on the
+// way out.
 func TestStateDurability_TheDrainWritesTheArrivalAFailedWriteLeftBehind(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	store := &flakyProgress{failFirst: 1}
@@ -437,18 +525,107 @@ func TestStateDurability_TheDrainWritesTheArrivalAFailedWriteLeftBehind(t *testi
 	ctx := context.Background()
 	arrival := time.Now().UTC()
 	tb.arrivedAt = arrival
-	tb.recordProgress(ctx, false) // due, and fails
+	assert.NoError(t, tb.commitState(ctx, false)) // due, and the write fails
 
-	// Inside the interval a commit must not retry ...
-	tb.recordProgress(ctx, false)
+	// Silence: an idle commit sees no newer arrival and sits inside the
+	// interval, so it does not write.
+	assert.NoError(t, tb.commitState(ctx, false))
 	if n, _ := store.state(); n != 1 {
-		t.Fatalf("the commit path retried inside the interval: %d attempts", n)
+		t.Fatalf("an idle commit inside the interval wrote: %d attempts", n)
 	}
 
-	// ... but the drain must, and what it writes is the arrival left behind.
+	// The drain does, and what it writes is the arrival left behind.
 	assert.NoError(t, tb.SyncState(ctx))
 	n, recs := store.state()
 	assert.Equal(t, 2, n)
 	assert.Equal(t, 1, len(recs))
 	assert.That(t, recs[0].LastArrival.Equal(arrival))
+}
+
+// refusingProgress is a progress write the database refuses, run on the
+// batch's own connection the way ProgressStore's is. A NOT NULL violation is
+// one of the failures DuckDB answers by aborting the open transaction.
+type refusingProgress struct{ conn adbc.Connection }
+
+func (r refusingProgress) Record(ctx context.Context, _ Progress) error {
+	stmt, err := r.conn.NewStatement()
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	if err := stmt.SetSqlQuery(`UPDATE ` + progressTable + ` SET messages = NULL`); err != nil {
+		return err
+	}
+	_, err = stmt.ExecuteUpdate(ctx)
+	return err
+}
+
+// countCommitted counts a table's rows from a second connection, which sees
+// committed rows only.
+func countCommitted(t *testing.T, db *duckdb.DB, table string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	defer conn.Close()
+	stmt, err := conn.NewStatement()
+	assert.NoError(t, err)
+	defer stmt.Close()
+	assert.NoError(t, stmt.SetSqlQuery(`SELECT count(*)::BIGINT FROM `+table))
+	reader, _, err := stmt.ExecuteQuery(ctx)
+	assert.NoError(t, err)
+	defer reader.Release()
+	assert.That(t, reader.Next())
+	col, ok := reader.Record().Column(0).(*array.Int64)
+	assert.That(t, ok)
+	return col.Value(0)
+}
+
+// With a state path the progress UPDATE runs inside the batch's transaction,
+// and a statement DuckDB refuses aborts that transaction. A source with no
+// offsets, such as a webhook, then has nothing left to write before Commit,
+// and Commit on the aborted transaction reports success while keeping none of
+// the batch. The rows are gone and nothing says so.
+//
+// commitState promises the opposite: a batch it cannot make durable is
+// replayed rather than lost. So the refused write must fail the commit.
+func TestStateDurability_AProgressWriteTheStateTransactionRefusesFailsTheCommit(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	ctx := context.Background()
+
+	db, err := duckdb.OpenPath(ctx, filepath.Join(t.TempDir(), "state.db"))
+	assert.NoError(t, err)
+	defer db.Close()
+	conn, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	defer conn.Close()
+
+	// run's order: the engine's tables and the handler's under autocommit,
+	// then autocommit off so each batch is one transaction.
+	offsets := NewOffsetStore(conn)
+	assert.NoError(t, offsets.Init(ctx))
+	assert.NoError(t, NewProgressStore(conn).Init(ctx))
+	exec(t, conn, `CREATE TABLE out (v INTEGER)`)
+	po, ok := conn.(adbc.PostInitOptions)
+	assert.That(t, ok)
+	assert.NoError(t, po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled))
+	tx, ok := conn.(stateTx)
+	assert.That(t, ok)
+
+	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithStateStore(offsets, tx), WithProgressStore(refusingProgress{conn}))
+
+	// The batch: the handler's write inside the open transaction, and no
+	// marks, as from a source that has no offsets.
+	exec(t, conn, `INSERT INTO out VALUES (1)`)
+	tb.arrivedAt = time.Now().UTC()
+
+	err = tb.commitState(ctx, false)
+	if err == nil && countCommitted(t, db, "out") == 0 {
+		t.Fatal("commitState reported success and the batch's row is not durable: " +
+			"the batch was discarded without an error")
+	}
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeStateCommitFailed, errs.CodeOf(err))
 }

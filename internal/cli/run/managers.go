@@ -42,6 +42,29 @@ func initWindowStores(ctx context.Context, conf *config.Conf, conn adbc.Connecti
 	return managers.NewStore(conn).Init(ctx)
 }
 
+// progressRecorder is what core records liveness into. Spelled out here
+// because core's own name for it is unexported.
+type progressRecorder interface {
+	Record(ctx context.Context, p core.Progress) error
+}
+
+// progressOptions is how run wires the progress write: always the store, and
+// the opt-out where nothing in the engine reads last_arrival. Only the
+// idle-close branch of the watermark predicate does, so only a pipeline with
+// such a window is owed that column ahead of the write interval.
+//
+// The guarantee is the default and this opts out of it, so losing this wiring
+// costs a statement per commit rather than closing windows early. Getting the
+// condition backwards is the dangerous mistake, and it is why this is a
+// function a test can drive rather than a line inside RunE.
+func progressOptions(conf *config.Conf, store progressRecorder) []core.TurbineOption {
+	opts := []core.TurbineOption{core.WithProgressStore(store)}
+	if !conf.ReadsLastArrival() {
+		opts = append(opts, core.WithProgressReadersAbsent())
+	}
+	return opts
+}
+
 // buildManagedTables constructs a watermark manager per table that declares
 // a window. Each manager gets two connections of its own to the pipeline's
 // DuckDB: one with autocommit off for the close, so it reads committed rows

@@ -35,12 +35,13 @@
   about 8 to 9 percent of throughput at batch 5000 and about a quarter at
   batch 500 on the container benchmark; `BenchmarkCommitStateArrivalForced`
   isolates it per commit, in memory and on a state path.
-- A failing `sqlflow_progress` write is retried on the write interval rather
-  than on every commit. The statement holds the connection lock the window
-  managers poll under, so a store that kept failing could starve their polls.
-  The failure is recorded as `system.state.progress_write_failed` in phase
-  `state.progress_write`, separate from a state commit failure, so it can be
-  alerted on without matching the opposite condition.
+- A failed `sqlflow_progress` write is no longer only a log line, and what it
+  means now depends on whether the pipeline has a state path. Without one the
+  write commits by itself, the batch is unaffected, and the failure is recorded
+  as `system.state.progress_write_failed`, separate from a state commit
+  failure, so a frozen `last_arrival` can be alerted on. With a state path the
+  write runs inside the batch's transaction, and a statement DuckDB refuses
+  aborts that transaction; see Fixed.
 - The shutdown drain now forces the `sqlflow_progress` write. The managers'
   final poll runs after it, and a write the interval had skipped, or one that
   failed moments before the signal, would otherwise leave that poll reading a
@@ -56,6 +57,16 @@
 
 ### Fixed
 
+- A pipeline with a state path and a source that has no offsets, such as a
+  webhook, could discard a whole batch without an error. The `sqlflow_progress`
+  write runs inside the batch's transaction, and a write DuckDB refused aborted
+  it. The failure was only logged, nothing was left to write before the commit,
+  and a commit on an aborted transaction reports success while keeping none of
+  the batch. The refused write now fails the commit as
+  `system.state.commit_failed`, so the batch rolls back and the pipeline stops
+  rather than carrying on without it. A Kafka source already stopped, because
+  saving its offsets hit the aborted transaction; its error now names the
+  cause.
 - `StructuredBatch` stored a JSON object read into a `TEXT` column with the
   escapes inside it decoded, so `{"q":"say \"hi\""}` became
   `{"q":"say "hi""}`, which is not JSON, and `from_json` failed on it. Only a

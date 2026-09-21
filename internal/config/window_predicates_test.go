@@ -29,6 +29,11 @@ func TestManagerWindow_ConfigPredicatesSplitOnIdleClose(t *testing.T) {
 			Conf{Tables: &Tables{SQL: []TableSQL{table("t", &Window{SizeSeconds: 60})}}}, true, false},
 		{"a window with idle_close_seconds",
 			Conf{Tables: &Tables{SQL: []TableSQL{table("t", &Window{SizeSeconds: 60, IdleCloseSeconds: 10})}}}, true, true},
+		// The smallest value that turns the idle branch on. The manager's
+		// guard is IdleClose > 0, so one second reads the column, and a
+		// predicate that missed it would opt out in the permissive direction.
+		{"idle_close_seconds of one is still a reader",
+			Conf{Tables: &Tables{SQL: []TableSQL{table("t", &Window{SizeSeconds: 60, IdleCloseSeconds: 1})}}}, true, true},
 		{"one of each: the reader wins",
 			Conf{Tables: &Tables{SQL: []TableSQL{
 				table("a", &Window{SizeSeconds: 60}),

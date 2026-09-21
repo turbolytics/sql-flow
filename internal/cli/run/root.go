@@ -269,19 +269,10 @@ func NewCommand() *cobra.Command {
 			// State wiring. Everything below is skipped for a pipeline with no
 			// state path, which then behaves exactly as it did before.
 			var (
-				turbineOpts = []core.TurbineOption{core.WithProgressStore(progressStore)}
+				turbineOpts = progressOptions(conf, progressStore)
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)
-			// Only the idleness branch of the watermark predicate reads
-			// sqlflow_progress.last_arrival, so only a window that can reach
-			// it is owed that column ahead of the write interval. The
-			// default keeps the guarantee; this opts out of it, so losing
-			// this wiring costs a statement per commit rather than closing
-			// windows early.
-			if !conf.ReadsLastArrival() {
-				turbineOpts = append(turbineOpts, core.WithProgressReadersAbsent())
-			}
 			if statePath != "" {
 				// Both calls are returned as-is. They already carry a code, and
 				// the outermost code wins: re-wrapping either as
