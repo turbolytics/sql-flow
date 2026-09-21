@@ -10,6 +10,8 @@ import (
 
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/managers"
+	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/zeebo/assert"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -203,10 +205,35 @@ func TestCollect_CarriesTheStaticFactsAndTheRuntime(t *testing.T) {
 	assert.Equal(t, 0, b.SentAt.Nanosecond())
 }
 
-func TestCollect_TheBundleIsUnderOneKiB(t *testing.T) {
+// A realistic run bundle, through the real collector, stays under 1 KiB: a
+// Kafka pipeline with windows and a retrying sink, a year into the Bluesky
+// firehose.
+//
+// This is the guard a constrained link needs. The bundle is paid for every
+// interval, and on a metered or satellite link its size is the cost of
+// telemetry. It measures 885 bytes. A contract-wide 4 KiB ceiling let this
+// grow fourfold without failing anything; at 1 KiB, growing past it is a
+// decision someone makes, not a drift someone finds on a bill.
+func TestCollect_ARealisticRunBundleStaysUnderOneKiB(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
-	reader, m, meter := provider(t)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := core.NewMetrics(mp)
+	assert.NoError(t, err)
 	ctx := context.Background()
+	for partition := 0; partition < 32; partition++ {
+		m.Lag.Set("bluesky.posts", int32(partition), 184203)
+	}
+	window := managers.NewWindowMetrics(mp, "posts_by_lang")
+	w := metric.WithAttributes(attribute.String("window", "posts_by_lang"))
+	window.Late.Add(ctx, 184203, metric.WithAttributes(
+		attribute.String("window", "posts_by_lang"), attribute.String("policy", "drop")))
+	window.Late.Add(ctx, 184203, metric.WithAttributes(
+		attribute.String("window", "posts_by_lang"), attribute.String("policy", "reemit")))
+	window.Closed.Add(ctx, 1842033, w)
+	window.NewestStart.Record(ctx, 1757570000, w)
+	window.CloseLag.Record(ctx, 0, w)
+	sinks.RetryCounter(mp, "postgres")(1, errors.New("refused"))
 	// Nine-digit totals, the size a year of the Bluesky firehose reaches.
 	m.MessageCount.Add(ctx, 184203311)
 	m.HandlerRowsRead.Add(ctx, 184203311)
@@ -215,7 +242,7 @@ func TestCollect_TheBundleIsUnderOneKiB(t *testing.T) {
 	m.PipelineRowsAccepted.Add(ctx, 184203311)
 	m.PipelineRowsWritten.Add(ctx, 184203311)
 	m.PipelineLastMessage.Record(ctx, 1757570000)
-	_ = meter
+	m.LagObserved.Record(ctx, 1757570000)
 	size := int64(4194304)
 	stats := func(context.Context) (*core.StateStats, error) { return &core.StateStats{SizeBytes: size}, nil }
 
@@ -224,7 +251,10 @@ func TestCollect_TheBundleIsUnderOneKiB(t *testing.T) {
 	b.Exit = &Exit{Reason: "SIGTERM", Code: 0}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
-	assert.That(t, len(raw) < 1024)
+	t.Logf("a realistic run bundle with lag, windows and retries is %d bytes", len(raw))
+	// Thirty-two partitions went in, and the bundle is no wider for them.
+	assert.Equal(t, 32, *b.Pipeline.LagPartitions)
+	assert.That(t, len(raw) < 1<<10)
 }
 
 // A section's presence says what the process does. A run bundle has no serve
@@ -366,7 +396,10 @@ func TestCollect_LastActivityIsTheLaterSectionTimestamp(t *testing.T) {
 	assert.Equal(t, int64(1757570500), b.LastActivityAt.Unix())
 }
 
-func TestCollect_TheServeBundleIsUnderOneKiB(t *testing.T) {
+// The serve section is unchanged by the dimensional fields, so it keeps the
+// tighter guard it had. The 4 KiB ceiling is the whole contract's smoke
+// alarm; this section growing past 1 KiB would still be news.
+func TestCollect_AServeBundleStaysUnderOneKiB(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats.serve")
 	reader, meter := serveProvider(t)
 	for _, name := range []string{"serve_requests", "serve_cache_hits", "serve_cache_misses"} {
@@ -393,5 +426,5 @@ func TestCollect_TheServeBundleIsUnderOneKiB(t *testing.T) {
 	b.Exit = &Exit{Reason: "SIGTERM", Code: 0}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
-	assert.That(t, len(raw) < 1024)
+	assert.That(t, len(raw) < 1<<10)
 }

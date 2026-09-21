@@ -102,6 +102,83 @@ type Pipeline struct {
 	StateDBSizeBytes *int64 `json:"state_db_size_bytes,omitempty"`
 	// Absent until the pipeline receives anything, because zero is not a time.
 	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
+
+	// SinkRetryCount is every sink write retried after a failure, summed
+	// across sinks. An engine that reports it always sends it, zero included.
+	//
+	// A pointer, so an engine that predates the field reads as unknown. As a
+	// plain integer it decoded to zero from a bundle that never carried it,
+	// and an old instance whose sink retried constantly read as one that
+	// never had.
+	SinkRetryCount *int64 `json:"sink_retry_count,omitempty"`
+
+	// Lag is how far behind the source this pipeline is, summarized across
+	// every topic and partition it has read.
+	//
+	// Pointers, not omitempty on a value. A pipeline that has caught up
+	// reports zero, and a pipeline with no Kafka source reports nothing, and
+	// omitempty on an int64 would render both as an absent field -- turning
+	// the healthiest state the system has into the same page as the unknown
+	// one.
+	//
+	// Both aggregates, because either alone misleads: max hides a backlog
+	// spread evenly over every partition, and the total hides one stuck
+	// partition among many. LagPartitions says how many points they
+	// summarize, without which the two cannot be told apart.
+	LagMaxMessages   *int64 `json:"lag_max_messages,omitempty"`
+	LagTotalMessages *int64 `json:"lag_total_messages,omitempty"`
+	LagPartitions    *int   `json:"lag_partitions,omitempty"`
+	// LagObservedAt is when the lag above was last measured, and a receiver
+	// must read the two together. Lag is measured when a message is
+	// processed, so a consumer that stops receiving keeps its last reading,
+	// usually zero, while the backlog grows behind it. SentAt minus this is
+	// how old the reading is.
+	LagObservedAt *time.Time `json:"lag_observed_at,omitempty"`
+
+	// The three window counters travel as a group: all present when this
+	// pipeline runs any window, from the moment it starts, and all absent
+	// when it runs none.
+	//
+	// That is what makes LateRowsDropped readable. It counts rows the engine
+	// deleted because they arrived after the watermark, which is silent data
+	// loss, and an operator has to be able to tell "no rows were dropped"
+	// from "nothing here drops rows". Absent says the second; zero says the
+	// first.
+	//
+	// Dropped and reemitted are separate fields because the policy that
+	// splits them is an outcome, not a shard: one number loses data and the
+	// other does not, and a sum of the two is true of neither. Both are
+	// absent if a window reports a policy this contract has no field for,
+	// because a count that leaves some rows out is worse than none.
+	LateRowsDropped   *int64 `json:"late_rows_dropped,omitempty"`
+	LateRowsReemitted *int64 `json:"late_rows_reemitted,omitempty"`
+	WindowClosedCount *int64 `json:"window_closed_count,omitempty"`
+
+	// WindowLagSeconds is how far the most behind window's closes trail the
+	// data it holds, in event seconds: where its watermark should be, given
+	// its rows, minus where it is. It is zero while closes keep up, zero
+	// after an idle close has closed everything, and it grows while rows
+	// arrive and closes fail. Present once any window has polled.
+	//
+	// No clock enters it, so it carries no skew and a sparse stream does not
+	// read as stalled. A stream going quiet is the source's to report, as
+	// last_message_at does. Two earlier readings measured against this
+	// host's clock and got both wrong: the watermark's age trailed by size
+	// and grace by design, and wall time past the next close grew for any
+	// stream that paused.
+	WindowLagSeconds *int64 `json:"window_lag_seconds,omitempty"`
+
+	// WindowNewestBucketAt is the start of the newest bucket any window
+	// holds, in event time: a timestamp from the data, not from this host.
+	//
+	// Ahead of now means rows are stamped in the future. That is a fault,
+	// not an artefact: one device with a fast clock moves the watermark past
+	// every correctly-timed row, and under a drop policy each of those is
+	// then late and deleted. The engine does not subtract this host's clock
+	// from it, because on a gateway without a real-time clock that clock is
+	// the thing most likely to be wrong. A receiver compares it with its own
+	// clock at receipt.
+	WindowNewestBucketAt *time.Time `json:"window_newest_bucket_at,omitempty"`
 }
 
 // Serve carries the dataset API's totals since Process.StartedAt.

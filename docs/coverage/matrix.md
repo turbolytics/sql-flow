@@ -75,7 +75,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**51 invariants declared: 43 safety and 8 liveness. Of 180 (invariant, integration) cells: 95 proven, 51 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
+**52 invariants declared: 44 safety and 8 liveness. Of 181 (invariant, integration) cells: 96 proven, 51 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -143,6 +143,7 @@ drains. An invariant holds only if it holds on all four.
 | `manager.watermark.never_regresses` | The persisted watermark never moves backwards, across polls and across a restart. A manager built over the state another one saved publishes nothing that one published. | · | · | · | ✅ u |
 | `manager.close.committed_rows_only` | A close publishes rows the pipeline has committed and no others. Rows an open batch has written are not counted, so a batch that rolls back was never published. | · | · | · | ✅ u |
 | `manager.late.policy_holds` | A row for a bucket below the watermark is late. Under drop it is discarded and counted, and the bucket is never published again. Under reemit it is published once. | · | · | · | ✅ u |
+| `manager.late.counted_once` | A late row is counted once, when the close that dropped or reemitted it commits. A close that fails counts nothing; the close that later settles those rows counts them. *(violated once: #354)* | · | · | · | ✅ u |
 
 These checkpoint invariants are properties of the consume loop
 rather than of anything a config file names. The columns are
