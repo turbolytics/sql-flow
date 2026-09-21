@@ -346,15 +346,15 @@ in the tag message.
 - A `sqlflow serve` timeout returns `504` and leaves the query running to
   completion.
 
-## v1.0.0 — sqlflow, the Go engine
+## v1.0.0 — `sqlflow`, the Go engine
 
-SQLFlow now ships a second engine: **sqlflow**, a Go rewrite of the Python
+SQLFlow now ships a second engine: **`sqlflow`**, a Go rewrite of the Python
 stream processor that reads the same configuration files. A `sqlflow.yml`
-written for the Python engine is intended to run unmodified on sqlflow — same
+written for the Python engine is intended to run unmodified on `sqlflow` — same
 YAML spec, same Jinja2 templating, same JSON Schema, same DuckDB SQL.
 
 The Python engine (`sqlflow/`, `turbolytics/sql-flow`) is unchanged and still
-maintained. sqlflow is the recommended engine for new pipelines.
+maintained. `sqlflow` is the recommended engine for new pipelines.
 
 ### Why
 
@@ -425,7 +425,7 @@ maintained. sqlflow is the recommended engine for new pipelines.
   handlers retain the caller's slice, so any fixture line larger than the read
   buffer produced corrupted rows.
 
-### Not supported in sqlflow
+### Not supported in `sqlflow`
 
 - **UDFs.** Dropped by decision — they belong to DuckDB (a macro, an extension,
   or an `ATTACH`ed database). A `udfs:` block is a hard error naming the

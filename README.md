@@ -13,7 +13,7 @@ SQLFlow is a stream processing engine that lets you define pipelines with just S
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/turbolytics/sql-flow)
 
-One click runs sqlflow on Render: a webhook that accepts metrics, a one-minute
+One click runs SQLFlow on Render: a webhook that accepts metrics, a one-minute
 aggregation into Postgres, and an HTTP API that reads them back. It asks for
 one secret and is a paid deploy. See [`render/`](render/README.md).
 
@@ -73,10 +73,10 @@ The consumer prints one row per city:
 
 # Installation
 
-sqlflow reaches DuckDB through the Arrow ADBC driver manager, which **dlopens
+SQLFlow reaches DuckDB through the Arrow ADBC driver manager, which **dlopens
 `libduckdb` at runtime**. The binary is not standalone: wherever you run it,
 that shared library has to be present. `SQLFLOW_DUCKDB_LIB` points at it;
-without that variable sqlflow looks in `/opt/homebrew/lib/libduckdb.dylib` on
+without that variable SQLFlow looks in `/opt/homebrew/lib/libduckdb.dylib` on
 macOS and `/usr/local/lib/libduckdb.so` on Linux.
 
 The pinned DuckDB version lives in one place, the `DUCKDB_VERSION` file.
@@ -793,7 +793,7 @@ source:
 ```
 
 A platform that assigns the port passes it through the template:
-`addr: "0.0.0.0:{{ PORT }}"`. sqlflow refuses at startup an `addr` that is
+`addr: "0.0.0.0:{{ PORT }}"`. SQLFlow refuses at startup an `addr` that is
 not a `host:port`.
 
 To send a signed event, compute an HMAC-SHA256 of the exact bytes of the body
@@ -1378,7 +1378,7 @@ Each adjacent ratio isolates one kind of loss:
   handler rejected never reaches the SQL.
 - `sink_rows_accepted` over `handler_rows_read` — whatever the SQL does. A join
   that drops, a `WHERE`, a `GROUP BY`. Its meaning depends on the pipeline,
-  which is why sqlflow reports the numbers and leaves the threshold to you.
+  which is why SQLFlow reports the numbers and leaves the threshold to you.
 - `sink_rows_written` over `sink_rows_accepted` — delivery loss. A ratio that
   stays below 1 is a sink that is not draining.
 
@@ -1386,7 +1386,7 @@ The `role` attribute separates the pipeline sink from the DLQ and from a window
 manager's sink. Sum across roles and a rejected record counts as a delivered
 one.
 
-**Every ratio is a floor, not an equality.** sqlflow is at-least-once: a crash
+**Every ratio is a floor, not an equality.** SQLFlow is at-least-once: a crash
 between the flush and the offset commit replays the batch, and the sink writes
 those rows again, so a ratio can exceed 1 after a normal recovery. Alert on a
 ratio that is low. Never alert on one that is not exactly 1, or a healthy
@@ -1514,7 +1514,7 @@ make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000 \
 **Docker Desktop's host→container port-forwarding caps Kafka fetches at roughly
 10-15 MB/s.** That starves the pipeline and understates throughput by about
 **10x** — you will measure the NAT, not the engine. `make benchmark-container`
-builds a linux sqlflow and runs it on the same docker network as the broker,
+builds a Linux `sqlflow` binary and runs it on the same docker network as the broker,
 which is the only way to get a number that reflects the engine.
 
 `make benchmark` runs the same workload from the host. It is fine for a quick
@@ -1526,7 +1526,7 @@ smoke test, but do not quote its numbers.
 make release-binaries        # artifacts land in dist/
 ```
 
-sqlflow **cannot be cross-compiled the usual way**, and it is worth
+SQLFlow **cannot be cross-compiled the usual way**, and it is worth
 understanding why before you try. The ADBC driver manager is a cgo package:
 
 - `CGO_ENABLED=0` does not merely produce a degraded binary, it **fails to
@@ -1662,7 +1662,7 @@ docker-compose -f dev/kafka-single.yml up -d
 uv run python cmd/publish-test-data.py --num-messages=5000 --topic="input-kafka-mem-iceberg"
 ```
 
-- Run sqlflow, which reads from Kafka and writes to the iceberg table locally
+- Run SQLFlow, which reads from Kafka and writes to the iceberg table locally
 ```
 PYICEBERG_HOME=$(pwd)/dev/config/iceberg \
   ./bin/sqlflow run -c dev/config/examples/kafka.mem.iceberg.yml --max-msgs=5000
