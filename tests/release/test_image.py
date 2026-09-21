@@ -1331,11 +1331,14 @@ def test_turbostats_bundle_reports_consumer_lag(image, stack):
     """
     topic = f"turbostats-lag-{int(time.time())}"
     producer = Producer({"bootstrap.servers": stack.bootstrap})
+    payload_bytes = 0
     for i in range(600):
-        producer.produce(topic, json.dumps({
+        value = json.dumps({
             "timestamp": "2026-09-01T12:00:00Z",
             "properties": {"city": "Baltimore" if i % 2 else "New York"},
-        }).encode("utf-8"))
+        }).encode("utf-8")
+        payload_bytes += len(value)
+        producer.produce(topic, value)
     producer.flush()
 
     bundle = None
@@ -1388,6 +1391,11 @@ def test_turbostats_bundle_reports_consumer_lag(image, stack):
 
     # A pipeline always has a sink, so no retries is a reading too.
     assert pipeline["sink_retry_count"] == 0, pipeline
+
+    # Payload bytes cover exactly the messages counted: every value produced,
+    # byte for byte, through a real consumer.
+    assert pipeline["message_payload_bytes"] == payload_bytes, (
+        pipeline["message_payload_bytes"], payload_bytes)
 
     # This config declares a window with late_rows: drop, and its counters are
     # present from startup, before any close. Absent would read as "nothing

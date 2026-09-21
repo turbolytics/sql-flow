@@ -56,6 +56,13 @@ type Metrics struct {
 	// cannot: a websocket or webhook source has no offsets at all, and a
 	// per-partition lag is not one number.
 	PipelineLastMessage metric.Int64Gauge
+	// MessagePayloadBytes is the bytes of every message value received, the
+	// same messages message_count counts. It is payload, and named so: it
+	// excludes keys, headers, framing and TLS, and under Kafka compression
+	// the bytes on the wire can be fewer than these. It answers what a
+	// pipeline is being asked to process, uniformly across sources. What a
+	// metered link pays is wire bytes, which only some clients expose.
+	MessagePayloadBytes metric.Int64Counter
 	// LagObserved is when consumer_lag was last recorded, as Unix seconds.
 	//
 	// Lag is recorded when a message is processed, so a consumer that stops
@@ -312,6 +319,14 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("s"),
 	); err != nil {
 		return nil, fmt.Errorf("pipeline_last_message_timestamp: %w", err)
+	}
+
+	if m.MessagePayloadBytes, err = meter.Int64Counter(
+		"message_payload_bytes",
+		metric.WithDescription("Bytes of every message value received; payload only, not keys, headers or wire framing"),
+		metric.WithUnit("By"),
+	); err != nil {
+		return nil, fmt.Errorf("message_payload_bytes: %w", err)
 	}
 
 	if m.LagObserved, err = meter.Int64Gauge(

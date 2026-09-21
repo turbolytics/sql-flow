@@ -86,6 +86,43 @@ func TestObservabilityMetrics_PublishingLagRecordsWhenItWasObserved(t *testing.T
 	assert.That(t, observed >= before)
 }
 
+// Payload bytes count every message received, the same messages
+// message_count counts, including one the handler rejects.
+//
+// Counted anywhere later -- after a write, or before --max-msgs stops the
+// loop -- the two would cover different messages, and bytes over count would
+// no longer be a message size.
+func TestObservabilityMetrics_PayloadBytesCoverTheMessagesCounted(t *testing.T) {
+	coverage.Covers(t, "observability.metrics")
+	reader := sdkmetric.NewManualReader()
+	m, err := NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	assert.NoError(t, err)
+
+	batch := []Message{{Value: []byte("12345")}, {Value: []byte("123")}, {Value: []byte("1234567")}}
+	src := &fakeSource{batches: [][]Message{batch}}
+	// --max-msgs 2 stops the loop after two of three, and message_count
+	// still counts all three that arrived.
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 100, time.Second,
+		&sync.Mutex{}, PipelineErrorPolicies{}, WithMetrics(m))
+	_, err = tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, reader.Collect(context.Background(), &rm))
+	sums := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, metric := range sm.Metrics {
+			if data, ok := metric.Data.(metricdata.Sum[int64]); ok {
+				for _, dp := range data.DataPoints {
+					sums[metric.Name] += dp.Value
+				}
+			}
+		}
+	}
+	assert.Equal(t, int64(3), sums["message_count"])
+	assert.Equal(t, int64(15), sums["message_payload_bytes"])
+}
+
 func lagPoints(t *testing.T, reader *sdkmetric.ManualReader) map[int64]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -216,4 +253,29 @@ func BenchmarkLagTableSet(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m.Lag.Set("events", 0, int64(i))
 	}
+}
+
+// BenchmarkPayloadSum is the whole per-message cost message_payload_bytes
+// adds to the consume loop: one length read and one add. The end-to-end
+// write-path benchmark cannot resolve it, because its run-to-run noise on a
+// laptop is several percent of a 160 ns message.
+//
+//	go test ./internal/core/ -bench PayloadSum -benchmem -run '^$'
+func BenchmarkPayloadSum(b *testing.B) {
+	batch := make([]Message, 500)
+	for i := range batch {
+		batch[i].Value = make([]byte, 1000)
+	}
+	var sink int64
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var payload int64
+		for j := range batch {
+			payload += int64(len(batch[j].Value))
+		}
+		sink += payload
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(len(batch)), "ns/msg")
+	_ = sink
 }
