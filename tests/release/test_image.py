@@ -1355,6 +1355,10 @@ def test_turbostats_bundle_reports_consumer_lag(image, stack):
         try:
             wait_for_logs(container, "consumer loop starting", timeout=90)
             port = container.get_exposed_port(8000)
+            # Poll until lag reads zero, not until the message count does.
+            # message_count is recorded as a fetch arrives and lag after the
+            # fetch is processed, so a bundle can carry all 600 messages next
+            # to the lag of an earlier fetch.
             deadline = time.time() + 60
             while time.time() < deadline:
                 resp = requests.get(
@@ -1362,7 +1366,7 @@ def test_turbostats_bundle_reports_consumer_lag(image, stack):
                 assert resp.status_code == 200
                 bundle = resp.json()
                 pipeline = bundle["pipeline"]
-                if "lag_max_messages" in pipeline and pipeline["message_count"] >= 600:
+                if pipeline.get("lag_max_messages") == 0 and pipeline["message_count"] >= 600:
                     break
                 time.sleep(1)
         finally:
@@ -1379,14 +1383,21 @@ def test_turbostats_bundle_reports_consumer_lag(image, stack):
     assert pipeline["lag_total_messages"] == 0, pipeline
     assert pipeline["lag_partitions"] >= 1, pipeline
     assert pipeline["lag_total_messages"] >= pipeline["lag_max_messages"]
+    # A lag reading is only as current as its date.
+    assert "lag_observed_at" in pipeline, pipeline
 
     # A pipeline always has a sink, so no retries is a reading too.
     assert pipeline["sink_retry_count"] == 0, pipeline
 
-    # The window fields travel as a group: all present or none.
-    window = ["late_rows_dropped", "late_rows_reemitted", "window_closed_count"]
-    present = [name in pipeline for name in window]
-    assert all(present) or not any(present), pipeline
+    # This config declares a window with late_rows: drop, and its counters are
+    # present from startup, before any close. Absent would read as "nothing
+    # here drops rows".
+    for name in ("late_rows_dropped", "late_rows_reemitted", "window_closed_count"):
+        assert name in pipeline, (name, pipeline)
+    assert pipeline["late_rows_dropped"] == 0, pipeline
+
+    # The window times travel together.
+    assert ("window_lag_seconds" in pipeline) == ("window_ahead_seconds" in pipeline), pipeline
 
     # No field is wider for the partitions behind it.
     assert not any(isinstance(v, (list, dict)) for v in pipeline.values()), pipeline

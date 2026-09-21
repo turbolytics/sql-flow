@@ -263,16 +263,20 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 
 	// Late rows belong to buckets that already closed. Under drop they leave
 	// now, before the close is computed, so they are never collected.
-	var lateToReemit, dropped int64
+	// lateCounted is recorded only after the commit below. It used to be
+	// recorded here, and a close that then lost a write conflict rolled the
+	// delete back while the counter kept the rows: the next poll found the
+	// same rows and counted them again, so 500 rows dropped once read as
+	// 1,000. This counter is the data-loss signal, so it counts what
+	// happened rather than what was attempted.
+	var lateToReemit, dropped, lateCounted int64
 	if hadPrevious {
 		late, _, err := queryInt64(ctx, w.conn, w.decl.countClosedSQL(previous))
 		if err != nil {
 			return fmt.Errorf("counting late rows: %w", err)
 		}
 		if late > 0 {
-			w.metrics.Late.Add(ctx, late, metric.WithAttributes(
-				attribute.String("window", w.decl.Table),
-				attribute.String("policy", string(w.decl.Late))))
+			lateCounted = late
 			if w.decl.Late == LateDrop {
 				if _, err := execRows(ctx, w.conn, w.decl.deleteClosedSQL(previous)); err != nil {
 					return fmt.Errorf("dropping late rows: %w", err)
@@ -285,9 +289,18 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 		}
 	}
 
-	watermark, moved, err := w.nextWatermark(ctx, previous, hadPrevious)
+	watermark, moved, newest, hasRows, err := w.nextWatermark(ctx, previous, hadPrevious)
 	if err != nil {
 		return err
+	}
+	if hasRows {
+		// Every poll that sees rows, not only one that commits. Rows stamped
+		// in the future are reported the moment they arrive, even if the close
+		// that would record them fails. This is an observation, not an
+		// effect: a rollback changes nothing about where the newest bucket
+		// was seen.
+		w.metrics.NewestStart.Record(ctx, newest.Unix(),
+			metric.WithAttributes(attribute.String("window", w.decl.Table)))
 	}
 	if !moved && lateToReemit == 0 && dropped == 0 {
 		return nil
@@ -319,8 +332,19 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 	}
 	committed = true
 
+	if lateCounted > 0 {
+		w.metrics.Late.Add(ctx, lateCounted, metric.WithAttributes(
+			attribute.String("window", w.decl.Table),
+			attribute.String("policy", string(w.decl.Late))))
+	}
 	w.metrics.Watermark.Record(ctx, watermark.Unix(), metric.WithAttributes(
 		attribute.String("window", w.decl.Table)))
+	// When the next close is due if the stream keeps pace with the wall
+	// clock: the bucket after the watermark closes once rows arrive a grace
+	// period past its end. Wall time beyond this is how overdue that close
+	// is, whether the stream stopped or the close did.
+	w.metrics.CloseDue.Record(ctx, watermark.Add(w.decl.Size+w.decl.Grace).Unix(),
+		metric.WithAttributes(attribute.String("window", w.decl.Table)))
 	if rows > 0 {
 		w.metrics.Closed.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("window", w.decl.Table)))
@@ -336,21 +360,23 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 // idle bound with nothing arriving it is the newest bucket's end: a stream
 // that stops closes everything it has. It never moves backwards, so a delete
 // that lowers the newest bucket changes nothing.
-func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPrevious bool) (time.Time, bool, error) {
+func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPrevious bool) (
+	watermark time.Time, moved bool, newest time.Time, hasRows bool, err error) {
+
 	newestMicros, hasRows, err := queryInt64(ctx, w.conn, w.decl.newestSQL())
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("reading the newest bucket: %w", err)
+		return time.Time{}, false, time.Time{}, false, fmt.Errorf("reading the newest bucket: %w", err)
 	}
 	if !hasRows {
-		return previous, false, nil
+		return previous, false, time.Time{}, false, nil
 	}
-	newest := time.UnixMicro(newestMicros).UTC()
+	newest = time.UnixMicro(newestMicros).UTC()
 
 	candidate := newest.Add(-w.decl.Grace)
 	if w.decl.IdleClose > 0 {
 		arrivalMicros, arrived, err := queryInt64(ctx, w.conn, lastArrivalSQL())
 		if err != nil {
-			return time.Time{}, false, fmt.Errorf("reading the last arrival: %w", err)
+			return time.Time{}, false, time.Time{}, false, fmt.Errorf("reading the last arrival: %w", err)
 		}
 		if arrived && w.now().Sub(time.UnixMicro(arrivalMicros)) >= w.decl.IdleClose {
 			if end := newest.Add(w.decl.Size); end.After(candidate) {
@@ -360,9 +386,9 @@ func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPr
 	}
 
 	if hadPrevious && !candidate.After(previous) {
-		return previous, false, nil
+		return previous, false, newest, true, nil
 	}
-	return candidate, true, nil
+	return candidate, true, newest, true, nil
 }
 
 // publish runs emit_sql over the closed rows and hands the result to the
@@ -450,6 +476,16 @@ type WindowMetrics struct {
 	Watermark metric.Int64Gauge
 	Closed    metric.Int64Counter
 	Late      metric.Int64Counter
+	// CloseDue is when the next close is due, if the stream keeps pace with
+	// the wall clock. The watermark's own age cannot say whether a window is
+	// behind, because it trails by the window's size and grace by design: a
+	// healthy hourly window reads an hour or two old while fully caught up.
+	// Wall time past CloseDue is zero while closes keep up, whatever the
+	// window's size, and grows when either the stream or the close stops.
+	CloseDue metric.Int64Gauge
+	// NewestStart is the start of the newest bucket the window holds, in
+	// event time. Ahead of wall time means rows are stamped in the future.
+	NewestStart metric.Int64Gauge
 }
 
 // NewWindowMetrics builds the instruments from a provider. A nil provider
@@ -478,5 +514,22 @@ func NewWindowMetrics(mp metric.MeterProvider, table string) WindowMetrics {
 		metric.WithDescription("Rows that arrived for a bucket that had already closed, by policy")); err != nil {
 		return NewWindowMetrics(noop.NewMeterProvider(), table)
 	}
+	if m.CloseDue, err = meter.Int64Gauge("window_close_due_seconds",
+		metric.WithDescription("When the window's next close is due at the wall clock's pace, as Unix time; wall time past this is how overdue it is"),
+		metric.WithUnit("s")); err != nil {
+		return NewWindowMetrics(noop.NewMeterProvider(), table)
+	}
+	if m.NewestStart, err = meter.Int64Gauge("window_newest_bucket_start_seconds",
+		metric.WithDescription("Start of the newest bucket the window holds, as Unix event time; ahead of wall time means rows are stamped in the future"),
+		metric.WithUnit("s")); err != nil {
+		return NewWindowMetrics(noop.NewMeterProvider(), table)
+	}
+
+	// The window exists from here, and says so. Nothing else is recorded
+	// until the first close commits, which after a start or a restart can be
+	// a poll interval away, and a reader that sees no window series concludes
+	// that nothing here drops rows -- on a pipeline configured to drop them.
+	m.Closed.Add(context.Background(), 0,
+		metric.WithAttributes(attribute.String("window", table)))
 	return m
 }

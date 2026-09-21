@@ -5,11 +5,15 @@ import (
 	"runtime"
 	"testing"
 
+	"errors"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/managers"
+	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/zeebo/assert"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 // liveHeap is the bytes still reachable after a collection.
@@ -42,28 +46,28 @@ func liveHeap() int64 {
 func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	ctx := context.Background()
-	reader, m, meter := provider(t)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := core.NewMetrics(mp)
+	assert.NoError(t, err)
 
 	for p := 0; p < 32; p++ {
-		m.ConsumerLag.Record(ctx, int64(p), lagAttrs("posts", p))
+		m.Lag.Set("posts", int32(p), int64(p))
 	}
-	late, err := meter.Int64Counter("window_late_rows")
-	assert.NoError(t, err)
-	closed, err := meter.Int64Counter("window_closed")
-	assert.NoError(t, err)
-	watermark, err := meter.Int64Gauge("window_watermark_seconds")
-	assert.NoError(t, err)
-	retries, err := meter.Int64Counter("sink_retry_count")
-	assert.NoError(t, err)
-	for _, w := range []string{"hourly", "daily"} {
-		win := attribute.String("window", w)
-		late.Add(ctx, 1, metric.WithAttributes(win, attribute.String("policy", string(managers.LateDrop))))
-		late.Add(ctx, 1, metric.WithAttributes(win, attribute.String("policy", string(managers.LateReemit))))
-		closed.Add(ctx, 1, metric.WithAttributes(win))
-		watermark.Record(ctx, 1757570000, metric.WithAttributes(win))
+	for _, name := range []string{"hourly", "daily"} {
+		window := managers.NewWindowMetrics(mp, name)
+		w := metric.WithAttributes(attribute.String("window", name))
+		window.Late.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("window", name), attribute.String("policy", string(managers.LateDrop))))
+		window.Late.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("window", name), attribute.String("policy", string(managers.LateReemit))))
+		window.Closed.Add(ctx, 1, w)
+		window.NewestStart.Record(ctx, 1757570000, w)
+		window.CloseDue.Record(ctx, 1757577200, w)
 	}
-	retries.Add(ctx, 1, metric.WithAttributes(attribute.String("sink", "postgres")))
-	retries.Add(ctx, 1, metric.WithAttributes(attribute.String("sink", "kafka")))
+	failed := errors.New("refused")
+	sinks.RetryCounter(mp, "postgres")(1, failed)
+	sinks.RetryCounter(mp, "kafka")(1, failed)
 
 	src := runSource(reader, nil)
 	const warmup, iters = 5_000, 50_000
@@ -74,7 +78,7 @@ func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 	before := liveHeap()
 	for i := 0; i < iters; i++ {
 		// The series keep moving, as they do in a live pipeline.
-		m.ConsumerLag.Record(ctx, int64(i%1000), lagAttrs("posts", i%32))
+		m.Lag.Set("posts", int32(i%32), int64(i%1000))
 		b, err := Collect(ctx, src)
 		assert.NoError(t, err)
 		if i == iters-1 {

@@ -82,28 +82,39 @@ func pipelineSection(ctx context.Context, flat map[string]int64, dim *dimensiona
 		SinkRowsWritten:  flat["pipeline_rows_written"],
 		StateCommitCount: flat["pipeline_commits"],
 		LastMessageAt:    unixTime(flat["pipeline_last_message_timestamp"]),
-		// Always present: a pipeline always has a sink, so no retries is a
-		// reading rather than a silence.
-		SinkRetryCount: dim.sinkRetries,
+		// Always sent, zero included: a pipeline always has a sink.
+		SinkRetryCount: &dim.sinkRetries,
 	}
-	if dim.lagSeen {
+	// Present once lag has been measured at all, not only while partitions
+	// are held. An instance whose partitions all moved elsewhere, or one in a
+	// group with more consumers than partitions, is still a Kafka pipeline:
+	// it reports zero partitions and zero lag, dated, rather than the silence
+	// that means it has no Kafka source.
+	if dim.lagSeen || flat["consumer_lag_observed_timestamp"] > 0 {
 		p.LagMaxMessages = &dim.lagMax
 		p.LagTotalMessages = &dim.lagTotal
 		p.LagPartitions = &dim.lagPoints
+		p.LagObservedAt = unixTime(flat["consumer_lag_observed_timestamp"])
 	}
 	if dim.windowSeen {
-		p.LateRowsDropped = &dim.lateDropped
-		p.LateRowsReemitted = &dim.lateReemitted
 		p.WindowClosedCount = &dim.windowClosed
-		if dim.watermarkSeen {
-			age := int64(sentAt.Sub(time.Unix(dim.watermarkOldest, 0)).Seconds())
-			if age < 0 {
-				// A watermark ahead of now is a clock artefact, not a
-				// negative age.
-				age = 0
-			}
-			p.WatermarkLagSeconds = &age
+		// A policy with no field of its own leaves both out. Reporting the
+		// two known ones would state a count that omits rows, on the field
+		// an operator reads for data loss.
+		if !dim.lateUnknownPolicy {
+			p.LateRowsDropped = &dim.lateDropped
+			p.LateRowsReemitted = &dim.lateReemitted
 		}
+	}
+	if dim.timesSeen {
+		// Neither is clamped to hide a fault. Below zero, the next close is
+		// not yet due, which is a window keeping up and reads as no lag. Rows
+		// stamped in the future are the other field's to report, and below
+		// zero there means they are not.
+		lag := nonNegative(sentAt.Unix() - dim.dueOldest)
+		ahead := nonNegative(dim.newestStartNewest - sentAt.Unix())
+		p.WindowLagSeconds = &lag
+		p.WindowAheadSeconds = &ahead
 	}
 	if src.Stats != nil {
 		st, err := src.Stats(ctx)
@@ -230,12 +241,27 @@ type dimensional struct {
 	lagPoints   int
 	sinkRetries int64
 
-	windowSeen      bool
-	lateDropped     int64
-	lateReemitted   int64
-	windowClosed    int64
-	watermarkOldest int64
-	watermarkSeen   bool
+	windowSeen        bool
+	lateDropped       int64
+	lateReemitted     int64
+	lateUnknownPolicy bool
+	windowClosed      int64
+
+	// The most overdue close and the newest bucket across windows. Seen
+	// flags rather than zeros, because zero here is the Unix epoch and an
+	// unset value would read as fifty years of lag.
+	timesSeen         bool
+	dueSeen           bool
+	dueOldest         int64
+	startSeen         bool
+	newestStartNewest int64
+}
+
+func nonNegative(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
@@ -263,14 +289,25 @@ func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
 			d.lateDropped += v
 		case "reemit":
 			d.lateReemitted += v
+		default:
+			// An outcome this contract has no field for. It cannot join
+			// either count without making that count false.
+			d.lateUnknownPolicy = true
 		}
-	case "window_watermark_seconds":
-		// The oldest watermark across windows, which is the one furthest
-		// behind, so the age derived from it is the worst of them.
+	case "window_close_due_seconds":
+		// The earliest due close is the most overdue window.
 		d.windowSeen = true
-		if !d.watermarkSeen || v < d.watermarkOldest {
-			d.watermarkOldest = v
+		if !d.dueSeen || v < d.dueOldest {
+			d.dueOldest = v
 		}
-		d.watermarkSeen = true
+		d.dueSeen = true
+		d.timesSeen = d.dueSeen && d.startSeen
+	case "window_newest_bucket_start_seconds":
+		d.windowSeen = true
+		if !d.startSeen || v > d.newestStartNewest {
+			d.newestStartNewest = v
+		}
+		d.startSeen = true
+		d.timesSeen = d.dueSeen && d.startSeen
 	}
 }

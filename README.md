@@ -1294,6 +1294,7 @@ open for longer than a batch, and memory grows until it closes.
 |---|---|---|---|
 | `source_read_latency` | `source_read_latency_seconds` | histogram | — |
 | `consumer_lag` | `consumer_lag_messages` | gauge | `topic`, `partition` |
+| `consumer_lag_observed_timestamp` | `consumer_lag_observed_timestamp_seconds` | gauge | — |
 
 **Reference tables**, recorded once at startup for each table the handler SQL
 joins, with or without a state path:
@@ -1309,9 +1310,24 @@ joins, with or without a state path:
 | `window_watermark_seconds` | `window_watermark_seconds` | gauge | `window` |
 | `window_closed` | `window_closed_total` | counter | `window` |
 | `window_late_rows` | `window_late_rows_total` | counter | `window`, `policy` |
+| `window_close_due_seconds` | `window_close_due_seconds` | gauge | `window` |
+| `window_newest_bucket_start_seconds` | `window_newest_bucket_start_seconds` | gauge | `window` |
 
-Wall time minus `window_watermark_seconds` is how far the stream's clock
-trails, which is the number to size `grace_seconds` from.
+`window_closed_total` is present from startup at zero, so a windowed pipeline
+is never mistaken for one without windows before its first close.
+`window_late_rows_total` counts only after the close that dropped or reemitted
+the rows commits.
+
+Wall time past `window_close_due_seconds` is how overdue the window's next
+close is: zero while closes keep up, whatever the window's size, and growing
+when the stream's clock stands still or closes stop committing. It is the
+number to alert on. `window_newest_bucket_start_seconds` ahead of wall time
+means rows are stamped in the future, which moves the watermark past every
+correctly-timed row and, under `late_rows: drop`, deletes them; it is updated
+on every poll that finds rows, even one whose close fails.
+`window_watermark_seconds` trails the newest bucket by `grace_seconds` by
+design, which makes its age the number to size `grace_seconds` from rather
+than one to alert on.
 
 **Durable state**, present only when the pipeline declares a state path. An
 absent series and an empty state are different facts, so a pipeline with state
@@ -1340,7 +1356,11 @@ message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 
 `consumer_lag` is the one to alert on. It is the broker's high watermark minus
 the offset the pipeline has finished with, so it measures the work the
-pipeline still owes rather than what its consumer group has been told.
+pipeline still owes rather than what its consumer group has been told. It is
+measured when a message is processed, so read it with
+`consumer_lag_observed_timestamp`: a consumer cut off from its brokers keeps
+its last reading while the backlog grows. It covers only the partitions this
+instance holds, and a partition taken away in a rebalance leaves the series.
 
 ### Reading the row counts
 

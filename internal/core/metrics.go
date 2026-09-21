@@ -31,7 +31,10 @@ type Metrics struct {
 	StateSizeBytes     metric.Int64Gauge
 	StateTableRows     metric.Int64Gauge
 	ReferenceTableRows metric.Int64Gauge
-	ConsumerLag        metric.Int64Gauge
+	// Lag holds each partition's consumer lag, which the consumer_lag gauge
+	// observes. A table rather than a synchronous gauge, so a partition that
+	// moves to another instance can be forgotten.
+	Lag *LagTable
 
 	// Flat twins of the instruments above that carry attributes.
 	//
@@ -53,6 +56,14 @@ type Metrics struct {
 	// cannot: a websocket or webhook source has no offsets at all, and a
 	// per-partition lag is not one number.
 	PipelineLastMessage metric.Int64Gauge
+	// LagObserved is when consumer_lag was last recorded, as Unix seconds.
+	//
+	// Lag is recorded when a message is processed, so a consumer that stops
+	// receiving -- cut off from its brokers, fenced out of its group, stuck
+	// in a rebalance -- leaves the gauge at its last value, usually zero,
+	// while the real backlog grows. The reading is only as good as its age,
+	// and this is its age.
+	LagObserved metric.Int64Gauge
 }
 
 // latencyBuckets is the boundary set every latency histogram declares.
@@ -204,10 +215,12 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		return nil, fmt.Errorf("phase_duration: %w", err)
 	}
 
-	if m.ConsumerLag, err = meter.Int64Gauge(
+	m.Lag = newLagTable()
+	if _, err = meter.Int64ObservableGauge(
 		"consumer_lag",
 		metric.WithDescription("Messages between the last one processed and the partition's high watermark"),
 		metric.WithUnit("messages"),
+		metric.WithInt64Callback(m.Lag.observe),
 	); err != nil {
 		return nil, fmt.Errorf("consumer_lag: %w", err)
 	}
@@ -299,6 +312,14 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("s"),
 	); err != nil {
 		return nil, fmt.Errorf("pipeline_last_message_timestamp: %w", err)
+	}
+
+	if m.LagObserved, err = meter.Int64Gauge(
+		"consumer_lag_observed_timestamp",
+		metric.WithDescription("When consumer_lag was last recorded, as unix seconds; a lag reading is only as current as this"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("consumer_lag_observed_timestamp: %w", err)
 	}
 
 	return &m, nil

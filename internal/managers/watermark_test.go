@@ -197,6 +197,88 @@ func TestManagerWindow_LateRowsFollowThePolicy(t *testing.T) {
 	}
 }
 
+// Late rows are counted once, by the close that commits their fate.
+//
+// The counter used to be incremented before the close committed. A close
+// that then failed rolled the delete back and kept the count, so the next
+// poll found the same rows and counted them again: two rows dropped once read
+// as four. This counter is the data-loss signal the TurboStats bundle
+// reports, so it counts what happened rather than what was attempted.
+func TestManagerWindow_LateRowsAreCountedOnlyWhenTheCloseCommits(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	now := live(d, t)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	decl := testDecl()
+	decl.Late = LateDrop
+
+	first := newTestWatermark(t, d, decl, &recordingSink{}, now, WithMeterProvider(mp))
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assert.NoError(t, first.Poll(ctx))
+
+	// Two late rows for the closed bucket, and a newer bucket so the next
+	// close has something to publish -- to a sink that is down.
+	insertBucket(t, d.pipeline, 0, "late", 1)
+	insertBucket(t, d.pipeline, 0, "late", 1)
+	insertBucket(t, d.pipeline, 4, "NYC", 1)
+	failing := newTestWatermark(t, d, decl, &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	assert.Error(t, failing.Poll(ctx))
+	late, _ := metricValue(t, reader, "window_late_rows")
+	assert.Equal(t, int64(0), late)
+
+	retry := newTestWatermark(t, d, decl, &recordingSink{}, now, WithMeterProvider(mp))
+	assert.NoError(t, retry.Poll(ctx))
+	assert.Equal(t, int64(2), counterValue(t, reader, "window_late_rows"))
+}
+
+// The newest bucket is reported on every poll that finds rows, including one
+// whose close fails; the close that is due moves only when a close commits.
+//
+// Rows stamped in the future are therefore visible the moment they arrive,
+// even while the sink the close publishes to is down. And a close that keeps
+// failing leaves its due time where it was, so the bundle's window lag grows
+// rather than reading healthy while nothing is published.
+func TestManagerWindow_TheNewestBucketIsReportedEvenWhenTheCloseFails(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	now := live(d, t)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	decl := testDecl()
+
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	failing := newTestWatermark(t, d, decl, &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	assert.Error(t, failing.Poll(ctx))
+
+	assert.Equal(t, bucket(2).Unix(), gaugeValue(t, reader, "window_newest_bucket_start_seconds"))
+	_, due := metricValue(t, reader, "window_close_due_seconds")
+	assert.That(t, !due)
+
+	ok := newTestWatermark(t, d, decl, &recordingSink{}, now, WithMeterProvider(mp))
+	assert.NoError(t, ok.Poll(ctx))
+	watermark := gaugeValue(t, reader, "window_watermark_seconds")
+	assert.Equal(t, watermark+int64((decl.Size+decl.Grace).Seconds()),
+		gaugeValue(t, reader, "window_close_due_seconds"))
+}
+
+// A window reports that it exists before its first close.
+func TestManagerWindow_ExistsInTheMetricsBeforeItsFirstClose(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	NewWindowMetrics(mp, "hourly")
+	closed, ok := metricValue(t, reader, "window_closed")
+	assert.That(t, ok)
+	assert.Equal(t, int64(0), closed)
+}
+
 // reemit runs emit_sql over the late rows alone. The bucket's earlier rows
 // were deleted when it closed, so a sum over the bucket after a late row is
 // the late rows' sum, not the bucket's total. A sink that replaces the

@@ -10,6 +10,8 @@ import (
 
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/managers"
+	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/zeebo/assert"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -211,26 +213,24 @@ func TestCollect_CarriesTheStaticFactsAndTheRuntime(t *testing.T) {
 // spec only estimated is one anybody can read.
 func TestCollect_ARunBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
-	reader, m, meter := provider(t)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := core.NewMetrics(mp)
+	assert.NoError(t, err)
 	ctx := context.Background()
 	for partition := 0; partition < 32; partition++ {
-		m.ConsumerLag.Record(ctx, 184203, lagAttrs("bluesky.posts", partition))
+		m.Lag.Set("bluesky.posts", int32(partition), 184203)
 	}
-	late, err := meter.Int64Counter("window_late_rows")
-	assert.NoError(t, err)
-	late.Add(ctx, 184203, metric.WithAttributes(
+	window := managers.NewWindowMetrics(mp, "posts_by_lang")
+	w := metric.WithAttributes(attribute.String("window", "posts_by_lang"))
+	window.Late.Add(ctx, 184203, metric.WithAttributes(
 		attribute.String("window", "posts_by_lang"), attribute.String("policy", "drop")))
-	late.Add(ctx, 184203, metric.WithAttributes(
+	window.Late.Add(ctx, 184203, metric.WithAttributes(
 		attribute.String("window", "posts_by_lang"), attribute.String("policy", "reemit")))
-	closed, err := meter.Int64Counter("window_closed")
-	assert.NoError(t, err)
-	closed.Add(ctx, 1842033, metric.WithAttributes(attribute.String("window", "posts_by_lang")))
-	watermark, err := meter.Int64Gauge("window_watermark_seconds")
-	assert.NoError(t, err)
-	watermark.Record(ctx, 1757570000, metric.WithAttributes(attribute.String("window", "posts_by_lang")))
-	retries, err := meter.Int64Counter("sink_retry_count")
-	assert.NoError(t, err)
-	retries.Add(ctx, 1842, metric.WithAttributes(attribute.String("sink", "postgres")))
+	window.Closed.Add(ctx, 1842033, w)
+	window.NewestStart.Record(ctx, 1757570000, w)
+	window.CloseDue.Record(ctx, 1757577200, w)
+	sinks.RetryCounter(mp, "postgres")(1, errors.New("refused"))
 	// Nine-digit totals, the size a year of the Bluesky firehose reaches.
 	m.MessageCount.Add(ctx, 184203311)
 	m.HandlerRowsRead.Add(ctx, 184203311)
@@ -239,6 +239,7 @@ func TestCollect_ARunBundleStaysUnderTheCeiling(t *testing.T) {
 	m.PipelineRowsAccepted.Add(ctx, 184203311)
 	m.PipelineRowsWritten.Add(ctx, 184203311)
 	m.PipelineLastMessage.Record(ctx, 1757570000)
+	m.LagObserved.Record(ctx, 1757570000)
 	size := int64(4194304)
 	stats := func(context.Context) (*core.StateStats, error) { return &core.StateStats{SizeBytes: size}, nil }
 
@@ -392,7 +393,10 @@ func TestCollect_LastActivityIsTheLaterSectionTimestamp(t *testing.T) {
 	assert.Equal(t, int64(1757570500), b.LastActivityAt.Unix())
 }
 
-func TestCollect_AServeBundleStaysUnderTheCeiling(t *testing.T) {
+// The serve section is unchanged by the dimensional fields, so it keeps the
+// tighter guard it had. The 4 KiB ceiling is the whole contract's smoke
+// alarm; this section growing past 1 KiB would still be news.
+func TestCollect_AServeBundleStaysUnderOneKiB(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats.serve")
 	reader, meter := serveProvider(t)
 	for _, name := range []string{"serve_requests", "serve_cache_hits", "serve_cache_misses"} {
@@ -419,5 +423,5 @@ func TestCollect_AServeBundleStaysUnderTheCeiling(t *testing.T) {
 	b.Exit = &Exit{Reason: "SIGTERM", Code: 0}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
-	assert.That(t, len(raw) < 4<<10)
+	assert.That(t, len(raw) < 1<<10)
 }

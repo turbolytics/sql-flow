@@ -104,12 +104,16 @@ type Pipeline struct {
 	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
 
 	// SinkRetryCount is every sink write retried after a failure, summed
-	// across sinks. Always present: a pipeline always has a sink, so zero
-	// retries is a fact rather than a silence.
-	SinkRetryCount int64 `json:"sink_retry_count"`
+	// across sinks. An engine that reports it always sends it, zero included.
+	//
+	// A pointer, so an engine that predates the field reads as unknown. As a
+	// plain integer it decoded to zero from a bundle that never carried it,
+	// and an old instance whose sink retried constantly read as one that
+	// never had.
+	SinkRetryCount *int64 `json:"sink_retry_count,omitempty"`
 
 	// Lag is how far behind the source this pipeline is, summarized across
-	// every topic and partition it holds.
+	// every topic and partition it has read.
 	//
 	// Pointers, not omitempty on a value. A pipeline that has caught up
 	// reports zero, and a pipeline with no Kafka source reports nothing, and
@@ -124,9 +128,16 @@ type Pipeline struct {
 	LagMaxMessages   *int64 `json:"lag_max_messages,omitempty"`
 	LagTotalMessages *int64 `json:"lag_total_messages,omitempty"`
 	LagPartitions    *int   `json:"lag_partitions,omitempty"`
+	// LagObservedAt is when the lag above was last measured, and a receiver
+	// must read the two together. Lag is measured when a message is
+	// processed, so a consumer that stops receiving keeps its last reading,
+	// usually zero, while the backlog grows behind it. SentAt minus this is
+	// how old the reading is.
+	LagObservedAt *time.Time `json:"lag_observed_at,omitempty"`
 
-	// The window fields travel as a group: all four are present when this
-	// pipeline runs any window, and all four are absent when it runs none.
+	// The three window counters travel as a group: all present when this
+	// pipeline runs any window, from the moment it starts, and all absent
+	// when it runs none.
 	//
 	// That is what makes LateRowsDropped readable. It counts rows the engine
 	// deleted because they arrived after the watermark, which is silent data
@@ -136,15 +147,32 @@ type Pipeline struct {
 	//
 	// Dropped and reemitted are separate fields because the policy that
 	// splits them is an outcome, not a shard: one number loses data and the
-	// other does not, and a sum of the two is true of neither.
+	// other does not, and a sum of the two is true of neither. Both are
+	// absent if a window reports a policy this contract has no field for,
+	// because a count that leaves some rows out is worse than none.
 	LateRowsDropped   *int64 `json:"late_rows_dropped,omitempty"`
 	LateRowsReemitted *int64 `json:"late_rows_reemitted,omitempty"`
 	WindowClosedCount *int64 `json:"window_closed_count,omitempty"`
-	// WatermarkLagSeconds is how far behind the oldest watermark is at
-	// SentAt. The raw watermark is a Unix second that means nothing without
-	// the read time, and both clocks are this process's, so the subtraction
-	// carries no skew.
-	WatermarkLagSeconds *int64 `json:"watermark_lag_seconds,omitempty"`
+
+	// WindowLagSeconds and WindowAheadSeconds place the windows against this
+	// process's clock. Both are present once any window has closed or held
+	// rows, and both clocks are this process's, so neither carries skew.
+	//
+	// WindowLagSeconds is how overdue the most overdue window's next close
+	// is: wall time minus the watermark, the window's size and its grace
+	// period. It is zero while closes keep up, whatever the window's size,
+	// and it grows when the stream's clock stands still or when closes stop
+	// committing. The watermark's plain age could not say this: it trails by
+	// size and grace by design, so a healthy hourly window read an hour or
+	// two behind, and a stalled one-minute window hid behind it.
+	//
+	// WindowAheadSeconds is how far the newest bucket starts beyond now, for
+	// the window furthest ahead. It is zero unless rows are stamped in the
+	// future. That is a fault and never an artefact: one device with a fast
+	// clock moves the watermark ahead of every honest row, and under a drop
+	// policy each of those is then late and deleted.
+	WindowLagSeconds   *int64 `json:"window_lag_seconds,omitempty"`
+	WindowAheadSeconds *int64 `json:"window_ahead_seconds,omitempty"`
 }
 
 // Serve carries the dataset API's totals since Process.StartedAt.

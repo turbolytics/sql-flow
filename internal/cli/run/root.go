@@ -461,6 +461,12 @@ func NewCommand() *cobra.Command {
 				// Returned as-is: the code already names the subsystem.
 				return err
 			}
+			// A source whose partitions can move tells the lag table which it
+			// holds, so a partition taken away in a rebalance stops being
+			// reported here while another instance reports it too.
+			if owner, ok := src.(core.PartitionOwner); ok {
+				owner.OnPartitions(pipelineMetrics.Lag.Assigned, pipelineMetrics.Lag.Released)
+			}
 
 			// Resume where the durable state left off. The state database is
 			// the source of truth; a disagreement with Kafka is resolved in
