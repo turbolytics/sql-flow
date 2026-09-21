@@ -230,8 +230,8 @@ storage. Measured against the running control plane, it does not:
 | `run` bundle, websocket source, no windows | 721 |
 | Average raw JSON across 3,576 stored bundles | 485 |
 | Average **stored** size of the same `doc` column | **588** |
-| `run` bundle with these fields: 32 partitions, windows, a retrying sink | 885 |
-| Every field of both sections at its widest value | 1,816 |
+| `run` bundle with these fields: 32 partitions, windows, a retrying sink | 921 |
+| Every field of both sections at its widest value | 1,853 |
 
 The last two are measured by tests, not estimated. The 32-partition bundle is
 no wider than a one-partition bundle, which is the shape invariant doing its
@@ -261,9 +261,9 @@ Three consequences, none of which belong in this contract:
   changes nothing about the row.
 
 There is one reader for whom bytes per heartbeat is the real cost, and it is
-not the control plane: an instance on a metered or constrained link. At 885
+not the control plane: an instance on a metered or constrained link. At 921
 bytes the default 60s interval costs about 1.3 MB a day and a 10s interval
-about 7.6 MB, before HTTP and TLS overhead of the same order. That is the
+about 8.0 MB, before HTTP and TLS overhead of the same order. That is the
 strongest argument for the shape invariant below, stronger than storage ever
 was: a map keyed by partition would have put the broker's partition count on
 that link every interval. It also makes compressing the *request* worthwhile
@@ -276,6 +276,30 @@ field at its widest guards the shape. The
 invariant that matters is not a byte count but a shape: **no field's presence
 or repetition depends on data cardinality.** A reviewer can check that by
 reading the struct, which a byte count cannot.
+
+## Bytes read
+
+`message_payload_bytes` is the bytes of every message value received, added
+for instances on constrained links, where volume is the cost. It is not
+dimensional, so it sits outside this amendment's rule, but it ships into the
+same v1.
+
+| Field | Type | From |
+|---|---|---|
+| `message_payload_bytes` | int64 | `message_payload_bytes`, flat |
+
+It counts the same messages `message_count` counts, at the same point --
+received, before `--max-msgs` or a rejected message can drop one -- so the two
+divide to a true average message size. It is payload and named so: keys,
+headers, framing and TLS are excluded, and under Kafka compression the wire
+carries fewer bytes. Wire bytes are what a metered link pays, only some
+clients expose them, and they would be a different field.
+
+Its cost on the consume loop is one length read and one add per message,
+measured in isolation at 0.38 ns and no allocation. The end-to-end write-path
+benchmark cannot resolve that: its run-to-run noise on a laptop is several
+percent of a 160 ns message. It is a pointer in the Go type, so an engine that
+predates it reads as unknown rather than as a pipeline that received nothing.
 
 ## Testing
 
@@ -347,15 +371,10 @@ point once in `walk`; the aggregates accumulate in that walk.
   alike. Measuring lag while nothing arrives means asking the broker for each
   held partition's high watermark on a timer, a round trip this change does
   not add. Until then a receiver should show old lag as old, not as current.
-- **Byte volume.** `bytes_read` and `bytes_written` will be added, most of all
-  for an instance on a constrained link, and they are not here because nothing
-  measures them: unlike every field above, this is new instrumentation on the
-  consume loop rather than a series the bundle dropped, so it needs the
-  write-path benchmark as a gate. The definition has to be settled first.
-  Payload bytes are uniform across sources and nearly free, but exclude
-  framing and TLS, and under Kafka compression the wire can be smaller than
-  the payload. Wire bytes are what a metered link pays, and only some clients
-  expose them. Whichever ships must be named for what it is.
+- **Bytes written.** The sink interface takes an Arrow table, so the core
+  never sees bytes, and each sink encodes differently -- Kafka JSON, a
+  Postgres COPY stream, ClickHouse's own format. It needs an optional sink
+  interface and a definition of "bytes" per sink before any code.
 - **A freshness probe.** Every number in the bundle is the engine attesting
   about itself. None of them can say the output arrived: a sink that
   acknowledges and loses, or a destination nobody can read, looks healthy from

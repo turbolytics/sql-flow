@@ -133,6 +133,7 @@ func exportedNames(t *testing.T) []string {
 	m.PhaseDuration.Record(ctx, 1)
 	m.Lag.Set("events", 0, 1)
 	m.LagObserved.Record(ctx, 1)
+	m.MessagePayloadBytes.Add(ctx, 1)
 	m.StateCommitLatency.Record(ctx, 1)
 	m.StateCommitCount.Add(ctx, 1)
 	m.StateSizeBytes.Record(ctx, 1)
@@ -211,6 +212,7 @@ func TestExportedSeriesNames(t *testing.T) {
 		"handler_checkpoints_skipped_total",
 		"handler_rows_read_total",
 		"message_count_messages_total",
+		"message_payload_bytes_total",
 		"phase_duration_seconds",
 		"pipeline_commits_total",
 		"pipeline_errors_total",
