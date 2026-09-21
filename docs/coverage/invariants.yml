@@ -507,6 +507,25 @@ invariants:
     requires: []
     enforced: true
 
+  # The late-row counter is the data-loss signal the TurboStats bundle reports
+  # as late_rows_dropped, so it holds to what sink_rows_written holds to:
+  # counted when the outcome is durable, never when it is attempted. It was
+  # incremented before the close committed, and a close that then failed
+  # rolled its delete back while the count stayed, so the next close counted
+  # the same rows again.
+  - id: manager.late.counted_once
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      A late row is counted once, when the close that dropped or reemitted it
+      commits. A close that fails counts nothing; the close that later settles
+      those rows counts them.
+    verified_by: harness
+    requires: []
+    enforced: true
+    violated_once: ["#354"]
+
   - id: manager.drain.bounded
     family: lifecycle
     class: liveness

@@ -27,7 +27,10 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // Manager is what a subject builds: the poll loop, and one poll of it.
@@ -77,6 +80,22 @@ type ManagerSubject struct {
 	// whose commit calls hold first. By then the close has written its
 	// delete and its watermark and committed neither.
 	HoldCommit func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, hold func()) Manager
+
+	// Metered builds like New, polling only when asked, recording its
+	// metrics on the given provider so the harness can read what the manager
+	// counted. Optional, with SeedNewer and LateInstrument: a subject without
+	// all three skips the counted-once claim.
+	Metered func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, mp metric.MeterProvider) Manager
+
+	// SeedNewer adds a bucket newer than every one a manager has closed,
+	// which the next poll closes and publishes. Beside late rows it makes a
+	// close that has already counted them reach the sink, so a sink that
+	// refuses the flush rolls the close back after the count.
+	SeedNewer func(t *testing.T)
+
+	// LateInstrument is the counter the manager records late rows on. The
+	// harness sums it across attributes.
+	LateInstrument string
 }
 
 // Managers proves every manager invariant against the subject.
@@ -123,6 +142,7 @@ const (
 	watermarkNeverRegress  = "manager.watermark.never_regresses"
 	closeCommittedRowsOnly = "manager.close.committed_rows_only"
 	latePolicyHolds        = "manager.late.policy_holds"
+	lateCountedOnce        = "manager.late.counted_once"
 	batchIndependentOfIO   = "pipeline.batch.independent_of_window_io"
 )
 
@@ -149,6 +169,7 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	regress := verdict{invariant: watermarkNeverRegress}
 	committedOnly := verdict{invariant: closeCommittedRowsOnly}
 	late := verdict{invariant: latePolicyHolds}
+	countedOnce := verdict{invariant: lateCountedOnce}
 	independent := verdict{invariant: batchIndependentOfIO}
 
 	if err := checkDeleteAfterFlush(t, s); err != nil {
@@ -178,6 +199,12 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	if err := checkLatePolicyHolds(t, s); err != nil {
 		late.failure = err.Error()
 	}
+	if s.Metered == nil || s.SeedNewer == nil || s.LateInstrument == "" {
+		countedOnce.skipped = s.Integration + " cannot report what it counted; " +
+			"supply Metered, SeedNewer and LateInstrument"
+	} else if err := checkLateCountedOnce(t, s); err != nil {
+		countedOnce.failure = err.Error()
+	}
 	if s.Batch == nil || s.HoldCommit == nil {
 		independent.skipped = s.Integration + " cannot run a batch beside a " +
 			"held close; supply Batch and HoldCommit"
@@ -186,7 +213,7 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	}
 
 	return []verdict{afterFlush, onFailure, eventually, exits, bounded, regress,
-		committedOnly, late, independent}
+		committedOnly, late, countedOnce, independent}
 }
 
 // newManagerRun seeds the table and builds the manager on a recording sink.
@@ -526,6 +553,90 @@ func checkLatePolicyHolds(t *testing.T, s ManagerSubject) error {
 				return fmt.Errorf("reemit: %d late rows are still in the table after "+
 					"being published", left)
 			}
+		}
+	}
+	return nil
+}
+
+// lateRows is how many late rows the counted-once check writes.
+const lateRows = 3
+
+// checkLateCountedOnce proves the late-row counter counts what happened, not
+// what was attempted, under both policies.
+//
+// A close counts late rows, then fails -- here the sink refuses the flush of a
+// newer bucket -- and rolls back, restoring the rows it dropped or reemitted.
+// The counter must still read zero. The close that later succeeds counts the
+// same rows, once. Counted before the commit, the failed close kept its count
+// and the next one added the same rows again: under drop, the data-loss
+// counter read twice the rows that were lost.
+func checkLateCountedOnce(t *testing.T, s ManagerSubject) error {
+	t.Helper()
+	for _, policy := range []string{"drop", "reemit"} {
+		reader := sdkmetric.NewManualReader()
+		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+		counted := func() (int64, error) {
+			var rm metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &rm); err != nil {
+				return 0, err
+			}
+			var total int64
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					if m.Name != s.LateInstrument {
+						continue
+					}
+					if sum, ok := m.Data.(metricdata.Sum[int64]); ok {
+						for _, dp := range sum.DataPoints {
+							total += dp.Value
+						}
+					}
+				}
+			}
+			return total, nil
+		}
+		poll := func(fail bool) error {
+			budget := core.NewDrainBudget(core.DefaultDrainDeadline)
+			defer budget.Stop()
+			sink := newRecordingSink(&Recorder{}, nil, noop.NewMeterProvider())
+			sink.fail = fail
+			return s.Metered(t, sink.counted, budget, policy, mp).Poll(context.Background())
+		}
+
+		s.Seed(t, seededWindows)
+		if err := poll(false); err != nil {
+			return fmt.Errorf("%s: the first close failed: %v", policy, err)
+		}
+
+		s.SeedLate(t, lateRows)
+		s.SeedNewer(t)
+		if err := poll(true); err == nil {
+			return fmt.Errorf("%s: a close whose sink refused the flush reported success", policy)
+		}
+		n, err := counted()
+		if err != nil {
+			return fmt.Errorf("%s: reading %s: %v", policy, s.LateInstrument, err)
+		}
+		if n != 0 {
+			return fmt.Errorf(
+				"%s: a close that failed and rolled back counted %d late rows, want 0. "+
+					"The rows are back in the table, and the next close counts them again",
+				policy, n)
+		}
+
+		if err := poll(false); err != nil {
+			return fmt.Errorf("%s: the close after the failure failed: %v", policy, err)
+		}
+		n, err = counted()
+		if err != nil {
+			return fmt.Errorf("%s: reading %s: %v", policy, s.LateInstrument, err)
+		}
+		if n != lateRows {
+			return fmt.Errorf("%s: %d late rows were counted, want %d: each late row "+
+				"counts once, when the close that settled it commits", policy, n, lateRows)
+		}
+		if left := s.Remaining(t); left != 0 {
+			return fmt.Errorf("%s: %d rows are still in the table after the close", policy, left)
 		}
 	}
 	return nil
