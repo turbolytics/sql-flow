@@ -3,7 +3,6 @@ package turbostats
 import (
 	"context"
 	"runtime"
-	"runtime/debug"
 	"testing"
 
 	"github.com/turbolytics/sql-flow/internal/coverage"
@@ -13,13 +12,20 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-func settled(t *testing.T) int64 {
-	t.Helper()
+// liveHeap is the bytes still reachable after a collection.
+//
+// Not resident memory, which the handler leak test reads. That test needs it
+// because its leak is native, across the ADBC boundary, where the Go heap
+// sees nothing. The aggregation here is pure Go, so a leak in it is a
+// reachable object, and the live heap counts those exactly. Resident memory
+// under the race detector wandered 1.3 MiB either way over the same run,
+// which is the size of the signal.
+func liveHeap() int64 {
 	runtime.GC()
-	debug.FreeOSMemory()
-	n, err := ResidentAnonBytes()
-	assert.NoError(t, err)
-	return n
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	return int64(ms.HeapAlloc)
 }
 
 // Collect does not grow the process, however often it runs.
@@ -27,15 +33,14 @@ func settled(t *testing.T) int64 {
 // A reporter collects for weeks and a control plane may poll the route every
 // second, so a leak here is linear in collects rather than in messages. A
 // twenty-minute soak sees about a thousand of them and cannot tell 0.05 MiB a
-// minute from its own noise. This runs two hundred thousand, which is four
-// months of a minute interval, over every attributed series the bundle
-// summarizes: 32 lag partitions, two windows, late rows under both policies,
-// and two sinks.
+// minute from its own noise. This runs fifty thousand, which is five weeks of
+// a minute interval, over every attributed series the bundle summarizes: 32
+// lag partitions, two windows, late rows under both policies, and two sinks.
+//
+// It does not skip under -short. CI runs only -short and TestIntegration, so
+// a skip here would be a test nothing ever runs.
 func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
-	if testing.Short() {
-		t.Skip("volume test")
-	}
 	ctx := context.Background()
 	reader, m, meter := provider(t)
 
@@ -61,12 +66,12 @@ func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 	retries.Add(ctx, 1, metric.WithAttributes(attribute.String("sink", "kafka")))
 
 	src := runSource(reader, nil)
-	const warmup, iters = 5_000, 200_000
+	const warmup, iters = 5_000, 50_000
 	for i := 0; i < warmup; i++ {
 		_, err := Collect(ctx, src)
 		assert.NoError(t, err)
 	}
-	before := settled(t)
+	before := liveHeap()
 	for i := 0; i < iters; i++ {
 		// The series keep moving, as they do in a live pipeline.
 		m.ConsumerLag.Record(ctx, int64(i%1000), lagAttrs("posts", i%32))
@@ -77,13 +82,14 @@ func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 			assert.Equal(t, int64(2), *b.Pipeline.LateRowsDropped)
 		}
 	}
-	after := settled(t)
+	after := liveHeap()
 
 	growth := after - before
-	t.Logf("resident %d KiB before, %d KiB after %d collects: %+d KiB",
+	t.Logf("live heap %d KiB before, %d KiB after %d collects: %+d KiB",
 		before>>10, after>>10, iters, growth>>10)
-	// A leak of even 100 bytes a collect would be 19 MiB here.
-	const limit = 4 << 20
+	// Retaining one summary a collect is 160 bytes each, 7.6 MiB here. The
+	// live heap after a collection moves by kilobytes.
+	const limit = 1 << 20
 	if growth > limit {
 		t.Fatalf("process grew %d KiB over %d collects; Collect is retaining memory", growth>>10, iters)
 	}
