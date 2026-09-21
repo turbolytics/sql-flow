@@ -90,13 +90,26 @@ type Process struct {
 
 // Pipeline carries the consume loop's totals since Process.StartedAt.
 type Pipeline struct {
-	MessageCount     int64 `json:"message_count"`
-	HandlerRowsRead  int64 `json:"handler_rows_read"`
-	ErrorCount       int64 `json:"error_count"`
-	SinkFlushCount   int64 `json:"sink_flush_count"`
-	SinkRowsAccepted int64 `json:"sink_rows_accepted"`
-	SinkRowsWritten  int64 `json:"sink_rows_written"`
-	StateCommitCount int64 `json:"state_commit_count"`
+	MessageCount int64 `json:"message_count"`
+	// MessagePayloadBytes is the bytes of every message value received,
+	// the same messages MessageCount counts, so the two divide to a true
+	// average message size.
+	//
+	// Payload, and named so. It excludes keys, headers, framing and TLS, and
+	// under Kafka compression the wire carries fewer bytes than this. It is
+	// what the pipeline is asked to process, measured the same way for every
+	// source. What a constrained or metered link pays is wire bytes, which
+	// only some clients expose and which would be a different field.
+	//
+	// A pointer, so an engine that predates it reads as unknown rather than
+	// as a pipeline that received nothing.
+	MessagePayloadBytes *int64 `json:"message_payload_bytes,omitempty"`
+	HandlerRowsRead     int64  `json:"handler_rows_read"`
+	ErrorCount          int64  `json:"error_count"`
+	SinkFlushCount      int64  `json:"sink_flush_count"`
+	SinkRowsAccepted    int64  `json:"sink_rows_accepted"`
+	SinkRowsWritten     int64  `json:"sink_rows_written"`
+	StateCommitCount    int64  `json:"state_commit_count"`
 	// A pointer so a pipeline with no state path omits the field: absent
 	// state and empty state are different facts.
 	StateDBSizeBytes *int64 `json:"state_db_size_bytes,omitempty"`

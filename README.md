@@ -1295,6 +1295,12 @@ open for longer than a batch, and memory grows until it closes.
 | `source_read_latency` | `source_read_latency_seconds` | histogram | — |
 | `consumer_lag` | `consumer_lag_messages` | gauge | `topic`, `partition` |
 | `consumer_lag_observed_timestamp` | `consumer_lag_observed_timestamp_seconds` | gauge | — |
+| `message_payload_bytes` | `message_payload_bytes_total` | counter | — |
+
+`message_payload_bytes` is the bytes of every message value received, over the
+same messages `message_count` counts, so the two divide to an average message
+size. It is payload, not wire bytes: keys, headers, framing and TLS are
+excluded, and under Kafka compression the wire carries fewer bytes than this.
 
 **Reference tables**, recorded once at startup for each table the handler SQL
 joins, with or without a state path:
