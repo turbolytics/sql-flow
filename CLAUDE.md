@@ -21,6 +21,13 @@ Draft short the first time. Don't draft long and plan to trim later.
 Replace wordy phrases: `in order to` → `to`, `is able to` → `can`, `at this
 point in time` → `now`, `due to the fact that` → `because`.
 
+## Product names
+
+The product is SQLFlow in prose: the blog, the site, the README, docs,
+release notes, commit messages and comments. Lowercase `sqlflow` is the
+command, always in code formatting: `sqlflow run`. `sql-flow` is an
+identifier only: the repo `turbolytics/sql-flow`, the image, sql-flow.com.
+
 ## Code comments
 
 Explain why, not what. The code shows what.

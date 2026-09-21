@@ -1,6 +1,6 @@
 # Integrations
 
-Every integration sqlflow can construct, and what each one claims. One file
+Every integration SQLFlow can construct, and what each one claims. One file
 per integration, named for its id: `sink.clickhouse.yml` declares
 `id: sink.clickhouse`. A file whose name and id disagree fails
 `make coverage-check`.
