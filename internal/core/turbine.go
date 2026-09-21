@@ -262,6 +262,12 @@ type Turbine struct {
 	// pays for a write, rather than silently closing windows early.
 	progressReadersAbsent bool
 
+	// progressFailed is whether the last attempted write returned an error.
+	// While it is set an owed arrival no longer forces a write, so a store
+	// that keeps failing is retried on the interval rather than on every
+	// commit. Guarded by lock.
+	progressFailed bool
+
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
 	// so a scrape cannot stall the pipeline. Nil when there is no state
@@ -455,14 +461,22 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	// ahead of the interval. Where one is, this term fired on every batch
 	// that carried a new message, which is every batch under load, and
 	// turned a once-a-second write into a statement per commit.
-	owed := !t.progressReadersAbsent && !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
+	// ... and not while the store is failing. The arrival stays owed in
+	// writtenArrival so it is not lost, but the retry is paced by the
+	// throttle below: Record runs under t.lock, which the window managers
+	// poll under, so retrying a slow failure on every commit starves them.
+	owed := !t.progressReadersAbsent && !t.progressFailed &&
+		!t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
 	due := owed || elapsed >= t.progressEvery || elapsed < 0
 
 	// The snapshot above is exact and free. The table is not: one UPDATE
-	// through ADBC measures about 112 microseconds, and a batch of 5000 at a
-	// million messages a second commits two hundred times a second, so
-	// writing it on every commit costs a few percent of throughput.
-	// BenchmarkCommitState is where that number comes from.
+	// through ADBC measures about 112 microseconds (BenchmarkProgressStoreRecord;
+	// BenchmarkCommitState measures the commit around it, and its
+	// readers_absent and readers_present variants are what show this branch
+	// mattering), and a batch of 5000 at a million messages a second commits
+	// two hundred times a second, so writing it on every commit costs a few
+	// percent of throughput -- far more at smaller batches, where there are
+	// more commits per message.
 	//
 	// So ticks that change nothing the reader needs are skipped until the
 	// interval has passed. Where a window reads the table an arrival is
@@ -474,16 +488,36 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	if !due {
 		return
 	}
+
+	// The two clocks move for different reasons, so they move separately.
+	//
+	// progressWrittenAt is the throttle, and it advances on every attempt.
+	// A store that keeps failing is then retried once an interval, not on
+	// every commit: Record runs under t.lock, which is the connection lock
+	// the window managers poll under, so an unbounded retry of a slow
+	// failure starves the polls and the pipeline stops publishing.
+	t.progressWrittenAt = now
+
 	if err := t.progress.Record(ctx, p); err != nil {
-		// The write clocks are not advanced: a failed write leaves the
-		// arrival owed, so the next commit carries it rather than the table
-		// keeping a value it never got. Advancing them here dropped the
-		// arrival exactly as a skip would, which is the one thing owed
-		// exists to prevent.
-		t.logger.Warn("recording progress", zap.Error(err))
+		// writtenArrival stays where it is, so the arrival remains owed and
+		// the next due write carries it rather than the table keeping a
+		// value it never got.
+		//
+		// Recorded as an error, not merely logged: on a windowed pipeline a
+		// frozen last_arrival makes the predicate read the stream as quiet
+		// and close every open bucket early, and a Warn line is not
+		// something a fleet can alert on.
+		t.progressFailed = true
+		t.recordError(ctx, err, phaseStateCommit, "recording progress")
 		return
 	}
-	t.progressWrittenAt = now
+	t.progressFailed = false
+
+	// Only a write that the store accepted moves the arrival. With a state
+	// path this UPDATE rides the batch transaction (see commitState), so a
+	// rollback still discards it after Record returned nil; that commit
+	// failure stops the pipeline, so the arrival dies with the process
+	// rather than being silently skipped on a live one.
 	t.writtenArrival = t.arrivedAt
 }
 

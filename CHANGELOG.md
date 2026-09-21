@@ -23,15 +23,22 @@
   request, so a browser no longer sends a preflight before it. `client_id`
   reaches neither the SQL nor the cache key, and a dataset cannot declare a
   param of that name. The request log's `token` field is now `client`.
-- A pipeline with no tumbling window no longer writes `sqlflow_progress` on
-  every commit. The row is still maintained on the write interval, so
-  `last_arrival` is at most one interval, or one idle tick, behind; the
-  tumbling window predicate is its only reader and pipelines that have one
-  are unchanged. The per-commit `UPDATE` cost about a fifth of the throughput
-  at batch 5000 and more at smaller batches.
+- A pipeline whose windows cannot reach the idle-close branch no longer writes
+  `sqlflow_progress` on every commit. The engine reads `last_arrival` in one
+  place, the watermark predicate under `idle_close_seconds`, so a pipeline
+  without such a window is no longer owed that write ahead of the interval;
+  pipelines that have one are unchanged. The row is still created on every
+  pipeline and still maintained, now on the write interval, so anything else
+  that reads it out of band -- handler SQL, `emit_sql`, a `sqlcommand` sink,
+  `/debug`, the `slow-soak` skill -- sees a value at most one interval, or one
+  idle tick, behind rather than a stopped table. `BenchmarkCommitStateArrivalForced`
+  measures the difference the branch makes to a commit: 157us against 537ns.
 - A failed `sqlflow_progress` write no longer counts as a successful one. The
-  write clocks advance only after the statement succeeds, so the arrival it
-  carried is retried on the next commit instead of being dropped.
+  arrival it carried stays owed rather than being dropped, and the retry is
+  paced by the write interval instead of running on every commit: the
+  statement holds the connection lock the window managers poll under. The
+  failure is now recorded as a pipeline error, so a frozen `last_arrival` is
+  visible to metrics and `/healthz` rather than only to a log line.
 
 ### Deprecated
 

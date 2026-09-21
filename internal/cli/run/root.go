@@ -273,12 +273,13 @@ func NewCommand() *cobra.Command {
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)
-			// Only a window reads sqlflow_progress.last_arrival, so only a
-			// window is owed that column ahead of the write interval. The
+			// Only the idleness branch of the watermark predicate reads
+			// sqlflow_progress.last_arrival, so only a window that can reach
+			// it is owed that column ahead of the write interval. The
 			// default keeps the guarantee; this opts out of it, so losing
 			// this wiring costs a statement per commit rather than closing
 			// windows early.
-			if !anyWindow(conf) {
+			if !anyIdleCloseWindow(conf) {
 				turbineOpts = append(turbineOpts, core.WithProgressReadersAbsent())
 			}
 			if statePath != "" {

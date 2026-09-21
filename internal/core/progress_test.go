@@ -357,3 +357,70 @@ func TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForItsReader(t *testing.
 		}
 	})
 }
+
+// failingProgress fails every write and counts the attempts.
+type failingProgress struct {
+	mu       sync.Mutex
+	attempts int
+}
+
+func (f *failingProgress) Record(context.Context, Progress) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attempts++
+	return fmt.Errorf("progress store is down")
+}
+
+func (f *failingProgress) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts
+}
+
+// A store that keeps failing must be retried on the write interval, not on
+// every commit. Record runs under the connection lock the window managers
+// poll under, so retrying a slow failure per commit starves the polls and the
+// pipeline stops publishing -- at batch 5000 and a million messages a second
+// that is two hundred failing statements a second.
+//
+// Both arms matter. Leaving the arrival owed is what stops it being lost, and
+// it is exactly what would keep forcing the retry, so the pacing has to hold
+// with a reader present too.
+func TestCoreConsumeLoop_AFailingProgressStoreIsRetriedOnTheIntervalNotEveryCommit(t *testing.T) {
+	coverage.Covers(t, "core.consume_loop")
+
+	for _, tc := range []struct {
+		name string
+		opts []TurbineOption
+	}{
+		{"with a reader for last_arrival", nil},
+		{"without one", []TurbineOption{WithProgressReadersAbsent()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &failingProgress{}
+			opts := append([]TurbineOption{
+				WithProgressStore(store),
+				// Long enough that the loop below cannot reach it, so every
+				// attempt after the first must come from owed.
+				WithProgressWriteInterval(time.Hour),
+			}, tc.opts...)
+			tb := NewTurbine(newBlockingSource(messages(1)), &fakeHandler{}, &fakeSink{},
+				1000, 30*time.Millisecond, &sync.Mutex{}, PipelineErrorPolicies{}, opts...)
+
+			ctx := context.Background()
+			for i := 0; i < 50; i++ {
+				//每 commit carries a newer arrival, which is what makes a
+				// write owed and what a live pipeline always looks like.
+				tb.arrivedAt = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
+				tb.recordProgress(ctx)
+			}
+
+			// One attempt: the first commit, which is always due. The other
+			// forty-nine are inside the interval.
+			if n := store.count(); n != 1 {
+				t.Fatalf("a failing store was attempted %d times in 50 commits inside one interval; "+
+					"the retry is not paced and it runs under the shared lock", n)
+			}
+		})
+	}
+}

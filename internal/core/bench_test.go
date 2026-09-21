@@ -242,3 +242,42 @@ func BenchmarkProgressStoreRecord(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkCommitStateArrivalForced is the evidence for the opt-out, which
+// BenchmarkCommitState cannot give: its source never delivers, so arrivedAt
+// stays zero, nothing is ever owed, and both of its store variants sit behind
+// the write throttle measuring the bookkeeping rather than the statement.
+// That is why its duckdb_progress_store variant is not slower than
+// snapshot_only.
+//
+// Here each iteration is a commit that follows a batch, so the arrival is
+// newer than the one the table holds. With a reader for last_arrival that
+// makes the UPDATE owed on every commit; without one the interval governs and
+// the statement is skipped. The gap between the two is what the opt-out buys.
+func BenchmarkCommitStateArrivalForced(b *testing.B) {
+	ctx := context.Background()
+
+	run := func(b *testing.B, opts ...TurbineOption) {
+		conn, cleanup := benchConn(b)
+		defer cleanup()
+		store := NewProgressStore(conn)
+		if err := store.Init(ctx); err != nil {
+			b.Fatal(err)
+		}
+		tb := benchTurbine(b, append([]TurbineOption{
+			WithStateStore(benchOffsets{}, benchTx{}),
+			WithProgressStore(store),
+		}, opts...)...)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			tb.arrivedAt = time.Now().UTC()
+			if err := tb.commitState(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+
+	b.Run("readers_present", func(b *testing.B) { run(b) })
+	b.Run("readers_absent", func(b *testing.B) { run(b, WithProgressReadersAbsent()) })
+}
