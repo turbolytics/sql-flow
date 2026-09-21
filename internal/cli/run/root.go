@@ -279,7 +279,7 @@ func NewCommand() *cobra.Command {
 			// default keeps the guarantee; this opts out of it, so losing
 			// this wiring costs a statement per commit rather than closing
 			// windows early.
-			if !anyIdleCloseWindow(conf) {
+			if !conf.ReadsLastArrival() {
 				turbineOpts = append(turbineOpts, core.WithProgressReadersAbsent())
 			}
 			if statePath != "" {

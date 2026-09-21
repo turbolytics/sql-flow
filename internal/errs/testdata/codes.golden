@@ -10,6 +10,7 @@ system.source.unreachable
 system.state.commit_failed
 system.state.corrupt
 system.state.internal
+system.state.progress_write_failed
 user.config.invalid
 user.config.not_found
 user.config.parse_failed

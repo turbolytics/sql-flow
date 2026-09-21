@@ -31,14 +31,20 @@
   pipeline and still maintained, now on the write interval, so anything else
   that reads it out of band -- handler SQL, `emit_sql`, a `sqlcommand` sink,
   `/debug`, the `slow-soak` skill -- sees a value at most one interval, or one
-  idle tick, behind rather than a stopped table. `BenchmarkCommitStateArrivalForced`
-  measures the difference the branch makes to a commit: 157us against 537ns.
-- A failed `sqlflow_progress` write no longer counts as a successful one. The
-  arrival it carried stays owed rather than being dropped, and the retry is
-  paced by the write interval instead of running on every commit: the
-  statement holds the connection lock the window managers poll under. The
-  failure is now recorded as a pipeline error, so a frozen `last_arrival` is
-  visible to metrics and `/healthz` rather than only to a log line.
+  idle tick, behind rather than a stopped table. The per-commit write cost
+  about 8 to 9 percent of throughput at batch 5000 and about a quarter at
+  batch 500 on the container benchmark; `BenchmarkCommitStateArrivalForced`
+  isolates it per commit, in memory and on a state path.
+- A failing `sqlflow_progress` write is retried on the write interval rather
+  than on every commit. The statement holds the connection lock the window
+  managers poll under, so a store that kept failing could starve their polls.
+  The failure is recorded as `system.state.progress_write_failed` in phase
+  `state.progress_write`, separate from a state commit failure, so it can be
+  alerted on without matching the opposite condition.
+- The shutdown drain now forces the `sqlflow_progress` write. The managers'
+  final poll runs after it, and a write the interval had skipped, or one that
+  failed moments before the signal, would otherwise leave that poll reading a
+  stale `last_arrival` and closing open buckets early on the way out.
 
 ### Deprecated
 

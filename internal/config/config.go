@@ -212,6 +212,45 @@ type Tables struct {
 	SQL []TableSQL `yaml:"sql"`
 }
 
+// HasWindow reports whether any table declares a window, which is what
+// decides whether the watermark store is needed.
+func (c *Conf) HasWindow() bool {
+	if c.Tables == nil {
+		return false
+	}
+	for _, table := range c.Tables.SQL {
+		if table.Window != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// ReadsLastArrival reports whether any window can reach the idleness branch of
+// the watermark predicate, the engine's only reader of
+// sqlflow_progress.last_arrival. The manager reads it under IdleClose > 0, and
+// IdleClose is IdleCloseSeconds as a duration, so this tests the same guard at
+// the source. A window without idle_close_seconds never reads the column.
+//
+// It is narrower than HasWindow on purpose: whether a watermark needs storing
+// and whether anything reads the arrival clock are different questions.
+//
+// It is not a claim that nothing else reads the table. The row exists on every
+// pipeline and is reachable from handler SQL, emit_sql, a sqlcommand sink or
+// /debug. Those readers see it kept current on the write interval rather than
+// on every commit: bounded staleness, not a stopped table.
+func (c *Conf) ReadsLastArrival() bool {
+	if c.Tables == nil {
+		return false
+	}
+	for _, table := range c.Tables.SQL {
+		if table.Window != nil && table.Window.IdleCloseSeconds > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // UDF registers a user-defined function the handler SQL can call.
 type UDF struct {
 	FunctionName string `yaml:"function_name"`

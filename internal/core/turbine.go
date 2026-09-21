@@ -186,6 +186,7 @@ const (
 	phaseSinkWrite     = "sink.write"
 	phaseSinkFlush     = "sink.flush"
 	phaseStateCommit   = "state.commit"
+	phaseProgressWrite = "state.progress_write"
 )
 
 // phases is every phase above, in the order a batch runs them, so the
@@ -243,9 +244,11 @@ type Turbine struct {
 	// stamping it with the commit clock would place the arrival wherever the
 	// write landed. Guarded by lock.
 	arrivedAt time.Time
-	// writtenArrival is the arrival the table already holds, so a write that
-	// was skipped or that failed is retried on the next commit rather than
-	// lost. It advances only after Record returns nil. Guarded by lock.
+	// writtenArrival is the arrival last handed to the store, so an arrival
+	// the throttle skipped is still owed on the next commit. It advances on
+	// every attempt, failed or not: a failed write is paced by progressFailed
+	// and its arrival is carried by the next due write or, at shutdown, by the
+	// drain's forced one. Guarded by lock.
 	writtenArrival time.Time
 	// commits counts successful state commits, for tests that wait on ticks.
 	// Guarded by lock.
@@ -263,9 +266,10 @@ type Turbine struct {
 	progressReadersAbsent bool
 
 	// progressFailed is whether the last attempted write returned an error.
-	// While it is set an owed arrival no longer forces a write, so a store
-	// that keeps failing is retried on the interval rather than on every
-	// commit. Guarded by lock.
+	// While it is set an owed arrival does not force a write, so a failing
+	// store is retried on the interval rather than on every commit. It is the
+	// only thing that paces that retry: with a reader, every commit of a
+	// live stream carries a newer arrival and is owed. Guarded by lock.
 	progressFailed bool
 
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
@@ -427,7 +431,7 @@ const progressWriteInterval = time.Second
 //
 // A batch since the last commit moves the arrival clock; an idle tick moves
 // the commit clock only.
-func (t *Turbine) recordProgress(ctx context.Context) {
+func (t *Turbine) recordProgress(ctx context.Context, force bool) {
 	if t.progress == nil {
 		return
 	}
@@ -461,22 +465,23 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	// ahead of the interval. Where one is, this term fired on every batch
 	// that carried a new message, which is every batch under load, and
 	// turned a once-a-second write into a statement per commit.
-	// ... and not while the store is failing. The arrival stays owed in
-	// writtenArrival so it is not lost, but the retry is paced by the
-	// throttle below: Record runs under t.lock, which the window managers
-	// poll under, so retrying a slow failure on every commit starves them.
 	owed := !t.progressReadersAbsent && !t.progressFailed &&
 		!t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
 	due := owed || elapsed >= t.progressEvery || elapsed < 0
 
-	// The snapshot above is exact and free. The table is not: one UPDATE
-	// through ADBC measures about 112 microseconds (BenchmarkProgressStoreRecord;
-	// BenchmarkCommitState measures the commit around it, and its
-	// readers_absent and readers_present variants are what show this branch
-	// mattering), and a batch of 5000 at a million messages a second commits
-	// two hundred times a second, so writing it on every commit costs a few
-	// percent of throughput -- far more at smaller batches, where there are
-	// more commits per message.
+	// The snapshot above is exact and free. The table is not, and the
+	// statement alone understates what it costs.
+	//
+	// In isolation one UPDATE through ADBC measures about 112 microseconds
+	// (BenchmarkProgressStoreRecord). A batch of 5000 at a million messages a
+	// second commits two hundred times a second, so the statement by itself
+	// is about 2 percent. Measured end to end it was 8 to 9 percent at batch
+	// 5000 and about a quarter at batch 500, for two reasons the arithmetic
+	// leaves out: a commit carrying the write costs several times the bare
+	// statement (BenchmarkCommitStateArrivalForced), and the write leaves the
+	// connection holding a write transaction that makes the next batch's
+	// truncate and checkpoint in Init dearer. The cost is per commit, so it
+	// grows as batches shrink.
 	//
 	// So ticks that change nothing the reader needs are skipped until the
 	// interval has passed. Where a window reads the table an arrival is
@@ -485,40 +490,47 @@ func (t *Turbine) recordProgress(ctx context.Context) {
 	// closes it early. Early is the dangerous direction, since that is the
 	// window-splitting behaviour the stream clock exists to prevent. Where
 	// no window reads it there is no such reader to be early for.
-	if !due {
+	if !due && !force {
 		return
 	}
 
-	// The two clocks move for different reasons, so they move separately.
+	// Both clocks advance on every attempt, success or not.
 	//
-	// progressWrittenAt is the throttle, and it advances on every attempt.
-	// A store that keeps failing is then retried once an interval, not on
-	// every commit: Record runs under t.lock, which is the connection lock
-	// the window managers poll under, so an unbounded retry of a slow
-	// failure starves the polls and the pipeline stops publishing.
+	// Neither is left behind to keep a failed arrival owed. progressFailed
+	// below is what paces a failing store, and a second mechanism doing the
+	// same job had no effect a test could observe.
+	//
+	// The arrival a failed write carried is therefore not retried by the
+	// commit path ahead of the interval. A live stream does not need it to
+	// be: last_arrival is a last value, so the next due write carries a
+	// newer arrival and the table catches up. The case that does need it is
+	// a batch followed by silence and then shutdown, where no newer arrival
+	// is coming. SyncState forces a write for that.
+	//
+	// With a state path the UPDATE rides the batch transaction, so a
+	// rollback can discard a write Record reported as done. That rollback is
+	// a failed state commit, which stops the pipeline, so the arrival goes
+	// with the process rather than being skipped on a live one.
 	t.progressWrittenAt = now
+	t.writtenArrival = t.arrivedAt
 
 	if err := t.progress.Record(ctx, p); err != nil {
-		// writtenArrival stays where it is, so the arrival remains owed and
-		// the next due write carries it rather than the table keeping a
-		// value it never got.
+		// Recorded, not merely logged. On a windowed pipeline a frozen
+		// last_arrival makes the watermark predicate read a live stream as
+		// quiet and close every open bucket early, and a Warn line is not
+		// something a fleet can alert on. It carries its own code and phase
+		// so an alert can tell it from a state commit that failed, which
+		// means the opposite: that batch replays and the pipeline stops.
 		//
-		// Recorded as an error, not merely logged: on a windowed pipeline a
-		// frozen last_arrival makes the predicate read the stream as quiet
-		// and close every open bucket early, and a Warn line is not
-		// something a fleet can alert on.
+		// Record runs under t.lock, the connection lock the window managers
+		// poll under, so a slow failure retried on every commit starves the
+		// polls and the pipeline stops publishing. Hence the flag.
 		t.progressFailed = true
-		t.recordError(ctx, err, phaseStateCommit, "recording progress")
+		t.recordError(ctx, errs.Wrap(errs.CodeProgressWriteFailed, err, "recording progress"),
+			phaseProgressWrite, "recording progress")
 		return
 	}
 	t.progressFailed = false
-
-	// Only a write that the store accepted moves the arrival. With a state
-	// path this UPDATE rides the batch transaction (see commitState), so a
-	// rollback still discards it after Record returned nil; that commit
-	// failure stops the pipeline, so the arrival dies with the process
-	// rather than being silently skipped on a live one.
-	t.writtenArrival = t.arrivedAt
 }
 
 // WithStateStats supplies the snapshot function backing the state gauges. It
@@ -742,7 +754,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// silently, with the rows still reported as live state. This tick
 			// is also what makes a table manager's deletes durable while no
 			// messages are arriving.
-			if err := t.commitState(batchCtx); err != nil {
+			if err := t.commitState(batchCtx, false); err != nil {
 				t.recordError(ctx, err, phaseStateCommit, "error committing state on idle tick")
 				return nil, err
 			}
@@ -1177,8 +1189,8 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 // were so the batch is replayed rather than lost.
 //
 // A pipeline with no state database does nothing here.
-func (t *Turbine) commitState(ctx context.Context) error {
-	t.recordProgress(ctx)
+func (t *Turbine) commitState(ctx context.Context, forceProgress bool) error {
+	t.recordProgress(ctx, forceProgress)
 
 	if t.offsets == nil || t.stateTx == nil {
 		return nil
@@ -1226,7 +1238,12 @@ func (t *Turbine) commitState(ctx context.Context) error {
 // instead of being rolled back when the connection closes and republished on
 // the next start.
 func (t *Turbine) SyncState(ctx context.Context) error {
-	return t.commitState(ctx)
+	// The drain forces the progress write. root.go calls this before the
+	// managers' final poll so that poll sees a current arrival clock, and a
+	// write that the throttle would skip -- or that failed moments before
+	// the signal -- would leave the poll evaluating a stale one and closing
+	// open buckets early on the way out.
+	return t.commitState(ctx, true)
 }
 
 // processBatch invokes the handler on the buffered messages, writes the
@@ -1342,7 +1359,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	// Committing first would move the offsets past rows the sink never
 	// received, which loses them silently.
 	c0 := time.Now()
-	err = t.commitState(ctx)
+	err = t.commitState(ctx, false)
 	// Timed at the call site rather than inside commitState, so the phase is
 	// reported by a pipeline with no state database too. state_commit_latency
 	// is deliberately absent there -- an absent series and an empty state are

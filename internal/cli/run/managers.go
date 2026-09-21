@@ -36,51 +36,10 @@ func windowDeclaration(table config.TableSQL) managers.Declaration {
 // under autocommit, so the DDL commits on its own the way the offsets and
 // progress tables' does. Nothing to do for a pipeline with no window.
 func initWindowStores(ctx context.Context, conf *config.Conf, conn adbc.Connection) error {
-	if !anyWindow(conf) {
+	if !conf.HasWindow() {
 		return nil
 	}
 	return managers.NewStore(conn).Init(ctx)
-}
-
-// anyWindow reports whether any table declares a window, which is what
-// decides whether the watermark store is needed.
-func anyWindow(conf *config.Conf) bool {
-	if conf.Tables == nil {
-		return false
-	}
-	for _, table := range conf.Tables.SQL {
-		if table.Window != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// anyIdleCloseWindow reports whether any window can reach the idleness branch
-// of the watermark predicate, which is the engine's only reader of
-// sqlflow_progress.last_arrival (managers.nextWatermark reads it under
-// `IdleClose > 0`). A window without idle_close_seconds never reads the
-// column, so it is not owed that write ahead of the interval either.
-//
-// This is narrower than anyWindow deliberately: the two questions are "does
-// a watermark need storing" and "does anything read the arrival clock", and
-// they are not the same question.
-//
-// It is not a claim that nothing else ever reads the table. The row is
-// created on every pipeline and stays readable from handler SQL, emit_sql, a
-// sqlcommand sink or /debug -- the slow-soak skill reads it that way. Those
-// readers see a row kept current on the write interval rather than on every
-// commit, which is bounded staleness, not a stopped table.
-func anyIdleCloseWindow(conf *config.Conf) bool {
-	if conf.Tables == nil {
-		return false
-	}
-	for _, table := range conf.Tables.SQL {
-		if table.Window != nil && table.Window.IdleCloseSeconds > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // buildManagedTables constructs a watermark manager per table that declares

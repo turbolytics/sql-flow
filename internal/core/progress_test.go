@@ -299,128 +299,156 @@ func TestCoreConsumeLoop_ProgressRecordsTheLastError(t *testing.T) {
 	assert.That(t, !p.LastError.After(time.Now().UTC()))
 }
 
-// last_arrival has one reader, the tumbling window predicate, and a pipeline
-// without a window has none. The arrival then need not force a write ahead of
-// the interval, which is what turned a once-a-second UPDATE into one per
-// commit and cost about a fifth of the throughput at batch 5000.
+// The engine reads last_arrival in one place, the watermark predicate's
+// idle-close branch. Where that reader exists every arrival is owed a write on
+// the commit that sees it; where it does not, the write interval governs.
 //
-// Both halves matter and neither is "no writes ever": the default must carry
-// every arrival, and the opt-out must still keep the table current on the
-// interval. A long interval would prove only the first, so this one is short
-// enough that the loop crosses it.
+// That per-commit UPDATE is what this buys back. Measured on the container
+// benchmark against v1.1.0, which had no progress row: about 8 to 9 percent of
+// throughput at batch 5000 and about a quarter at batch 500, because the cost
+// is per commit and a smaller batch commits more often per message.
+//
+// Three cases, none of which depends on how fast the machine is. A long
+// interval can never come due, so any write past the first is owed. A one
+// millisecond interval is always due against a source paced at ten, so every
+// commit writes on the clock alone.
 func TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForItsReader(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 
-	const interval = 60 * time.Millisecond
+	const batches = 6
 
-	run := func(t *testing.T, optOut bool) *progressRecorder {
+	run := func(t *testing.T, interval time.Duration, opts ...TurbineOption) (*Turbine, *progressRecorder) {
 		t.Helper()
 		rec := &progressRecorder{}
-		// A paced source, so arrivals land across several commits rather
-		// than all inside one: the whole question is what a *new* arrival
-		// does to a write that the interval has not yet made due.
-		src := newPacedSource(6, 10*time.Millisecond)
-		opts := []TurbineOption{WithProgressStore(rec), WithProgressWriteInterval(interval)}
-		if optOut {
-			opts = append(opts, WithProgressReadersAbsent())
-		}
+		src := newPacedSource(batches, 10*time.Millisecond)
+		t.Cleanup(func() { close(src.release) })
+		opts = append([]TurbineOption{WithProgressStore(rec), WithProgressWriteInterval(interval)}, opts...)
 		tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1, 5*time.Millisecond,
 			&sync.Mutex{}, PipelineErrorPolicies{}, opts...)
 		done := make(chan struct{})
-		go func() { _, _ = tb.ConsumeLoop(context.Background(), 6); close(done) }()
+		go func() { _, _ = tb.ConsumeLoop(context.Background(), batches); close(done) }()
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatal("the consume loop did not finish")
 		}
-		return rec
+		return tb, rec
 	}
 
 	t.Run("a reader is owed every arrival", func(t *testing.T) {
-		rec := run(t, false)
+		tb, rec := run(t, time.Hour)
 		last, n := rec.last()
-		// Six arrivals paced past the interval: the table must hold the
-		// newest, and must have been written more than the interval alone
-		// would account for.
-		assert.That(t, n > 2)
-		assert.That(t, !last.LastArrival.IsZero())
+		// The interval never comes due, so every write after the first was
+		// forced by an arrival: one per batch at the least.
+		if n < batches {
+			t.Fatalf("%d batches produced %d writes; an arrival did not force one", batches, n)
+		}
+		assert.That(t, last.LastArrival.Equal(tb.Progress().LastArrival))
 	})
 
-	t.Run("without one the interval governs", func(t *testing.T) {
-		rec := run(t, true)
-		_, n := rec.last()
-		assert.That(t, n >= 1) // still maintained, never abandoned
-		// The arrivals no longer force a write, so the count is bounded by
-		// the interval rather than by the number of commits.
-		if n > 3 {
-			t.Fatalf("opting out still wrote %d times: the arrival is still forcing it", n)
+	t.Run("without a reader an arrival forces nothing", func(t *testing.T) {
+		_, rec := run(t, time.Hour, WithProgressReadersAbsent())
+		// The first commit is always due. Nothing after it can be: the
+		// interval is an hour and no arrival is owed.
+		if _, n := rec.last(); n != 1 {
+			t.Fatalf("opting out wrote %d times inside one interval, want exactly 1", n)
 		}
 	})
+
+	t.Run("and the interval still keeps the row current", func(t *testing.T) {
+		tb, rec := run(t, time.Millisecond, WithProgressReadersAbsent())
+		// Opting out is not abandoning the table: the clock alone keeps
+		// writing it, well past the first commit.
+		if _, n := rec.last(); n < 2 {
+			t.Fatalf("a 1ms interval over six paced batches produced %d writes", n)
+		}
+		// What it does not promise is that the newest arrival is there the
+		// instant the loop ends: a commit inside the interval of the write
+		// before it is skipped, and nothing is owed. That is the staleness
+		// bound, and the drain is what closes it on the way out.
+		assert.NoError(t, tb.SyncState(context.Background()))
+		last, _ := rec.last()
+		assert.That(t, last.LastArrival.Equal(tb.Progress().LastArrival))
+	})
 }
 
-// failingProgress fails every write and counts the attempts.
-type failingProgress struct {
-	mu       sync.Mutex
-	attempts int
+// flakyProgress fails its first failFirst writes, then records the rest.
+type flakyProgress struct {
+	mu        sync.Mutex
+	failFirst int
+	attempts  int
+	recs      []Progress
 }
 
-func (f *failingProgress) Record(context.Context, Progress) error {
+func (f *flakyProgress) Record(_ context.Context, p Progress) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts++
-	return fmt.Errorf("progress store is down")
+	if f.attempts <= f.failFirst {
+		return fmt.Errorf("progress store is down")
+	}
+	f.recs = append(f.recs, p)
+	return nil
 }
 
-func (f *failingProgress) count() int {
+func (f *flakyProgress) state() (attempts int, recs []Progress) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.attempts
+	return f.attempts, append([]Progress(nil), f.recs...)
 }
 
-// A store that keeps failing must be retried on the write interval, not on
-// every commit. Record runs under the connection lock the window managers
-// poll under, so retrying a slow failure per commit starves the polls and the
-// pipeline stops publishing -- at batch 5000 and a million messages a second
-// that is two hundred failing statements a second.
-//
-// Both arms matter. Leaving the arrival owed is what stops it being lost, and
-// it is exactly what would keep forcing the retry, so the pacing has to hold
-// with a reader present too.
-func TestCoreConsumeLoop_AFailingProgressStoreIsRetriedOnTheIntervalNotEveryCommit(t *testing.T) {
-	coverage.Covers(t, "core.consume_loop")
+// A store that keeps failing is retried on the write interval, not on every
+// commit. Record runs under the connection lock the window managers poll
+// under, so a slow failure retried per commit starves the polls and the
+// pipeline stops publishing. The reader is present here on purpose: that is
+// the arm where an owed arrival would otherwise keep forcing the retry.
+func TestStateDurability_AFailingProgressStoreIsRetriedOnTheIntervalNotEveryCommit(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	store := &flakyProgress{failFirst: 1 << 30}
+	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(store), WithProgressWriteInterval(time.Hour))
 
-	for _, tc := range []struct {
-		name string
-		opts []TurbineOption
-	}{
-		{"with a reader for last_arrival", nil},
-		{"without one", []TurbineOption{WithProgressReadersAbsent()}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := &failingProgress{}
-			opts := append([]TurbineOption{
-				WithProgressStore(store),
-				// Long enough that the loop below cannot reach it, so every
-				// attempt after the first must come from owed.
-				WithProgressWriteInterval(time.Hour),
-			}, tc.opts...)
-			tb := NewTurbine(newBlockingSource(messages(1)), &fakeHandler{}, &fakeSink{},
-				1000, 30*time.Millisecond, &sync.Mutex{}, PipelineErrorPolicies{}, opts...)
-
-			ctx := context.Background()
-			for i := 0; i < 50; i++ {
-				//每 commit carries a newer arrival, which is what makes a
-				// write owed and what a live pipeline always looks like.
-				tb.arrivedAt = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
-				tb.recordProgress(ctx)
-			}
-
-			// One attempt: the first commit, which is always due. The other
-			// forty-nine are inside the interval.
-			if n := store.count(); n != 1 {
-				t.Fatalf("a failing store was attempted %d times in 50 commits inside one interval; "+
-					"the retry is not paced and it runs under the shared lock", n)
-			}
-		})
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		// Every commit carries a newer arrival, which is what makes a write
+		// owed and what a live pipeline always looks like.
+		tb.arrivedAt = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
+		tb.recordProgress(ctx, false)
 	}
+	if n, _ := store.state(); n != 1 {
+		t.Fatalf("a failing store was attempted %d times in 50 commits inside one interval", n)
+	}
+	// And the failure is a recorded error, not only a log line.
+	assert.Equal(t, int64(1), tb.Progress().Errors)
+}
+
+// A batch, a failed write, then silence and shutdown: no newer arrival is
+// coming, so nothing on the commit path will ever carry the one the failed
+// write had. The drain forces the write so the managers' final poll reads a
+// current arrival clock instead of closing open buckets early on the way out.
+func TestStateDurability_TheDrainWritesTheArrivalAFailedWriteLeftBehind(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	store := &flakyProgress{failFirst: 1}
+	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(store), WithProgressWriteInterval(time.Hour))
+
+	ctx := context.Background()
+	arrival := time.Now().UTC()
+	tb.arrivedAt = arrival
+	tb.recordProgress(ctx, false) // due, and fails
+
+	// Inside the interval a commit must not retry ...
+	tb.recordProgress(ctx, false)
+	if n, _ := store.state(); n != 1 {
+		t.Fatalf("the commit path retried inside the interval: %d attempts", n)
+	}
+
+	// ... but the drain must, and what it writes is the arrival left behind.
+	assert.NoError(t, tb.SyncState(ctx))
+	n, recs := store.state()
+	assert.Equal(t, 2, n)
+	assert.Equal(t, 1, len(recs))
+	assert.That(t, recs[0].LastArrival.Equal(arrival))
 }

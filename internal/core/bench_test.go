@@ -84,7 +84,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, false); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -97,7 +97,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, false); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -116,7 +116,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, false); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -144,7 +144,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, false); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -172,7 +172,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, false); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -191,7 +191,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, false); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -247,37 +247,72 @@ func BenchmarkProgressStoreRecord(b *testing.B) {
 // BenchmarkCommitState cannot give: its source never delivers, so arrivedAt
 // stays zero, nothing is ever owed, and both of its store variants sit behind
 // the write throttle measuring the bookkeeping rather than the statement.
-// That is why its duckdb_progress_store variant is not slower than
-// snapshot_only.
 //
 // Here each iteration is a commit that follows a batch, so the arrival is
-// newer than the one the table holds. With a reader for last_arrival that
-// makes the UPDATE owed on every commit; without one the interval governs and
-// the statement is skipped. The gap between the two is what the opt-out buys.
+// newer than the one the table holds. With a reader for last_arrival the
+// UPDATE is owed on every commit; without one the interval governs and the
+// statement is skipped. The gap between each pair is what the opt-out buys.
+//
+// Two configurations, because the run command has two. Without a state path
+// the progress connection autocommits. With one, autocommit is off and the
+// UPDATE rides the batch's own transaction into a file, which is the
+// configuration a durable pipeline actually runs and the one whose absolute
+// numbers the in-memory pair understates.
 func BenchmarkCommitStateArrivalForced(b *testing.B) {
 	ctx := context.Background()
 
-	run := func(b *testing.B, opts ...TurbineOption) {
+	loop := func(b *testing.B, tb *Turbine) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			tb.arrivedAt = time.Now().UTC()
+			if err := tb.commitState(ctx, false); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+
+	inMemory := func(b *testing.B, opts ...TurbineOption) {
 		conn, cleanup := benchConn(b)
 		defer cleanup()
 		store := NewProgressStore(conn)
 		if err := store.Init(ctx); err != nil {
 			b.Fatal(err)
 		}
-		tb := benchTurbine(b, append([]TurbineOption{
+		loop(b, benchTurbine(b, append([]TurbineOption{
 			WithStateStore(benchOffsets{}, benchTx{}),
 			WithProgressStore(store),
-		}, opts...)...)
-		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			tb.arrivedAt = time.Now().UTC()
-			if err := tb.commitState(ctx); err != nil {
-				b.Fatal(err)
-			}
-		}
+		}, opts...)...))
 	}
 
-	b.Run("readers_present", func(b *testing.B) { run(b) })
-	b.Run("readers_absent", func(b *testing.B) { run(b, WithProgressReadersAbsent()) })
+	onDisk := func(b *testing.B, opts ...TurbineOption) {
+		conn, cleanup := benchConnAt(b, filepath.Join(b.TempDir(), "state.db"))
+		defer cleanup()
+		// Init before autocommit goes off, the order root.go uses, so the
+		// CREATE TABLE commits on its own.
+		store := NewProgressStore(conn)
+		if err := store.Init(ctx); err != nil {
+			b.Fatal(err)
+		}
+		po, ok := conn.(adbc.PostInitOptions)
+		if !ok {
+			b.Fatal("connection does not support disabling autocommit")
+		}
+		if err := po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled); err != nil {
+			b.Fatal(err)
+		}
+		tx, ok := conn.(stateTx)
+		if !ok {
+			b.Fatal("connection is not a transaction boundary")
+		}
+		loop(b, benchTurbine(b, append([]TurbineOption{
+			WithStateStore(benchOffsets{}, tx),
+			WithProgressStore(store),
+		}, opts...)...))
+	}
+
+	b.Run("in_memory/readers_present", func(b *testing.B) { inMemory(b) })
+	b.Run("in_memory/readers_absent", func(b *testing.B) { inMemory(b, WithProgressReadersAbsent()) })
+	b.Run("state_path/readers_present", func(b *testing.B) { onDisk(b) })
+	b.Run("state_path/readers_absent", func(b *testing.B) { onDisk(b, WithProgressReadersAbsent()) })
 }

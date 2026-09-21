@@ -77,7 +77,12 @@ const (
 	// Durable state and the offsets committed with it.
 	CodeStateCorrupt      Code = "system.state.corrupt"
 	CodeStateCommitFailed Code = "system.state.commit_failed"
-	CodeStateInternal     Code = "system.state.internal"
+	// CodeProgressWriteFailed is the liveness row failing to write. It is not
+	// a commit failure: the batch is not rolled back and the pipeline keeps
+	// running. It matters because a stale last_arrival makes the watermark
+	// predicate close open buckets early.
+	CodeProgressWriteFailed Code = "system.state.progress_write_failed"
+	CodeStateInternal       Code = "system.state.internal"
 
 	// Batch orchestration.
 	CodeBatchInternal Code = "system.batch.internal"
@@ -233,6 +238,11 @@ var registry = map[Code]Definition{
 		CodeStateCommitFailed,
 		"The state transaction could not commit, so its batch rolled back.",
 		"Check disk space and permissions on the state path.",
+	},
+	CodeProgressWriteFailed: {
+		CodeProgressWriteFailed,
+		"The liveness row could not be written, so last_arrival is stale.",
+		"The batch is unaffected. A window with idle_close_seconds may close buckets early while this persists; check the state connection.",
 	},
 	CodeStateInternal: {
 		CodeStateInternal,
