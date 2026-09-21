@@ -184,13 +184,6 @@
             "interval_seconds": {
               "type": "integer",
               "description": "IntervalSeconds is how often to report. Absent means the default."
-            },
-            "allow": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array",
-              "description": "Allow is the scopes this instance permits. It is a ceiling the instance\nsets, so a control plane cannot grant itself more than the operator\nwrote here."
             }
           },
           "additionalProperties": false,

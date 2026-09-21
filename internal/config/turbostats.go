@@ -34,10 +34,6 @@ type TurboStats struct {
 	Key string `yaml:"key,omitempty"`
 	// IntervalSeconds is how often to report. Absent means the default.
 	IntervalSeconds int `yaml:"interval_seconds,omitempty"`
-	// Allow is the scopes this instance permits. It is a ceiling the instance
-	// sets, so a control plane cannot grant itself more than the operator
-	// wrote here.
-	Allow []string `yaml:"allow,omitempty"`
 }
 
 // Enabled reports whether this instance posts anywhere.
@@ -89,13 +85,6 @@ func (t *TurboStats) Check(at []string) []Violation {
 		// issue, or a screenshot.
 		add(errs.CodeConfigInvalid, "key",
 			"turbostats.key is not a credential; `sqlflow-control credential create` prints one")
-	}
-	for _, scope := range t.Allow {
-		if scope != wire.ScopeRead {
-			add(errs.CodeConfigInvalid, "allow",
-				"turbostats.allow %q is not a scope this release implements; it issues %q",
-				scope, wire.ScopeRead)
-		}
 	}
 	if t.IntervalSeconds < 0 {
 		add(errs.CodeConfigInvalid, "interval_seconds",

@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zeebo/assert"
@@ -69,18 +72,6 @@ func TestTurboStats_RefusesAKeyThatCannotSign(t *testing.T) {
 	}
 }
 
-// v1 issues one scope. A config naming another describes a permission this
-// build does not implement, and accepting it silently would be worse than
-// refusing it.
-func TestTurboStats_AcceptsOnlyTheReadScope(t *testing.T) {
-	c := valid()
-	c.Allow = []string{"read"}
-	assert.Equal(t, 0, len(c.Check([]string{"pipeline", "turbostats"})))
-
-	c.Allow = []string{"read", "execute"}
-	assert.Equal(t, 1, len(c.Check([]string{"pipeline", "turbostats"})))
-}
-
 // An interval under a second is a mistake that would hammer a control plane,
 // and a negative one is not a duration.
 func TestTurboStats_RefusesAnImpossibleInterval(t *testing.T) {
@@ -94,4 +85,39 @@ func TestTurboStats_RefusesAnImpossibleInterval(t *testing.T) {
 		}
 		assert.Equal(t, 1, len(c.Check([]string{"pipeline", "turbostats"})))
 	}
+}
+
+// A scope ceiling is refused, not ignored.
+//
+// turbostats.allow was parsed, validated against the one scope v1 issues, and
+// then read by nothing: not the bundle, not a header, not the reporter. An
+// operator who wrote `allow: [read]` got no protection and every sign of
+// having some. There are no commands yet for a ceiling to constrain, so the
+// key is gone, and the loader's strict decoding makes a leftover one an error
+// at startup rather than a comfort. It comes back in the change that makes it
+// do something.
+func TestTurboStats_AScopeCeilingIsRefusedUntilItIsEnforced(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipeline.yml")
+	assert.NoError(t, os.WriteFile(path, []byte(`
+pipeline:
+  name: p
+  turbostats:
+    id: p-01
+    report_to: https://control.example.com/v1/turbostats
+    key: sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+    allow: [read]
+  source:
+    type: webhook
+    webhook:
+      addr: 127.0.0.1:0
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1 AS n
+  sink:
+    type: noop
+`), 0o600))
+
+	_, _, err := LoadRendered(path, map[string]string{})
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "allow"))
 }
