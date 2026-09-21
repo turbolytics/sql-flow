@@ -15,7 +15,7 @@ func valid() *TurboStats {
 }
 
 func TestTurboStats_AcceptsAWholeBlock(t *testing.T) {
-	assert.Equal(t, 0, len(valid().Check()))
+	assert.Equal(t, 0, len(valid().Check([]string{"pipeline", "turbostats"})))
 	assert.That(t, valid().Enabled())
 	// Sixty seconds unless asked otherwise: a fleet page derives rates from
 	// consecutive bundles, and a minute is dense enough to see a rate change.
@@ -27,7 +27,7 @@ func TestTurboStats_AcceptsAWholeBlock(t *testing.T) {
 func TestTurboStats_IsOffWithoutAReportTo(t *testing.T) {
 	var off TurboStats
 	assert.That(t, !off.Enabled())
-	assert.Equal(t, 0, len(off.Check()))
+	assert.Equal(t, 0, len(off.Check([]string{"pipeline", "turbostats"})))
 }
 
 // The control plane files a bundle under instance.id. Without one it cannot
@@ -36,7 +36,7 @@ func TestTurboStats_IsOffWithoutAReportTo(t *testing.T) {
 func TestTurboStats_RequiresAnIDWhenReporting(t *testing.T) {
 	c := valid()
 	c.ID = ""
-	assert.Equal(t, 1, len(c.Check()))
+	assert.Equal(t, 1, len(c.Check([]string{"pipeline", "turbostats"})))
 }
 
 // TLS is not optional on a public network, and a device is on one. A
@@ -45,7 +45,7 @@ func TestTurboStats_RequiresAnIDWhenReporting(t *testing.T) {
 func TestTurboStats_RefusesPlaintextToTheInternet(t *testing.T) {
 	c := valid()
 	c.ReportTo = "http://control.turbolytics.io/v1/turbostats"
-	assert.Equal(t, 1, len(c.Check()))
+	assert.Equal(t, 1, len(c.Check([]string{"pipeline", "turbostats"})))
 
 	// Loopback is how someone tests against a control plane on their own
 	// machine, and there is no network to eavesdrop.
@@ -55,7 +55,7 @@ func TestTurboStats_RefusesPlaintextToTheInternet(t *testing.T) {
 		"http://[::1]:8090/v1/turbostats",
 	} {
 		c.ReportTo = url
-		assert.Equal(t, 0, len(c.Check()))
+		assert.Equal(t, 0, len(c.Check([]string{"pipeline", "turbostats"})))
 	}
 }
 
@@ -65,7 +65,7 @@ func TestTurboStats_RefusesAKeyThatCannotSign(t *testing.T) {
 	for _, key := range []string{"", "not-a-credential", "sfc_short"} {
 		c := valid()
 		c.Key = key
-		assert.That(t, len(c.Check()) > 0)
+		assert.That(t, len(c.Check([]string{"pipeline", "turbostats"})) > 0)
 	}
 }
 
@@ -75,10 +75,10 @@ func TestTurboStats_RefusesAKeyThatCannotSign(t *testing.T) {
 func TestTurboStats_AcceptsOnlyTheReadScope(t *testing.T) {
 	c := valid()
 	c.Allow = []string{"read"}
-	assert.Equal(t, 0, len(c.Check()))
+	assert.Equal(t, 0, len(c.Check([]string{"pipeline", "turbostats"})))
 
 	c.Allow = []string{"read", "execute"}
-	assert.Equal(t, 1, len(c.Check()))
+	assert.Equal(t, 1, len(c.Check([]string{"pipeline", "turbostats"})))
 }
 
 // An interval under a second is a mistake that would hammer a control plane,
@@ -89,9 +89,9 @@ func TestTurboStats_RefusesAnImpossibleInterval(t *testing.T) {
 		c.IntervalSeconds = s
 		// Zero is absent, which is the default.
 		if s == 0 {
-			assert.Equal(t, 0, len(c.Check()))
+			assert.Equal(t, 0, len(c.Check([]string{"pipeline", "turbostats"})))
 			continue
 		}
-		assert.Equal(t, 1, len(c.Check()))
+		assert.Equal(t, 1, len(c.Check([]string{"pipeline", "turbostats"})))
 	}
 }

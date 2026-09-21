@@ -481,7 +481,7 @@ var (
 // in document order. validate reports each with a position; serve refuses to
 // start on any.
 func (c *ServeConf) Check() []Violation {
-	out := c.Serve.TurboStats.Check()
+	out := c.Serve.TurboStats.Check([]string{"serve", "turbostats"})
 	add := func(code errs.Code, path []string, format string, args ...any) {
 		out = append(out, Violation{Code: code, Path: path, Message: fmt.Sprintf(format, args...)})
 	}

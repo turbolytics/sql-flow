@@ -27,7 +27,7 @@ type collectFunc func(context.Context) (turbostats.Bundle, error)
 
 // statsFunc reports a snapshot of the pipeline's durable state. It returns a
 // nil snapshot, and no error, for a pipeline that has no state database.
-type statsFunc func() (*core.StateStats, error)
+type statsFunc func(context.Context) (*core.StateStats, error)
 
 // progressFunc reports the pipeline's liveness snapshot: when the newest
 // batch arrived, when state last committed, and how many messages have been
@@ -82,7 +82,7 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 			out := map[string]any{"state": nil}
 
 			if stats != nil {
-				state, err := stats()
+				state, err := stats(r.Context())
 				if err != nil {
 					// A monitoring system must see the failure, not a
 					// healthy-looking blank.

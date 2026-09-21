@@ -76,9 +76,16 @@ type Instance struct {
 
 // Process is what the runtime and the kernel say about this process.
 type Process struct {
-	StartedAt  time.Time `json:"started_at"`
-	RSSBytes   int64     `json:"rss_bytes"`
-	Goroutines int       `json:"goroutines"`
+	StartedAt time.Time `json:"started_at"`
+	// RSSBytes is absent when the kernel would not answer. A live process
+	// never holds zero bytes, so absent and zero cannot be confused.
+	//
+	// It is omittable rather than required because the alternative was
+	// worse: a failed read used to fail the whole bundle, so a process that
+	// was running fine reported nothing at all, and a receiver reads silence
+	// as a dead instance. Losing one number beats losing the heartbeat.
+	RSSBytes   int64 `json:"rss_bytes,omitempty"`
+	Goroutines int   `json:"goroutines"`
 }
 
 // Pipeline carries the consume loop's totals since Process.StartedAt.

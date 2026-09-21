@@ -66,7 +66,14 @@ func NewCommand() *cobra.Command {
 
 			// A supervisor stops the server with SIGTERM. Without the handler
 			// the process dies mid-request and the deferred close never runs.
-			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			// The command's own context is the parent, for the reason run
+			// gives: cobra supplies Background here, and an embedding caller
+			// gets a command it can stop.
+			parent := cmd.Context()
+			if parent == nil {
+				parent = context.Background()
+			}
+			ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
 			return serveConfig(ctx, path, l, nil, serveTurbostats)
@@ -168,32 +175,42 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 	// The reporter reads the same bundle builder the route serves, so a
 	// server with the route off still reports. Started before Serve blocks,
 	// so an instance appears on a fleet page as soon as it is listening.
-	var reporter *turbostats.Reporter
+	var serveErr error
 	if ts.Enabled() {
 		key, err := wire.ParseCredential(ts.Key)
 		if err != nil {
 			return errs.New(errs.CodeConfigInvalid, "turbostats.key is not a credential")
 		}
-		reporter, err = turbostats.NewReporter(turbostats.ReporterConfig{
+		reporter, err := turbostats.NewReporter(turbostats.ReporterConfig{
 			ReportTo: ts.ReportTo, Key: key, Interval: ts.Interval(),
 			Collect: srv.CollectBundle, Log: l.Named("turbostats"),
 		})
 		if err != nil {
 			return err
 		}
-		go reporter.Run(ctx)
+		stopReporter := turbostats.StartReporter(ctx, reporter)
+
+		// A defer, so the goroutine is stopped and waited for however this
+		// function returns. It runs after Serve, so the last bundle counts
+		// every request the server answered. A crash never reaches it, which
+		// is how a receiver tells a clean stop from one.
+		//
+		// The reason is derived rather than hardcoded. It used to say
+		// "stopped" whatever Serve returned, so a server that fell over
+		// reported the exit code of a crash and the reason of a clean stop --
+		// and the reason is the field whose whole job is telling those apart.
+		defer func() {
+			final, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), shutdownGrace)
+			defer cancel()
+			stopReporter(final, turbostats.Exit{
+				Reason: turbostats.ExitReason(serveErr, ctx.Err()),
+				Code:   errs.ExitCode(serveErr),
+			})
+		}()
 	}
 
-	serveErr := srv.Serve(ctx, ln)
-
-	// After the server drains, so the last bundle counts every request it
-	// answered. A crash never reaches this line, which is how a receiver
-	// tells a clean stop from one.
-	if reporter != nil {
-		final, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
-		reporter.Final(final, turbostats.Exit{Reason: "stopped", Code: errs.ExitCode(serveErr)})
-		cancel()
-	}
+	serveErr = srv.Serve(ctx, ln)
 	return serveErr
 }
 

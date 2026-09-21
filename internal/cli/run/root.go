@@ -155,8 +155,17 @@ func NewCommand() *cobra.Command {
 			// Three deferred steps below would therefore never run: the final
 			// batch, the managers' last poll, and the state commit that makes
 			// their deletes durable.
+			// The command's own context is the parent, not Background. Under
+			// `sqlflow run` cobra supplies Background and nothing changes,
+			// but a caller that embeds this command -- a test, or another
+			// binary -- could not stop it at all, and a run that cannot be
+			// stopped is a run a test can only leak.
+			parent := cmd.Context()
+			if parent == nil {
+				parent = context.Background()
+			}
 			ctx, stopSignals := signal.NotifyContext(
-				context.Background(), syscall.SIGINT, syscall.SIGTERM)
+				parent, syscall.SIGINT, syscall.SIGTERM)
 			defer stopSignals()
 
 			conf, rendered, err := config.LoadRendered(configPath, map[string]string{})
@@ -324,13 +333,13 @@ func NewCommand() *cobra.Command {
 				}()
 
 				var statsMu sync.Mutex
-				statsFn = func() (*core.StateStats, error) {
+				statsFn = func(ctx context.Context) (*core.StateStats, error) {
 					// One ADBC connection is not safe for concurrent use, and
 					// the status loop and any number of scrapes share this
 					// one. The lock guards the reader, never the writer.
 					statsMu.Lock()
 					defer statsMu.Unlock()
-					return core.CollectStateStats(context.Background(), statsConn, statePath)
+					return core.CollectStateStats(ctx, statsConn, statePath)
 				}
 				turbineOpts = append(turbineOpts, core.WithStateStats(statsFn))
 
@@ -369,17 +378,23 @@ func NewCommand() *cobra.Command {
 			// nothing it does can block the consume loop. It is started here
 			// rather than later so an instance appears on a fleet page while
 			// the pipeline is still connecting to its source.
-			var reporter *turbostats.Reporter
+			var stopReporter func(context.Context, turbostats.Exit)
 			if ts.Enabled() {
+				// serve refuses an invalid block at startup and run did not,
+				// so a config `sqlflow validate` rejects started anyway. The
+				// reporter signs every bundle; a plaintext report_to then puts
+				// the document and its signature headers across a public
+				// network in the clear, which is what reportToProblem exists
+				// to refuse.
+				if err := ts.CheckError([]string{"pipeline", "turbostats"}); err != nil {
+					return err
+				}
 				key, err := wire.ParseCredential(ts.Key)
 				if err != nil {
-					// Validation already refuses this. Reaching it means a
-					// config bypassed validate, and reporting nowhere is
-					// worse discovered from a silent page.
 					return errs.New(errs.CodeConfigInvalid,
 						"turbostats.key is not a credential")
 				}
-				reporter, err = turbostats.NewReporter(turbostats.ReporterConfig{
+				reporter, err := turbostats.NewReporter(turbostats.ReporterConfig{
 					ReportTo: ts.ReportTo, Key: key, Interval: ts.Interval(),
 					Collect: collectBundle, Log: l.Named("turbostats"),
 				})
@@ -389,7 +404,37 @@ func NewCommand() *cobra.Command {
 				// The command's context, not the pipeline's: a run that
 				// failed is exactly when someone wants telemetry, and the
 				// reporter should keep going until the process exits.
-				go reporter.Run(ctx)
+				stopReporter = turbostats.StartReporter(ctx, reporter)
+
+				// Registered here rather than with the drain below, for two
+				// reasons.
+				//
+				// Everything between this line and the drain can fail -- a
+				// broker that will not connect, a dimension table that will
+				// not load -- and those returns never reach the drain's
+				// defer. The instance would appear on a fleet page and then
+				// go silent, which this design defines as a crash.
+				//
+				// And this runs after the drain's defer but before the state
+				// reader connection closes, so the reporter is stopped and
+				// waited for while the connection it collects from is still
+				// open. Left running, a collect can be mid-query on statsConn
+				// while the deferred Close runs, which is a use-after-free
+				// inside DuckDB rather than anything the race detector sees.
+				// The status loop below already takes this shape.
+				//
+				// On an ordinary stop the drain has already sent the bundle,
+				// and stopReporter sends one bundle however often it is
+				// called, so this is then only the wait.
+				defer func() {
+					final, cancel := context.WithTimeout(
+						context.WithoutCancel(ctx), reporterGrace)
+					defer cancel()
+					stopReporter(final, turbostats.Exit{
+						Reason: turbostats.ExitReason(runErr, ctx.Err()),
+						Code:   errs.ExitCode(runErr),
+					})
+				}()
 			}
 			pipelineMetrics, err := core.NewMetrics(meterProvider)
 			if err != nil {
@@ -548,9 +593,10 @@ func NewCommand() *cobra.Command {
 				// A process that crashes never reaches this line, which is
 				// the whole signal: the receiver tells a clean stop from a
 				// crash by whether this bundle arrived.
-				if reporter != nil {
-					reporter.Final(drainCtx, turbostats.Exit{
-						Reason: exitReasonOf(runErr), Code: errs.ExitCode(runErr),
+				if stopReporter != nil {
+					stopReporter(drainCtx, turbostats.Exit{
+						Reason: turbostats.ExitReason(runErr, ctx.Err()),
+						Code:   errs.ExitCode(runErr),
 					})
 				}
 			}()
@@ -631,15 +677,6 @@ func NewCommand() *cobra.Command {
 	return cmd
 }
 
-// exitReasonOf names how a run ended, for the last bundle.
-//
-// A supervisor reads the exit code; a person reads this. "max-msgs" and a
-// signal are both clean stops and say different things about why.
-func exitReasonOf(err error) string {
-	switch {
-	case err == nil:
-		return "stopped"
-	default:
-		return string(errs.CodeOf(err))
-	}
-}
+// reporterGrace bounds the final bundle when the drain did not send one,
+// which happens only when a startup step failed before the drain existed.
+const reporterGrace = 15 * time.Second

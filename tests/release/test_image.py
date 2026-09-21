@@ -558,8 +558,12 @@ def test_turbostats_reporter_posts_signed_bundles(image, stack):
     reporter's goroutine and the link-time stamp together, and a unit test
     proves none of them in the artifact users pull.
 
-    The receiver is a sidecar on the test network rather than a listener on
-    the host, which is how every other release test reaches a dependency.
+    The pipeline shares the receiver's network namespace rather than sitting
+    beside it on the test network, so it reports to 127.0.0.1. That is not a
+    convenience: `report_to` refuses plaintext to anything but the loopback,
+    because a signed bundle still crosses the wire in the clear. Posting to a
+    network alias made this test evidence for a config `sqlflow validate`
+    rejects, which is evidence of nothing.
 
     The signature is not verified here. Doing it in Python would be a second
     implementation of the thing under test; the wire vectors cover the math,
@@ -576,7 +580,7 @@ pipeline:
   name: reporting_pipeline
   turbostats:
     id: release-01
-    report_to: http://control:8080/v1/turbostats
+    report_to: http://127.0.0.1:8080/v1/turbostats
     key: sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
     interval_seconds: 1
   source:
@@ -598,7 +602,8 @@ pipeline:
 
             pipeline = DockerContainer(image) \
                 .with_volume_mapping(tmp, "/conf") \
-                .with_network(stack.network) \
+                .with_kwargs(network_mode=(
+                    f"container:{receiver.get_wrapped_container().id}")) \
                 .with_command("run /conf/pipeline.yml")
             pipeline.start()
             try:

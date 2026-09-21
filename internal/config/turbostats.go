@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -52,9 +53,15 @@ func (t *TurboStats) Interval() time.Duration {
 
 // Check validates the block.
 //
+// at is where this block sits in the document: {"pipeline","turbostats"}
+// under run, {"serve","turbostats"} under serve. The caller supplies it
+// because the block is reachable from two places and a violation naming a
+// path the operator cannot find in their file is a violation they cannot
+// act on.
+//
 // Order matters: the first violation is the one an operator reads, so the
 // destination comes before what is sent to it.
-func (t *TurboStats) Check() []Violation {
+func (t *TurboStats) Check(at []string) []Violation {
 	if !t.Enabled() {
 		// Nothing to validate. An instance with no control plane is the
 		// ordinary case, and a half-filled block that reports nowhere is not
@@ -65,7 +72,7 @@ func (t *TurboStats) Check() []Violation {
 	var out []Violation
 	add := func(code errs.Code, key, format string, args ...any) {
 		out = append(out, Violation{
-			Code: code, Path: []string{"turbostats", key},
+			Code: code, Path: append(append([]string{}, at...), key),
 			Message: fmt.Sprintf(format, args...),
 		})
 	}
@@ -127,4 +134,23 @@ func isLoopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// CheckError folds Check into one error for a process that must refuse to
+// start.
+//
+// run had no such call. A config validate rejects -- plaintext to a public
+// address, or a missing id -- started anyway and posted signed bundles in
+// the clear, which is exactly what reportToProblem is written to refuse.
+func (t *TurboStats) CheckError(at []string) error {
+	violations := t.Check(at)
+	if len(violations) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("the turbostats config is invalid")
+	for _, v := range violations {
+		fmt.Fprintf(&b, "\n  %s: %s", strings.Join(v.Path, "."), v.Message)
+	}
+	return errs.New(violations[0].Code, "%s", b.String())
 }

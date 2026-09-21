@@ -21,9 +21,17 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	}
 	flat := scalars(rm)
 
+	// Not fatal. Every other number in the bundle is still true, and an
+	// instance that stops reporting is indistinguishable from one that died.
+	// The field is omitted instead, which says "unknown" where a zero would
+	// have said "no memory".
+	// A failed read omits the field rather than failing the bundle. Every
+	// other number is still true, and an instance that stops reporting is
+	// indistinguishable from one that died, so losing the heartbeat over one
+	// number is the worse trade. The gap on the memory chart is the signal.
 	rss, err := ResidentAnonBytes()
 	if err != nil {
-		return Bundle{}, fmt.Errorf("turbostats: reading resident memory: %w", err)
+		rss = 0
 	}
 
 	s := src.Static
@@ -47,7 +55,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	}
 
 	if src.Pipeline != nil {
-		p, err := pipelineSection(flat, src.Pipeline)
+		p, err := pipelineSection(ctx, flat, src.Pipeline)
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -62,7 +70,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	return b, nil
 }
 
-func pipelineSection(flat map[string]int64, src *PipelineSource) (*Pipeline, error) {
+func pipelineSection(ctx context.Context, flat map[string]int64, src *PipelineSource) (*Pipeline, error) {
 	p := &Pipeline{
 		MessageCount:     flat["message_count"],
 		HandlerRowsRead:  flat["handler_rows_read"],
@@ -74,7 +82,7 @@ func pipelineSection(flat map[string]int64, src *PipelineSource) (*Pipeline, err
 		LastMessageAt:    unixTime(flat["pipeline_last_message_timestamp"]),
 	}
 	if src.Stats != nil {
-		st, err := src.Stats()
+		st, err := src.Stats(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("turbostats: reading state stats: %w", err)
 		}

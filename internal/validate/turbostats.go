@@ -31,7 +31,7 @@ func checkTurboStats(rendered []byte, rep *Report) {
 	var root yaml.Node
 	_ = yaml.Unmarshal(rendered, &root)
 
-	violations := conf.Pipeline.TurboStats.Check()
+	violations := conf.Pipeline.TurboStats.Check([]string{"pipeline", "turbostats"})
 	for _, v := range violations {
 		// The block hangs off pipeline, and Check names its own keys.
 		path := append([]string{"pipeline"}, v.Path...)

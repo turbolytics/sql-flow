@@ -65,6 +65,11 @@ func TestCliServe_ReportsItselfAndSaysWhenItStops(t *testing.T) {
 	assert.NoError(t, os.WriteFile(path, []byte(`
 serve:
   name: reporting_serve
+  # An ephemeral port, as every other serve test uses. Without it this bound
+  # the default 8080 and failed against anything already listening there,
+  # including another test and a developer's own instance.
+  http:
+    addr: 127.0.0.1:0
   clients: [{name: local, id: local-dev}]
   turbostats:
     id: serve-01

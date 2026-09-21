@@ -13,6 +13,7 @@
 package turbostats
 
 import (
+	"context"
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/core"
@@ -60,7 +61,12 @@ type Source struct {
 // PipelineSource is what the pipeline section reads beyond the instruments.
 type PipelineSource struct {
 	// Stats may be nil for a pipeline with no state path.
-	Stats func() (*core.StateStats, error)
+	//
+	// It takes a context because it queries the state database. Without one
+	// the post timeout bounds only the HTTP request, and a COUNT(*) over a
+	// large state table holds a shutdown open past the deadline a supervisor
+	// is waiting on.
+	Stats func(context.Context) (*core.StateStats, error)
 }
 
 // ServeSource is what the serve section reads beyond the instruments. Both

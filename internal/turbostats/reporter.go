@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
+	"sync"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"go.uber.org/zap"
 )
@@ -25,6 +29,23 @@ const postTimeout = 10 * time.Second
 // that lost power reports in lockstep forever and the receiver sees every
 // instance in the same second of every minute.
 const jitterFraction = 0.1
+
+// seed draws the jitter seed from the OS.
+//
+// time.Now() cannot do this job on the fleets this protocol names. A device
+// with no battery-backed clock boots to the same epoch every time, so a rack
+// restored together would seed identically, jitter identically, and report in
+// lockstep -- the exact failure the jitter exists to prevent. The OS source
+// is seeded before any clock is.
+func seed() int64 {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		// Nothing here is a secret; the only cost of a bad seed is a fleet
+		// that reports in step, which is what the clock would have given.
+		return time.Now().UnixNano()
+	}
+	return int64(binary.LittleEndian.Uint64(b[:]))
+}
 
 // ReporterConfig is everything the reporter needs. Now and Client are for
 // tests; both have working defaults.
@@ -54,10 +75,45 @@ type Reporter struct {
 	client   *http.Client
 	rand     *rand.Rand
 
+	// mu serializes posts. Two in flight would race on failing, and worse,
+	// would let a periodic bundle land after the final one and report a
+	// stopped instance as running. A receiver that rejects an out-of-order
+	// bundle hides this; not every receiver does, and the guarantee belongs
+	// on the sender.
+	mu sync.Mutex
 	// failing is whether the last post failed. It turns a run of failures
 	// into one line at each edge rather than one per attempt: a log that
 	// buries itself reporting an outage is no log.
 	failing bool
+}
+
+// StartReporter runs a reporter and returns the one call that ends it.
+//
+// The goroutine is owned rather than launched. A bare `go r.Run(ctx)` cannot
+// be waited on, and the collect function usually reads a database connection
+// the caller closes on its way out: a reporter still collecting at that
+// moment is a use-after-free inside DuckDB, which no race detector sees. The
+// status loop beside it already takes this shape.
+//
+// stop cancels the loop, waits for any post in flight, then sends the final
+// bundle on the context it is given, so a caller's drain budget bounds it.
+// Calling stop more than once is safe and sends one bundle.
+func StartReporter(ctx context.Context, r *Reporter) func(context.Context, Exit) {
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(runCtx)
+	}()
+
+	var once sync.Once
+	return func(final context.Context, exit Exit) {
+		once.Do(func() {
+			cancel()
+			<-done
+			r.Final(final, exit)
+		})
+	}
 }
 
 func NewReporter(conf ReporterConfig) (*Reporter, error) {
@@ -74,7 +130,7 @@ func NewReporter(conf ReporterConfig) (*Reporter, error) {
 	r := &Reporter{
 		url: conf.ReportTo, key: conf.Key, interval: conf.Interval,
 		collect: conf.Collect, log: conf.Log, now: conf.Now, client: conf.Client,
-		rand: rand.New(rand.NewSource(time.Now().UnixNano())),
+		rand: rand.New(rand.NewSource(seed())),
 	}
 	if r.interval <= 0 {
 		r.interval = time.Minute
@@ -129,7 +185,15 @@ func (r *Reporter) nextInterval() time.Duration {
 // post builds one bundle, signs it, and sends it. It returns nothing: a
 // caller cannot act on a failure, which is the point.
 func (r *Reporter) post(ctx context.Context, exit *Exit) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), postTimeout)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// The caller's context, not a detached copy. WithTimeout takes the
+	// earlier of the two deadlines, so a shutdown's drain budget bounds the
+	// final bundle and a cancelled run stops posting promptly. Detaching it
+	// meant the documented promise -- that a hung receiver cannot hold a
+	// shutdown past the supervisor's deadline -- was not kept.
+	ctx, cancel := context.WithTimeout(ctx, postTimeout)
 	defer cancel()
 
 	b, err := r.collect(ctx)
@@ -193,5 +257,24 @@ func (r *Reporter) succeed() {
 	if r.failing {
 		r.failing = false
 		r.log.Info("turbostats reporting recovered", zap.String("report_to", r.url))
+	}
+}
+
+// ExitReason names how a process ended, for the final bundle.
+//
+// A supervisor reads the exit code; a person reads this. A signal and a run
+// that finished on its own are both clean stops, and they say different
+// things about why, so they get different words.
+func ExitReason(runErr error, ctxErr error) string {
+	switch {
+	case runErr != nil:
+		return string(errs.CodeOf(runErr))
+	case ctxErr != nil:
+		// Cancelled from outside: a signal, or a supervisor stopping it.
+		return "signal"
+	default:
+		// Reached the end of what it was asked to do: --max-msgs, a source
+		// that closed, a server told to stop listening.
+		return "stopped"
 	}
 }
