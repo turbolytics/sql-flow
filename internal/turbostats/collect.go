@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
@@ -19,7 +20,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	if err := src.Reader.Collect(ctx, &rm); err != nil {
 		return Bundle{}, fmt.Errorf("turbostats: collecting instruments: %w", err)
 	}
-	flat := scalars(rm)
+	flat, dim := walk(rm)
 
 	// Not fatal. Every other number in the bundle is still true, and an
 	// instance that stops reporting is indistinguishable from one that died.
@@ -55,7 +56,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	}
 
 	if src.Pipeline != nil {
-		p, err := pipelineSection(ctx, flat, src.Pipeline)
+		p, err := pipelineSection(ctx, flat, dim, b.SentAt, src.Pipeline)
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -70,7 +71,8 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	return b, nil
 }
 
-func pipelineSection(ctx context.Context, flat map[string]int64, src *PipelineSource) (*Pipeline, error) {
+func pipelineSection(ctx context.Context, flat map[string]int64, dim *dimensional,
+	sentAt time.Time, src *PipelineSource) (*Pipeline, error) {
 	p := &Pipeline{
 		MessageCount:     flat["message_count"],
 		HandlerRowsRead:  flat["handler_rows_read"],
@@ -80,6 +82,28 @@ func pipelineSection(ctx context.Context, flat map[string]int64, src *PipelineSo
 		SinkRowsWritten:  flat["pipeline_rows_written"],
 		StateCommitCount: flat["pipeline_commits"],
 		LastMessageAt:    unixTime(flat["pipeline_last_message_timestamp"]),
+		// Always present: a pipeline always has a sink, so no retries is a
+		// reading rather than a silence.
+		SinkRetryCount: dim.sinkRetries,
+	}
+	if dim.lagSeen {
+		p.LagMaxMessages = &dim.lagMax
+		p.LagTotalMessages = &dim.lagTotal
+		p.LagPartitions = &dim.lagPoints
+	}
+	if dim.windowSeen {
+		p.LateRowsDropped = &dim.lateDropped
+		p.LateRowsReemitted = &dim.lateReemitted
+		p.WindowClosedCount = &dim.windowClosed
+		if dim.watermarkSeen {
+			age := int64(sentAt.Sub(time.Unix(dim.watermarkOldest, 0)).Seconds())
+			if age < 0 {
+				// A watermark ahead of now is a clock artefact, not a
+				// negative age.
+				age = 0
+			}
+			p.WatermarkLagSeconds = &age
+		}
 	}
 	if src.Stats != nil {
 		st, err := src.Stats(ctx)
@@ -143,36 +167,110 @@ func later(a, b *time.Time) *time.Time {
 	return b
 }
 
-// scalars reads the dimensionless point of every int64 instrument, by name.
+// walk reads every instrument once, and yields two things.
 //
-// It sums nothing and filters nothing. Every number the bundle reports has a
-// dimensionless series recorded for it, so this is a lookup, and which
-// measurements count was decided where they were recorded.
+// flat is the dimensionless point of each int64 instrument, by name. It sums
+// nothing and filters nothing, because which measurements count was decided
+// where they were recorded.
 //
-// That is the whole point. Adding a counter's attribute sets together is
-// arithmetic that silently encodes a policy: sink_flush_count carries
-// result=ok and result=error, and summing them reports a number of flushes
-// that is true of nothing. A point carrying any attribute is not the flat
-// series and is skipped.
-func scalars(rm metricdata.ResourceMetrics) map[string]int64 {
-	out := map[string]int64{}
+// dim is the summary of the instruments that only ever record under
+// attributes, which flat therefore cannot see at all: consumer lag, sink
+// retries, and the window counters. A bundle field may collapse one of those
+// attributes only when every point under it measures the same thing.
+//
+//   - A shard attribute -- topic, partition, window, sink -- splits one
+//     measurement across parts of one system. Collapsing it is arithmetic
+//     that stays true.
+//   - An outcome attribute -- result, policy -- splits points that measure
+//     different things. Collapsing it reports a number true of nothing.
+//     sink_flush_count carries result=ok and result=error, and their sum is
+//     a count of flushes that never happened; window_late_rows carries
+//     policy=drop and policy=reemit, and one of those lost data while the
+//     other did not.
+//
+// So flat keeps ignoring every attributed point, and dim collapses shards
+// only, splitting each outcome into a field of its own.
+func walk(rm metricdata.ResourceMetrics) (map[string]int64, *dimensional) {
+	flat := map[string]int64{}
+	dim := &dimensional{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			switch data := m.Data.(type) {
 			case metricdata.Sum[int64]:
 				for _, dp := range data.DataPoints {
 					if dp.Attributes.Len() == 0 {
-						out[m.Name] = dp.Value
+						flat[m.Name] = dp.Value
+						continue
 					}
+					dim.add(m.Name, dp.Attributes, dp.Value)
 				}
 			case metricdata.Gauge[int64]:
 				for _, dp := range data.DataPoints {
 					if dp.Attributes.Len() == 0 {
-						out[m.Name] = dp.Value
+						flat[m.Name] = dp.Value
+						continue
 					}
+					dim.add(m.Name, dp.Attributes, dp.Value)
 				}
 			}
 		}
 	}
-	return out
+	return flat, dim
+}
+
+// dimensional accumulates the attributed series a bundle summarizes.
+//
+// Each group carries a seen flag rather than relying on a zero, because zero
+// is a reading and absence is not: a pipeline that has caught up reports lag
+// zero, and one with no Kafka source reports no lag at all.
+type dimensional struct {
+	lagSeen     bool
+	lagMax      int64
+	lagTotal    int64
+	lagPoints   int
+	sinkRetries int64
+
+	windowSeen      bool
+	lateDropped     int64
+	lateReemitted   int64
+	windowClosed    int64
+	watermarkOldest int64
+	watermarkSeen   bool
+}
+
+func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
+	switch name {
+	case "consumer_lag":
+		// Collapses topic and partition, both shards.
+		d.lagSeen = true
+		d.lagPoints++
+		d.lagTotal += v
+		if v > d.lagMax {
+			d.lagMax = v
+		}
+	case "sink_retry_count":
+		// Collapses sink, a shard.
+		d.sinkRetries += v
+	case "window_closed":
+		d.windowSeen = true
+		d.windowClosed += v
+	case "window_late_rows":
+		// Collapses window, a shard. Splits policy, an outcome: dropped rows
+		// are gone and reemitted rows are not.
+		d.windowSeen = true
+		switch policy, _ := attrs.Value(attribute.Key("policy")); policy.AsString() {
+		case "drop":
+			d.lateDropped += v
+		case "reemit":
+			d.lateReemitted += v
+		}
+	case "window_watermark_seconds":
+		// The oldest watermark across windows, which is the one furthest
+		// behind, so the age derived from it is the worst of them.
+		d.windowSeen = true
+		if !d.watermarkSeen || v < d.watermarkOldest {
+			d.watermarkOldest = v
+		}
+		d.watermarkSeen = true
+	}
 }

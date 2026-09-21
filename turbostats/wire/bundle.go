@@ -102,6 +102,49 @@ type Pipeline struct {
 	StateDBSizeBytes *int64 `json:"state_db_size_bytes,omitempty"`
 	// Absent until the pipeline receives anything, because zero is not a time.
 	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
+
+	// SinkRetryCount is every sink write retried after a failure, summed
+	// across sinks. Always present: a pipeline always has a sink, so zero
+	// retries is a fact rather than a silence.
+	SinkRetryCount int64 `json:"sink_retry_count"`
+
+	// Lag is how far behind the source this pipeline is, summarized across
+	// every topic and partition it holds.
+	//
+	// Pointers, not omitempty on a value. A pipeline that has caught up
+	// reports zero, and a pipeline with no Kafka source reports nothing, and
+	// omitempty on an int64 would render both as an absent field -- turning
+	// the healthiest state the system has into the same page as the unknown
+	// one.
+	//
+	// Both aggregates, because either alone misleads: max hides a backlog
+	// spread evenly over every partition, and the total hides one stuck
+	// partition among many. LagPartitions says how many points they
+	// summarize, without which the two cannot be told apart.
+	LagMaxMessages   *int64 `json:"lag_max_messages,omitempty"`
+	LagTotalMessages *int64 `json:"lag_total_messages,omitempty"`
+	LagPartitions    *int   `json:"lag_partitions,omitempty"`
+
+	// The window fields travel as a group: all four are present when this
+	// pipeline runs any window, and all four are absent when it runs none.
+	//
+	// That is what makes LateRowsDropped readable. It counts rows the engine
+	// deleted because they arrived after the watermark, which is silent data
+	// loss, and an operator has to be able to tell "no rows were dropped"
+	// from "nothing here drops rows". Absent says the second; zero says the
+	// first.
+	//
+	// Dropped and reemitted are separate fields because the policy that
+	// splits them is an outcome, not a shard: one number loses data and the
+	// other does not, and a sum of the two is true of neither.
+	LateRowsDropped   *int64 `json:"late_rows_dropped,omitempty"`
+	LateRowsReemitted *int64 `json:"late_rows_reemitted,omitempty"`
+	WindowClosedCount *int64 `json:"window_closed_count,omitempty"`
+	// WatermarkLagSeconds is how far behind the oldest watermark is at
+	// SentAt. The raw watermark is a Unix second that means nothing without
+	// the read time, and both clocks are this process's, so the subtraction
+	// carries no skew.
+	WatermarkLagSeconds *int64 `json:"watermark_lag_seconds,omitempty"`
 }
 
 // Serve carries the dataset API's totals since Process.StartedAt.

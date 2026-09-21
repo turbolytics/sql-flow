@@ -1315,6 +1315,83 @@ def test_turbostats_endpoint_serves_the_bundle(image, stack):
     assert "pipeline" not in bundle["instance"]
 
 
+@pytest.mark.covers("observability.turbostats")
+def test_turbostats_bundle_reports_consumer_lag(image, stack):
+    """A Kafka pipeline's bundle says how far behind it is.
+
+    consumer_lag is recorded per topic and partition, and the bundle used to
+    read only attribute-free series, so lag never reached it: a pipeline four
+    hundred thousand messages behind looked the same as one that had caught
+    up. The bundle now summarizes it as the worst partition, the total, and
+    how many partitions those cover.
+
+    Driven against the image with a real broker because the unit tests record
+    synthetic points. What they cannot show is that a real consumer produces
+    those points at all, under the names the collector reads.
+    """
+    topic = f"turbostats-lag-{int(time.time())}"
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
+    for i in range(600):
+        producer.produce(topic, json.dumps({
+            "timestamp": "2026-09-01T12:00:00Z",
+            "properties": {"city": "Baltimore" if i % 2 else "New York"},
+        }).encode("utf-8"))
+    producer.flush()
+
+    bundle = None
+    with container_writable_dir() as state_dir:
+        container = DockerContainer(image) \
+            .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+            .with_volume_mapping(state_dir, "/state", "rw") \
+            .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
+            .with_env("SQLFLOW_STATE_PATH", "/state/state.db") \
+            .with_env("SQLFLOW_TOPIC", topic) \
+            .with_env("SQLFLOW_GROUP_ID", topic) \
+            .with_exposed_ports(8000) \
+            .with_network(stack.network) \
+            .with_command(
+                "run /tmp/conf/config/examples/kafka.stateful.window.yml --turbostats")
+        container.start()
+        try:
+            wait_for_logs(container, "consumer loop starting", timeout=90)
+            port = container.get_exposed_port(8000)
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                resp = requests.get(
+                    f"http://localhost:{port}/turbostats/v1", timeout=10)
+                assert resp.status_code == 200
+                bundle = resp.json()
+                pipeline = bundle["pipeline"]
+                if "lag_max_messages" in pipeline and pipeline["message_count"] >= 600:
+                    break
+                time.sleep(1)
+        finally:
+            container.stop()
+
+    pipeline = bundle["pipeline"]
+    assert pipeline["message_count"] >= 600, pipeline
+    assert "lag_max_messages" in pipeline, (
+        f"a Kafka pipeline that consumed {pipeline['message_count']} messages "
+        f"reported no lag: {pipeline}")
+    # Everything produced was consumed, so it has caught up. Zero is a
+    # reading here, and an absent field would have meant no Kafka source.
+    assert pipeline["lag_max_messages"] == 0, pipeline
+    assert pipeline["lag_total_messages"] == 0, pipeline
+    assert pipeline["lag_partitions"] >= 1, pipeline
+    assert pipeline["lag_total_messages"] >= pipeline["lag_max_messages"]
+
+    # A pipeline always has a sink, so no retries is a reading too.
+    assert pipeline["sink_retry_count"] == 0, pipeline
+
+    # The window fields travel as a group: all present or none.
+    window = ["late_rows_dropped", "late_rows_reemitted", "window_closed_count"]
+    present = [name in pipeline for name in window]
+    assert all(present) or not any(present), pipeline
+
+    # No field is wider for the partitions behind it.
+    assert not any(isinstance(v, (list, dict)) for v in pipeline.values()), pipeline
+
+
 @pytest.mark.covers("lifecycle.health")
 def test_lifecycle_health_reports_healthy_once_committed(image, stack):
     """The shipped image answers /healthz with the four-state body.

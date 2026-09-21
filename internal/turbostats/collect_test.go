@@ -203,10 +203,34 @@ func TestCollect_CarriesTheStaticFactsAndTheRuntime(t *testing.T) {
 	assert.Equal(t, 0, b.SentAt.Nanosecond())
 }
 
-func TestCollect_TheBundleIsUnderOneKiB(t *testing.T) {
+// A realistic run bundle, through the real collector: a Kafka pipeline with
+// windows and a retrying sink, a year into the Bluesky firehose.
+//
+// The ceiling is 4 KiB. It was 1 KiB until measurement showed that bound
+// protected nothing, and this test logs the size so the number the contract's
+// spec only estimated is one anybody can read.
+func TestCollect_ARunBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, m, meter := provider(t)
 	ctx := context.Background()
+	for partition := 0; partition < 32; partition++ {
+		m.ConsumerLag.Record(ctx, 184203, lagAttrs("bluesky.posts", partition))
+	}
+	late, err := meter.Int64Counter("window_late_rows")
+	assert.NoError(t, err)
+	late.Add(ctx, 184203, metric.WithAttributes(
+		attribute.String("window", "posts_by_lang"), attribute.String("policy", "drop")))
+	late.Add(ctx, 184203, metric.WithAttributes(
+		attribute.String("window", "posts_by_lang"), attribute.String("policy", "reemit")))
+	closed, err := meter.Int64Counter("window_closed")
+	assert.NoError(t, err)
+	closed.Add(ctx, 1842033, metric.WithAttributes(attribute.String("window", "posts_by_lang")))
+	watermark, err := meter.Int64Gauge("window_watermark_seconds")
+	assert.NoError(t, err)
+	watermark.Record(ctx, 1757570000, metric.WithAttributes(attribute.String("window", "posts_by_lang")))
+	retries, err := meter.Int64Counter("sink_retry_count")
+	assert.NoError(t, err)
+	retries.Add(ctx, 1842, metric.WithAttributes(attribute.String("sink", "postgres")))
 	// Nine-digit totals, the size a year of the Bluesky firehose reaches.
 	m.MessageCount.Add(ctx, 184203311)
 	m.HandlerRowsRead.Add(ctx, 184203311)
@@ -215,7 +239,6 @@ func TestCollect_TheBundleIsUnderOneKiB(t *testing.T) {
 	m.PipelineRowsAccepted.Add(ctx, 184203311)
 	m.PipelineRowsWritten.Add(ctx, 184203311)
 	m.PipelineLastMessage.Record(ctx, 1757570000)
-	_ = meter
 	size := int64(4194304)
 	stats := func(context.Context) (*core.StateStats, error) { return &core.StateStats{SizeBytes: size}, nil }
 
@@ -224,7 +247,10 @@ func TestCollect_TheBundleIsUnderOneKiB(t *testing.T) {
 	b.Exit = &Exit{Reason: "SIGTERM", Code: 0}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
-	assert.That(t, len(raw) < 1024)
+	t.Logf("a realistic run bundle with lag, windows and retries is %d bytes", len(raw))
+	// Thirty-two partitions went in, and the bundle is no wider for them.
+	assert.Equal(t, 32, *b.Pipeline.LagPartitions)
+	assert.That(t, len(raw) < 4<<10)
 }
 
 // A section's presence says what the process does. A run bundle has no serve
@@ -366,7 +392,7 @@ func TestCollect_LastActivityIsTheLaterSectionTimestamp(t *testing.T) {
 	assert.Equal(t, int64(1757570500), b.LastActivityAt.Unix())
 }
 
-func TestCollect_TheServeBundleIsUnderOneKiB(t *testing.T) {
+func TestCollect_AServeBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats.serve")
 	reader, meter := serveProvider(t)
 	for _, name := range []string{"serve_requests", "serve_cache_hits", "serve_cache_misses"} {
@@ -393,5 +419,5 @@ func TestCollect_TheServeBundleIsUnderOneKiB(t *testing.T) {
 	b.Exit = &Exit{Reason: "SIGTERM", Code: 0}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
-	assert.That(t, len(raw) < 1024)
+	assert.That(t, len(raw) < 4<<10)
 }

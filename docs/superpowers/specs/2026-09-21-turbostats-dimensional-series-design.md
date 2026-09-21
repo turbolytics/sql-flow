@@ -77,9 +77,20 @@ mistake the original argument warned about.
 
 ## New fields
 
-All eight are in `pipeline`, and every one is omitted when its source has no
-points. A pipeline with no Kafka source reports no lag. A pipeline with no
-windows reports no window fields.
+All eight are in `pipeline`. Presence is decided per group, not per field,
+because for these numbers zero is a reading and absence is a different fact:
+
+- **Lag** is present when the pipeline has a Kafka source. A pipeline that has
+  caught up reports `0`; a pipeline with no Kafka source reports nothing. The
+  three fields are pointers in the Go type for that reason: `omitempty` on a
+  plain integer would render both states as an absent field, and the
+  healthiest state a pipeline has would read the same as the unknown one.
+- **The window fields travel together.** All four are present when the
+  pipeline runs any window, and all four are absent when it runs none.
+  `late_rows_dropped` counts data the engine deleted, so "no rows were
+  dropped" has to be distinguishable from "nothing here drops rows".
+- **`sink_retry_count` is always present.** A pipeline always has a sink, so
+  no retries is a reading rather than a silence.
 
 | Field | Type | From | Aggregate |
 |---|---|---|---|
@@ -119,10 +130,10 @@ subtracts.
     "lag_total_messages": 1902,
     "lag_partitions": 6,
 
-    // Absent until a sink retries.
+    // Always present: every pipeline has a sink.
     "sink_retry_count": 3,
 
-    // Absent without windows.
+    // All four present with any window, all four absent with none.
     "late_rows_dropped": 0,
     "late_rows_reemitted": 14,
     "window_closed_count": 288,
@@ -142,6 +153,12 @@ storage. Measured against the running control plane, it does not:
 | `run` bundle, websocket source, no windows | 721 |
 | Average raw JSON across 3,576 stored bundles | 485 |
 | Average **stored** size of the same `doc` column | **588** |
+| `run` bundle with these fields: 32 partitions, windows, a retrying sink | 807 |
+| Every field of both sections at its widest value | 1,715 |
+
+The last two are measured by tests, not estimated. The 32-partition bundle is
+no wider than a one-partition bundle, which is the shape invariant doing its
+job.
 
 Storage is 21% *larger* than the wire form, not smaller. `doc` is `jsonb` with
 EXTENDED storage, and Postgres compresses a value only above roughly 2 KB, so
@@ -165,6 +182,16 @@ Three consequences, none of which belong in this contract:
   `SET STORAGE MAIN` with a lowered TOAST threshold, or `bytea` holding
   compressed text. A request `Content-Encoding` compresses the wire and
   changes nothing about the row.
+
+There is one reader for whom bytes per heartbeat is the real cost, and it is
+not the control plane: an instance on a metered or constrained link. At 807
+bytes the default 60s interval costs about 1.1 MB a day and a 10s interval
+about 7 MB, before HTTP and TLS overhead of the same order. That is the
+strongest argument for the shape invariant below, stronger than storage ever
+was: a map keyed by partition would have put the broker's partition count on
+that link every interval. It also makes compressing the *request* worthwhile
+where compressing the row was not, since a JSON document repeats its keys.
+The interval remains the lever that matters most.
 
 So the contract keeps a ceiling only to catch accidents. 4 KiB, tested. The
 invariant that matters is not a byte count but a shape: **no field's presence
@@ -210,6 +237,20 @@ data point once in `scalars`; the aggregates accumulate in that walk.
   it would be added to find. That is a distribution problem rather than a
   dimensional one, and it deserves its own amendment.
 - Per-partition, per-window, or per-sink detail. `/metrics` carries it.
+- **Byte volume.** `bytes_read` and `bytes_written` will be added, most of all
+  for an instance on a constrained link, and they are not here because nothing
+  measures them: unlike every field above, this is new instrumentation on the
+  consume loop rather than a series the bundle dropped, so it needs the
+  write-path benchmark as a gate. The definition has to be settled first.
+  Payload bytes are uniform across sources and nearly free, but exclude
+  framing and TLS, and under Kafka compression the wire can be smaller than
+  the payload. Wire bytes are what a metered link pays, and only some clients
+  expose them. Whichever ships must be named for what it is.
+- **A freshness probe.** Every number in the bundle is the engine attesting
+  about itself. None of them can say the output arrived: a sink that
+  acknowledges and loses, or a destination nobody can read, looks healthy from
+  in here. Proving freshness means reading the destination, which is a
+  different component with its own credentials and its own failure modes.
 - Error detail beyond `error_count`. An operator still goes to the logs to
   learn what failed. `exit.reason` shows a taxonomy code is possible in a
   bundle, so this is worth its own amendment rather than a field bolted here.
