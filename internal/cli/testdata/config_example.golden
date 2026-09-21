@@ -245,11 +245,6 @@ pipeline:
     key: <string>
     # IntervalSeconds is how often to report. Absent means the default.
     interval_seconds: <integer>
-    # Allow is the scopes this instance permits. It is a ceiling the instance
-    # sets, so a control plane cannot grant itself more than the operator
-    # wrote here.
-    allow:
-      - <array>
 # Predefined SQL tables used in the pipeline.
 tables:
   # List of tables with their SQL definitions and management configurations.

@@ -82,11 +82,6 @@ serve:
     key: <string>
     # IntervalSeconds is how often to report. Absent means the default.
     interval_seconds: <integer>
-    # Allow is the scopes this instance permits. It is a ceiling the instance
-    # sets, so a control plane cannot grant itself more than the operator
-    # wrote here.
-    allow:
-      - <array>
   # Bounds the response cache. It does not enable it: a dataset opts in
   # with its own cache block.
   cache:

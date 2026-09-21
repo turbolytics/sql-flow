@@ -48,7 +48,7 @@ holds without exception.
 | Authentication | Ed25519 signature over a canonical string. | A bearer token: the secret crosses the wire on every request. HMAC: the receiver must store every secret recoverable. RFC 9421: negotiation and canonicalization this design does not need. |
 | Key id | The first 16 hex characters of the SHA-256 of the public key. | An id the control plane assigns: an operator could not bring a key the control plane has never seen. |
 | Command channel | The heartbeat response. Its envelope is fixed now and its contents are reserved. | Defining verbs now: nobody has used a command, so any shape is a guess. |
-| Scope ceiling | The instance config lists the scopes it allows. The reporter drops anything outside them. | Trusting the control plane's scopes alone: a compromised control plane could grant itself `execute`. |
+| Scope ceiling | **Withdrawn 2026-09-21.** Deferred to the change that defines commands. See below. | A config key with nothing to enforce: `allow` shipped in #351, was parsed and validated, and was read by nothing. |
 | Shared code | A public Go package in this repository holds the bundle types and the signing functions. | Copies in both repositories: the two would drift. |
 | The HTTP route | `GET /turbostats/v1` stays behind a CLI flag, for local inspection, tests, and the memory soak. The system is push-based, and no deployed instance turns it on. | A config key for it, in the `turbostats` block or anywhere else: a permanent surface for a route nothing in production calls. |
 
@@ -263,13 +263,22 @@ pipeline:
     report_to: https://control.turbolytics.io/v1/turbostats
     key: {{ SQLFLOW_TURBOSTATS_KEY }}
     interval_seconds: 60
-    allow: [read]
 ```
 
-`key` replaces the earlier spec's `token`. `allow` lists the scopes this
-instance permits and defaults to `[read]`. v1 accepts only `read`, and any
-other value fails validation. `validate` also fails on a `key` that does not
-parse as a credential string.
+`key` replaces the earlier spec's `token`. `validate` fails on a `key` that
+does not parse as a credential string.
+
+**The scope ceiling is withdrawn.** This spec proposed `allow`, a list of the
+scopes an instance permits, so a compromised control plane could not grant
+itself `execute`. It shipped in #351 and did nothing: v1 sends no commands, so
+there was nothing for the reporter to drop, and no code read the field. An
+operator who set `allow: [read]` got every sign of protection and none of it,
+and `sqlflow config example` printed the key into every generated config.
+It is removed before any release carried it. The loader decodes strictly, so a
+leftover `allow` fails config load rather than reassuring anyone. The ceiling
+is still the right defence against a compromised control plane, and it
+returns in the change that defines commands, enforced by the code that
+receives them.
 
 Every reporter rule in the earlier spec still holds: one post at start, one
 per interval with ten percent jitter, one on a clean drain with `exit`; a
