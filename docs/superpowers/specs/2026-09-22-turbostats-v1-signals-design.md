@@ -89,6 +89,35 @@ One whose flushes all take 90 seconds puts every sample in the overflow
 bucket, and the distribution says nothing at all. Count, sum, min and max
 stay true whatever the workload, and they are four numbers.
 
+### The successor: an exponential histogram
+
+Fixed boundaries cannot be re-scaled after the fact, and a percentile across
+a fleet needs a form that merges. The successor is the base-2 exponential
+histogram, which the OTel SDK already implements
+(`AggregationBase2ExponentialHistogram`), so it needs no new dependency:
+
+```json
+"batch": {
+  "count": 41203, "sum_seconds": 831.4,
+  "min_seconds": 0.0008, "max_seconds": 41.2,
+  "hist": { "scale": 3, "zero_count": 0, "offset": -84, "counts": [2, 19, 240, ...] }
+}
+```
+
+`scale` sets the relative error, `offset` is the index of the first count,
+and `counts` runs from there. It is one field with a fixed shape: an array,
+never a map keyed by bucket, so the shape rule holds. Two sketches at one
+scale merge exactly, and a sketch at a finer scale reduces to a coarser one,
+which is what makes a fleet-wide percentile possible.
+
+It is not in v1 because the cost lands in the receiver: storage, merging and
+quantile math before anyone sees a number, for a question no customer has
+asked. It also multiplies the report's size by two to four, on links where
+that is the constraint.
+
+When it arrives, `buckets` is derived from `hist` rather than measured
+separately, so a receiver keeps one path and nothing has to read both.
+
 ## Errors
 
 The `pipeline` section gains counters, one per phase the engine already
