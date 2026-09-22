@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- `sqlflow turbostats keygen --out FILE` generates a TurboStats keypair on
+  the instance. The credential, the private half, goes to `FILE`, readable
+  only by its owner, and is never printed. The public key and key id are
+  printed: send the public key to register the instance, and the private
+  key never leaves the machine it was made on. Public keys are strings with
+  the `sfp_` prefix, beside the `sfc_` credential. `keygen` refuses to
+  overwrite an existing file.
+
 ### Changed
 
 - `source.kafka.fetch.max_bytes` defaults to 4 MiB, from 100 MiB, and

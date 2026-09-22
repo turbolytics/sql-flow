@@ -41,6 +41,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(tail.NewCommand())
 	cmd.AddCommand(newConfigCommand())
 	cmd.AddCommand(newValidateCommand())
+	cmd.AddCommand(newTurbostatsCommand())
 	cmd.AddCommand(newDevCommand())
 	cmd.AddCommand(newVersionCommand())
 
