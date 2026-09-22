@@ -709,6 +709,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// against a whole batch, and a reader asking "is it still doing
 		// anything" cannot tell the two apart.
 		t.metrics.PipelineLastMessage.Record(ctx, time.Now().Unix())
+		t.metrics.Activity.Mark()
 
 		// handler.write is timed by bracketing the whole loop and subtracting
 		// the batches that ran inside it, rather than by timing each

@@ -215,6 +215,9 @@ func New(ctx context.Context, conf *config.ServeConf, ex Executor, opts ...Optio
 		return nil, err
 	}
 	s.metrics, s.reader = m, reader
+	if s.turbostats != nil {
+		m.activity = s.turbostats.Clock
+	}
 	if s.cache != nil {
 		s.cache.onEvict = m.observeEviction
 	}

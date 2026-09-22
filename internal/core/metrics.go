@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 )
@@ -71,6 +72,11 @@ type Metrics struct {
 	// while the real backlog grows. The reading is only as good as its age,
 	// and this is its age.
 	LagObserved metric.Int64Gauge
+
+	// Activity is the process's monotonic clock, marked with each batch
+	// received. Nil in tests and in any caller without a reporter; Mark is
+	// a no-op on nil.
+	Activity *activity.Clock
 }
 
 // latencyBuckets is the boundary set every latency histogram declares.

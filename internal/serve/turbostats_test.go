@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
@@ -147,4 +148,28 @@ serve:
 	b, err := srv.CollectBundle(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, int64(warmup+iters), b.Serve.RequestCount)
+}
+
+// A request answered marks the clock the bundle reads, end to end through
+// the real server.
+func TestServeTurbostats_ARequestSetsIdleSeconds(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.serve")
+	static := testStatic
+	static.Clock = activity.Start()
+	ts := newTestServerWith(t, testServe, WithTurbostats(static, true))
+
+	r := ts.do(t, http.MethodGet, "/turbostats/v1", nil)
+	var before wire.Bundle
+	assert.NoError(t, json.Unmarshal([]byte(r.raw), &before))
+	assert.That(t, before.Process.UptimeSeconds != nil)
+	// The route is not a dataset request, so nothing has been served yet.
+	assert.That(t, before.IdleSeconds == nil)
+
+	assert.Equal(t, http.StatusOK, ts.get(t, "/v1/datasets/status").status)
+
+	r = ts.do(t, http.MethodGet, "/turbostats/v1", nil)
+	var after wire.Bundle
+	assert.NoError(t, json.Unmarshal([]byte(r.raw), &after))
+	assert.That(t, after.IdleSeconds != nil)
+	assert.That(t, *after.IdleSeconds <= *after.Process.UptimeSeconds)
 }

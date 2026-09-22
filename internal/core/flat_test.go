@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -140,4 +141,33 @@ func TestToolingCoverage_TheDLQsRowsStayOutOfTheFlatCounters(t *testing.T) {
 	// Two sinks wrote one row each; only the pipeline's counts.
 	assert.Equal(t, int64(1), flatValue(t, r, "pipeline_rows_written"))
 	assert.Equal(t, int64(1), flatValue(t, r, "pipeline_rows_accepted"))
+}
+
+// The same batch that stamps pipeline_last_message_timestamp marks the
+// activity clock, so idle_seconds and last_activity_at describe one event.
+func TestCoreConsumeLoop_MarksTheActivityClock(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	src := &fakeSource{batches: [][]Message{messages(10)}}
+	r := sdkmetric.NewManualReader()
+	m, err := NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)))
+	assert.NoError(t, err)
+	m.Activity = activity.Start()
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 10, time.Second,
+		&sync.Mutex{}, PipelineErrorPolicies{}, WithMetrics(m))
+
+	_, err = tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	_, _, worked := m.Activity.Read()
+	assert.That(t, worked)
+}
+
+// Metrics built without a clock, as every other test builds them, still
+// consume: Mark is a no-op on nil.
+func TestCoreConsumeLoop_RunsWithoutAnActivityClock(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	src := &fakeSource{batches: [][]Message{messages(10)}}
+	tb, _ := meteredTurbine(t, src, &fakeSink{}, 10)
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	prom "github.com/prometheus/client_golang/prometheus"
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
@@ -45,6 +46,10 @@ type metrics struct {
 	flatCacheMisses   metric.Int64Counter
 	flatCacheShared   metric.Int64Counter
 	flatCacheEvicted  metric.Int64Counter
+
+	// activity is the process's monotonic clock, marked with each request
+	// answered. Nil when the server has no TurboStats static.
+	activity *activity.Clock
 }
 
 // newMetrics builds the provider every instrument records into.
@@ -252,4 +257,5 @@ func (m *metrics) observeRequest(dataset, grain, code string, status int, query 
 		m.flatRequestErrors.Add(ctx, 1)
 	}
 	m.flatLastRequest.Record(ctx, time.Now().Unix())
+	m.activity.Mark()
 }
