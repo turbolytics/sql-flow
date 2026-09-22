@@ -96,3 +96,24 @@ func TestBundleAndResponse_IgnoreUnknownFields(t *testing.T) {
 		t.Fatalf("response parsed wrong: %+v", r)
 	}
 }
+
+// A process a second old has an uptime of 0, and a receiver must not read
+// that as an older engine that sends none. So both durations are pointers:
+// absent means absent, and zero is a reading.
+func TestBundle_ZeroDurationsArePresentAndNilIsAbsent(t *testing.T) {
+	zero := int64(0)
+	with := mustMarshal(t, Bundle{V: Version,
+		Process: Process{UptimeSeconds: &zero}, IdleSeconds: &zero})
+	for _, want := range []string{`"uptime_seconds":0`, `"idle_seconds":0`} {
+		if !strings.Contains(with, want) {
+			t.Errorf("a zero duration is missing %s: %s", want, with)
+		}
+	}
+
+	without := mustMarshal(t, Bundle{V: Version})
+	for _, absent := range []string{"uptime_seconds", "idle_seconds"} {
+		if strings.Contains(without, absent) {
+			t.Errorf("an absent duration is present as %s: %s", absent, without)
+		}
+	}
+}
