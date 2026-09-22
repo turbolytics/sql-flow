@@ -243,21 +243,23 @@ func BenchmarkProgressStoreRecord(b *testing.B) {
 	})
 }
 
-// BenchmarkCommitStateArrivalForced is the evidence for the opt-out, which
-// BenchmarkCommitState cannot give: its source never delivers, so arrivedAt
-// stays zero, nothing is ever owed, and both of its store variants sit behind
-// the write throttle measuring the bookkeeping rather than the statement.
+// BenchmarkCommitStateArrivalForced measures a commit that carries the
+// progress write against one that does not, which BenchmarkCommitState cannot:
+// its source never delivers, so it never gives a commit an arrival to carry.
 //
-// Here each iteration is a commit that follows a batch, so the arrival is
-// newer than the one the table holds. With a reader for last_arrival the
-// UPDATE is owed on every commit; without one the interval governs and the
-// statement is skipped. The gap between each pair is what the opt-out buys.
+// Here each iteration is a commit that follows a batch. With a zero write
+// interval every one writes, which is what every commit did when a newer
+// arrival forced the write; with the production interval the statement is
+// skipped, which is what a commit under load does now. The gap is the
+// per-commit UPDATE the interval buys back.
 //
 // Two configurations, because the run command has two. Without a state path
 // the progress connection autocommits. With one, autocommit is off and the
 // UPDATE rides the batch's own transaction into a file, which is the
 // configuration a durable pipeline actually runs and the one whose absolute
-// numbers the in-memory pair understates.
+// numbers the in-memory pair understates. The offsets stub writes nothing in
+// either, so the state-path pair prices the progress write and the commit
+// around it, not a Kafka source's offsets upsert.
 func BenchmarkCommitStateArrivalForced(b *testing.B) {
 	ctx := context.Background()
 
@@ -311,8 +313,8 @@ func BenchmarkCommitStateArrivalForced(b *testing.B) {
 		}, opts...)...))
 	}
 
-	b.Run("in_memory/readers_present", func(b *testing.B) { inMemory(b) })
-	b.Run("in_memory/readers_absent", func(b *testing.B) { inMemory(b, WithProgressReadersAbsent()) })
-	b.Run("state_path/readers_present", func(b *testing.B) { onDisk(b) })
-	b.Run("state_path/readers_absent", func(b *testing.B) { onDisk(b, WithProgressReadersAbsent()) })
+	b.Run("in_memory/every_commit", func(b *testing.B) { inMemory(b, WithProgressWriteInterval(0)) })
+	b.Run("in_memory/on_the_interval", func(b *testing.B) { inMemory(b) })
+	b.Run("state_path/every_commit", func(b *testing.B) { onDisk(b, WithProgressWriteInterval(0)) })
+	b.Run("state_path/on_the_interval", func(b *testing.B) { onDisk(b) })
 }

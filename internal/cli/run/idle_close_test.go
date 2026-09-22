@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
@@ -20,8 +21,24 @@ import (
 // connection: the engine writes sqlflow_progress, and a window manager reads
 // it to decide whether the stream has stopped. The manager's own tests seed
 // that row by hand. These drive the real writer and the real reader together,
-// through run's own wiring, because the rule is only as good as what the
-// engine actually writes.
+// built the way run builds them, because the rule is only as good as what
+// the engine actually writes -- and the engine writes on an interval, not on
+// every commit, so the rule has to hold against a row that is up to an
+// interval behind.
+
+// nilHandler accepts every message and yields no table, as the real handlers
+// do for an empty batch. The consume loop marks the arrival either way.
+type nilHandler struct{}
+
+func (nilHandler) Init(context.Context) error                  { return nil }
+func (nilHandler) Write([]byte) error                          { return nil }
+func (nilHandler) Invoke(context.Context) (arrow.Table, error) { return nil, nil }
+func (nilHandler) RowsRead() int64                             { return 0 }
+
+type noopSink struct{}
+
+func (noopSink) WriteTable(context.Context, arrow.Table) error { return nil }
+func (noopSink) Flush(context.Context) error                   { return nil }
 
 // tickingSource delivers one-message batches every interval, up to limit (no
 // limit when zero), and then holds its stream open the way a quiet source
@@ -61,7 +78,7 @@ func (s *tickingSource) Stream() <-chan []core.Message {
 // one after, the way a store does once its database turns read-only or runs
 // out of memory.
 type failingAfter struct {
-	inner progressRecorder
+	inner core.ProgressSaver
 	ok    int
 
 	mu sync.Mutex
@@ -90,7 +107,7 @@ type idleCloseRig struct {
 	stop      func()
 }
 
-func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(progressRecorder) progressRecorder) *idleCloseRig {
+func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSaver) core.ProgressSaver) *idleCloseRig {
 	t.Helper()
 	ctx := context.Background()
 
@@ -126,14 +143,15 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(progressRecorde
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(managed))
 
-	var recorder progressRecorder = store
+	var recorder core.ProgressSaver = store
 	if wrap != nil {
 		recorder = wrap(store)
 	}
 	// A 20ms flush interval, so a quiet stream ticks often. The progress
-	// write interval stays at its production second.
+	// write interval stays at its production second, and the store is wired
+	// the one way run wires it.
 	tb := core.NewTurbine(src, nilHandler{}, noopSink{}, 1, 20*time.Millisecond,
-		&sync.Mutex{}, core.PipelineErrorPolicies{}, progressOptions(conf, recorder)...)
+		&sync.Mutex{}, core.PipelineErrorPolicies{}, core.WithProgressStore(recorder))
 
 	loopCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -186,7 +204,7 @@ func TestManagerWindow_AQuietStreamClosesOnTheEnginesConfirmation(t *testing.T) 
 func TestManagerWindow_ALiveStreamWithAFailingProgressStoreNeverClosesOnIdleness(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	src := &tickingSource{every: 10 * time.Millisecond, release: make(chan struct{})}
-	rig := newIdleCloseRig(t, src, func(inner progressRecorder) progressRecorder {
+	rig := newIdleCloseRig(t, src, func(inner core.ProgressSaver) core.ProgressSaver {
 		return &failingAfter{inner: inner, ok: 1}
 	})
 

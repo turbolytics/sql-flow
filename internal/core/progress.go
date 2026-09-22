@@ -30,8 +30,10 @@ type Progress struct {
 	Errors    int64
 }
 
-// progressSaver is what the Turbine needs; ProgressStore is the DuckDB one.
-type progressSaver interface {
+// ProgressSaver is what the Turbine records liveness into; ProgressStore is
+// the DuckDB one. Exported so a caller outside core can wrap or replace the
+// store without redeclaring the interface.
+type ProgressSaver interface {
 	Record(ctx context.Context, p Progress) error
 }
 

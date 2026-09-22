@@ -210,73 +210,72 @@ func TestStateDurability_IdleTicksDoNotGrowTheStateFile(t *testing.T) {
 	<-done
 }
 
-// The invariant the throttle broke, and the reason this file exists.
+// The invariant the row has to keep for the idle close, now that the rule
+// reads the row's two clocks against each other: a record never overstates
+// the quiet. last_commit - last_arrival in any record must be at most the
+// quiet the stream had actually seen when that record was written. A record
+// that overstates it is the one that closes a window early.
 //
-// The window predicate closes a bucket when now() - last_arrival exceeds the
-// grace. If the table's last_arrival is older than the newest arrival the
-// pipeline actually took, that difference is too large and the window closes
-// EARLY, while rows for it may still be coming. Early closing is the
-// window-splitting defect the stream clock was introduced to remove, so a
-// throttle that drops an arrival walks straight back into it.
-//
-// The dangerous shape is a batch followed by silence: the batch is the last
-// thing that will ever arrive, and if its write is skipped for being inside
-// the throttle interval, nothing afterwards carries it.
-func TestStateDurability_ProgressNeverReportsAnArrivalOlderThanTheNewest(t *testing.T) {
+// The shape that would break it is a batch inside the interval of an idle
+// tick. The batch's own commit is skipped, and the next write is a later idle
+// tick. That write carries the batch's arrival at its true time, so its gap
+// is exactly the quiet since the batch -- not the quiet since the write
+// before it, which the row would have reported had the skip stamped nothing.
+func TestStateDurability_ProgressNeverOverstatesTheQuiet(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	rec := &progressRecorder{}
 
-	// The ordering is the whole test. An idle tick has to write first, so
-	// that the batch's own commit falls inside the throttle interval and a
-	// clock-only rule would skip it. A source that delivers immediately
-	// makes the batch the first write of all, which is always due, and the
-	// bug hides: this test passed against the broken version until the
-	// source was paced.
+	// An idle tick writes first, then the batch lands inside the interval of
+	// that write and its commit is skipped, then more idle ticks. A source
+	// that delivers immediately makes the batch the first write of all,
+	// which is always due, and the case never arises.
 	src := newPacedSource(1, 150*time.Millisecond)
 
-	// An interval far longer than the test, so nothing after the first
-	// write is ever due on the clock alone.
+	// Long enough that only idle ticks past it are ever due, and short
+	// enough that several are.
 	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 20*time.Millisecond,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithProgressStore(rec), WithProgressWriteInterval(time.Hour))
+		WithProgressStore(rec), WithProgressWriteInterval(200*time.Millisecond))
 	done := make(chan struct{})
 	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
 
-	// Wait for the batch, then for several idle ticks after it. The commit
-	// counter only moves on a state commit and this pipeline has no state
-	// database, so the snapshot's own commit clock is the signal.
 	waitFor(t, "the batch to be consumed", 5*time.Second, func() bool {
 		return tb.Progress().Messages == 1
 	})
-	afterBatch := tb.Progress().LastCommit
-	waitFor(t, "idle ticks after the batch", 5*time.Second, func() bool {
-		return tb.Progress().LastCommit.Sub(afterBatch) > 60*time.Millisecond
-	})
-
 	// The snapshot is the truth about the newest arrival.
 	newest := tb.Progress().LastArrival
 	assert.That(t, !newest.IsZero())
-
-	// Every record the table ever received must agree with it or predate
-	// it, and the most recent one must equal it. A record carrying an
-	// arrival older than the newest is what closes a window early.
-	last, n := rec.last()
-	assert.That(t, n > 0)
-	if !last.LastArrival.Equal(newest) {
-		t.Fatalf("the table holds arrival %v while the newest is %v: a window "+
-			"reading this closes %v early", last.LastArrival, newest,
-			newest.Sub(last.LastArrival))
-	}
+	waitFor(t, "a write after the batch", 5*time.Second, func() bool {
+		last, _ := rec.last()
+		return last.LastArrival.Equal(newest)
+	})
+	close(src.release)
+	<-done
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
+	assert.That(t, len(rec.recs) >= 2)
+	var sawBatch bool
 	for i, r := range rec.recs {
 		if r.LastArrival.After(newest) {
 			t.Fatalf("record %d reports an arrival from the future: %v > %v", i, r.LastArrival, newest)
 		}
+		// Before the batch the row carries no arrival and confirms nothing.
+		// From the first write after it, the gap is measured from the
+		// batch's true arrival, so it can never exceed the real quiet.
+		if r.LastArrival.IsZero() {
+			continue
+		}
+		sawBatch = true
+		if !r.LastArrival.Equal(newest) {
+			t.Fatalf("record %d carries arrival %v, want the batch's %v", i, r.LastArrival, newest)
+		}
+		if real := r.LastCommit.Sub(newest); r.LastCommit.Sub(r.LastArrival) > real {
+			t.Fatalf("record %d confirms %v of quiet against a real %v: it overstates it, "+
+				"and a window reading it closes early", i, r.LastCommit.Sub(r.LastArrival), real)
+		}
 	}
-	close(src.release)
-	<-done
+	assert.That(t, sawBatch)
 }
 
 // The health endpoint calls a pipeline degraded when it recorded an error
@@ -302,32 +301,31 @@ func TestCoreConsumeLoop_ProgressRecordsTheLastError(t *testing.T) {
 	assert.That(t, !p.LastError.After(time.Now().UTC()))
 }
 
-// The engine reads last_arrival in one place, the watermark predicate's
-// idle-close branch. Where that reader exists every arrival is owed a write on
-// the commit that sees it; where it does not, the write interval governs.
+// The progress row is written on the write interval, and only there: an
+// arrival never forces a write ahead of it. Every commit under load used to,
+// which was a statement per batch, about 8 to 9 percent of throughput at
+// batch 5000 and a quarter at batch 500 on the container benchmark. The
+// interval is enough because the idle close reads the row's two clocks
+// against each other, so a write that lands late is a late close and never
+// an early one.
 //
-// That per-commit UPDATE is what this buys back. Measured on the container
-// benchmark against v1.1.0, which had no progress row: about 8 to 9 percent of
-// throughput at batch 5000 and about a quarter at batch 500, because the cost
-// is per commit and a smaller batch commits more often per message.
-//
-// Three cases, none of which depends on how fast the machine is. A long
-// interval can never come due, so any write past the first is owed. A one
-// millisecond interval is always due against a source paced at ten, so every
-// commit writes on the clock alone.
-func TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForItsReader(t *testing.T) {
+// Two cases, neither depending on how fast the machine is. An hour-long
+// interval makes only the first commit due, so a stream of batches produces
+// exactly one write however many arrive. A one millisecond interval is
+// always due against a source paced at ten, so every commit writes.
+func TestCoreConsumeLoop_TheProgressWriteIntervalGoverns(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 
 	const batches = 6
 
-	run := func(t *testing.T, interval time.Duration, opts ...TurbineOption) (*Turbine, *progressRecorder) {
+	run := func(t *testing.T, interval time.Duration) *progressRecorder {
 		t.Helper()
 		rec := &progressRecorder{}
 		src := newPacedSource(batches, 10*time.Millisecond)
 		t.Cleanup(func() { close(src.release) })
-		opts = append([]TurbineOption{WithProgressStore(rec), WithProgressWriteInterval(interval)}, opts...)
 		tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1, 5*time.Millisecond,
-			&sync.Mutex{}, PipelineErrorPolicies{}, opts...)
+			&sync.Mutex{}, PipelineErrorPolicies{},
+			WithProgressStore(rec), WithProgressWriteInterval(interval))
 		done := make(chan struct{})
 		go func() { _, _ = tb.ConsumeLoop(context.Background(), batches); close(done) }()
 		select {
@@ -335,50 +333,36 @@ func TestCoreConsumeLoop_ArrivalForcesAProgressWriteOnlyForItsReader(t *testing.
 		case <-time.After(10 * time.Second):
 			t.Fatal("the consume loop did not finish")
 		}
-		return tb, rec
+		return rec
 	}
 
-	t.Run("a reader is owed every arrival", func(t *testing.T) {
-		tb, rec := run(t, time.Hour)
-		last, n := rec.last()
-		// The interval never comes due, so every write after the first was
-		// forced by an arrival: one per batch at the least.
-		if n < batches {
-			t.Fatalf("%d batches produced %d writes; an arrival did not force one", batches, n)
-		}
-		assert.That(t, last.LastArrival.Equal(tb.Progress().LastArrival))
-	})
-
-	t.Run("without a reader an arrival forces nothing", func(t *testing.T) {
-		_, rec := run(t, time.Hour, WithProgressReadersAbsent())
-		// The first commit is always due. Nothing after it can be: the
-		// interval is an hour and no arrival is owed.
+	t.Run("an arrival does not force a write", func(t *testing.T) {
+		rec := run(t, time.Hour)
 		if _, n := rec.last(); n != 1 {
-			t.Fatalf("opting out wrote %d times inside one interval, want exactly 1", n)
+			t.Fatalf("%d batches inside one interval produced %d writes, want exactly 1: "+
+				"an arrival forced a write ahead of the interval", batches, n)
 		}
 	})
 
-	t.Run("and the interval still keeps the row current", func(t *testing.T) {
-		_, rec := run(t, time.Millisecond, WithProgressReadersAbsent())
-		// Opting out is not abandoning the table: the clock alone keeps
-		// writing it, well past the first commit.
+	t.Run("and the interval keeps the row current", func(t *testing.T) {
+		rec := run(t, time.Millisecond)
 		if _, n := rec.last(); n < 2 {
-			t.Fatalf("a 1ms interval over six paced batches produced %d writes", n)
+			t.Fatalf("a 1ms interval over %d paced batches produced %d writes", batches, n)
 		}
 	})
 }
 
-// Opting out leaves a staleness bound: a commit inside the interval of the
-// write before it is skipped, and nothing is owed, so the newest arrival can
-// be missing from the table when the stream stops. The drain closes that
-// bound on the way out. Driven commit by commit, so the skip is certain
-// rather than a matter of timing.
+// The interval leaves a staleness bound: a commit inside the interval of the
+// write before it is skipped, so the newest arrival can be missing from the
+// table when the stream stops. The drain closes that bound on the way out,
+// and what it writes is the arrival at its true time, not the drain's. Driven
+// commit by commit, so the skip is certain rather than a matter of timing.
 func TestStateDurability_TheDrainWritesAnArrivalTheIntervalSkipped(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	rec := &progressRecorder{}
 	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithProgressStore(rec), WithProgressWriteInterval(time.Hour), WithProgressReadersAbsent())
+		WithProgressStore(rec), WithProgressWriteInterval(time.Hour))
 
 	ctx := context.Background()
 	first := time.Now().UTC()
@@ -449,17 +433,12 @@ func errorCodes(t *testing.T, r *sdkmetric.ManualReader) map[string]int64 {
 	return codes
 }
 
-// With a reader for last_arrival, a failing store is retried on every commit
-// that sees a newer arrival, and the table has the newest arrival again on the
-// first write that succeeds. That costs nothing a healthy store does not
-// already cost, since a healthy one takes the same statement on the same
-// commits, and pacing the retry instead would only leave the reader blind for
-// longer: the window managers poll on connections of their own, so a failing
-// write on the pipeline's connection starves nobody.
-//
-// Without a state path the write autocommits by itself, so the failure does
-// not touch the batch. It is recorded under its own code, so an alert can tell
-// a frozen arrival clock from a state commit that failed.
+// A failing store is retried on the write interval, and the row has the
+// newest arrival again on the first write that succeeds. Until then the row
+// confirms no quiet, so no window closes on it: the failure is in the late
+// direction. Without a state path the write autocommits by itself, so the
+// failure does not touch the batch; it is recorded under its own code, so an
+// alert can tell a stalled liveness row from a state commit that failed.
 func TestStateDurability_AFailingProgressStoreRecoversOnItsFirstSuccessfulWrite(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	r := sdkmetric.NewManualReader()
@@ -467,9 +446,11 @@ func TestStateDurability_AFailingProgressStoreRecoversOnItsFirstSuccessfulWrite(
 	assert.NoError(t, err)
 
 	store := &flakyProgress{failFirst: 3}
+	// A zero interval: every commit is due, so this is about what a failure
+	// does to the next write and not about pacing, which the next test pins.
 	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithMetrics(m), WithProgressStore(store), WithProgressWriteInterval(time.Hour))
+		WithMetrics(m), WithProgressStore(store), WithProgressWriteInterval(0))
 
 	ctx := context.Background()
 	var newest time.Time
@@ -481,7 +462,7 @@ func TestStateDurability_AFailingProgressStoreRecoversOnItsFirstSuccessfulWrite(
 	}
 
 	attempts, recs := store.state()
-	assert.Equal(t, 6, attempts) // every commit tried: none was paced away
+	assert.Equal(t, 6, attempts)
 	assert.Equal(t, 3, len(recs))
 	assert.That(t, recs[len(recs)-1].LastArrival.Equal(newest))
 
@@ -491,14 +472,15 @@ func TestStateDurability_AFailingProgressStoreRecoversOnItsFirstSuccessfulWrite(
 	assert.Equal(t, int64(3), tb.Progress().Errors)
 }
 
-// Where nothing in the engine reads last_arrival no arrival is owed, so the
-// write interval is all that paces a failing store.
-func TestStateDurability_WithoutAReaderAFailingProgressStoreIsRetriedOnTheInterval(t *testing.T) {
+// The write interval paces a failing store: the throttle advances on every
+// attempt, so a store that keeps failing is tried once an interval and not on
+// every commit, however many arrivals those commits carry.
+func TestStateDurability_AFailingProgressStoreIsRetriedOnTheInterval(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	store := &flakyProgress{failFirst: 1 << 30}
 	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithProgressStore(store), WithProgressWriteInterval(time.Hour), WithProgressReadersAbsent())
+		WithProgressStore(store), WithProgressWriteInterval(time.Hour))
 
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
@@ -510,11 +492,10 @@ func TestStateDurability_WithoutAReaderAFailingProgressStoreIsRetriedOnTheInterv
 	}
 }
 
-// A batch, a failed write, then silence and shutdown: no newer arrival is
-// coming, so no later commit is owed and none will carry the arrival the
-// failed write had. The drain forces the write, so the managers' final poll
-// reads a current arrival clock instead of closing open buckets early on the
-// way out.
+// A batch, a failed write, then silence and shutdown. The next interval
+// write would carry the arrival, but the signal comes first. The drain forces
+// the write, so the managers' final poll sees the arrival and the quiet since
+// it rather than a row that confirms nothing.
 func TestStateDurability_TheDrainWritesTheArrivalAFailedWriteLeftBehind(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	store := &flakyProgress{failFirst: 1}
@@ -628,4 +609,44 @@ func TestStateDurability_AProgressWriteTheStateTransactionRefusesFailsTheCommit(
 	}
 	assert.Error(t, err)
 	assert.Equal(t, errs.CodeStateCommitFailed, errs.CodeOf(err))
+
+	// The failed commit rolled its transaction back, so the connection is
+	// not left inside an aborted one. run's drain calls SyncState twice on
+	// the way out; stuck in the aborted transaction both would fail, and the
+	// drain's forced progress write would never land. The store is healthy
+	// again for this write, so it must succeed and be durable.
+	tb.progress = NewProgressStore(conn)
+	exec(t, conn, `INSERT INTO out VALUES (2)`)
+	assert.NoError(t, tb.SyncState(ctx))
+	assert.Equal(t, int64(1), countCommitted(t, db, "out"))
+}
+
+// A host clock that steps back must not stop the progress write. The throttle
+// compares now with the last write; after a jump back that difference is
+// negative, and a plain `elapsed >= interval` would be false for as long as
+// the jump was, or forever after a jump of more than the interval. The row
+// would freeze, and with it last_commit, so no window would close on idleness
+// for the length of the jump.
+func TestStateDurability_AClockThatStepsBackDoesNotStopTheProgressWrite(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(time.Hour))
+
+	ctx := context.Background()
+	assert.NoError(t, tb.commitState(ctx, false)) // the first write, always due
+	if _, n := rec.last(); n != 1 {
+		t.Fatalf("want one write, got %d", n)
+	}
+
+	// The clock steps back a day: the last write now lies in the future.
+	tb.lock.Lock()
+	tb.progressWrittenAt = time.Now().UTC().Add(24 * time.Hour)
+	tb.lock.Unlock()
+
+	assert.NoError(t, tb.commitState(ctx, false))
+	if _, n := rec.last(); n != 2 {
+		t.Fatalf("after the clock stepped back the write was skipped: %d writes, want 2", n)
+	}
 }

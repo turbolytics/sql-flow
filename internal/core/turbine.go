@@ -233,7 +233,7 @@ type Turbine struct {
 
 	// progress is the liveness record, see progress.go. Optional: a Turbine
 	// built without it records nothing and Progress() reports zeros.
-	progress progressSaver
+	progress ProgressSaver
 	// snapshot is the in-memory copy of what progress last recorded, read by
 	// /stats and /healthz without touching the database. Guarded by lock.
 	snapshot Progress
@@ -241,15 +241,10 @@ type Turbine struct {
 	// processBatch. It is the arrival time itself rather than a flag,
 	// because a throttled write can happen long after the arrival and
 	// stamping it with the commit clock would place the arrival wherever the
-	// write landed. Guarded by lock.
+	// write landed. Every write carries it, so a write the throttle skipped
+	// loses nothing: the next one reports the same arrival at its true time.
+	// Guarded by lock.
 	arrivedAt time.Time
-	// writtenArrival is the arrival last handed to the store, so an arrival
-	// the throttle skipped is still owed on the next commit. It advances on
-	// every attempt, failed or not. A failed write's arrival is carried by the
-	// next write that is due, which with a reader is the next commit that sees
-	// a newer arrival, or at shutdown by the drain's forced one. Guarded by
-	// lock.
-	writtenArrival time.Time
 	// commits counts successful state commits, for tests that wait on ticks.
 	// Guarded by lock.
 	commits int64
@@ -257,13 +252,6 @@ type Turbine struct {
 	// progressEvery is how often it may be. Guarded by lock.
 	progressWrittenAt time.Time
 	progressEvery     time.Duration
-
-	// progressReadersAbsent says nothing reads sqlflow_progress.last_arrival,
-	// so a new arrival need not force a write ahead of the interval. It is
-	// an opt-out on purpose: the default keeps the liveness guarantee, so a
-	// Turbine built without the run command's wiring is correct and merely
-	// pays for a write, rather than silently closing windows early.
-	progressReadersAbsent bool
 
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
@@ -349,21 +337,8 @@ func WithStateStore(offsets offsetSaver, tx stateTx) TurbineOption {
 
 // WithProgressStore records liveness into a store and into an in-memory
 // snapshot on every commit and every idle tick.
-func WithProgressStore(s progressSaver) TurbineOption {
+func WithProgressStore(s ProgressSaver) TurbineOption {
 	return func(t *Turbine) { t.progress = s }
-}
-
-// WithProgressReadersAbsent declares that nothing in the engine reads
-// sqlflow_progress.last_arrival, which today means no window sets
-// idle_close_seconds (Conf.ReadsLastArrival). A new arrival then need not
-// force a write ahead of the interval, and the per-commit UPDATE is skipped.
-//
-// It is the opt-out rather than the opt-in because the two mistakes are not
-// equal. Forgetting it costs a statement per commit. Its inverse, had the
-// guarantee been opt-in, would be a window closing early on a stale
-// last_arrival, which splits buckets and emits partial rollups, silently.
-func WithProgressReadersAbsent() TurbineOption {
-	return func(t *Turbine) { t.progressReadersAbsent = true }
 }
 
 // WithProgressWriteInterval bounds how often the progress table is written.
@@ -397,8 +372,8 @@ func (t *Turbine) commitCount() int64 {
 
 // progressWriteInterval bounds how often sqlflow_progress is written. The
 // snapshot behind /stats and /healthz is updated on every commit regardless;
-// this is only the SQL-visible copy, whose one reader compares it against a
-// grace measured in tens of seconds.
+// this is only the SQL-visible copy, whose one reader in the engine compares
+// its two clocks against an idle bound measured in tens of seconds.
 const progressWriteInterval = time.Second
 
 // recordProgress runs at the top of every commit, before the state guard.
@@ -412,17 +387,19 @@ const progressWriteInterval = time.Second
 //
 // The table is written on every pipeline, including those where the engine
 // never reads it: a table that exists but silently stops being maintained is
-// a worse trap than one that costs a little. What varies is only how often. A
-// pipeline with a window that can close on idleness is owed the newest
-// arrival on the commit that sees it. Elsewhere the interval governs, and the
-// bound is the interval or the spacing of commits, whichever is longer:
-// recordProgress only runs from a commit, and once a stream goes quiet those
-// are idle ticks one flush interval apart, 30 seconds by default.
+// a worse trap than one that costs a little. It is written on the interval,
+// and forced by the drain. A commit inside the interval of the last write
+// skips it, and nothing is lost by the skip: every write carries the arrival
+// clock as it stands, so the next write reports the same arrival at its true
+// time, and a reader measures the quiet from the right instant.
 //
-// A window can close on idleness without a state path, so "has state" is not
-// the test for whether the engine reads the column -- Conf.ReadsLastArrival
-// is, and the run command opts out with WithProgressReadersAbsent where it is
-// false.
+// The interval used to be overridden by any commit carrying a newer arrival,
+// which under load is every commit: a statement per batch, 8 percent of
+// throughput at batch 5000 and a quarter at batch 500. That existed for a
+// reader that compared last_arrival against its own clock, for which a stale
+// arrival meant an early close. The reader now compares the row's two clocks
+// against each other (managers.nextWatermark), so a late write is a late
+// close, never an early one, and the interval is enough.
 //
 // A batch since the last commit moves the arrival clock; an idle tick moves
 // the commit clock only.
@@ -450,67 +427,42 @@ func (t *Turbine) recordProgress(ctx context.Context, force bool) error {
 	t.snapshot.LastCommit = now
 	t.snapshot.Messages = p.Messages
 
-	// Due on the clock, or owing an arrival the table has not got yet.
-	// The second half is the liveness guarantee: where the idle-close branch
-	// reads the table, the newest arrival is written on the commit that sees
-	// it, so a stream that stops cannot strand the arrival that decides when
-	// its last window closes. A write that fails does not keep that promise;
-	// the next due write carries the arrival instead, and the drain forces
-	// one.
-	//
-	// The elapsed test is written to survive a clock that moves backwards.
-	// Comparing now.Sub(written) >= interval is false forever after a jump
-	// back, which would stop the table being written at all.
-	elapsed := now.Sub(t.progressWrittenAt)
-	// Only the idle-close branch reads last_arrival, so only a pipeline that
-	// has one is owed a write ahead of the interval. There, this term fires
-	// on every batch that carries a new message, which is every batch under
-	// load: a statement per commit. Elsewhere the interval governs.
-	owed := !t.progressReadersAbsent && !t.arrivedAt.IsZero() && t.arrivedAt.After(t.writtenArrival)
 	// The clock term is load-bearing for windows, not only housekeeping. An
 	// idle tick is due on it alone, and that write, a later last_commit
 	// against the same last_arrival, is the only thing that confirms to a
 	// window manager that the stream is quiet. Without it no window would
 	// ever close on idleness.
-	due := owed || elapsed >= t.progressEvery || elapsed < 0
+	//
+	// The elapsed test is written to survive a clock that moves backwards.
+	// Comparing now.Sub(written) >= interval is false forever after a jump
+	// back, which would stop the table being written at all: last_commit
+	// would freeze, and with it every window's idle close.
+	elapsed := now.Sub(t.progressWrittenAt)
+	due := elapsed >= t.progressEvery || elapsed < 0
 
 	// The snapshot above is exact and free. The table is not.
 	//
-	// One UPDATE through ADBC (BenchmarkProgressStoreRecord) measured about
-	// 112 microseconds on an idle machine and 200 to 500 under load. A batch
-	// of 5000 at a million messages a second commits two hundred times a
-	// second, so at 400 microseconds the statement is 8 percent of the time,
-	// which is what the container benchmark lost end to end at that batch
-	// size. A commit that carries the write costs about the same as the bare
-	// statement (BenchmarkCommitStateArrivalForced), so the statement is the
-	// cost. It is paid per commit, so it grows as batches shrink: about a
-	// quarter of throughput at batch 500.
-	//
-	// So ticks that change nothing a reader needs are skipped until the
-	// interval has passed. Where the idle-close branch reads the table an
-	// owed arrival is not skipped, because a last_arrival older than the
-	// truth closes a window early, and early is the dangerous direction:
-	// it is the window-splitting behaviour the stream clock exists to
-	// prevent. Where the engine does not read it there is nothing to be
-	// early for.
+	// One UPDATE through ADBC measures about 150 microseconds on a quiet
+	// machine (BenchmarkProgressStoreRecord), and a commit that carries it
+	// costs the same again (BenchmarkCommitStateArrivalForced, every_commit
+	// against on_the_interval: 156 against 0.4 microseconds in memory, 260
+	// against 70 on a state path). A batch of 5000 at a million messages a
+	// second commits two hundred times a second, so the statement alone is
+	// about 3 percent there. The container benchmark lost 8 to 9 percent end
+	// to end at that batch size and a quarter at batch 500: the rest is the
+	// write transaction it leaves on the connection, which makes the next
+	// batch's truncate and checkpoint in Init dearer. Paying it once a
+	// second instead of once a commit is what buys that back.
 	if !due && !force {
 		return nil
 	}
 
-	// Both clocks advance on every attempt, success or not.
-	//
-	// A failed write's arrival is not kept owed. With a reader, the next
-	// commit of a live stream sees a newer arrival and is owed anyway, so a
-	// failing store is retried on every such commit, which is what a healthy
-	// one already costs, and the reader recovers on the first write that
-	// succeeds. The price while it fails is a failing statement and an error
-	// line per commit. Without a reader the interval paces the retry.
-	//
-	// The case that needs the failed arrival itself is a batch followed by
-	// silence and then shutdown, where no newer arrival is coming. SyncState
-	// forces a write for that.
+	// The throttle advances on every attempt, success or not, so a store
+	// that keeps failing is retried once an interval and not on every
+	// commit. A failed write's arrival is not carried specially: the next
+	// write reports it, at shutdown the drain forces one, and until a write
+	// succeeds the row confirms no quiet, so no window closes on it.
 	t.progressWrittenAt = now
-	t.writtenArrival = t.arrivedAt
 
 	return t.progress.Record(ctx, p)
 }
@@ -674,7 +626,8 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 
 	t.stats.StartTime = time.Now().UTC()
 	t.stats.SetNumMessagesConsumed(0)
-	// Under the lock: the managers are already polling this connection (#280).
+	// Under the lock: the debug API may already be running statements on
+	// this connection.
 	if err := t.initHandler(ctx); err != nil {
 		return nil, err
 	}
@@ -1115,11 +1068,13 @@ func (t *Turbine) commitSource() error {
 }
 
 // initHandler resets the handler under the lock. Init drops or truncates the
-// batch table on the shared connection, and the table managers poll that
-// connection from their own goroutines. DuckDB closes a pending result the
-// moment another statement runs on its connection, so an unlocked reset
-// failed whichever collect was in flight with "closed pending query result",
-// once per batch at batch size 1 (#280).
+// batch table on the shared connection, and the debug API runs statements
+// on that connection from its own goroutine. DuckDB closes a pending result
+// the moment another statement runs on its connection, so an unlocked reset
+// fails whichever query is in flight with "closed pending query result".
+// #280 found that with the table managers, which polled this connection
+// then; since #281 each manager polls a connection of its own and never
+// takes this lock.
 func (t *Turbine) initHandler(ctx context.Context) error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
@@ -1195,18 +1150,22 @@ func (t *Turbine) commitState(ctx context.Context, forceProgress bool) error {
 	defer t.lock.Unlock()
 
 	// With a state path the progress UPDATE ran inside this transaction, and
-	// a statement DuckDB refuses aborts it. Commit on an aborted transaction
+	// a statement DuckDB refuses may abort it: a constraint or conversion
+	// error does, a catalog error does not. Commit on an aborted transaction
 	// reports success while keeping none of the batch. A source with offsets
 	// would trip over the abort saving them below; a source with none, such
 	// as a webhook, has nothing left to write and would lose the batch
-	// without a word. So the refused write fails the commit here, the way any
-	// other failed commit does.
+	// without a word. Whether or not this one aborted, the batch's
+	// transaction is not one to commit, so the refused write fails the commit
+	// here the way any other failed commit does, and the rollback leaves the
+	// connection ready for the next batch and for the drain rather than stuck
+	// in an aborted transaction that fails everything after it.
 	if progressErr != nil {
 		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed progress write", zap.Error(rbErr))
 		}
 		return errs.Wrap(errs.CodeStateCommitFailed, progressErr,
-			"the progress write aborted the state transaction")
+			"the progress write failed inside the state transaction")
 	}
 
 	if err := t.offsets.Save(ctx, t.marks); err != nil {
@@ -1251,10 +1210,11 @@ func (t *Turbine) commitState(ctx context.Context, forceProgress bool) error {
 // worth more than saving it.
 func (t *Turbine) SyncState(ctx context.Context) error {
 	// The drain forces the progress write. root.go calls this before the
-	// managers' final poll so that poll sees a current arrival clock, and a
-	// write that the throttle would skip -- or that failed moments before
-	// the signal -- would leave the quiet since then unconfirmed, and the
-	// poll would leave buckets open that a clean shutdown should close.
+	// managers' final poll, and that poll closes on idleness only for the
+	// quiet the row confirms. The last regular write was up to an interval
+	// ago, or failed, and either way the quiet since then is unconfirmed:
+	// a stream that stopped just under idle_close before the signal would
+	// leave the poll with buckets open that a clean shutdown should close.
 	return t.commitState(ctx, true)
 }
 

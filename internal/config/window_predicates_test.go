@@ -7,42 +7,30 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// HasWindow and ReadsLastArrival answer different questions and must disagree
-// exactly where a window has no idle_close_seconds: it needs a watermark
-// store, and it never reads the arrival clock. Getting the second one wrong in
-// the permissive direction closes windows early; in the other it pays a
-// statement per commit for a column nothing reads.
-func TestManagerWindow_ConfigPredicatesSplitOnIdleClose(t *testing.T) {
+// HasWindow decides whether the watermark store is created. A window with no
+// idle_close_seconds still needs it: the store holds the watermark, and the
+// idle close is only one of the two ways it moves.
+func TestManagerWindow_HasWindowIsAnyWindow(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 
 	table := func(name string, w *Window) TableSQL { return TableSQL{Name: name, Window: w} }
 
 	for _, tc := range []struct {
-		name         string
-		conf         Conf
-		hasWindow    bool
-		readsArrival bool
+		name string
+		conf Conf
+		want bool
 	}{
-		{"no tables block", Conf{}, false, false},
-		{"tables without a window", Conf{Tables: &Tables{SQL: []TableSQL{table("t", nil)}}}, false, false},
+		{"no tables block", Conf{}, false},
+		{"tables without a window", Conf{Tables: &Tables{SQL: []TableSQL{table("t", nil)}}}, false},
 		{"a window without idle_close_seconds",
-			Conf{Tables: &Tables{SQL: []TableSQL{table("t", &Window{SizeSeconds: 60})}}}, true, false},
+			Conf{Tables: &Tables{SQL: []TableSQL{table("t", &Window{SizeSeconds: 60})}}}, true},
 		{"a window with idle_close_seconds",
-			Conf{Tables: &Tables{SQL: []TableSQL{table("t", &Window{SizeSeconds: 60, IdleCloseSeconds: 10})}}}, true, true},
-		// The smallest value that turns the idle branch on. The manager's
-		// guard is IdleClose > 0, so one second reads the column, and a
-		// predicate that missed it would opt out in the permissive direction.
-		{"idle_close_seconds of one is still a reader",
-			Conf{Tables: &Tables{SQL: []TableSQL{table("t", &Window{SizeSeconds: 60, IdleCloseSeconds: 1})}}}, true, true},
-		{"one of each: the reader wins",
-			Conf{Tables: &Tables{SQL: []TableSQL{
-				table("a", &Window{SizeSeconds: 60}),
-				table("b", &Window{SizeSeconds: 60, IdleCloseSeconds: 10}),
-			}}}, true, true},
+			Conf{Tables: &Tables{SQL: []TableSQL{table("t", &Window{SizeSeconds: 60, IdleCloseSeconds: 10})}}}, true},
+		{"one among plain tables",
+			Conf{Tables: &Tables{SQL: []TableSQL{table("a", nil), table("b", &Window{SizeSeconds: 60})}}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.hasWindow, tc.conf.HasWindow())
-			assert.Equal(t, tc.readsArrival, tc.conf.ReadsLastArrival())
+			assert.Equal(t, tc.want, tc.conf.HasWindow())
 		})
 	}
 }

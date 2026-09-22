@@ -23,25 +23,26 @@
   request, so a browser no longer sends a preflight before it. `client_id`
   reaches neither the SQL nor the cache key, and a dataset cannot declare a
   param of that name. The request log's `token` field is now `client`.
-- A pipeline whose windows cannot reach the idle-close branch no longer writes
-  `sqlflow_progress` on every commit. The engine reads `last_arrival` in one
-  place, the watermark predicate under `idle_close_seconds`, so a pipeline
-  without such a window is no longer owed that write ahead of the interval;
-  pipelines that have one are unchanged. The row is still created on every
-  pipeline and still maintained, now on the write interval, so anything else
-  that reads it out of band -- handler SQL, `emit_sql`, a `sqlcommand` sink,
-  `/debug`, the `slow-soak` skill -- sees a value at most one interval, or one
-  idle tick, behind rather than a stopped table. The per-commit write cost
-  about 8 to 9 percent of throughput at batch 5000 and about a quarter at
-  batch 500 on the container benchmark; `BenchmarkCommitStateArrivalForced`
-  isolates it per commit, in memory and on a state path.
+- `sqlflow_progress` is written once a second, not on every commit. Any commit
+  that carried a newer arrival used to force the write, which under load is
+  every commit: one `UPDATE` per batch, about 8 to 9 percent of throughput at
+  batch 5000 and about a quarter at batch 500 on the container benchmark
+  (`BenchmarkCommitStateArrivalForced` isolates the per-commit cost, in memory
+  and on a state path). The forced write existed for an idle close that
+  compared `last_arrival` against the wall clock, where a late write meant an
+  early close; the idle close now reads the row's own two clocks, so a late
+  write is a late close and the interval is enough. Every write still carries
+  the newest arrival at its true time, so a skipped commit loses nothing, and
+  the shutdown drain forces one. Anything reading the row out of band --
+  handler SQL, `emit_sql`, a `sqlcommand` sink, `/debug`, the `slow-soak`
+  skill -- sees a value at most one second, or one idle tick, behind.
 - A failed `sqlflow_progress` write is no longer only a log line, and what it
   means now depends on whether the pipeline has a state path. Without one the
-  write commits by itself, the batch is unaffected, and the failure is recorded
-  as `system.state.progress_write_failed`, separate from a state commit
-  failure, so a frozen `last_arrival` can be alerted on. With a state path the
-  write runs inside the batch's transaction, and a statement DuckDB refuses
-  aborts that transaction; see Fixed.
+  write commits by itself, the batch is unaffected, the failure is recorded as
+  `system.state.progress_write_failed`, separate from a state commit failure,
+  and the retry is paced by the write interval. With a state path the write
+  runs inside the batch's transaction, and a statement DuckDB refuses aborts
+  that transaction; see Fixed.
 - The shutdown drain now forces the `sqlflow_progress` write. The managers'
   final poll runs after it, and a write the interval had skipped, or one that
   failed moments before the signal, would otherwise leave the quiet up to the

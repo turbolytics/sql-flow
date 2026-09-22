@@ -51,12 +51,15 @@ func (h *connHandler) Invoke(ctx context.Context) (arrow.Table, error) {
 }
 
 // Every statement the pipeline runs on the shared connection runs under the
-// shared lock. The table managers collect on the same connection under that
-// lock, and DuckDB closes a pending result the moment another statement runs
-// on its connection, so a statement outside the lock fails whichever poll is
-// in flight. #280: the handler reset after every batch and the progress write
-// both ran outside the lock, and the Bluesky demo logged "closed pending
-// query result" once at batch 500 and seven times in ten minutes at batch 1.
+// shared lock. The debug API runs statements on the same connection under
+// that lock, and DuckDB closes a pending result the moment another statement
+// runs on its connection, so a statement outside the lock fails whichever
+// query is in flight. #280 found this with the table managers, which polled
+// this connection then: the handler reset after every batch and the progress
+// write both ran outside the lock, and the Bluesky demo logged "closed
+// pending query result" once at batch 500 and seven times in ten minutes at
+// batch 1. Since #281 a manager polls a connection of its own; the lock now
+// guards the pipeline against the debug API and against itself.
 //
 // The race cannot be reproduced on demand. The invariant can be checked on
 // every statement: the wrapper records any execution that finds the lock

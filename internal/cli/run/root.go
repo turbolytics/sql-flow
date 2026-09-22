@@ -269,7 +269,7 @@ func NewCommand() *cobra.Command {
 			// State wiring. Everything below is skipped for a pipeline with no
 			// state path, which then behaves exactly as it did before.
 			var (
-				turbineOpts = progressOptions(conf, progressStore)
+				turbineOpts = []core.TurbineOption{core.WithProgressStore(progressStore)}
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)
@@ -479,10 +479,12 @@ func NewCommand() *cobra.Command {
 				// was not a signal, --max-msgs or a closed source, this starts
 				// the clock, and the steps finish in milliseconds.
 				drainCtx := budget.Context()
-				// Close the open transaction first. The managers' final poll
-				// runs on this connection, and its close predicate is
-				// evaluated against the transaction's clock -- which is
-				// frozen at the last commit until this runs.
+				// Commit first. The managers' final poll reads the progress
+				// row from a connection of its own, so it sees only what has
+				// been committed, and it closes on idleness only for the quiet
+				// that row confirms. This forces the write, so the poll sees
+				// the quiet up to the signal rather than up to the last
+				// interval write.
 				if err := turbine.SyncState(drainCtx); err != nil {
 					l.Error("failed to sync state before final poll", zap.Error(err))
 				}
