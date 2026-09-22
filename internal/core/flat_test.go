@@ -171,3 +171,48 @@ func TestCoreConsumeLoop_RunsWithoutAnActivityClock(t *testing.T) {
 	_, err := tb.ConsumeLoop(context.Background(), 0)
 	assert.NoError(t, err)
 }
+
+// An idle tick is not work. The flush ticker wakes the consume loop on a
+// quiet source too, and a mark there would hold idle_seconds near zero for
+// every pipeline forever: control would never read one as idle. The state
+// store's commits prove the ticks ran.
+func TestCoreConsumeLoop_IdleTicksDoNotMarkTheActivityClock(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	var events []string
+	src := newIdleSource()
+	r := sdkmetric.NewManualReader()
+	m, err := NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)))
+	assert.NoError(t, err)
+	m.Activity = activity.Start()
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 10*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{}, WithMetrics(m),
+		WithStateStore(&fakeOffsetStore{events: &events}, &txConn{events: &events}))
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = tb.ConsumeLoop(context.Background(), 0)
+		close(done)
+	}()
+	deadline := time.After(5 * time.Second)
+	for ticks := 0; ticks < 3; {
+		tb.lock.Lock()
+		ticks = 0
+		for _, e := range events {
+			if e == "commit" {
+				ticks++
+			}
+		}
+		tb.lock.Unlock()
+		select {
+		case <-deadline:
+			t.Fatalf("the idle pipeline never ticked; events=%v", events)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	close(src.release)
+	<-done
+
+	_, _, worked := m.Activity.Read()
+	assert.That(t, !worked)
+}
