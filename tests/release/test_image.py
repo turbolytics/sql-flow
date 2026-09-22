@@ -520,6 +520,134 @@ def test_turbostats_serve_bundle_carries_a_serve_section(image):
     assert "latency" not in json.dumps(bundle)
 
 
+# A receiver that records each POST as one JSON line on stdout, so the test
+# reads what arrived from the container's log. Inline and dependency-free: the
+# image under test is sqlflow's, not this one's.
+RECEIVER = r"""
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        print(json.dumps({
+            "path": self.path,
+            "content_type": self.headers.get("Content-Type"),
+            "key_id": self.headers.get("X-Turbostats-Key-Id"),
+            "timestamp": self.headers.get("X-Turbostats-Timestamp"),
+            "signature": self.headers.get("X-Turbostats-Signature"),
+            "body": json.loads(body),
+        }), flush=True)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.turbolytics.turbostats.v1+json")
+        self.end_headers()
+        self.wfile.write(b'{"v":1,"commands":[]}')
+
+    def log_message(self, *args):
+        pass
+
+HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+"""
+
+
+@pytest.mark.covers("observability.turbostats.reporter")
+def test_turbostats_reporter_posts_signed_bundles(image, stack):
+    """The shipped image reports itself to a control plane, signed.
+
+    Driven against the image because what ships is the config block, the
+    reporter's goroutine and the link-time stamp together, and a unit test
+    proves none of them in the artifact users pull.
+
+    The pipeline shares the receiver's network namespace rather than sitting
+    beside it on the test network, so it reports to 127.0.0.1. That is not a
+    convenience: `report_to` refuses plaintext to anything but the loopback,
+    because a signed bundle still crosses the wire in the clear. Posting to a
+    network alias made this test evidence for a config `sqlflow validate`
+    rejects, which is evidence of nothing.
+
+    The signature is not verified here. Doing it in Python would be a second
+    implementation of the thing under test; the wire vectors cover the math,
+    and running against the real control plane covers the rest.
+    """
+    receiver = DockerContainer("python:3.12-alpine") \
+        .with_network(stack.network) \
+        .with_network_aliases("control") \
+        .with_command(["python", "-u", "-c", RECEIVER])
+    receiver.start()
+    try:
+        config = f"""
+pipeline:
+  name: reporting_pipeline
+  turbostats:
+    id: release-01
+    report_to: http://127.0.0.1:8080/v1/turbostats
+    key: sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+    interval_seconds: 1
+  source:
+    type: webhook
+    webhook:
+      addr: 0.0.0.0:8081
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1 AS n
+  sink:
+    type: noop
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "pipeline.yml")
+            with open(path, "w") as f:
+                f.write(config)
+            os.chmod(tmp, 0o755)
+            os.chmod(path, 0o644)
+
+            pipeline = DockerContainer(image) \
+                .with_volume_mapping(tmp, "/conf") \
+                .with_kwargs(network_mode=(
+                    f"container:{receiver.get_wrapped_container().id}")) \
+                .with_command("run /conf/pipeline.yml")
+            pipeline.start()
+            try:
+                posts = wait_for_posts(receiver, 2, timeout=60)
+            finally:
+                pipeline.stop()
+    finally:
+        receiver.stop()
+
+    first = posts[0]
+    assert first["path"] == "/v1/turbostats"
+    assert first["content_type"] == "application/vnd.turbolytics.turbostats.v1+json"
+    # Present and well formed. What they prove is covered elsewhere.
+    assert len(first["key_id"]) == 16
+    assert first["timestamp"].isdigit()
+    assert len(first["signature"]) > 80
+
+    bundle = first["body"]
+    assert bundle["v"] == 1
+    assert bundle["instance"]["id"] == "release-01"
+    assert bundle["instance"]["name"] == "reporting_pipeline"
+    assert bundle["interval_seconds"] == 1
+    assert "pipeline" in bundle
+    assert "serve" not in bundle
+
+    # The version in the bundle is the one stamped into the image.
+    stdout, _ = run_docker_container(image, "version")
+    stamped = stdout.splitlines()[0].split()[1]
+    assert bundle["instance"]["version"] == stamped
+
+
+def wait_for_posts(receiver, count, timeout):
+    """Read what the receiver logged until count posts have arrived."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out, _ = receiver.get_logs()
+        posts = [json.loads(line) for line in out.decode().splitlines()
+                 if line.startswith("{")]
+        if len(posts) >= count:
+            return posts
+        time.sleep(0.5)
+    raise AssertionError(f"only {len(posts)} of {count} posts arrived in {timeout}s")
+
+
 @pytest.mark.covers("source.websocket", "handler.structured")
 @pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):
@@ -1185,6 +1313,192 @@ def test_turbostats_endpoint_serves_the_bundle(image, stack):
     assert "serve" not in bundle
     assert bundle["instance"]["name"]
     assert "pipeline" not in bundle["instance"]
+
+
+@pytest.mark.covers("observability.turbostats")
+def test_turbostats_bundle_reports_consumer_lag(image, stack):
+    """A Kafka pipeline's bundle says how far behind it is.
+
+    consumer_lag is recorded per topic and partition, and the bundle used to
+    read only attribute-free series, so lag never reached it: a pipeline four
+    hundred thousand messages behind looked the same as one that had caught
+    up. The bundle now summarizes it as the worst partition, the total, and
+    how many partitions those cover.
+
+    Driven against the image with a real broker because the unit tests record
+    synthetic points. What they cannot show is that a real consumer produces
+    those points at all, under the names the collector reads.
+    """
+    topic = f"turbostats-lag-{int(time.time())}"
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
+    payload_bytes = 0
+    for i in range(600):
+        value = json.dumps({
+            "timestamp": "2026-09-01T12:00:00Z",
+            "properties": {"city": "Baltimore" if i % 2 else "New York"},
+        }).encode("utf-8")
+        payload_bytes += len(value)
+        producer.produce(topic, value)
+    producer.flush()
+
+    bundle = None
+    with container_writable_dir() as state_dir:
+        container = DockerContainer(image) \
+            .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+            .with_volume_mapping(state_dir, "/state", "rw") \
+            .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
+            .with_env("SQLFLOW_STATE_PATH", "/state/state.db") \
+            .with_env("SQLFLOW_TOPIC", topic) \
+            .with_env("SQLFLOW_GROUP_ID", topic) \
+            .with_exposed_ports(8000) \
+            .with_network(stack.network) \
+            .with_command(
+                "run /tmp/conf/config/examples/kafka.stateful.window.yml --turbostats")
+        container.start()
+        try:
+            wait_for_logs(container, "consumer loop starting", timeout=90)
+            port = container.get_exposed_port(8000)
+            # Poll until lag reads zero, not until the message count does.
+            # message_count is recorded as a fetch arrives and lag after the
+            # fetch is processed, so a bundle can carry all 600 messages next
+            # to the lag of an earlier fetch.
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                resp = requests.get(
+                    f"http://localhost:{port}/turbostats/v1", timeout=10)
+                assert resp.status_code == 200
+                bundle = resp.json()
+                pipeline = bundle["pipeline"]
+                if pipeline.get("lag_max_messages") == 0 and pipeline["message_count"] >= 600:
+                    break
+                time.sleep(1)
+        finally:
+            container.stop()
+
+    pipeline = bundle["pipeline"]
+    assert pipeline["message_count"] >= 600, pipeline
+    assert "lag_max_messages" in pipeline, (
+        f"a Kafka pipeline that consumed {pipeline['message_count']} messages "
+        f"reported no lag: {pipeline}")
+    # Everything produced was consumed, so it has caught up. Zero is a
+    # reading here, and an absent field would have meant no Kafka source.
+    assert pipeline["lag_max_messages"] == 0, pipeline
+    assert pipeline["lag_total_messages"] == 0, pipeline
+    assert pipeline["lag_partitions"] >= 1, pipeline
+    assert pipeline["lag_total_messages"] >= pipeline["lag_max_messages"]
+    # A lag reading is only as current as its date.
+    assert "lag_observed_at" in pipeline, pipeline
+
+    # A pipeline always has a sink, so no retries is a reading too.
+    assert pipeline["sink_retry_count"] == 0, pipeline
+
+    # Payload bytes cover exactly the messages counted: every value produced,
+    # byte for byte, through a real consumer.
+    assert pipeline["message_payload_bytes"] == payload_bytes, (
+        pipeline["message_payload_bytes"], payload_bytes)
+
+    # This config declares a window with late_rows: drop, and its counters are
+    # present from startup, before any close. Absent would read as "nothing
+    # here drops rows".
+    for name in ("late_rows_dropped", "late_rows_reemitted", "window_closed_count"):
+        assert name in pipeline, (name, pipeline)
+    assert pipeline["late_rows_dropped"] == 0, pipeline
+
+    # The newest bucket is event time from the data, never an age this host
+    # computed, so a receiver can compare it with a clock it trusts.
+    if "window_newest_bucket_at" in pipeline:
+        assert pipeline["window_newest_bucket_at"].endswith("Z"), pipeline
+
+    # No field is wider for the partitions behind it.
+    assert not any(isinstance(v, (list, dict)) for v in pipeline.values()), pipeline
+
+
+@pytest.mark.covers("observability.turbostats.reporter")
+def test_turbostats_exit_bundle_keeps_kafka_lag(image, stack):
+    """A Kafka pipeline stopped with SIGTERM reports the partitions it held.
+
+    Closing the consumer leaves its group, and leaving revokes every
+    partition. Handled as a rebalance, that emptied the lag table before the
+    final bundle was collected, so every exit reported lag 0 over 0
+    partitions: a consumer stopped with a backlog read as one that had caught
+    up, in the one bundle a receiver reads to learn how a process ended.
+
+    Driven against the image because the order that decides it -- the source
+    closing, the lag table, the final bundle -- is wired in the run command,
+    which the broker tests in internal/kafka do not execute.
+    """
+    topic = f"turbostats-exit-{int(time.time())}"
+    producer = Producer({"bootstrap.servers": stack.bootstrap})
+    for i in range(200):
+        producer.produce(topic, json.dumps({"i": i}).encode("utf-8"))
+    producer.flush()
+
+    receiver = DockerContainer("python:3.12-alpine") \
+        .with_network(stack.network) \
+        .with_command(["python", "-u", "-c", RECEIVER])
+    receiver.start()
+    try:
+        config = f"""
+pipeline:
+  name: exit_lag
+  turbostats:
+    id: exit-01
+    report_to: http://127.0.0.1:8080/v1/turbostats
+    key: sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+    interval_seconds: 1
+  source:
+    type: kafka
+    kafka:
+      brokers: [kafka:9092]
+      group_id: {topic}
+      auto_offset_reset: earliest
+      topics: [{topic}]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT count(*) AS n FROM batch
+  sink:
+    type: noop
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "pipeline.yml")
+            with open(path, "w") as f:
+                f.write(config)
+            os.chmod(tmp, 0o755)
+            os.chmod(path, 0o644)
+
+            pipeline = DockerContainer(image) \
+                .with_volume_mapping(tmp, "/conf") \
+                .with_kwargs(network_mode=(
+                    f"container:{receiver.get_wrapped_container().id}")) \
+                .with_command("run /conf/pipeline.yml")
+            pipeline.start()
+            try:
+                deadline = time.time() + 60
+                held = False
+                while time.time() < deadline and not held:
+                    posts = wait_for_posts(receiver, 1, timeout=60)
+                    held = any(p["body"].get("pipeline", {}).get("lag_partitions", 0) >= 1
+                               for p in posts)
+                    time.sleep(0.5)
+                assert held, "no bundle reported a held partition before the stop"
+                # SIGTERM, then the drain. testcontainers' stop() force-removes,
+                # which is SIGKILL and skips the final bundle entirely.
+                pipeline.get_wrapped_container().stop(timeout=30)
+            finally:
+                pipeline.stop()
+            posts = wait_for_posts(receiver, 1, timeout=10)
+    finally:
+        receiver.stop()
+
+    exits = [p["body"] for p in posts if "exit" in p["body"]]
+    assert exits, "no bundle carried an exit"
+    final = exits[-1]
+    assert final["exit"]["reason"] == "signal", final["exit"]
+    assert final["exit"]["code"] == 0, final["exit"]
+    lag = final["pipeline"]
+    assert lag.get("lag_partitions", 0) >= 1, (
+        f"the exit bundle says this consumer held no partitions: {lag}")
+    assert "lag_observed_at" in lag, lag
 
 
 @pytest.mark.covers("lifecycle.health")

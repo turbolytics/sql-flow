@@ -39,7 +39,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 		Offsets:   []core.OffsetStat{{Topic: "events", Partition: 0, Offset: 999, LeaderEpoch: 7}},
 	}
 
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return want, nil }, nil, nil, nil, 30*time.Second, time.Now)
+	mux := newHTTPMux(nil, func(context.Context) (*core.StateStats, error) { return want, nil }, nil, nil, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -66,7 +66,7 @@ func TestObservabilityMetrics_StatsHandler_ReportsState(t *testing.T) {
 // endpoint stays useful for the counters even when nothing is durable.
 func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) { return nil, nil }, nil, nil, nil, 30*time.Second, time.Now)
+	mux := newHTTPMux(nil, func(context.Context) (*core.StateStats, error) { return nil, nil }, nil, nil, nil, 30*time.Second, time.Now)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
@@ -82,7 +82,7 @@ func TestObservabilityMetrics_StatsHandler_NullStateWithoutAStateDatabase(t *tes
 // blank.
 func TestObservabilityMetrics_StatsHandler_ReportsCollectionFailure(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	mux := newHTTPMux(nil, func() (*core.StateStats, error) {
+	mux := newHTTPMux(nil, func(context.Context) (*core.StateStats, error) {
 		return nil, errors.New("state database unreadable")
 	}, nil, nil, nil, 30*time.Second, time.Now)
 
@@ -131,7 +131,9 @@ func exportedNames(t *testing.T) []string {
 	m.SinkFlushCount.Add(ctx, 1)
 	m.BatchProcessingLatency.Record(ctx, 1)
 	m.PhaseDuration.Record(ctx, 1)
-	m.ConsumerLag.Record(ctx, 1)
+	m.Lag.Set("events", 0, 1)
+	m.LagObserved.Record(ctx, 1)
+	m.MessagePayloadBytes.Add(ctx, 1)
 	m.StateCommitLatency.Record(ctx, 1)
 	m.StateCommitCount.Add(ctx, 1)
 	m.StateSizeBytes.Record(ctx, 1)
@@ -157,6 +159,8 @@ func exportedNames(t *testing.T) []string {
 	win.Watermark.Record(ctx, 1)
 	win.Closed.Add(ctx, 1)
 	win.Late.Add(ctx, 1)
+	win.NewestStart.Record(ctx, 1)
+	win.CloseLag.Record(ctx, 1)
 
 	// The row counters are declared in internal/sinks, not core.NewMetrics, so
 	// a core-only sweep would miss them and let the README document series no
@@ -203,10 +207,12 @@ func TestExportedSeriesNames(t *testing.T) {
 	want := []string{
 		"batch_processing_latency_seconds",
 		"consumer_lag_messages",
+		"consumer_lag_observed_timestamp_seconds",
 		"error_count_total",
 		"handler_checkpoints_skipped_total",
 		"handler_rows_read_total",
 		"message_count_messages_total",
+		"message_payload_bytes_total",
 		"phase_duration_seconds",
 		"pipeline_commits_total",
 		"pipeline_errors_total",
@@ -227,8 +233,10 @@ func TestExportedSeriesNames(t *testing.T) {
 		"state_table_rows",
 		"webhook_request_duration_seconds",
 		"webhook_requests_total",
+		"window_close_lag_seconds",
 		"window_closed_total",
 		"window_late_rows_total",
+		"window_newest_bucket_start_seconds",
 		"window_watermark_seconds",
 	}
 	assert.DeepEqual(t, want, exportedNames(t))
@@ -383,7 +391,7 @@ func TestObservabilityTurbostats_ManualReaderLeavesExportedNamesAlone(t *testing
 // nothing unless Prometheus was on.
 func TestObservabilityTurbostats_ProviderExistsWithoutAnExporter(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
-	mp, err := newMeterProvider("", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
+	mp, _, err := newMeterProvider("", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
 	assert.NoError(t, err)
 	assert.That(t, mp != nil)
 
@@ -394,6 +402,6 @@ func TestObservabilityTurbostats_ProviderExistsWithoutAnExporter(t *testing.T) {
 
 func TestObservabilityTurbostats_RejectsAnUnknownExporter(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
-	_, err := newMeterProvider("statsd", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
+	_, _, err := newMeterProvider("statsd", false, turbostats.Static{}, zap.NewNop(), nil, nil, nil, 30*time.Second)
 	assert.Error(t, err)
 }

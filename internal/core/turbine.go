@@ -257,7 +257,7 @@ type Turbine struct {
 	// connection dedicated to reading, never the one batches are written on,
 	// so a scrape cannot stall the pipeline. Nil when there is no state
 	// database.
-	stateStats func() (*StateStats, error)
+	stateStats func(context.Context) (*StateStats, error)
 
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
@@ -284,14 +284,6 @@ type Turbine struct {
 	lastErrorUnixNano atomic.Int64
 	errorCount        atomic.Int64
 
-	// lagAttrCache keeps one attribute set per topic and partition, so the
-	// per-message lag metric costs no allocation. Touched only by mark, on
-	// the consume-loop goroutine.
-	//
-	// The cached value is the variadic slice itself, not just the option:
-	// passing options one by one reallocates the slice on every call.
-	lagAttrCache map[lagKey][]metric.RecordOption
-
 	// lagPending holds the newest lag seen per topic and partition since the
 	// last recordLag. A gauge is a last value, so recording it on every
 	// message spends a real instrument call to say what the final message of
@@ -299,7 +291,7 @@ type Turbine struct {
 	// default provider stopped being a noop. Same goroutine rule as the cache.
 	lagPending map[lagKey]int64
 
-	// Built once at startup for the same reason as lagAttrCache. Typed as
+	// Built once at startup, because WithAttributes allocates. Typed as
 	// AddOption because only counters carry result; the histograms keep
 	// measuring every attempt regardless of outcome.
 	resultOKAttrs    []metric.AddOption
@@ -470,7 +462,7 @@ func (t *Turbine) recordProgress(ctx context.Context, force bool) error {
 // WithStateStats supplies the snapshot function backing the state gauges. It
 // must read a connection dedicated to reading; passing the pipeline's writer
 // would let a scrape contend with batch processing.
-func WithStateStats(fn func() (*StateStats, error)) TurbineOption {
+func WithStateStats(fn func(context.Context) (*StateStats, error)) TurbineOption {
 	return func(t *Turbine) {
 		t.stateStats = fn
 	}
@@ -574,7 +566,7 @@ func (t *Turbine) recordStateGauges(ctx context.Context) {
 		return
 	}
 
-	stats, err := t.stateStats()
+	stats, err := t.stateStats(ctx)
 	if err != nil {
 		// Never fatal: the pipeline keeps running and keeps serving its
 		// other metrics even when state cannot be read.
@@ -723,6 +715,14 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		}
 		t.metrics.SourceReadLatency.Record(ctx, readLatency.Seconds())
 		t.metrics.MessageCount.Add(ctx, int64(len(msgBatch)))
+		// Over the same messages message_count just counted, received rather
+		// than processed, so bytes over count is a true average. One integer
+		// add per message and one record per batch.
+		var payload int64
+		for i := range msgBatch {
+			payload += int64(len(msgBatch[i].Value))
+		}
+		t.metrics.MessagePayloadBytes.Add(ctx, payload)
 		// Once per batch, not per message: the cost is one gauge record
 		// against a whole batch, and a reader asking "is it still doing
 		// anything" cannot tell the two apart.
@@ -885,7 +885,7 @@ const (
 
 // resultAttrs returns the cached attribute set for a result.
 //
-// Cached for the same reason lagAttrs is: metric.WithAttributes allocates on
+// Cached because metric.WithAttributes allocates on
 // every call whatever the metrics config, and passing options one by one
 // reallocates the variadic slice too. These sit on the per-batch path.
 func (t *Turbine) resultAttrs(result string) []metric.AddOption {
@@ -1017,35 +1017,14 @@ func (t *Turbine) mark(m Message) {
 // fresh as the newest message and costs one record per partition per fetch
 // rather than one per message.
 func (t *Turbine) recordLag(ctx context.Context) {
+	if len(t.lagPending) > 0 {
+		// Once per fetch that marked anything, beside the readings it dates.
+		t.metrics.LagObserved.Record(ctx, time.Now().Unix())
+	}
 	for key, lag := range t.lagPending {
-		t.metrics.ConsumerLag.Record(ctx, lag, t.lagAttrs(key.topic, key.partition)...)
+		t.metrics.Lag.Set(key.topic, key.partition, lag)
 		delete(t.lagPending, key)
 	}
-}
-
-// lagAttrs returns the cached attribute set for one topic and partition.
-//
-// Building it inline costs an allocation per message whatever the metrics
-// configuration: metric.WithAttributes allocates before any provider decides
-// to discard the measurement. Benchmarked against a noop provider, that took
-// mark from 17.5 ns and no allocations to 224 ns and four -- around 19% of a
-// core at the throughput this engine advertises, spent on garbage.
-//
-// A plain map needs no lock: mark runs only on the consume-loop goroutine.
-func (t *Turbine) lagAttrs(topic string, partition int32) []metric.RecordOption {
-	key := lagKey{topic: topic, partition: partition}
-	if opts, ok := t.lagAttrCache[key]; ok {
-		return opts
-	}
-	opts := []metric.RecordOption{metric.WithAttributes(
-		attribute.String("topic", topic),
-		attribute.Int("partition", int(partition)),
-	)}
-	if t.lagAttrCache == nil {
-		t.lagAttrCache = make(map[lagKey][]metric.RecordOption)
-	}
-	t.lagAttrCache[key] = opts
-	return opts
 }
 
 // commitSource commits what the pipeline has processed. A source that can

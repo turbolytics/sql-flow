@@ -21,6 +21,7 @@ type Source struct {
 	done          chan struct{}
 	closeOnce     sync.Once
 	seeker        *OffsetSeeker
+	partitions    *PartitionEvents
 
 	logger *zap.Logger
 }
@@ -45,6 +46,14 @@ func WithLogger(logger *zap.Logger) Option {
 func WithChannelBuffer(size int) Option {
 	return func(s *Source) {
 		s.channelBuffer = size
+	}
+}
+
+// WithPartitionEvents gives the source the relay registered on its client,
+// so the pipeline can learn which partitions it holds.
+func WithPartitionEvents(e *PartitionEvents) Option {
+	return func(s *Source) {
+		s.partitions = e
 	}
 }
 
@@ -83,6 +92,17 @@ func (k *Source) ChannelBuffer() int {
 	return k.channelBuffer
 }
 
+// OnPartitions reports the partitions this consumer holds, now and after
+// every rebalance. It implements core.PartitionOwner; a source built without
+// the relay reports nothing, and the pipeline then reports every partition
+// it reads, as it did before ownership was tracked.
+func (k *Source) OnPartitions(assigned, released, lost func(map[string][]int32)) {
+	if k.partitions == nil {
+		return
+	}
+	k.partitions.Subscribe(assigned, released, lost)
+}
+
 func (k *Source) Start() error {
 	k.logger.Info("starting franz-go consumer")
 	return nil
@@ -93,6 +113,11 @@ func (k *Source) Close() error {
 	k.closeOnce.Do(func() {
 		close(k.done)
 	})
+	// Before the client closes, because closing leaves the group and
+	// leaving revokes every partition.
+	if k.partitions != nil {
+		k.partitions.Closing()
+	}
 	k.client.Close()
 	return nil
 }

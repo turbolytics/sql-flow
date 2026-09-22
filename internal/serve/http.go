@@ -31,11 +31,11 @@ func (s *Server) Handler() http.Handler {
 		// labels name every dataset and grain.
 		mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
 	}
-	if s.turbostats != nil {
+	if s.serveTurbostatsRoute {
 		// No client id, for the reason /metrics has none: it carries no row
 		// data. It is absent unless the command asks, because it names the
 		// build and the process's memory on a listener that is public.
-		mux.Handle("/turbostats/v1", turbostats.Handler(s.collectBundle, func(err error) {
+		mux.Handle("/turbostats/v1", turbostats.Handler(s.CollectBundle, func(err error) {
 			s.logger.Error("building turbostats bundle", zap.String("error", Redact(err.Error())))
 		}))
 	}

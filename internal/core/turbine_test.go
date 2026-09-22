@@ -814,7 +814,7 @@ func TestObservabilityMetrics_StateGaugesReportsSizeAndRows(t *testing.T) {
 	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
 
 	calls := 0
-	tb.stateStats = func() (*StateStats, error) {
+	tb.stateStats = func(context.Context) (*StateStats, error) {
 		calls++
 		return &StateStats{
 			Path:      "/state/state.db",
@@ -842,7 +842,7 @@ func TestObservabilityMetrics_StateGaugesNoProviderRecordsNothing(t *testing.T) 
 func TestObservabilityMetrics_StateGaugesSurvivesCollectionFailure(t *testing.T) {
 	coverage.Covers(t, "observability.metrics")
 	tb := newTestTurbine(&fakeSource{}, &fakeHandler{}, &fakeSink{}, 4)
-	tb.stateStats = func() (*StateStats, error) {
+	tb.stateStats = func(context.Context) (*StateStats, error) {
 		return nil, errors.New("state database unreadable")
 	}
 

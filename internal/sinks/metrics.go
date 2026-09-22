@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 )
 
-// retryCounter builds the callback the retry ladder reports attempts through.
+// RetryCounter builds the callback the retry ladder reports attempts through.
 //
 // A stalled sink has to be visible before its deadline fires. Without this, a
 // pipeline retrying every batch for the full deadline looks the same on a
@@ -17,7 +17,11 @@ import (
 //
 // A nil provider yields a counter that records nothing, so a pipeline started
 // without --metrics needs no branch here.
-func retryCounter(mp metric.MeterProvider, sinkType string) func(attempt int, err error) {
+//
+// Exported so the TurboStats bundle's test drives this instrument rather than
+// a string that happens to match it: renamed here, a bundle would report zero
+// retries for ever and every test would still pass.
+func RetryCounter(mp metric.MeterProvider, sinkType string) func(attempt int, err error) {
 	if mp == nil {
 		mp = noop.NewMeterProvider()
 	}

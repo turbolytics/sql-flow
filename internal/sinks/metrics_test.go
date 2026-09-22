@@ -46,7 +46,7 @@ func newMeteredRetry(inner *flakySink, p RetryPolicy) (*retrying, sdkmetric.Read
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	r, _ := newTestRetry(inner, p)
-	r.onRetry = retryCounter(mp, "clickhouse")
+	r.onRetry = RetryCounter(mp, "clickhouse")
 	return r, reader
 }
 
@@ -116,7 +116,7 @@ func TestSinkRetry_ExportedSeriesName(t *testing.T) {
 	assert.NoError(t, err)
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exp))
 
-	retryCounter(mp, "clickhouse")(1, errs.New(errs.CodeSinkUnreachable, "refused"))
+	RetryCounter(mp, "clickhouse")(1, errs.New(errs.CodeSinkUnreachable, "refused"))
 
 	families, err := reg.Gather()
 	assert.NoError(t, err)
@@ -136,7 +136,7 @@ func TestSinkRetry_MetricsNilProviderIsSafe(t *testing.T) {
 	coverage.Covers(t, "sink.retry")
 	inner := &flakySink{failures: 1, err: errs.New(errs.CodeSinkUnreachable, "refused")}
 	r, _ := newTestRetry(inner, testPolicy())
-	r.onRetry = retryCounter(nil, "clickhouse")
+	r.onRetry = RetryCounter(nil, "clickhouse")
 
 	assert.NoError(t, r.Flush(context.Background()))
 }

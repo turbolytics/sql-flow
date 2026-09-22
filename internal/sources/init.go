@@ -53,6 +53,10 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		// to the source afterwards so SeekTo can fill it in. With no marks
 		// set it leaves the group's own offsets alone.
 		seeker := tkafka.NewOffsetSeeker()
+		// A client option too, for the same reason: the rebalance callbacks
+		// are how the pipeline stops reporting lag for a partition that moved
+		// to another instance.
+		partitions := tkafka.NewPartitionEvents()
 
 		opts := []kgo.Opt{
 			kgo.SeedBrokers(brokers...),
@@ -74,6 +78,7 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			return nil, fmt.Errorf("kafka source security: %w", err)
 		}
 		opts = append(opts, securityOpts...)
+		opts = append(opts, partitions.ClientOptions()...)
 
 		client, err := kgo.NewClient(opts...)
 		if err != nil {
@@ -83,6 +88,7 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		k, err := tkafka.NewSource(client,
 			tkafka.WithLogger(l),
 			tkafka.WithSeeker(seeker),
+			tkafka.WithPartitionEvents(partitions),
 			tkafka.WithChannelBuffer(fetch.Prefetch),
 		)
 		return k, err

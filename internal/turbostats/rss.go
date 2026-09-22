@@ -10,17 +10,26 @@ import (
 	"syscall"
 )
 
-// ResidentAnonBytes is the process's anonymous resident memory.
+// ResidentAnonBytes is the process's resident memory now.
 //
 // That is the figure a native leak moves: Go's heap profiler cannot see a
 // buffer DuckDB allocated across the ADBC boundary, and duckdb_memory() does
 // not track it either, so the only honest instrument is the process itself.
 //
-// Linux reads RssAnon, which excludes file-backed pages and is exact. Other
-// platforms fall back to peak resident size from getrusage, which only ever
-// rises, so it is a weaker signal there; a leak still shows as growth between
-// two readings, since a steady process has a steady peak.
+// Every platform reports a current reading, never a peak. Linux reads
+// RssAnon, which excludes file-backed pages and is exact. Darwin asks mach
+// for the task's resident size.
+//
+// It used to fall back to getrusage's ru_maxrss off Linux, which is a
+// high-water mark: it only ever rises, so a process that spiked once reported
+// that spike forever. That was tolerable when the only reader was a soak test
+// watching for growth. It is not tolerable now that a control plane charts
+// it, because a monotonic line is exactly the shape of a leak, and a fleet
+// page that draws one where none exists costs an operator an afternoon.
 func ResidentAnonBytes() (int64, error) {
+	if runtime.GOOS == "darwin" {
+		return residentBytesDarwin()
+	}
 	if runtime.GOOS == "linux" {
 		f, err := os.Open("/proc/self/status")
 		if err != nil {
@@ -42,13 +51,11 @@ func ResidentAnonBytes() (int64, error) {
 		}
 		return 0, fmt.Errorf("RssAnon not found in /proc/self/status")
 	}
+	// Everything else: the peak, which is a weaker signal, and said to be so
+	// where it is read. No third platform ships today.
 	var ru syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
 		return 0, err
 	}
-	maxrss := int64(ru.Maxrss)
-	if runtime.GOOS != "darwin" {
-		maxrss <<= 10 // kilobytes everywhere but darwin, which reports bytes
-	}
-	return maxrss, nil
+	return int64(ru.Maxrss) << 10, nil
 }

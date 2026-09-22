@@ -13,7 +13,7 @@ SQLFlow is a stream processing engine that lets you define pipelines with just S
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/turbolytics/sql-flow)
 
-One click runs sqlflow on Render: a webhook that accepts metrics, a one-minute
+One click runs SQLFlow on Render: a webhook that accepts metrics, a one-minute
 aggregation into Postgres, and an HTTP API that reads them back. It asks for
 one secret and is a paid deploy. See [`render/`](render/README.md).
 
@@ -73,10 +73,10 @@ The consumer prints one row per city:
 
 # Installation
 
-sqlflow reaches DuckDB through the Arrow ADBC driver manager, which **dlopens
+SQLFlow reaches DuckDB through the Arrow ADBC driver manager, which **dlopens
 `libduckdb` at runtime**. The binary is not standalone: wherever you run it,
 that shared library has to be present. `SQLFLOW_DUCKDB_LIB` points at it;
-without that variable sqlflow looks in `/opt/homebrew/lib/libduckdb.dylib` on
+without that variable SQLFlow looks in `/opt/homebrew/lib/libduckdb.dylib` on
 macOS and `/usr/local/lib/libduckdb.so` on Linux.
 
 The pinned DuckDB version lives in one place, the `DUCKDB_VERSION` file.
@@ -793,7 +793,7 @@ source:
 ```
 
 A platform that assigns the port passes it through the template:
-`addr: "0.0.0.0:{{ PORT }}"`. sqlflow refuses at startup an `addr` that is
+`addr: "0.0.0.0:{{ PORT }}"`. SQLFlow refuses at startup an `addr` that is
 not a `host:port`.
 
 To send a signed event, compute an HMAC-SHA256 of the exact bytes of the body
@@ -1304,6 +1304,13 @@ open for longer than a batch, and memory grows until it closes.
 |---|---|---|---|
 | `source_read_latency` | `source_read_latency_seconds` | histogram | — |
 | `consumer_lag` | `consumer_lag_messages` | gauge | `topic`, `partition` |
+| `consumer_lag_observed_timestamp` | `consumer_lag_observed_timestamp_seconds` | gauge | — |
+| `message_payload_bytes` | `message_payload_bytes_total` | counter | — |
+
+`message_payload_bytes` is the bytes of every message value received, over the
+same messages `message_count` counts, so the two divide to an average message
+size. It is payload, not wire bytes: keys, headers, framing and TLS are
+excluded, and under Kafka compression the wire carries fewer bytes than this.
 
 **Reference tables**, recorded once at startup for each table the handler SQL
 joins, with or without a state path:
@@ -1319,9 +1326,26 @@ joins, with or without a state path:
 | `window_watermark_seconds` | `window_watermark_seconds` | gauge | `window` |
 | `window_closed` | `window_closed_total` | counter | `window` |
 | `window_late_rows` | `window_late_rows_total` | counter | `window`, `policy` |
+| `window_close_lag_seconds` | `window_close_lag_seconds` | gauge | `window` |
+| `window_newest_bucket_start_seconds` | `window_newest_bucket_start_seconds` | gauge | `window` |
 
-Wall time minus `window_watermark_seconds` is how far the stream's clock
-trails, which is the number to size `grace_seconds` from.
+`window_closed_total` is present from startup at zero, so a windowed pipeline
+is never mistaken for one without windows before its first close.
+`window_late_rows_total` counts only after the close that dropped or reemitted
+the rows commits.
+
+`window_close_lag_seconds` is how far the window's closes trail the data it
+holds, in event time, and it is the number to alert on: zero while closes keep
+up, zero after an idle close, growing while rows arrive and closes fail. It
+uses no clock, so a sparse stream does not read as stalled and a host whose
+clock is wrong reports it correctly; a stream going quiet shows in
+`pipeline_last_message_timestamp` instead. `window_newest_bucket_start_seconds`
+ahead of a trusted clock means rows are stamped in the future, which moves the
+watermark past every correctly-timed row and, under `late_rows: drop`, deletes
+them. It is updated on every poll that finds rows, even one whose close fails.
+`window_watermark_seconds` trails the newest bucket by `grace_seconds` by
+design, which makes its age the number to size `grace_seconds` from rather
+than one to alert on.
 
 **Durable state**, present only when the pipeline declares a state path. An
 absent series and an empty state are different facts, so a pipeline with state
@@ -1350,7 +1374,11 @@ message_count_messages_total{otel_scope_name="sqlflow",...} 154635
 
 `consumer_lag` is the one to alert on. It is the broker's high watermark minus
 the offset the pipeline has finished with, so it measures the work the
-pipeline still owes rather than what its consumer group has been told.
+pipeline still owes rather than what its consumer group has been told. It is
+measured when a message is processed, so read it with
+`consumer_lag_observed_timestamp`: a consumer cut off from its brokers keeps
+its last reading while the backlog grows. It covers only the partitions this
+instance holds, and a partition taken away in a rebalance leaves the series.
 
 ### Reading the row counts
 
@@ -1360,7 +1388,7 @@ Each adjacent ratio isolates one kind of loss:
   handler rejected never reaches the SQL.
 - `sink_rows_accepted` over `handler_rows_read` — whatever the SQL does. A join
   that drops, a `WHERE`, a `GROUP BY`. Its meaning depends on the pipeline,
-  which is why sqlflow reports the numbers and leaves the threshold to you.
+  which is why SQLFlow reports the numbers and leaves the threshold to you.
 - `sink_rows_written` over `sink_rows_accepted` — delivery loss. A ratio that
   stays below 1 is a sink that is not draining.
 
@@ -1368,7 +1396,7 @@ The `role` attribute separates the pipeline sink from the DLQ and from a window
 manager's sink. Sum across roles and a rejected record counts as a delivered
 one.
 
-**Every ratio is a floor, not an equality.** sqlflow is at-least-once: a crash
+**Every ratio is a floor, not an equality.** SQLFlow is at-least-once: a crash
 between the flush and the offset commit replays the batch, and the sink writes
 those rows again, so a ratio can exceed 1 after a normal recovery. Alert on a
 ratio that is low. Never alert on one that is not exactly 1, or a healthy
@@ -1496,7 +1524,7 @@ make benchmark-container NUM_MESSAGES=300000 BATCH_SIZE=5000 \
 **Docker Desktop's host→container port-forwarding caps Kafka fetches at roughly
 10-15 MB/s.** That starves the pipeline and understates throughput by about
 **10x** — you will measure the NAT, not the engine. `make benchmark-container`
-builds a linux sqlflow and runs it on the same docker network as the broker,
+builds a Linux `sqlflow` binary and runs it on the same docker network as the broker,
 which is the only way to get a number that reflects the engine.
 
 `make benchmark` runs the same workload from the host. It is fine for a quick
@@ -1508,7 +1536,7 @@ smoke test, but do not quote its numbers.
 make release-binaries        # artifacts land in dist/
 ```
 
-sqlflow **cannot be cross-compiled the usual way**, and it is worth
+SQLFlow **cannot be cross-compiled the usual way**, and it is worth
 understanding why before you try. The ADBC driver manager is a cgo package:
 
 - `CGO_ENABLED=0` does not merely produce a degraded binary, it **fails to
@@ -1644,7 +1672,7 @@ docker-compose -f dev/kafka-single.yml up -d
 uv run python cmd/publish-test-data.py --num-messages=5000 --topic="input-kafka-mem-iceberg"
 ```
 
-- Run sqlflow, which reads from Kafka and writes to the iceberg table locally
+- Run SQLFlow, which reads from Kafka and writes to the iceberg table locally
 ```
 PYICEBERG_HOME=$(pwd)/dev/config/iceberg \
   ./bin/sqlflow run -c dev/config/examples/kafka.mem.iceberg.yml --max-msgs=5000

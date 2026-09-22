@@ -20,6 +20,18 @@ const (
 	HeaderSignature = "X-Turbostats-Signature"
 )
 
+// The scopes a credential may carry. A scope names what a control plane may
+// do with an instance that signs with it, and both sides need the same
+// spelling: the instance lists what it permits, and the receiver refuses a
+// request whose credential does not hold what the route needs.
+//
+// v1 issues ScopeRead. ScopeExecute is reserved, so the column and the config
+// key are a set from the start and a later spec defines what it permits.
+const (
+	ScopeRead    = "read"
+	ScopeExecute = "execute"
+)
+
 // CredentialPrefix marks a credential string, so a scanner can find a leaked
 // one and an operator can tell it from any other secret.
 const CredentialPrefix = "sfc_"
@@ -130,7 +142,7 @@ func Verify(pub ed25519.PublicKey, method, path string, timestamp int64, body, s
 func SignRequest(req *http.Request, priv ed25519.PrivateKey, body []byte, now time.Time) error {
 	ts := now.Unix()
 	// Sign checks the key's size, which is also what makes Public safe below.
-	sig, err := Sign(priv, req.Method, req.URL.Path, ts, body)
+	sig, err := Sign(priv, req.Method, RequestPath(req.URL.Path), ts, body)
 	if err != nil {
 		return err
 	}
@@ -138,6 +150,23 @@ func SignRequest(req *http.Request, priv ed25519.PrivateKey, body []byte, now ti
 	req.Header.Set(HeaderTimestamp, strconv.FormatInt(ts, 10))
 	req.Header.Set(HeaderSignature, base64.StdEncoding.EncodeToString(sig))
 	return nil
+}
+
+// RequestPath is the path a signature covers, normalized.
+//
+// A URL written without one -- https://control.example -- parses to an empty
+// path, but HTTP puts "/" on the wire and that is what a receiver reads back
+// from its own request. Signing the empty string would make every such
+// heartbeat verify against a different canonical string than the one it was
+// signed from, and the receiver would reject a correctly signed bundle.
+//
+// Both sides call this. A receiver reading r.URL.Path already has "/", so it
+// is a no-op there, and it stays in the contract so nobody has to know that.
+func RequestPath(path string) string {
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
 // ParseHeaders reads the three headers. A receiver calls it first, looks the

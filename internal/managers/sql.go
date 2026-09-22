@@ -38,6 +38,12 @@ func (d Declaration) closedBefore(instant time.Time) string {
 
 // newestSQL reads the newest bucket start the table holds, as microseconds
 // since the epoch. NULL on an empty table.
+// oldestSQL reads the oldest bucket the window holds, as microseconds since
+// the epoch. NULL when the table is empty.
+func (d Declaration) oldestSQL() string {
+	return fmt.Sprintf("SELECT epoch_us(min(%s)) FROM %s", quoteIdent(d.TimeColumn), quoteIdent(d.Table))
+}
+
 func (d Declaration) newestSQL() string {
 	return fmt.Sprintf("SELECT epoch_us(max(%s)) FROM %s", quoteIdent(d.TimeColumn), quoteIdent(d.Table))
 }

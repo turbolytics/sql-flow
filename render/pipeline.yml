@@ -9,6 +9,12 @@
 # SQLFLOW_WEBHOOK_HMAC_SECRET     required under hmac
 # SQLFLOW_WEBHOOK_PORT            default 8001
 # SQLFLOW_WEBHOOK_MAX_BODY_BYTES  default 26214400, 25 MiB
+# SQLFLOW_TURBOSTATS_REPORT_TO    optional. A control plane's report URL, such
+#                                 as https://ingest.turbolytics.io/v1/turbostats.
+#                                 Empty, the default, reports nowhere.
+# SQLFLOW_TURBOSTATS_KEY          required with a report URL: the credential
+#                                 the control plane issued
+# SQLFLOW_TURBOSTATS_ID           default sqlflow-metrics-ingest
 # SQLFLOW_WRITER_ID               required. bin/entrypoint.sh makes one per
 #                                 process start. Never set it by hand: two
 #                                 processes that share one replace each
@@ -94,6 +100,16 @@ tables:
 
 pipeline:
   name: render-metrics
+  # Reports this instance to a control plane when
+  # SQLFLOW_TURBOSTATS_REPORT_TO is set, signed with SQLFLOW_TURBOSTATS_KEY.
+  # Empty, the default, reports nowhere. The values are quoted so an unset
+  # variable renders as an empty string, which the pipeline schema reads as
+  # off, and not as null, which it rejects. Needs SQLFlow v2026.09.21 or later.
+  turbostats:
+    id: "{{ SQLFLOW_TURBOSTATS_ID|default('sqlflow-metrics-ingest') }}"
+    report_to: "{{ SQLFLOW_TURBOSTATS_REPORT_TO|default('') }}"
+    key: "{{ SQLFLOW_TURBOSTATS_KEY|default('') }}"
+
   batch_size: 500
   # A lone curl is a partial batch. It waits this long, then the minute has to
   # close, so a first metric is readable after one to two minutes.

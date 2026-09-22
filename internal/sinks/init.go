@@ -158,7 +158,7 @@ func wrap(built core.Sink, sink config.Sink, role string, o options) core.Sink {
 	}
 
 	r := newRetrying(built, policy)
-	r.onRetry = retryCounter(o.meterProvider, sink.Type)
+	r.onRetry = RetryCounter(o.meterProvider, sink.Type)
 	r.listen(role+"/"+sink.Type, o.retryEvents)
 
 	// Outside the ladder, so one logical flush is one counted flush. The

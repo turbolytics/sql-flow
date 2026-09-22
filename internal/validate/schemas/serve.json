@@ -167,6 +167,29 @@
           "type": "object",
           "description": "Whether to serve Prometheus metrics at /metrics."
         },
+        "turbostats": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "ID is the operator's name for this instance. The receiver files a\nbundle under it, so reporting without one cannot be filed at all."
+            },
+            "report_to": {
+              "type": "string",
+              "description": "ReportTo is where bundles are posted. Empty means reporting is off,\nwhich is the ordinary case for an instance with no control plane."
+            },
+            "key": {
+              "type": "string",
+              "description": "Key is the credential the control plane issued. It is the private half\nof an Ed25519 keypair and belongs in an environment variable, which the\ntemplate renders in."
+            },
+            "interval_seconds": {
+              "type": "integer",
+              "description": "IntervalSeconds is how often to report. Absent means the default."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "description": "Where this instance reports itself, the same block `run` takes."
+        },
         "cache": {
           "properties": {
             "max_mb": {

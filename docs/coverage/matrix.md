@@ -56,6 +56,7 @@ added, and this page changes only when a status does.
 | `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — |
 | `observability.turbostats` | Reports the process's own state as one versioned document, served at /turbostats/v1. | ✅ | — | ✅ |
 | `observability.turbostats.serve` | Reports `sqlflow serve`'s totals as the bundle's serve section, served at /turbostats/v1. | ✅ | — | ✅ |
+| `observability.turbostats.reporter` | Posts the process's own state to a control plane on an interval, signed. | ✅ | — | ✅ |
 | `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — |
 | `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — |
 | `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ |
@@ -66,7 +67,7 @@ added, and this page changes only when a status does.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**43 features declared. 42 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**44 features declared. 43 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -74,7 +75,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**51 invariants declared: 43 safety and 8 liveness. Of 180 (invariant, integration) cells: 95 proven, 51 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
+**52 invariants declared: 44 safety and 8 liveness. Of 181 (invariant, integration) cells: 96 proven, 51 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -142,6 +143,7 @@ drains. An invariant holds only if it holds on all four.
 | `manager.watermark.never_regresses` | The persisted watermark never moves backwards, across polls and across a restart. A manager built over the state another one saved publishes nothing that one published. | · | · | · | ✅ u |
 | `manager.close.committed_rows_only` | A close publishes rows the pipeline has committed and no others. Rows an open batch has written are not counted, so a batch that rolls back was never published. | · | · | · | ✅ u |
 | `manager.late.policy_holds` | A row for a bucket below the watermark is late. Under drop it is discarded and counted, and the bucket is never published again. Under reemit it is published once. | · | · | · | ✅ u |
+| `manager.late.counted_once` | A late row is counted once, when the close that dropped or reemitted it commits. A close that fails counts nothing; the close that later settles those rows counts them. *(violated once: #354)* | · | · | · | ✅ u |
 
 These checkpoint invariants are properties of the consume loop
 rather than of anything a config file names. The columns are

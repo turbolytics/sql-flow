@@ -43,7 +43,7 @@ def render_types_page(lattice, integration):
         "",
         "## Type mapping {#type-mapping}",
         "",
-        "sqlflow hands each batch to ClickHouse as rows built from the Arrow "
+        "SQLFlow hands each batch to ClickHouse as rows built from the Arrow "
         "table DuckDB produces, so what matters is the type each SQL column "
         "ends up with. Cast in the handler SQL to control it.",
         "",

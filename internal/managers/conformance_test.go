@@ -2,12 +2,13 @@ package managers
 
 // The watermark manager under the conformance harness.
 //
-// The subject supplies seven things: build the manager on the sink the
+// The subject supplies ten things: build the manager on the sink the
 // harness hands it, put closed buckets in the table, put late rows in a
 // bucket that closed, count what is left, hold rows open in the pipeline's
 // transaction, run a batch through the structured handler on the pipeline's
-// connection, and build a manager whose commit waits. The harness owns the
-// sink, the faults and the verdicts.
+// connection, build a manager whose commit waits, and build one whose metrics
+// the harness reads beside a newer bucket its sink can refuse. The harness
+// owns the sink, the faults and the verdicts.
 
 import (
 	"context"
@@ -20,6 +21,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/handlers"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // heldConn is a manager's connection whose commit calls hold first, so a
@@ -150,6 +152,26 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 			}
 			return w
 		},
+
+		Metered: func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, mp metric.MeterProvider) conformance.Manager {
+			conn := managerConn(t, d.db)
+			t.Cleanup(func() { conn.Close() })
+			decl := testDecl()
+			decl.Late = LatePolicy(late)
+			w, err := NewWatermark(conn, decl, time.Hour, sink,
+				WithDrainBudget(budget), WithClock(now), WithMeterProvider(mp))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return w
+		},
+
+		// A bucket past every one Seed wrote. The idle rule closes it.
+		SeedNewer: func(t *testing.T) {
+			insertBucket(t, d.pipeline, 10, "newer", 1)
+		},
+
+		LateInstrument: "window_late_rows",
 	}
 	conformance.Managers(t, subject)
 }
