@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -140,4 +141,78 @@ func TestToolingCoverage_TheDLQsRowsStayOutOfTheFlatCounters(t *testing.T) {
 	// Two sinks wrote one row each; only the pipeline's counts.
 	assert.Equal(t, int64(1), flatValue(t, r, "pipeline_rows_written"))
 	assert.Equal(t, int64(1), flatValue(t, r, "pipeline_rows_accepted"))
+}
+
+// The same batch that stamps pipeline_last_message_timestamp marks the
+// activity clock, so idle_seconds and last_activity_at describe one event.
+func TestCoreConsumeLoop_MarksTheActivityClock(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	src := &fakeSource{batches: [][]Message{messages(10)}}
+	r := sdkmetric.NewManualReader()
+	m, err := NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)))
+	assert.NoError(t, err)
+	m.Activity = activity.Start()
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 10, time.Second,
+		&sync.Mutex{}, PipelineErrorPolicies{}, WithMetrics(m))
+
+	_, err = tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	_, _, worked := m.Activity.Read()
+	assert.That(t, worked)
+}
+
+// Metrics built without a clock, as every other test builds them, still
+// consume: Mark is a no-op on nil.
+func TestCoreConsumeLoop_RunsWithoutAnActivityClock(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	src := &fakeSource{batches: [][]Message{messages(10)}}
+	tb, _ := meteredTurbine(t, src, &fakeSink{}, 10)
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+}
+
+// An idle tick is not work. The flush ticker wakes the consume loop on a
+// quiet source too, and a mark there would hold idle_seconds near zero for
+// every pipeline forever: control would never read one as idle. The state
+// store's commits prove the ticks ran.
+func TestCoreConsumeLoop_IdleTicksDoNotMarkTheActivityClock(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	var events []string
+	src := newIdleSource()
+	r := sdkmetric.NewManualReader()
+	m, err := NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)))
+	assert.NoError(t, err)
+	m.Activity = activity.Start()
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 10*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{}, WithMetrics(m),
+		WithStateStore(&fakeOffsetStore{events: &events}, &txConn{events: &events}))
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = tb.ConsumeLoop(context.Background(), 0)
+		close(done)
+	}()
+	deadline := time.After(5 * time.Second)
+	for ticks := 0; ticks < 3; {
+		tb.lock.Lock()
+		ticks = 0
+		for _, e := range events {
+			if e == "commit" {
+				ticks++
+			}
+		}
+		tb.lock.Unlock()
+		select {
+		case <-deadline:
+			t.Fatalf("the idle pipeline never ticked; events=%v", events)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	close(src.release)
+	<-done
+
+	_, _, worked := m.Activity.Read()
+	assert.That(t, !worked)
 }

@@ -55,6 +55,16 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 		},
 	}
 
+	if s.Clock != nil {
+		uptime, idle, worked := s.Clock.Read()
+		up := int64(uptime / time.Second)
+		b.Process.UptimeSeconds = &up
+		if worked {
+			i := int64(idle / time.Second)
+			b.IdleSeconds = &i
+		}
+	}
+
 	if src.Pipeline != nil {
 		p, err := pipelineSection(ctx, flat, dim, b.SentAt, src.Pipeline)
 		if err != nil {

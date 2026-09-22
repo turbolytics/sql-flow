@@ -4,6 +4,24 @@
 
 ### Added
 
+- The TurboStats bundle carries `process.uptime_seconds` and `idle_seconds`,
+  measured on the process's monotonic clock. A wall-clock step cannot move
+  them, where it moves any difference of two wall readings: a gateway
+  without a hardware clock that boots near 1970 and then syncs reported a
+  start 56 years old for the life of the process. `sqlflow run` also stops
+  stripping its start's monotonic reading.
+  - Both are time awake: the monotonic clock does not advance while the host
+    is suspended, so a gateway that sleeps for an hour reports an uptime
+    without that hour.
+  - `idle_seconds` counts from the last batch received or request served.
+    The flush ticker's idle ticks are not work, so a pipeline on a quiet
+    source reports a rising idle time.
+  - `idle_seconds` is absent before any work, and a zero uptime is still
+    sent. A receiver that gets neither field is talking to an older engine,
+    and falls back to `sent_at - started_at` and `sent_at -
+    last_activity_at`.
+
+  Both fields are additive, and the document stays v1.
 - `sqlflow turbostats keygen --out FILE` generates a TurboStats keypair on
   the instance. The credential, the private half, goes to `FILE`, readable
   only by its owner, and is never printed. The public key and key id are

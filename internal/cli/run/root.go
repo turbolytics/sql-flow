@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/spf13/cobra"
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/turbolytics/sql-flow/internal/handlers"
 	"github.com/turbolytics/sql-flow/internal/logging"
@@ -122,9 +123,11 @@ func NewCommand() *cobra.Command {
 				return levelErr
 			}
 
-			// Taken here, once. It is the TurboStats bundle's started_at, and
-			// a restart is the control plane seeing that value change.
-			startedAt := time.Now().UTC()
+			// Taken here, once. Its wall time is the bundle's started_at, and
+			// a restart is the control plane seeing that value change. The
+			// durations the bundle carries come from its monotonic reading,
+			// which time.Now().UTC() used to strip.
+			clock := activity.Start()
 
 			configPath, err := resolveConfigPath(configPath, args)
 			if err != nil {
@@ -359,7 +362,8 @@ func NewCommand() *cobra.Command {
 				Version:    buildinfo.Version,
 				Commit:     buildinfo.Commit,
 				ConfigHash: turbostats.HashConfig(rendered),
-				StartedAt:  startedAt,
+				StartedAt:  clock.StartedAt(),
+				Clock:      clock,
 			}
 			if ts.Enabled() {
 				static.ID = ts.ID
@@ -440,6 +444,7 @@ func NewCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to create metrics: %w", err)
 			}
+			pipelineMetrics.Activity = clock
 
 			// A dimension table that did not load is the enrichment failure
 			// nothing else makes visible. Reported before the pipeline
