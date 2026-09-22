@@ -64,6 +64,23 @@ type Source interface {
 	Close() error
 }
 
+// Deliverer is implemented by a source that knows when it can deliver at
+// all: a Kafka consumer holding partitions, a websocket that is connected.
+//
+// The engine counts quiet only while it waits on a source that could have
+// delivered. A consumer rejoining its group after a crash waits for the
+// session timeout, 45 seconds by default, before it holds anything, and
+// with idle_close_seconds below that every bucket saved in the state
+// database closed before the backlog arrived; the backlog's rows were then
+// late. Delivering reports whether the source can deliver now and since
+// when, and the engine's quiet clock never runs earlier than that. since
+// must be a reading of time.Now, with its monotonic clock, not a UTC()
+// copy. A source that does not implement this is taken to be delivering
+// whenever it is running.
+type Deliverer interface {
+	Delivering() (since time.Time, ok bool)
+}
+
 // MetadataWriter is implemented by handlers that can use a message's source
 // metadata. Handlers that only need the payload implement Handler alone and
 // the consume loop hands them the value.
@@ -372,6 +389,27 @@ func (t *Turbine) commitCount() int64 {
 // this is only the SQL-visible copy, whose one reader in the engine compares
 // its two clocks against an idle bound measured in tens of seconds.
 const progressWriteInterval = time.Second
+
+// holdQuietWhileNotDelivering keeps the quiet clock from running over time
+// the source could not deliver. A source that is not delivering resets it
+// to now; one that resumed since the clock was last set moves it to the
+// resumption, so the tick after a rebalance ends confirms quiet from the
+// assignment rather than from the loop's last stamp.
+func (t *Turbine) holdQuietWhileNotDelivering() {
+	d, ok := t.source.(Deliverer)
+	if !ok {
+		return
+	}
+	since, delivering := d.Delivering()
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	switch {
+	case !delivering:
+		t.quietSince = time.Now()
+	case since.After(t.quietSince):
+		t.quietSince = since
+	}
+}
 
 // recordProgress runs at the top of every commit, before the state guard.
 //
@@ -698,6 +736,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// idleness. With a state path it also ends the batch transaction
 			// left open since the last commit, so nothing stays uncommitted
 			// on the connection for as long as the stream is silent.
+			t.holdQuietWhileNotDelivering()
 			if err := t.commitState(batchCtx, false); err != nil {
 				t.recordError(ctx, err, phaseStateCommit, "error committing state on idle tick")
 				return nil, err

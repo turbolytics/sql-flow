@@ -38,6 +38,8 @@ type Source struct {
 	// Close may be tearing it down.
 	mu   sync.Mutex
 	conn *ws.Conn
+	// connectedAt is when conn was dialled, with its monotonic reading.
+	connectedAt time.Time
 
 	logger *zap.Logger
 }
@@ -171,9 +173,19 @@ func (s *Source) dial() error {
 
 	s.mu.Lock()
 	s.conn = c
+	s.connectedAt = time.Now()
 	s.mu.Unlock()
 
 	return nil
+}
+
+// Delivering implements core.Deliverer: connected, and since the dial. A
+// reconnect that takes longer than idle_close_seconds is not a quiet
+// stream, and the engine counts no quiet across it.
+func (s *Source) Delivering() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.connectedAt, s.conn != nil
 }
 
 // read blocks on the current connection. Reads are not given a deadline: the

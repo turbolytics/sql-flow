@@ -832,3 +832,79 @@ func TestStateDurability_TheLoopStartsTheQuietClockAgain(t *testing.T) {
 		t.Fatalf("the loop's first write confirms %v of quiet; the loop had run for milliseconds", quiet)
 	}
 }
+
+// rejoiningSource is an idle source that cannot deliver until a moment the
+// test picks, the way a consumer rejoining its group after a crash holds
+// nothing until the session timeout passes.
+type rejoiningSource struct {
+	*idleSource
+	mu         sync.Mutex
+	assignedAt time.Time
+}
+
+func (s *rejoiningSource) assign() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.assignedAt = time.Now()
+}
+
+func (s *rejoiningSource) Delivering() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.assignedAt, !s.assignedAt.IsZero()
+}
+
+// progress.quiet_is_watched, for a source that cannot deliver.
+//
+// The loop is waiting on the source, but the source holds nothing to wait
+// for. The quiet clock is held at zero on every tick until it does, and
+// once it does the clock runs from the assignment: a tick after a rebalance
+// confirms quiet since the partitions arrived, not since the loop started.
+func TestStateDurability_ASourceThatCannotDeliverConfirmsNoQuiet(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	src := &rejoiningSource{idleSource: newIdleSource()}
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 20*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(0))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+
+	// Between groups for several ticks.
+	waitFor(t, "ticks while not delivering", 5*time.Second, func() bool {
+		_, n := rec.last()
+		return n >= 5
+	})
+	src.assign()
+	assigned, _ := src.Delivering()
+	// Then delivering, and quiet, for several more.
+	waitFor(t, "ticks while delivering", 5*time.Second, func() bool {
+		p, _ := rec.last()
+		return p.LastCommit.Sub(assigned) > 100*time.Millisecond
+	})
+	close(src.release)
+	<-done
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var afterAssignment int
+	for i, r := range rec.recs {
+		quiet := r.LastCommit.Sub(r.LastArrival)
+		if r.LastCommit.Before(assigned) {
+			// Held at zero: the tick stamped the clock just before it wrote.
+			if quiet > 10*time.Millisecond {
+				t.Fatalf("record %d confirms %v of quiet while the source held nothing", i, quiet)
+			}
+			continue
+		}
+		afterAssignment++
+		if since := r.LastCommit.Sub(assigned); quiet > since+time.Millisecond {
+			t.Fatalf("record %d confirms %v of quiet, %v since the assignment", i, quiet, since)
+		}
+	}
+	assert.That(t, afterAssignment >= 2)
+	// And the clock did run once the source could deliver: the last record
+	// confirms most of the time since the assignment.
+	last := rec.recs[len(rec.recs)-1]
+	assert.That(t, last.LastCommit.Sub(last.LastArrival) > 100*time.Millisecond)
+}

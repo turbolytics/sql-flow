@@ -94,7 +94,10 @@
   confirms nothing, and its buckets wait. The quiet the row confirms is only
   the time the engine spent waiting on its source, on the monotonic clock: a
   restarted process no longer confirms the outage before it, a sink write held
-  in retries is not quiet, and a wall clock stepping forward is not quiet. A
+  in retries is not quiet, a wall clock stepping forward is not quiet, and a
+  source that cannot deliver is not quiet: a Kafka consumer holding no
+  partitions while it rejoins its group after a crash, or a websocket
+  reconnecting, holds the clock at zero until it can. A
   quiet stream now closes on the first commit past the bound rather than the
   first poll, so the close can trail `idle_close_seconds` by up to one
   `flush_interval_seconds`; `validate` warns when the interval is the longer

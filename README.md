@@ -1174,8 +1174,10 @@ moves past the newest bucket and every open bucket closes.
 
 The confirmation is the engine's own: a commit that late which still reports
 the same newest arrival, and the quiet it counts is only the time the engine
-spent waiting on its source, measured on the monotonic clock. A restart, a
-sink write held in retries and a wall clock stepping forward are not quiet.
+spent waiting on a source that could deliver, measured on the monotonic
+clock. A restart, a sink write held in retries, a wall clock stepping
+forward, a Kafka consumer waiting to rejoin its group and a websocket
+reconnecting are not quiet.
 With nothing arriving the commits are idle ticks, one `flush_interval_seconds`
 apart, so the close can trail `idle_close_seconds` by up to one flush
 interval; `validate` warns when the interval is the longer of the two. The

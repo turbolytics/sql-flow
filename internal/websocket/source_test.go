@@ -199,3 +199,25 @@ func TestSourceWebsocket_SurvivesAQuietServer(t *testing.T) {
 	// One connection: the silence did not look like a failure.
 	assert.Equal(t, int64(1), conns.Load())
 }
+
+// Connected is delivering, from the dial; before Start and after Close it
+// delivers nothing.
+func TestSourceWebsocket_DeliversWhileConnected(t *testing.T) {
+	coverage.Covers(t, "source.websocket")
+	srv, _ := newServer(t, []string{"one"}, true)
+
+	s, err := NewSource(wsURL(srv))
+	assert.NoError(t, err)
+	_, ok := s.Delivering()
+	assert.That(t, !ok)
+
+	before := time.Now()
+	assert.NoError(t, s.Start())
+	since, ok := s.Delivering()
+	assert.That(t, ok)
+	assert.That(t, !since.Before(before))
+
+	assert.NoError(t, s.Close())
+	_, ok = s.Delivering()
+	assert.That(t, !ok)
+}
