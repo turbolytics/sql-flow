@@ -237,14 +237,19 @@ type Turbine struct {
 	// snapshot is the in-memory copy of what progress last recorded, read by
 	// /stats and /healthz without touching the database. Guarded by lock.
 	snapshot Progress
-	// arrivedAt is when the newest batch reached the handler, set by
-	// processBatch. It is the arrival time itself rather than a flag,
-	// because a throttled write can happen long after the arrival and
-	// stamping it with the commit clock would place the arrival wherever the
-	// write landed. Every write carries it, so a write the throttle skipped
-	// loses nothing: the next one reports the same arrival at its true time.
-	// Guarded by lock.
-	arrivedAt time.Time
+	// quietSince is the last instant this process was doing anything other
+	// than waiting on the source: seeded when the turbine is built and again
+	// when the loop starts, and stamped at the end of every batch, after the
+	// sink write. The progress row confirms quiet from here to the commit,
+	// and that is the only quiet this process watched. A restart, a sink
+	// held in retries and a wall clock stepping forward are not quiet, and
+	// each was read as quiet once: the outage between a previous process's
+	// last arrival and this one's first tick, the hold between an arrival
+	// stamped before the write and the commit after it, and a step between
+	// two wall-clock readings. It keeps its monotonic reading, so the
+	// elapsed against it is measured on the monotonic clock; UTC() would
+	// strip that. Guarded by lock.
+	quietSince time.Time
 	// commits counts successful state commits, for tests that wait on ticks.
 	// Guarded by lock.
 	commits int64
@@ -404,19 +409,25 @@ func (t *Turbine) recordProgress(ctx context.Context, force bool) error {
 	if t.progress == nil {
 		return nil
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	// Held through the write below, because the debug API runs statements on
 	// this same connection and DuckDB closes a pending result the moment
 	// another statement runs on it. The window managers are not a party: they
 	// poll on connections of their own and never take this lock.
 	t.lock.Lock()
 	defer t.lock.Unlock()
-	p := Progress{LastCommit: now, Messages: t.stats.MessagesConsumed()}
-	if !t.arrivedAt.IsZero() {
-		p.LastArrival = t.arrivedAt
-		t.snapshot.LastArrival = t.arrivedAt
+	// The commit clock is the arrival clock plus the monotonic elapsed, not
+	// a second wall-clock reading: the row's difference is then what the
+	// monotonic clock measured, and a wall clock stepped forward between the
+	// two is not read as quiet. The arrival itself is written as stamped, so
+	// it is the same value on every write until the next batch.
+	p := Progress{
+		LastArrival: t.quietSince,
+		LastCommit:  t.quietSince.Add(now.Sub(t.quietSince)),
+		Messages:    t.stats.MessagesConsumed(),
 	}
-	t.snapshot.LastCommit = now
+	t.snapshot.LastArrival = p.LastArrival
+	t.snapshot.LastCommit = p.LastCommit
 	t.snapshot.Messages = p.Messages
 
 	// The clock term is load-bearing for windows, not only housekeeping. An
@@ -425,10 +436,11 @@ func (t *Turbine) recordProgress(ctx context.Context, force bool) error {
 	// window manager that the stream is quiet. Without it no window would
 	// ever close on idleness.
 	//
-	// The elapsed test is written to survive a clock that moves backwards.
-	// Comparing now.Sub(written) >= interval is false forever after a jump
-	// back, which would stop the table being written at all: last_commit
-	// would freeze, and with it every window's idle close.
+	// Both stamps carry monotonic readings, so a wall clock stepping back
+	// cannot make this negative. The guard stays for a stamp without one,
+	// which a test can inject: comparing now.Sub(written) >= interval alone
+	// would then be false for as long as the step was, the table would stop
+	// being written, and with it every window's idle close.
 	elapsed := now.Sub(t.progressWrittenAt)
 	due := elapsed >= t.progressEvery || elapsed < 0
 
@@ -498,6 +510,7 @@ func NewTurbine(
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
 		progressEvery: progressWriteInterval,
+		quietSince:    time.Now(),
 		lock:          lock,
 		running:       true,
 		stats: &Stats{
@@ -618,6 +631,11 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 
 	t.stats.StartTime = time.Now().UTC()
 	t.stats.SetNumMessagesConsumed(0)
+	// The quiet the row may confirm starts here, not at the previous
+	// process's last arrival, which the row still carries.
+	t.lock.Lock()
+	t.quietSince = time.Now()
+	t.lock.Unlock()
 	// Under the lock: the debug API may already be running statements on
 	// this connection.
 	if err := t.initHandler(ctx); err != nil {
@@ -1211,11 +1229,6 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 
 	t.lock.Lock()
 	batch, err := t.handler.Invoke(ctx)
-	// Messages reached the handler whatever Invoke returns, so this is an
-	// arrival. Stamped now rather than at commit time: a throttled write can
-	// land much later, and the window predicate needs when the data came,
-	// not when the row was updated.
-	t.arrivedAt = time.Now().UTC()
 	t.lock.Unlock()
 
 	b1 := time.Now()
@@ -1309,6 +1322,15 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	// duplicate -- recoverable -- while state and offsets stay consistent.
 	// Committing first would move the offsets past rows the sink never
 	// received, which loses them silently.
+	// The batch is done with the sink, so from here the loop is back to
+	// waiting on the source, and that is where the quiet the row may confirm
+	// starts. Stamped before the write, not the handler: the time inside a
+	// sink held in retries was not watched, and messages may have waited at
+	// the source through all of it.
+	t.lock.Lock()
+	t.quietSince = time.Now()
+	t.lock.Unlock()
+
 	c0 := time.Now()
 	err = t.commitState(ctx, false)
 	// Timed at the call site rather than inside commitState, so the phase is

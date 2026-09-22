@@ -267,7 +267,7 @@ func BenchmarkCommitStateArrivalForced(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			tb.arrivedAt = time.Now().UTC()
+			tb.quietSince = time.Now().UTC()
 			if err := tb.commitState(ctx, false); err != nil {
 				b.Fatal(err)
 			}

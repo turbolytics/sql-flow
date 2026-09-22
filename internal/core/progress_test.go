@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
@@ -142,9 +144,10 @@ func TestStateDurability_ProgressStoreKeepsOneRow(t *testing.T) {
 }
 
 // Twenty idle ticks against a real state file. The commit clock moves on
-// every tick, the arrival clock never does, and the file does not grow. An
-// empty commit that costs bytes would make a quiet pipeline expensive to
-// leave running, which is exactly what a slow stream does.
+// every tick, the arrival clock never does, and the file and its WAL grow by
+// no more than the progress row's update. A commit that cost more would make
+// a quiet pipeline expensive to leave running, which is exactly what a slow
+// stream does.
 func TestStateDurability_IdleTicksDoNotGrowTheStateFile(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	ctx := context.Background()
@@ -183,28 +186,38 @@ func TestStateDurability_IdleTicksDoNotGrowTheStateFile(t *testing.T) {
 	done := make(chan struct{})
 	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
 
+	// The file and its WAL together: the row's update lands in the WAL
+	// until a checkpoint folds it in, and a test that stats the file alone
+	// cannot see what each tick costs.
 	sizeAfter := func(ticks int64) int64 {
 		waitFor(t, fmt.Sprintf("%d idle commits", ticks), 10*time.Second, func() bool {
 			return tb.commitCount() >= ticks
 		})
-		fi, err := os.Stat(path)
-		assert.NoError(t, err)
-		return fi.Size()
+		var total int64
+		for _, name := range []string{path, path + ".wal"} {
+			if fi, err := os.Stat(name); err == nil {
+				total += fi.Size()
+			}
+		}
+		return total
 	}
 	s1 := sizeAfter(1)
 	s20 := sizeAfter(20)
 
-	// Nothing ever arrived, so the arrival clock is still unset while the
-	// commit clock has moved twenty times.
+	// Nothing ever arrived, so the arrival clock is where the loop started
+	// while the commit clock has moved twenty times: the quiet the row
+	// confirms is only what this process has watched.
 	snap := tb.Progress()
-	assert.That(t, snap.LastArrival.IsZero())
+	assert.That(t, !snap.LastArrival.IsZero())
+	assert.That(t, !snap.LastArrival.After(snap.LastCommit))
 	assert.That(t, !snap.LastCommit.IsZero())
 	assert.Equal(t, int64(0), snap.Messages)
 
-	// One checkpoint of slack: DuckDB may write a WAL frame on the first
-	// commit. Nineteen more empty commits must not add another.
-	if s20 > s1+256*1024 {
-		t.Fatalf("state file grew across idle commits: %d bytes after one, %d after twenty", s1, s20)
+	// Nineteen more ticks are nineteen updates of one row: under half a
+	// kilobyte of WAL each, measured, so 64 KiB is a generous bound. The
+	// first commit may also write a checkpoint, which s1 absorbs.
+	if s20 > s1+64*1024 {
+		t.Fatalf("state grew %d bytes across nineteen idle commits: %d after one, %d after twenty", s20-s1, s1, s20)
 	}
 	close(src.release)
 	<-done
@@ -260,10 +273,11 @@ func TestStateDurability_ProgressNeverOverstatesTheQuiet(t *testing.T) {
 		if r.LastArrival.After(newest) {
 			t.Fatalf("record %d reports an arrival from the future: %v > %v", i, r.LastArrival, newest)
 		}
-		// Before the batch the row carries no arrival and confirms nothing.
-		// From the first write after it, the gap is measured from the
-		// batch's true arrival, so it can never exceed the real quiet.
-		if r.LastArrival.IsZero() {
+		// Before the batch the row carries the loop's start, which confirms
+		// only the quiet this process has watched. From the first write
+		// after the batch, the gap is measured from the batch's true
+		// arrival, so it can never exceed the real quiet.
+		if r.LastArrival.Before(newest) {
 			continue
 		}
 		sawBatch = true
@@ -366,11 +380,11 @@ func TestStateDurability_TheDrainWritesAnArrivalTheIntervalSkipped(t *testing.T)
 
 	ctx := context.Background()
 	first := time.Now().UTC()
-	tb.arrivedAt = first
+	tb.quietSince = first
 	assert.NoError(t, tb.commitState(ctx, false)) // always due: writes `first`
 
 	newest := first.Add(time.Second)
-	tb.arrivedAt = newest
+	tb.quietSince = newest
 	assert.NoError(t, tb.commitState(ctx, false)) // inside the interval, not owed
 
 	last, n := rec.last()
@@ -408,7 +422,8 @@ func (f *flakyProgress) state() (attempts int, recs []Progress) {
 	return f.attempts, append([]Progress(nil), f.recs...)
 }
 
-// errorCodes returns how many errors error_count recorded under each code.
+// errorCodes returns how many errors error_count recorded under each code,
+// and under each code and phase as "code@phase".
 func errorCodes(t *testing.T, r *sdkmetric.ManualReader) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -424,8 +439,13 @@ func errorCodes(t *testing.T, r *sdkmetric.ManualReader) map[string]int64 {
 				continue
 			}
 			for _, dp := range data.DataPoints {
-				if v, ok := dp.Attributes.Value("code"); ok {
-					codes[v.AsString()] += dp.Value
+				code, ok := dp.Attributes.Value("code")
+				if !ok {
+					continue
+				}
+				codes[code.AsString()] += dp.Value
+				if phase, ok := dp.Attributes.Value("phase"); ok {
+					codes[code.AsString()+"@"+phase.AsString()] += dp.Value
 				}
 			}
 		}
@@ -456,7 +476,7 @@ func TestStateDurability_AFailingProgressStoreRecoversOnItsFirstSuccessfulWrite(
 	var newest time.Time
 	for i := 0; i < 6; i++ {
 		newest = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
-		tb.arrivedAt = newest
+		tb.quietSince = newest
 		// Stateless, so the commit itself succeeds whatever the write did.
 		assert.NoError(t, tb.commitState(ctx, false))
 	}
@@ -469,6 +489,9 @@ func TestStateDurability_AFailingProgressStoreRecoversOnItsFirstSuccessfulWrite(
 	codes := errorCodes(t, r)
 	assert.Equal(t, int64(3), codes[string(errs.CodeProgressWriteFailed)])
 	assert.Equal(t, int64(0), codes[string(errs.CodeStateCommitFailed)])
+	// Under the commit phase: the write is part of the commit, and an alert
+	// on the phase must find it there rather than under the sink's flush.
+	assert.Equal(t, int64(3), codes[string(errs.CodeProgressWriteFailed)+"@"+phaseStateCommit])
 	assert.Equal(t, int64(3), tb.Progress().Errors)
 }
 
@@ -484,7 +507,7 @@ func TestStateDurability_AFailingProgressStoreIsRetriedOnTheInterval(t *testing.
 
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
-		tb.arrivedAt = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
+		tb.quietSince = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
 		assert.NoError(t, tb.commitState(ctx, false))
 	}
 	if n, _ := store.state(); n != 1 {
@@ -505,7 +528,7 @@ func TestStateDurability_TheDrainWritesTheArrivalAFailedWriteLeftBehind(t *testi
 
 	ctx := context.Background()
 	arrival := time.Now().UTC()
-	tb.arrivedAt = arrival
+	tb.quietSince = arrival
 	assert.NoError(t, tb.commitState(ctx, false)) // due, and the write fails
 
 	// Silence: an idle commit sees no newer arrival and sits inside the
@@ -600,7 +623,7 @@ func TestStateDurability_AProgressWriteTheStateTransactionRefusesFailsTheCommit(
 	// The batch: the handler's write inside the open transaction, and no
 	// marks, as from a source that has no offsets.
 	exec(t, conn, `INSERT INTO out VALUES (1)`)
-	tb.arrivedAt = time.Now().UTC()
+	tb.quietSince = time.Now().UTC()
 
 	err = tb.commitState(ctx, false)
 	if err == nil && countCommitted(t, db, "out") == 0 {
@@ -649,4 +672,128 @@ func TestStateDurability_AClockThatStepsBackDoesNotStopTheProgressWrite(t *testi
 	if _, n := rec.last(); n != 2 {
 		t.Fatalf("after the clock stepped back the write was skipped: %d writes, want 2", n)
 	}
+}
+
+// heldSink holds every write for a while, the way a sink retrying a
+// destination does.
+type heldSink struct {
+	fakeSink
+	hold time.Duration
+}
+
+func (s *heldSink) WriteTable(ctx context.Context, batch arrow.Table) error {
+	time.Sleep(s.hold)
+	return s.fakeSink.WriteTable(ctx, batch)
+}
+
+// progress.quiet_is_watched, for a sink held in retries.
+//
+// The commit that ends a held write must not record the hold as quiet. The
+// engine was inside the sink, not waiting on the source, and messages may
+// have been waiting at the source the whole time. Stamped before the write,
+// the arrival made a 400ms hold read as 400ms of quiet on a live stream, and
+// a sink retrying for longer than idle_close closed every bucket.
+func TestStateDurability_ASinkWriteHeldInRetriesIsNotQuiet(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	src := newBlockingSource(messages(3))
+	sink := &heldSink{hold: 200 * time.Millisecond}
+	tb := NewTurbine(src, &fakeHandler{}, sink, 3, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(0))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+
+	waitFor(t, "the batch's write", 5*time.Second, func() bool {
+		p, _ := rec.last()
+		return p.Messages == 3
+	})
+	close(src.release)
+	<-done
+
+	p, _ := rec.last()
+	if quiet := p.LastCommit.Sub(p.LastArrival); quiet >= sink.hold {
+		t.Fatalf("the batch's commit confirms %v of quiet; the sink held its write for %v and nothing about the stream was watched meanwhile", quiet, sink.hold)
+	}
+}
+
+// progress.quiet_is_watched, for a restart.
+//
+// A process that just started has watched no quiet. The row it inherits
+// carries the previous process's last arrival, and a write that leaves it
+// there confirms the whole outage: a power cut of ten minutes, then a first
+// idle tick before the consumer group has rejoined, closed every bucket
+// saved in the state database, and the backlog replayed afterwards was late.
+func TestStateDurability_ARestartConfirmsNoQuietItDidNotSee(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	ctx := context.Background()
+	db, err := duckdb.OpenPath(ctx, "")
+	assert.NoError(t, err)
+	defer db.Close()
+	conn, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	defer conn.Close()
+	store := NewProgressStore(conn)
+	assert.NoError(t, store.Init(ctx))
+
+	// The previous process: an arrival, then a commit, an hour ago.
+	before := time.Now().Add(-time.Hour)
+	assert.NoError(t, store.Record(ctx, Progress{LastArrival: before, LastCommit: before, Messages: 7}))
+
+	// This process: no batch yet, and the first idle tick.
+	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(store), WithProgressWriteInterval(0))
+	assert.NoError(t, tb.commitState(ctx, false))
+
+	stmt, err := conn.NewStatement()
+	assert.NoError(t, err)
+	defer stmt.Close()
+	assert.NoError(t, stmt.SetSqlQuery(`SELECT epoch_us(last_commit) - epoch_us(last_arrival) FROM sqlflow_progress`))
+	reader, _, err := stmt.ExecuteQuery(ctx)
+	assert.NoError(t, err)
+	defer reader.Release()
+	assert.That(t, reader.Next())
+	quiet := time.Duration(reader.Record().Column(0).(*array.Int64).Value(0)) * time.Microsecond
+	if quiet > 10*time.Second {
+		t.Fatalf("the first tick after a restart confirms %v of quiet; this process has been running for milliseconds", quiet)
+	}
+}
+
+// progress.quiet_is_monotonic.
+//
+// A wall clock that steps forward between an arrival and a commit must not
+// turn the step into quiet: a gateway with no hardware clock boots near
+// 1970, and NTP moves it by decades after the first batch. Go measures
+// between two readings on the monotonic clock only when both carry one, and
+// UTC() strips it. A step cannot be staged in a test, so this pins the
+// mechanism: the stamps keep their readings, and the commit clock is
+// derived from the arrival's by the monotonic elapsed rather than read from
+// the wall.
+func TestStateDurability_TheQuietIsMeasuredOnTheMonotonicClock(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	src := newBlockingSource(messages(1))
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(0))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+	waitFor(t, "the batch's write", 5*time.Second, func() bool {
+		p, _ := rec.last()
+		return p.Messages == 1
+	})
+	close(src.release)
+	<-done
+
+	tb.lock.Lock()
+	since := tb.quietSince
+	written := tb.progressWrittenAt
+	tb.lock.Unlock()
+	// A reading is printed as m=±... by String, and by nothing else.
+	assert.That(t, strings.Contains(since.String(), " m="))
+	assert.That(t, strings.Contains(written.String(), " m="))
+	p, _ := rec.last()
+	assert.That(t, strings.Contains(p.LastArrival.String(), " m="))
+	assert.That(t, strings.Contains(p.LastCommit.String(), " m="))
 }
