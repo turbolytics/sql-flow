@@ -106,3 +106,15 @@ func TestClock_MarkAndReadAreSafeTogether(t *testing.T) {
 	_, _, worked := c.Read()
 	assert.That(t, worked)
 }
+
+// Mark runs once per batch in the consume loop and once per request in
+// serve, so it must cost nothing a soak would see. Read runs once per
+// report.
+func TestClock_MarkAndReadDoNotAllocate(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	c := Start()
+	assert.Equal(t, 0.0, testing.AllocsPerRun(1000, c.Mark))
+	assert.Equal(t, 0.0, testing.AllocsPerRun(1000, func() { _, _, _ = c.Read() }))
+	var none *Clock
+	assert.Equal(t, 0.0, testing.AllocsPerRun(1000, none.Mark))
+}
