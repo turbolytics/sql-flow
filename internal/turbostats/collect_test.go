@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/managers"
@@ -428,4 +429,82 @@ func TestCollect_AServeBundleStaysUnderOneKiB(t *testing.T) {
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
 	assert.That(t, len(raw) < 1<<10)
+}
+
+func TestCollect_ReportsUptimeAndIdleFromTheProcessClock(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	elapsed := 30 * time.Second
+	clock := activity.Fake(func() time.Duration { return elapsed })
+	clock.Mark()
+	elapsed = 90*time.Second + 400*time.Millisecond
+
+	src := runSource(reader, nil)
+	src.Static.Clock = clock
+	b, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+
+	assert.Equal(t, int64(90), *b.Process.UptimeSeconds)
+	assert.Equal(t, int64(60), *b.IdleSeconds)
+}
+
+func TestCollect_NoWorkYetOmitsIdleAndKeepsUptime(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	src := runSource(reader, nil)
+	src.Static.Clock = activity.Fake(func() time.Duration { return 0 })
+
+	b, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), *b.Process.UptimeSeconds)
+	assert.That(t, b.IdleSeconds == nil)
+}
+
+// A Static built without a clock, as older callers and tests build it,
+// sends neither field rather than a zero that reads as a fresh process.
+func TestCollect_NoClockSendsNoDurations(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Process.UptimeSeconds == nil)
+	assert.That(t, b.IdleSeconds == nil)
+}
+
+// The contract a receiver relies on: idle is at most uptime in every
+// bundle, so idle > uptime can only mean a broken producer.
+func TestCollect_IdleNeverExceedsUptime(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	var elapsed time.Duration
+	clock := activity.Fake(func() time.Duration { return elapsed })
+	src := runSource(reader, nil)
+	src.Static.Clock = clock
+	for i := 0; i < 200; i++ {
+		elapsed = time.Duration(i) * 1337 * time.Millisecond
+		if i%3 == 0 {
+			clock.Mark()
+		}
+		b, err := Collect(context.Background(), src)
+		assert.NoError(t, err)
+		if b.IdleSeconds != nil {
+			assert.That(t, *b.IdleSeconds <= *b.Process.UptimeSeconds)
+		}
+	}
+}
+
+// The other half of the contract. Collect reads the instruments before it
+// stamps sent_at, and both are whole seconds, so activity recorded now can
+// never land after the bundle that carries it. A receiver treats activity
+// more than a second after sent_at as contradictory.
+func TestCollect_ActivityIsNeverAfterSentAt(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+	m.PipelineLastMessage.Record(ctx, time.Now().Unix())
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.LastActivityAt != nil)
+	assert.That(t, !b.LastActivityAt.After(b.SentAt))
 }

@@ -16,6 +16,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -45,6 +46,10 @@ type Static struct {
 	StartedAt                             time.Time
 	// IntervalSeconds is the reporter's interval, and 0 without a reporter.
 	IntervalSeconds int
+	// Clock is the process's monotonic start and last work. Nil sends no
+	// uptime_seconds or idle_seconds, which a receiver reads as an older
+	// engine rather than as a process that just started.
+	Clock *activity.Clock
 }
 
 // Source is everything Collect reads. A nil Pipeline or Serve omits that
