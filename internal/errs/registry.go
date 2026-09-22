@@ -82,7 +82,7 @@ const (
 	// batch is not rolled back and the pipeline keeps running. It matters
 	// because the idle close acts on what this row confirms, so while the
 	// write fails no window closes on idleness. With a state path the same
-	// failure aborts the batch's transaction and is reported as
+	// failure fails the batch's commit, which rolls back and is reported as
 	// CodeStateCommitFailed instead.
 	CodeProgressWriteFailed Code = "system.state.progress_write_failed"
 	CodeStateInternal       Code = "system.state.internal"

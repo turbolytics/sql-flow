@@ -691,14 +691,13 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				numBatchMessages = 0
 				continue
 			}
-			// Nothing buffered, but an idle stateful pipeline still has to
-			// close its open transaction. DuckDB's now() returns the
-			// transaction's start time, so a transaction left open freezes
-			// the clock every window predicate is evaluated against, and a
-			// pipeline that stops receiving messages stops closing windows --
-			// silently, with the rows still reported as live state. This tick
-			// is also what makes a table manager's deletes durable while no
-			// messages are arriving.
+			// Nothing buffered. This tick's job is the progress write: a
+			// commit with a later last_commit against the same last_arrival
+			// is the only thing that confirms to a window manager that the
+			// stream is quiet, and without it no window would ever close on
+			// idleness. With a state path it also ends the batch transaction
+			// left open since the last commit, so nothing stays uncommitted
+			// on the connection for as long as the stream is silent.
 			if err := t.commitState(batchCtx, false); err != nil {
 				t.recordError(ctx, err, phaseStateCommit, "error committing state on idle tick")
 				return nil, err
@@ -1199,12 +1198,12 @@ func (t *Turbine) commitState(ctx context.Context, forceProgress bool) error {
 // window's final poll reads it with or without a state path.
 //
 // Shutdown uses it twice: once before the table managers run their final
-// poll, so that poll sees a current clock rather than one frozen at the last
-// batch, and once after, so the rows that poll published are actually deleted
-// instead of being rolled back when the connection closes and republished on
-// the next start. The second forced write is not needed for the clock; it is
-// one statement, and keeping SyncState's contract the same both times is
-// worth more than saving it.
+// poll, so that poll reads a progress row confirming the quiet up to the
+// signal rather than up to the last interval write, and once after, so the
+// batch transaction is closed with everything the drain wrote. The managers
+// commit their own transactions on their own connections; neither call is
+// for them. The second forced write is one statement, and keeping
+// SyncState's contract the same both times is worth more than saving it.
 func (t *Turbine) SyncState(ctx context.Context) error {
 	// The drain forces the progress write. root.go calls this before the
 	// managers' final poll, and that poll closes on idleness only for the

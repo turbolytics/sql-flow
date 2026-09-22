@@ -1173,14 +1173,19 @@ engine has confirmed `idle_close_seconds` with nothing arriving, the watermark
 moves past the newest bucket and every open bucket closes.
 
 The confirmation is the engine's own: a commit that late which still reports
-the same newest arrival. With nothing arriving those commits are idle ticks,
-one `flush_interval_seconds` apart, so the close can trail `idle_close_seconds`
-by up to one flush interval; lower it for a tighter idle close. The manager's
-clock appears nowhere in the rule. A pipeline that cannot commit, because a
-sink is retrying or its progress write is failing, confirms nothing, and its
-open buckets stay open rather than closing on a stream that may still be live.
-On shutdown the drain commits first, so the final poll sees the quiet up to the
-signal.
+the same newest arrival, and the quiet it counts is only the time the engine
+spent waiting on its source, measured on the monotonic clock. A restart, a
+sink write held in retries and a wall clock stepping forward are not quiet.
+With nothing arriving the commits are idle ticks, one `flush_interval_seconds`
+apart, so the close can trail `idle_close_seconds` by up to one flush
+interval; `validate` warns when the interval is the longer of the two. The
+manager's clock appears nowhere in the rule. A pipeline whose progress write
+is failing confirms nothing, and its open buckets stay open rather than
+closing on a stream that may still be live. On shutdown the drain commits
+first, so the final poll sees the quiet up to the signal.
+
+Every decision a window makes is a row in one of two tables, rendered from
+the code to [docs/windows/decisions.md](docs/windows/decisions.md).
 
 **Late rows.** A row for a bucket below the watermark arrived after that
 bucket was published. `late_rows` is required, because the two policies are

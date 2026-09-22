@@ -87,6 +87,25 @@ func checkWindows(rendered []byte, rep *Report) {
 						"Drop the index and sum the appended rows in emit_sql, or set "+
 						"pipeline.state.path", i), position(node)))
 			}
+			// The idle close waits for the engine to commit past the bound,
+			// and with nothing arriving those commits are one flush interval
+			// apart. An idle_close shorter than the interval is honoured
+			// late by up to the difference, which reads like a stalled close
+			// to anyone timing it.
+			flush := conf.Pipeline.FlushIntervalSeconds
+			if flush <= 0 {
+				flush = config.DefaultFlushIntervalSeconds
+			}
+			if w.IdleCloseSeconds > 0 && w.IdleCloseSeconds < flush {
+				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
+					"tables.sql[%d] window: idle_close_seconds is %d and pipeline.flush_interval_seconds "+
+						"is %d. The idle close waits for a commit made that long after the last "+
+						"arrival, and a quiet stream commits once a flush interval, so buckets close "+
+						"%d to %d seconds after the last arrival. Set flush_interval_seconds at or "+
+						"below idle_close_seconds",
+					i, w.IdleCloseSeconds, flush, w.IdleCloseSeconds, w.IdleCloseSeconds+flush),
+					position(mappingKey(node, "idle_close_seconds"))))
+			}
 			// reemit publishes emit_sql over the late rows alone, for a bucket
 			// the sink already holds. A sink that appends keeps both rows, and
 			// its reader has to add them rather than keep the newest.

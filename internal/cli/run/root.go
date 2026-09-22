@@ -576,10 +576,10 @@ func NewCommand() *cobra.Command {
 				}
 				stopManagers()
 				managerErr := group.wait()
-				// And again afterwards, so what that poll published is
-				// actually deleted. Without this the delete is rolled back
-				// when the connection closes, and every clean shutdown
-				// guarantees a republished window on the next start.
+				// And again afterwards, so the batch transaction closes
+				// with everything the drain wrote before the connection
+				// does. The managers' final poll committed on connections
+				// of its own; this is the engine's.
 				if err := turbine.SyncState(drainCtx); err != nil {
 					l.Error("failed to sync state after final poll", zap.Error(err))
 				}

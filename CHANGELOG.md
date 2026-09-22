@@ -81,9 +81,17 @@
   arriving then reopened the same buckets, which published a second time. The
   rule now acts on what the row confirms, `last_commit - last_arrival`: a
   commit made that long after the newest arrival. A row that has stopped moving
-  confirms nothing, and its buckets wait. A quiet stream now closes on the
-  first commit past the bound rather than the first poll, so the close can
-  trail `idle_close_seconds` by up to one `flush_interval_seconds`.
+  confirms nothing, and its buckets wait. The quiet the row confirms is only
+  the time the engine spent waiting on its source, on the monotonic clock: a
+  restarted process no longer confirms the outage before it, a sink write held
+  in retries is not quiet, and a wall clock stepping forward is not quiet. A
+  quiet stream now closes on the first commit past the bound rather than the
+  first poll, so the close can trail `idle_close_seconds` by up to one
+  `flush_interval_seconds`; `validate` warns when the interval is the longer
+  of the two, and `logs.rollup.clickhouse.yml` sets both to ten.
+- Every decision a window makes is a row in one of two truth tables in
+  `internal/managers/decide.go`, checked when the package loads and rendered
+  to `docs/windows/decisions.md` by a test.
 - A pipeline with a state path and a source that has no offsets, such as a
   webhook, could discard a whole batch without an error. The `sqlflow_progress`
   write runs inside the batch's transaction, and a write DuckDB refused aborted
