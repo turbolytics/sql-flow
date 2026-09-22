@@ -288,12 +288,43 @@ func TestCollect_SinkFlushDurationIsItsOwnPhase(t *testing.T) {
 	assert.Equal(t, 0.3, b.Pipeline.Duration.SinkFlush.MinSeconds)
 	assert.Equal(t, 0.4, b.Pipeline.Duration.SinkFlush.MaxSeconds)
 }
+
+// The contract claims a phase's buckets sum to its count, and that min is
+// at most max. A receiver that trusts the first claim reads a percentile
+// from the buckets alone; a fold that drops or double-counts a bucket makes
+// every one of those wrong, quietly. So a real bundle asserts it.
+func TestCollect_ADurationHoldsItsInvariants(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+	for _, seconds := range []float64{0.0005, 0.004, 0.02, 0.1, 0.5, 2, 12, 40, 90} {
+		m.BatchProcessingLatency.Record(ctx, seconds)
+	}
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	d := b.Pipeline.Duration.Batch
+	var summed uint64
+	for _, c := range d.Buckets {
+		summed += c
+	}
+	assert.Equal(t, d.Count, summed)
+	assert.Equal(t, uint64(9), d.Count)
+	assert.That(t, d.MinSeconds <= d.MaxSeconds)
+	assert.Equal(t, len(wire.DurationBounds)+1, len(d.Buckets))
+}
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test -short ./internal/turbostats/ -run 'TestDurationOf_|TestCollect_Durations|TestCollect_SinkFlush'`
+Run: `go test -short ./internal/turbostats/ -run 'TestDurationOf_|TestCollect_Durations|TestCollect_SinkFlush|TestCollect_ADurationHolds'`
 Expected: FAIL, `b.Pipeline.Duration` is nil, no `durationOf`.
+
+The invariant test is the one that catches a fold whose buckets do not add
+up, which is why its samples straddle every boundary including the overflow.
+It names `wire.DurationBounds`, so add
+`"github.com/turbolytics/sql-flow/turbostats/wire"` to the test file's
+imports.
 
 - [ ] **Step 3: Teach `walk` the other two shapes**
 
