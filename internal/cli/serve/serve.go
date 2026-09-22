@@ -16,6 +16,7 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/spf13/cobra"
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/buildinfo"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
@@ -91,9 +92,10 @@ func NewCommand() *cobra.Command {
 // until ctx ends. onListen, when set, receives the bound address; tests bind
 // port 0 and need to learn which port that was.
 func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(net.Addr), serveTurbostats bool) error {
-	// Taken here, once. It is the bundle's started_at, and a restart is a
-	// receiver noticing it changed.
-	startedAt := time.Now()
+	// Taken here, once. Its wall time is the bundle's started_at, and a
+	// restart is a receiver noticing it changed. Uptime and idle come from
+	// its monotonic reading.
+	clock := activity.Start()
 
 	conf, rendered, err := config.LoadServeRendered(path, nil)
 	if err != nil {
@@ -138,7 +140,8 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 		Version:    buildinfo.Version,
 		Commit:     buildinfo.Commit,
 		ConfigHash: turbostats.HashConfig(rendered),
-		StartedAt:  startedAt,
+		StartedAt:  clock.StartedAt(),
+		Clock:      clock,
 	}
 	if ts.Enabled() {
 		static.ID = ts.ID
