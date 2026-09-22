@@ -36,10 +36,16 @@ const (
 // one and an operator can tell it from any other secret.
 const CredentialPrefix = "sfc_"
 
+// PublicKeyPrefix marks a public key string. It is what an operator sends a
+// control plane to register an instance, and what `sqlflow turbostats keygen`
+// prints. The prefixes differ by one letter on purpose: a glance tells the
+// half that may be shared from the half that may not.
+const PublicKeyPrefix = "sfp_"
+
 // MaxClockSkew is how far a request's timestamp may sit from the receiver's
-// clock. The replay defense proper is the bundle's sent_at, which the
-// receiver checks against the last one it stored; this bounds how long a
-// captured request is even a candidate.
+// clock. The replay defense proper is the receiver's: Turbolytics' control
+// plane refuses a signed request it has already accepted. This bounds how
+// long a captured request is even a candidate.
 //
 // Nothing in this package enforces it. Verify checks a signature and has no
 // clock; the receiver compares the timestamp ParseHeaders returns against its
@@ -109,6 +115,39 @@ func ParseCredential(s string) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("wire: a credential's seed is %d bytes, not %d", ed25519.SeedSize, len(seed))
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// FormatPublicKey renders a public key as the string an operator sends to
+// register it.
+func FormatPublicKey(pub ed25519.PublicKey) (string, error) {
+	if len(pub) != ed25519.PublicKeySize {
+		return "", fmt.Errorf("wire: a public key is %d bytes, not %d", ed25519.PublicKeySize, len(pub))
+	}
+	return PublicKeyPrefix + base64.RawURLEncoding.EncodeToString(pub), nil
+}
+
+// ParsePublicKey reads a public key string.
+//
+// A credential is refused by name. It is the likeliest paste in the wrong
+// place, and a control plane that stored it would hold the private half;
+// the error says which half it is without echoing it.
+func ParsePublicKey(s string) (ed25519.PublicKey, error) {
+	if strings.HasPrefix(s, CredentialPrefix) {
+		return nil, errors.New("wire: that is a credential, the private half; register the " +
+			PublicKeyPrefix + " public key `sqlflow turbostats keygen` printed")
+	}
+	rest, ok := strings.CutPrefix(s, PublicKeyPrefix)
+	if !ok {
+		return nil, errors.New("wire: a public key starts with " + PublicKeyPrefix)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(rest)
+	if err != nil {
+		return nil, errors.New("wire: a public key is unpadded base64url")
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("wire: a public key is %d bytes, not %d", ed25519.PublicKeySize, len(raw))
+	}
+	return ed25519.PublicKey(raw), nil
 }
 
 // Sign signs one request.
