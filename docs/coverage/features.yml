@@ -206,6 +206,10 @@ features:
     description: Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits.
     requires: [unit, integration, release]
 
+  - id: cli.turbostats_keygen
+    description: Generates a TurboStats keypair on the instance, writes the private half to a file only, and prints the public half to register.
+    requires: [unit]
+
   - id: cli.rollup
     description: Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted.
     requires: [unit, integration]
