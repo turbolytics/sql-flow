@@ -16,6 +16,7 @@ type vectors struct {
 	SeedHex      string `json:"seed_hex"`
 	Credential   string `json:"credential"`
 	PublicKeyHex string `json:"public_key_hex"`
+	PublicKey    string `json:"public_key"`
 	KeyID        string `json:"key_id"`
 	Method       string `json:"method"`
 	Path         string `json:"path"`
@@ -254,5 +255,66 @@ func TestRequestPath_LeavesARealPathAlone(t *testing.T) {
 	}
 	if RequestPath("/v1/turbostats") != "/v1/turbostats" {
 		t.Fatal("a real path is itself")
+	}
+}
+
+// The instance formats its public key and the control plane parses it. If
+// the two disagree, registration fails or files the key under the wrong id,
+// so the vector pins the string.
+func TestPublicKey_RoundTripsTheVector(t *testing.T) {
+	v, _, pub, _ := loadVectors(t)
+	got, err := FormatPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != v.PublicKey {
+		t.Fatalf("FormatPublicKey is %q, want %q", got, v.PublicKey)
+	}
+	parsed, err := ParsePublicKey(v.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsed.Equal(pub) {
+		t.Fatal("ParsePublicKey rebuilt a different key")
+	}
+	if KeyID(parsed) != v.KeyID {
+		t.Fatalf("the parsed key files under %q, want %q", KeyID(parsed), v.KeyID)
+	}
+}
+
+func TestParsePublicKey_RefusesWhatIsNotOne(t *testing.T) {
+	v, _, _, _ := loadVectors(t)
+	for name, s := range map[string]string{
+		"no prefix":     strings.TrimPrefix(v.PublicKey, PublicKeyPrefix),
+		"not base64url": PublicKeyPrefix + "!!!!",
+		"too short":     PublicKeyPrefix + "AAEC",
+		"empty":         "",
+	} {
+		if _, err := ParsePublicKey(s); err == nil {
+			t.Errorf("%s: ParsePublicKey accepted %q", name, s)
+		}
+	}
+}
+
+// The mistake that matters: an operator pastes the credential, the private
+// half, where the public key belongs. It is refused by name, and the error
+// does not echo it.
+func TestParsePublicKey_RefusesACredentialWithoutEchoingIt(t *testing.T) {
+	v, _, _, _ := loadVectors(t)
+	_, err := ParsePublicKey(v.Credential)
+	if err == nil {
+		t.Fatal("ParsePublicKey accepted a credential")
+	}
+	if !strings.Contains(err.Error(), "private") {
+		t.Fatalf("the error does not say it is the private half: %v", err)
+	}
+	if strings.Contains(err.Error(), strings.TrimPrefix(v.Credential, CredentialPrefix)) {
+		t.Fatal("the error echoes the credential")
+	}
+}
+
+func TestFormatPublicKey_RefusesAWrongSizedKey(t *testing.T) {
+	if _, err := FormatPublicKey(ed25519.PublicKey{1, 2, 3}); err == nil {
+		t.Fatal("FormatPublicKey accepted a 3-byte key")
 	}
 }
