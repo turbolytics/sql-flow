@@ -7,6 +7,12 @@
 #                          deploy asks for it. bin/serve.sh refuses one that
 #                          would need encoding in a URL.
 # SQLFLOW_SERVE_PORT       default 8080
+# SQLFLOW_TURBOSTATS_REPORT_TO    optional. A control plane's report URL, such
+#                                 as https://ingest.turbolytics.io/v1/turbostats.
+#                                 Empty, the default, reports nowhere.
+# SQLFLOW_TURBOSTATS_KEY          required with a report URL: the credential
+#                                 the control plane issued
+# SQLFLOW_TURBOSTATS_ID           default sqlflow-metrics-api
 #
 # The metric and metric_total grains are written by hand. sqlflow rollup
 # generates a dataset of at most one dimension, folded, and a series here is
@@ -40,6 +46,16 @@ commands:
 
 serve:
   name: render-metrics-api
+
+  # Reports this instance to a control plane when
+  # SQLFLOW_TURBOSTATS_REPORT_TO is set, signed with SQLFLOW_TURBOSTATS_KEY.
+  # Empty, the default, reports nowhere. The values are quoted so an unset
+  # variable renders as an empty string, which the serve schema reads as
+  # off, and not as null, which it rejects. Needs SQLFlow v2026.09.21 or later.
+  turbostats:
+    id: "{{ SQLFLOW_TURBOSTATS_ID|default('sqlflow-metrics-api') }}"
+    report_to: "{{ SQLFLOW_TURBOSTATS_REPORT_TO|default('') }}"
+    key: "{{ SQLFLOW_TURBOSTATS_KEY|default('') }}"
 
   http:
     addr: "0.0.0.0:{{ SQLFLOW_SERVE_PORT|default('8080') }}"
