@@ -48,7 +48,8 @@ type Bundle struct {
 	// monotonic clock. Absent before any work, and from engines that predate
 	// the field. A receiver judging work reads this, not LastActivityAt: a
 	// wall-clock step between two readings moves their difference, and
-	// cannot move this.
+	// cannot move this. It excludes time the host was suspended, as
+	// UptimeSeconds does.
 	IdleSeconds *int64 `json:"idle_seconds,omitempty"`
 
 	Instance Instance `json:"instance"`
@@ -87,6 +88,12 @@ type Process struct {
 	// clock. Absent from engines that predate the field. StartedAt is for
 	// display: a gateway that boots near 1970 and then syncs keeps a 1970
 	// StartedAt for the life of the process, and its uptime stays right.
+	//
+	// It is time awake. Go's monotonic clock is CLOCK_MONOTONIC on Linux and
+	// mach_absolute_time on macOS, and neither advances while the host is
+	// suspended, so a gateway that sleeps for an hour reports an uptime
+	// without that hour. It can be less than now minus StartedAt, and that
+	// is not a contradiction.
 	UptimeSeconds *int64 `json:"uptime_seconds,omitempty"`
 	// RSSBytes is absent when the kernel would not answer. A live process
 	// never holds zero bytes, so absent and zero cannot be confused.

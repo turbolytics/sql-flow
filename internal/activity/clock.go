@@ -6,6 +6,12 @@
 // back. A duration taken from two wall readings across either step is wrong
 // by the step, for the life of the process. Go's monotonic reading does not
 // step, so every duration here is time.Since on a start that carries one.
+//
+// Both durations are time awake. The monotonic clock is CLOCK_MONOTONIC on
+// Linux and mach_absolute_time on macOS, and neither advances while the host
+// is suspended. For idle that is the meaning a receiver wants: time awake
+// without work. A suspended host sends no reports, and the receiver's own
+// silence check catches the sleep.
 package activity
 
 import (

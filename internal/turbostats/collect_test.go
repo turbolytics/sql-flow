@@ -493,10 +493,12 @@ func TestCollect_IdleNeverExceedsUptime(t *testing.T) {
 	}
 }
 
-// The other half of the contract. Collect reads the instruments before it
-// stamps sent_at, and both are whole seconds, so activity recorded now can
-// never land after the bundle that carries it. A receiver treats activity
-// more than a second after sent_at as contradictory.
+// The other half of the contract: activity recorded before a report is never
+// after that report's sent_at. It also pins the unit. The gauge is whole
+// seconds, and one recorded in milliseconds would decode as a date around
+// the year 57,000 and fail here. It does not pin whether Collect reads the
+// instruments before or after stamping sent_at, because the activity is
+// recorded before Collect runs.
 func TestCollect_ActivityIsNeverAfterSentAt(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, m, _ := provider(t)

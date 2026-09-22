@@ -152,6 +152,21 @@ judges start and work from these, and keeps `started_at` and
 - `idle_seconds`: seconds since the process last did work. Absent before any
   work, and from older engines.
 
+Both are time awake. Go's monotonic clock is `CLOCK_MONOTONIC` on Linux and
+`mach_absolute_time` on macOS, and neither advances while the host is
+suspended. A gateway that sleeps for an hour reports an uptime without that
+hour, so `uptime_seconds` can be less than `sent_at − started_at` without
+either being wrong. For work, time awake is the right measure: a suspended
+host sends no reports, and the receiver's silence check sees the sleep.
+
+A receiver that gets neither field is talking to an older engine. It falls
+back to differences of the instance's own wall readings: `sent_at −
+started_at` for uptime and `sent_at − last_activity_at` for idle. Those
+cancel a constant clock offset and not a step between the two readings, so
+a receiver should distrust a `started_at` it has another reason to doubt:
+zero, later than `sent_at`, or earlier than the engine version's release.
+During a rollout a fleet mixes both kinds, and the fallback is per bundle.
+
 Every bundle holds three invariants:
 
 - `last_activity_at` is at or before `sent_at`.
