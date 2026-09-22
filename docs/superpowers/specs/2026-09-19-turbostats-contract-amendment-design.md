@@ -138,7 +138,27 @@ bundle carries: `pipeline.last_message_at` and `serve.last_request_at`.
 `Collect` computes it. The section fields are the source, and this field is a
 denormalized copy. It is absent until any section sees activity. All three
 timestamps come from the instance's clock, so `sent_at − last_activity_at`
-carries no skew.
+cancels a constant skew. It does not cancel a clock step between the two
+readings, which is what the durations below are for.
+
+### Durations (added 2026-09-22)
+
+Two fields carry durations from the process's monotonic clock. A receiver
+judges start and work from these, and keeps `started_at` and
+`last_activity_at` for display.
+
+- `process.uptime_seconds`: seconds since the process started. Absent from
+  older engines.
+- `idle_seconds`: seconds since the process last did work. Absent before any
+  work, and from older engines.
+
+Every bundle holds three invariants:
+
+- `last_activity_at` is at or before `sent_at`.
+- `idle_seconds` is at most `process.uptime_seconds`.
+- Activity is per process. It resets on restart. A field that survives a
+  restart, such as a durable `sqlflow_progress` arrival time, must not feed
+  `last_activity_at` or `idle_seconds`.
 
 `instance.name` is `pipeline.name` under `run` and `serve.name` under `serve`.
 It is required when reporting is on, as `instance.id` is.

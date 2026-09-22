@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- The TurboStats bundle carries `process.uptime_seconds` and `idle_seconds`,
+  measured on the process's monotonic clock. A wall-clock step cannot move
+  them, where it moves any difference of two wall readings: a gateway
+  without a hardware clock that boots near 1970 and then syncs reported a
+  start 56 years old for the life of the process. `sqlflow run` also stops
+  stripping its start's monotonic reading. Both fields are additive and the
+  document stays v1.
+
 ### Changed
 
 - `source.kafka.fetch.max_bytes` defaults to 4 MiB, from 100 MiB, and
