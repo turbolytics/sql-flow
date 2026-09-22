@@ -1,6 +1,7 @@
 package managers
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -232,4 +233,39 @@ func joinValues[T ~string](vals []T) string {
 		parts[i] = "`" + string(v) + "`"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// The bucket table's boundary is the SQL's. Production splits late from
+// due with closedBefore, and BucketStateOf is the same comparison in Go;
+// this runs both at the boundary and a microsecond past it so a change to
+// either fails here.
+func TestManagerWindow_TheBucketBoundaryIsTheSQLs(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	decl := testDecl()
+
+	// One bucket, starting at t0 and ending at t0 + size.
+	insertBucket(t, d.pipeline, 0, "NYC", 1)
+	end := bucket(0).Add(decl.Size)
+	next := end.Add(time.Hour)
+
+	for _, c := range []struct {
+		name      string
+		watermark time.Time
+		want      Bucket
+	}{
+		{"watermark a microsecond before the end", end.Add(-time.Microsecond), BucketDue},
+		{"watermark at the end", end, BucketLate},
+		{"watermark a microsecond past the end", end.Add(time.Microsecond), BucketLate},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			closed, _, err := queryInt64(ctx, d.pipeline, decl.countClosedSQL(c.watermark))
+			assert.NoError(t, err)
+			got := BucketStateOf(decl, end, c.watermark, next).Bucket
+			assert.Equal(t, c.want, got)
+			assert.Equal(t, got == BucketLate, closed == 1)
+		})
+	}
 }

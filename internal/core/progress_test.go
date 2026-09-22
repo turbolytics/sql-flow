@@ -797,3 +797,38 @@ func TestStateDurability_TheQuietIsMeasuredOnTheMonotonicClock(t *testing.T) {
 	assert.That(t, strings.Contains(p.LastArrival.String(), " m="))
 	assert.That(t, strings.Contains(p.LastCommit.String(), " m="))
 }
+
+// progress.quiet_is_watched, for the work between building the turbine and
+// starting its loop.
+//
+// The constructor seeds the quiet clock, and the loop seeds it again when it
+// starts, because on a slow device the handler's Init and the source's Start
+// can sit between the two for a while, and that time was not spent waiting
+// on the source. The restart test cannot see the second seed: it runs the
+// loop the moment the turbine exists. This one moves the clock an hour back
+// after construction and checks the loop's first write ignores it.
+func TestStateDurability_TheLoopStartsTheQuietClockAgain(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	src := newIdleSource()
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 20*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(0))
+	tb.lock.Lock()
+	tb.quietSince = time.Now().Add(-time.Hour) // a slow start
+	tb.lock.Unlock()
+
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+	waitFor(t, "the first idle tick", 5*time.Second, func() bool {
+		_, n := rec.last()
+		return n >= 1
+	})
+	close(src.release)
+	<-done
+
+	p, _ := rec.last()
+	if quiet := p.LastCommit.Sub(p.LastArrival); quiet > 10*time.Second {
+		t.Fatalf("the loop's first write confirms %v of quiet; the loop had run for milliseconds", quiet)
+	}
+}
