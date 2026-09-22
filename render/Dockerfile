@@ -5,7 +5,7 @@
 #
 # An argument so an unreleased build can be tried locally:
 #   docker build --build-arg SQLFLOW_IMAGE=turbolytics/sql-flow:<tag> render
-ARG SQLFLOW_IMAGE=turbolytics/sql-flow:v2026.09.19.1
+ARG SQLFLOW_IMAGE=turbolytics/sql-flow:v2026.09.21
 FROM ${SQLFLOW_IMAGE}
 
 # psql and pg_isready apply the migrations. curl sends the install events.

@@ -31,7 +31,7 @@ TEMPLATE=render-metrics
 
 sql() { psql "$SQLFLOW_POSTGRES_URI" -X -Atq -v ON_ERROR_STOP=1 -c "$1" 2>/dev/null; }
 
-# The first line of `sqlflow --version` is "sqlflow v2026.09.19.1".
+# The first line of `sqlflow --version` is "sqlflow v2026.09.21".
 VERSION="$(sqlflow --version 2>/dev/null | awk 'NR==1 {print $2}')"
 case "$VERSION" in ''|*[!A-Za-z0-9._-]*) VERSION=unknown ;; esac
 
