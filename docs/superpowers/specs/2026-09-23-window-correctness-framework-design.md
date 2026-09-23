@@ -139,12 +139,72 @@ received. The events are the ones that have produced defects: a batch arrives,
 an idle tick fires, the process restarts, partitions are revoked, the wall
 clock steps forward or back, a sink write stalls, the progress store fails.
 
-Single-worker sequences are in scope and should pass on today's code. Anything
-involving a second worker is declared and skipped against the multi-worker
-issue, so the ledger records the gap rather than implying coverage.
-
 The simulator asserts three things: the property above, that no fact mixes
 clock domains, and that a watermark never moves backwards.
+
+### What determinism needs
+
+Three seams, one of which exists. `managers.WithClock` already replaces the
+manager's clock.
+
+**A clock on the turbine.** `time.Now()` is read directly at `turbine.go:453`,
+`:523`, `:624`, `:629`, `:744` and `:749`, and the flush ticker is a real
+`time.NewTicker` at `:783`. Until a `core.WithClock` covers both, every
+sequence is paced by the wall clock, which is the fragility that made an
+earlier test's `if n > 3` bound flake under load.
+
+**Triggers rather than tickers.** The simulator owns when an idle tick fires
+and when a manager polls, by injecting those two channels in place of
+`time.NewTicker(t.flushInterval)` and `time.NewTicker(w.poll)`. The real
+consume loop still runs; only the ordering becomes the simulator's.
+
+**A source that owns partitions.** The fake implements `Source`,
+`MarkCommitter`, `PartitionOwner` and `Deliverer`, and exposes `Assign`,
+`Revoke` and `Lose` as method calls, so a partition event is a function call
+rather than a broker's timing.
+
+### Modelling the group
+
+A small in-process coordinator holds what Kafka guarantees, and nothing else:
+an assignment of partitions to workers, a committed offset per partition where
+the last write wins, and a generation counter, so a commit from a worker whose
+generation has moved on is refused. That last one decides whether a worker
+that has lost a partition can still move its offset, which is the difference
+between a stranded batch and a lost one.
+
+`revoke()` calls the worker's revoke hook first and reassigns only once it
+returns, which is how the real callback blocks the rebalance. A crash is
+"stop stepping this worker and never read its state again". A restart is a new
+turbine with the same state path, reading committed offsets from the
+coordinator.
+
+The scenarios are then scripts rather than races: scale-out, scale-in, a crash
+with no revoke, a cooperative incremental revoke, a worker left holding zero
+partitions, a partition flapping back and forth, a revoke during a sink stall,
+and a revoke during an idle tick.
+
+### Two layers
+
+Scripted sequences run against the real engine, with real DuckDB and a real
+manager: a few hundred runs, cheap enough for CI. Exhaustive enumeration runs
+against a pure model of the facts and the table, with no DuckDB, where every
+sequence up to length five or six is affordable. The model catches design
+errors and the engine runs catch implementation ones; both share one property
+and one event alphabet.
+
+Single-worker sequences are in scope and should pass on today's code.
+Multi-worker scenarios are written but skipped, each naming the multi-worker
+issue as its reason, the way a conformance verdict carries a skip. Turning
+them on is how the fix for that issue earns its evidence.
+
+### What it cannot prove
+
+A fake source cannot establish franz-go's real behavior: whether a
+stale-generation commit is actually refused, or whether the revoke callback
+truly blocks the rebalance. The coordinator encodes both as assumptions, and
+one integration test against a real broker has to keep them honest. That test
+is the `source.commit.on_revoke` harness #183 needs, which is the other reason
+to build it.
 
 ## Out of scope
 
@@ -157,9 +217,12 @@ can be keyed by it, belongs with that work.
 
 ## Delivery
 
-This PR is the spec. The implementation follows in one PR: the `Source`
-dimension and `delivering_since`, provenance on the facts, the declared
-property, and the simulator with its single-worker sequences.
+This PR is the spec. The implementation follows in one PR, and the seams come
+first within it: a clock on the turbine and injected triggers for the flush
+tick and the manager poll, because nothing can be replayed deterministically
+until they exist. Then the `Source` dimension and `delivering_since`,
+provenance on the facts, the declared property, and the simulator with its
+single-worker sequences.
 
 ## Evidence
 
