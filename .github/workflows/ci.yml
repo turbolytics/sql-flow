@@ -68,6 +68,9 @@ jobs:
         with:
           name: report-unit
           path: .coverage/go.json
+          # A re-run must replace this report, not add a second one beside
+          # it. See the coverage job's download step.
+          overwrite: true
 
   # The Go tests that need a real service. They start their own containers, so
   # this job installs nothing beyond the toolchain.
@@ -100,6 +103,7 @@ jobs:
         with:
           name: report-integration
           path: .coverage/go-integration.json
+          overwrite: true
 
   # The coverage matrix generator. It gates every merge, so a wrong generator
   # is a wrong gate. Pure Python: no Docker, no image, seconds to run.
@@ -158,6 +162,7 @@ jobs:
         with:
           name: report-release
           path: .coverage/pytest.json
+          overwrite: true
 
   # The merge gate on feature coverage, and the last job to run.
   #
@@ -187,6 +192,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
+      # merge-multiple unpacks every matching artifact into one directory, so
+      # two artifacts of the same name write the same file and the last one
+      # extracted wins. Re-running a failed job used to upload a second
+      # report-unit rather than replacing the first, and this step could then
+      # read the failing report from the attempt before: on run 35850773454
+      # the Go job went green at 11:00:47 and this job still reported
+      # "manager.window: unit is failing" at 11:00:58, having fetched three
+      # artifacts whose digests did not include the fresh upload's.
+      #
+      # No re-run could clear that, because every attempt added one more
+      # artifact. The uploads above carry overwrite: true so exactly one of
+      # each name exists and the newest attempt always wins.
       - name: Download every suite report
         uses: actions/download-artifact@v4
         with:
@@ -217,3 +234,4 @@ jobs:
             .coverage/report.md
             docs/coverage/status/
             docs/coverage/matrix.md
+          overwrite: true
