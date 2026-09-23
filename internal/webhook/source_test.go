@@ -612,8 +612,8 @@ func TestSourceWebhook_StampsArrival(t *testing.T) {
 
 	select {
 	case batch := <-s.Stream():
-		assert.That(t, !batch[0].EventAt.Before(before))
-		assert.That(t, !batch[0].EventAt.After(time.Now()))
+		assert.That(t, batch[0].EventAtNanos >= before.UnixNano())
+		assert.That(t, batch[0].EventAtNanos <= time.Now().UnixNano())
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the message")
 	}

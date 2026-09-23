@@ -22,14 +22,21 @@ import (
 // knows about it. Only Kafka populates the metadata fields.
 type Message struct {
 	Value []byte
-	// EventAt is when the event happened, as the source knows it: a Kafka
-	// record's timestamp, or the moment a webhook or websocket message
-	// arrived. Zero for a source with no event time, which is why the
-	// pipeline's lag fields are absent for one.
-	EventAt   time.Time
-	Topic     string
-	Partition int32
-	Offset    int64
+	// EventAtNanos is when the event happened, as the source knows it, in
+	// Unix nanoseconds: a Kafka record's timestamp, or the moment a webhook
+	// or websocket message arrived. Zero for a source with no event time,
+	// which is why the pipeline's lag fields are absent for one.
+	//
+	// Nanoseconds rather than a time.Time because this field is on every
+	// message on the hot path, and one per batch is ever read. A time.Time
+	// costs 24 bytes against 8, which measured at +24% B/op and +16% on the
+	// consume loop's own overhead. Its monotonic reading buys nothing here:
+	// an event time comes from another machine's clock, so the subtraction
+	// falls back to wall clock either way.
+	EventAtNanos int64
+	Topic        string
+	Partition    int32
+	Offset       int64
 	// LeaderEpoch is the Kafka leader epoch the record was read under. It is
 	// carried through so a commit can name it, which lets the broker detect
 	// log truncation. Only meaningful when HasMetadata is true; a source with
@@ -63,16 +70,7 @@ const (
 	EventBasisArrival            = "arrival"
 )
 
-// eventTimeFloor is the oldest event time a lag reading treats as real.
-//
-// Kafka encodes "no timestamp" as -1, and kgo renders that as a moment just
-// before the epoch rather than as Go's zero time, so IsZero() cannot be the
-// only guard. Devices without a real-time clock boot near 1970 and stamp
-// records from there. Nothing a pipeline reads is genuinely from 1970, and
-// one such record set a run's worst-lag reading to 56 years.
-var eventTimeFloor = time.Unix(0, 0)
-
-// EventTimeSource is a source that stamps Message.EventAt. A source that
+// EventTimeSource is a source that stamps Message.EventAtNanos. A source that
 // does not implement it reports no lag, rather than a lag of zero.
 type EventTimeSource interface {
 	EventTimeBasis() string
@@ -922,11 +920,12 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// than processed, so bytes over count is a true average. One integer
 		// add per message and one record per batch.
 		var payload int64
-		var newest time.Time
+		var newestNanos int64
 		// One clock read for the whole batch. Two reads per message once
 		// took this loop from 22 ns/op to 91, and every comparison below
 		// has to be against the same now to be consistent.
 		now := time.Now()
+		nowNanos := now.UnixNano()
 		for i := range msgBatch {
 			payload += int64(len(msgBatch[i].Value))
 			// The newest event in the batch, taken in the pass that already
@@ -936,8 +935,13 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// Two kinds of record are skipped, because each reports a lag
 			// that is not this pipeline's:
 			//
-			// Below the floor is a record with no usable timestamp at all;
-			// see eventTimeFloor.
+			// At or before the epoch is a record with no usable timestamp.
+			// Kafka encodes "no timestamp" as -1 and a client renders that
+			// as a moment just before the epoch, not a zero value, so a
+			// zero check alone misses it. Devices without a real-time clock
+			// boot near 1970 and stamp records from there. Nothing a
+			// pipeline reads is genuinely from 1970, and one such record
+			// set a run's worst lag to 56 years, which never comes down.
 			//
 			// After now is a clock ahead of this host's, not a pipeline
 			// ahead of its stream. A Kafka record carries the producer's
@@ -945,9 +949,9 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// in a fleet can win "newest" for the whole batch. Taking it and
 			// clamping the negative lag to zero reported "caught up" while
 			// the other 499 records in the batch were an hour behind.
-			at := msgBatch[i].EventAt
-			if at.After(eventTimeFloor) && !at.After(now) && at.After(newest) {
-				newest = at
+			at := msgBatch[i].EventAtNanos
+			if at > 0 && at <= nowNanos && at > newestNanos {
+				newestNanos = at
 			}
 		}
 		t.metrics.MessagePayloadBytes.Add(ctx, payload)
@@ -971,8 +975,8 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// reads, not how long the data takes to land; a slow flush shows up
 		// as event_lag_observed_at going stale, and in the batch and
 		// sink_flush durations beside it.
-		if t.eventTimeSource != nil && !newest.IsZero() {
-			lag := now.Sub(newest).Seconds()
+		if t.eventTimeSource != nil && newestNanos > 0 {
+			lag := float64(nowNanos-newestNanos) / float64(time.Second)
 			t.metrics.EventLagSeconds.Record(ctx, lag)
 			if lag > t.eventLagMax {
 				t.eventLagMax = lag

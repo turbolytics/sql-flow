@@ -300,7 +300,7 @@ func TestCoreConsumeLoop_MeasuresLagPerBatch(t *testing.T) {
 	old := time.Now().Add(-2 * time.Minute)
 	batch := messages(3)
 	for i := range batch {
-		batch[i].EventAt = old.Add(time.Duration(i) * time.Second)
+		batch[i].EventAtNanos = old.Add(time.Duration(i) * time.Second).UnixNano()
 	}
 	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{batch}}}
 	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
@@ -358,7 +358,7 @@ func noLagRecorded(t *testing.T, reader *sdkmetric.ManualReader) {
 func TestCoreConsumeLoop_AFutureEventIsNoReading(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	batch := messages(1)
-	batch[0].EventAt = time.Now().Add(time.Hour)
+	batch[0].EventAtNanos = time.Now().Add(time.Hour).UnixNano()
 	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{batch}}}
 	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
 
@@ -376,9 +376,9 @@ func TestCoreConsumeLoop_AFutureEventDoesNotHideABacklog(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	batch := messages(500)
 	for i := range batch {
-		batch[i].EventAt = time.Now().Add(-time.Hour)
+		batch[i].EventAtNanos = time.Now().Add(-time.Hour).UnixNano()
 	}
-	batch[499].EventAt = time.Now().Add(5 * time.Minute)
+	batch[499].EventAtNanos = time.Now().Add(5 * time.Minute).UnixNano()
 
 	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{batch}}}
 	tb, reader := meteredTurbine(t, src, &fakeSink{}, 1000)
@@ -397,11 +397,12 @@ func TestCoreConsumeLoop_AFutureEventDoesNotHideABacklog(t *testing.T) {
 func TestCoreConsumeLoop_AnAbsentTimestampIsNotAnOldEvent(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	bad := messages(1)
-	bad[0].EventAt = time.Unix(0, -1e6)
-	assert.That(t, !bad[0].EventAt.IsZero())
+	bad[0].EventAtNanos = time.Unix(0, -1e6).UnixNano()
+	// Not a zero value, which is why a zero check alone misses it.
+	assert.That(t, bad[0].EventAtNanos != 0)
 
 	good := messages(1)
-	good[0].EventAt = time.Now().Add(-time.Second)
+	good[0].EventAtNanos = time.Now().Add(-time.Second).UnixNano()
 
 	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{bad, good}}}
 	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)

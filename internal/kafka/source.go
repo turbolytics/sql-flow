@@ -303,13 +303,13 @@ func (k *Source) Stream() <-chan []core.Message {
 // messageFrom is the record-to-message conversion, lifted out of the fetch
 // loop so a test can reach it without a broker.
 //
-// EventAt is the record's own timestamp: a pipeline behind by an hour is
-// handling records stamped an hour ago. Which clock set it depends on the
+// EventAtNanos is the record's own timestamp: a pipeline behind by an hour
+// is handling records stamped an hour ago. Which clock set it depends on the
 // topic, which is what EventTimeBasis reports.
 func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
 	return core.Message{
 		Value:         r.Value,
-		EventAt:       r.Timestamp,
+		EventAtNanos:  r.Timestamp.UnixNano(),
 		Topic:         r.Topic,
 		Partition:     r.Partition,
 		Offset:        r.Offset,
@@ -318,7 +318,7 @@ func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
 	}
 }
 
-// EventTimeBasis names the clock behind Message.EventAt.
+// EventTimeBasis names the clock behind Message.EventAtNanos.
 //
 // A Kafka record's timestamp is the producer's own clock unless the topic
 // sets message.timestamp.type to LogAppendTime, and CreateTime is the

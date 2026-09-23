@@ -20,7 +20,7 @@ func TestSourceKafka_CarriesTheRecordTimestamp(t *testing.T) {
 		Topic: "t", Partition: 3, Offset: 42, LeaderEpoch: 7,
 	}, 100)
 
-	assert.Equal(t, stamped.UTC(), msg.EventAt.UTC())
+	assert.Equal(t, stamped.UnixNano(), msg.EventAtNanos)
 	// The rest of the conversion, so lifting it out of the fetch loop
 	// cannot quietly drop a field the commit path needs.
 	assert.Equal(t, "t", msg.Topic)

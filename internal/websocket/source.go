@@ -144,7 +144,7 @@ func (s *Source) Stream() <-chan []core.Message {
 			// cursor on reconnect hands over old events that this stamps as
 			// arriving now, so the reading is near zero exactly when the
 			// pipeline is furthest behind.
-			case s.streamChan <- []core.Message{{Value: data, EventAt: time.Now()}}:
+			case s.streamChan <- []core.Message{{Value: data, EventAtNanos: time.Now().UnixNano()}}:
 			case <-s.done:
 				return
 			}

@@ -234,8 +234,8 @@ func TestSourceWebsocket_StampsArrival(t *testing.T) {
 	before := time.Now()
 	select {
 	case batch := <-s.Stream():
-		assert.That(t, !batch[0].EventAt.Before(before.Add(-time.Second)))
-		assert.That(t, !batch[0].EventAt.After(time.Now()))
+		assert.That(t, batch[0].EventAtNanos >= before.Add(-time.Second).UnixNano())
+		assert.That(t, batch[0].EventAtNanos <= time.Now().UnixNano())
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the message")
 	}

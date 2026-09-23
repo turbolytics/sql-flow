@@ -352,7 +352,7 @@ func (s *Source) receiveEvents(w http.ResponseWriter, r *http.Request) {
 	// A webhook carries no event time of its own, so arrival is the event.
 	// The lag that follows is queueing inside this process, and the basis
 	// says so.
-	case s.streamChan <- []core.Message{{Value: body, EventAt: time.Now()}}:
+	case s.streamChan <- []core.Message{{Value: body, EventAtNanos: time.Now().UnixNano()}}:
 		writeJSON(w, http.StatusOK, `{"status":"received"}`)
 	case <-s.done:
 		writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
