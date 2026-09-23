@@ -1150,6 +1150,14 @@ func (t *Turbine) recordError(ctx context.Context, err error, phase, message str
 	)
 }
 
+// EventBasis is where this pipeline's event times come from, and empty for
+// a source that has none.
+//
+// The turbine resolved it once at construction, so the bundle reads the
+// same answer the consume loop measures against rather than asserting the
+// source's type a second time.
+func (t *Turbine) EventBasis() string { return t.eventBasis }
+
 // LastError is the code and time of the last error this pipeline recorded.
 // ok is false before the first one.
 //

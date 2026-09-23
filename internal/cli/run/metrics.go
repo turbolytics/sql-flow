@@ -41,6 +41,11 @@ type progressFunc func() core.Progress
 // turbine itself.
 type lastErrorFunc func() (code string, at time.Time, ok bool)
 
+// eventBasisFunc is where the pipeline's event times come from, and empty
+// for a source with none. A closure for the same reason lastErrorFunc is
+// one: the source is built after the meter provider.
+type eventBasisFunc func() string
+
 // stuckIntervals is how many flush intervals may pass with no commit before
 // /healthz calls the pipeline stuck. Three, so one slow sink flush cannot
 // flap it.
@@ -169,7 +174,7 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 func newMeterProvider(exporter string, serveTurbostats bool,
 	static turbostats.Static, l *zap.Logger, stats statsFunc,
 	progress progressFunc, health healthFunc, lastError lastErrorFunc,
-	interval time.Duration) (metric.MeterProvider, collectFunc, error) {
+	eventBasis eventBasisFunc, interval time.Duration) (metric.MeterProvider, collectFunc, error) {
 
 	reader := sdkmetric.NewManualReader()
 	opts := []sdkmetric.Option{sdkmetric.WithReader(reader)}
@@ -194,9 +199,11 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 	// one, and it has no HTTP server of its own.
 	collect := func(ctx context.Context) (turbostats.Bundle, error) {
 		return turbostats.Collect(ctx, turbostats.Source{
-			Static:   static,
-			Reader:   reader,
-			Pipeline: &turbostats.PipelineSource{Stats: stats, LastError: lastError},
+			Static: static,
+			Reader: reader,
+			Pipeline: &turbostats.PipelineSource{
+				Stats: stats, LastError: lastError, EventBasis: basisOf(eventBasis),
+			},
 		})
 	}
 
@@ -257,4 +264,12 @@ func drainDeadlineFor(seconds int) time.Duration {
 		return time.Duration(seconds) * time.Second
 	}
 	return core.DefaultDrainDeadline
+}
+
+// basisOf reads the basis, tolerating the nil a test passes.
+func basisOf(f eventBasisFunc) string {
+	if f == nil {
+		return ""
+	}
+	return f()
 }

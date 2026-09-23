@@ -139,6 +139,20 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 		p.Duration = &PipelineDurations{Batch: batch, SinkFlush: flush}
 	}
 
+	// The basis is what makes the reading meaningful, so the four are sent
+	// together or not at all.
+	if src.EventBasis != "" {
+		if lag, ok := floats["pipeline_event_lag_seconds"]; ok {
+			basis := src.EventBasis
+			p.EventLagSeconds = &lag
+			p.EventLagBasis = &basis
+			if worst, ok := floats["pipeline_event_lag_max_seconds"]; ok {
+				p.EventLagMaxSeconds = &worst
+			}
+			p.EventLagObservedAt = unixTime(flat["pipeline_event_lag_observed_timestamp"])
+		}
+	}
+
 	if wait, ok := floats["pipeline_recv_wait_seconds"]; ok {
 		p.RecvWaitSeconds = &wait
 	}
@@ -281,6 +295,16 @@ func walk(rm metricdata.ResourceMetrics) (map[string]int64, map[string]float64,
 				// Seconds, not counts: recv_wait_seconds is the only one, and
 				// an attributed float series is a phase histogram's twin that
 				// the bundle does not carry.
+				for _, dp := range data.DataPoints {
+					if dp.Attributes.Len() == 0 {
+						floats[m.Name] = dp.Value
+					}
+				}
+			case metricdata.Gauge[float64]:
+				// A last value in seconds: the event lag readings. Sums and
+				// gauges land in the same map because a bundle field is one
+				// number and the instrument's kind is the engine's business,
+				// not the contract's.
 				for _, dp := range data.DataPoints {
 					if dp.Attributes.Len() == 0 {
 						floats[m.Name] = dp.Value

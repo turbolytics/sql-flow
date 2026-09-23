@@ -770,3 +770,40 @@ func TestCollect_CarriesTheConsumeLoopsWait(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1.5, *b.Pipeline.RecvWaitSeconds)
 }
+
+// The four travel together: a reading, its age, the worst since start, and
+// where the event time came from.
+func TestCollect_CarriesTheEventLagAndItsBasis(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+	m.EventLagSeconds.Record(ctx, 12.5)
+	m.EventLagMaxSeconds.Record(ctx, 90)
+	m.EventLagObserved.Record(ctx, time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC).Unix())
+
+	src := runSource(reader, nil)
+	src.Pipeline.EventBasis = "kafka_timestamp"
+	b, err := Collect(ctx, src)
+	assert.NoError(t, err)
+
+	assert.Equal(t, 12.5, *b.Pipeline.EventLagSeconds)
+	assert.Equal(t, float64(90), *b.Pipeline.EventLagMaxSeconds)
+	assert.Equal(t, "kafka_timestamp", *b.Pipeline.EventLagBasis)
+	assert.Equal(t, 2026, b.Pipeline.EventLagObservedAt.UTC().Year())
+}
+
+// A source with no event time sends none of the four, not zeros: a zero lag
+// says the pipeline is caught up.
+func TestCollect_NoBasisNoLagFields(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	// The instruments moved; without a basis the bundle still sends none of
+	// the four, because a reading whose meaning is unknown is not a reading.
+	m.EventLagSeconds.Record(context.Background(), 12.5)
+
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.EventLagSeconds == nil)
+	assert.That(t, b.Pipeline.EventLagBasis == nil)
+	assert.That(t, b.Pipeline.EventLagObservedAt == nil)
+}

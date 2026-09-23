@@ -391,8 +391,17 @@ func NewCommand() *cobra.Command {
 				static.IntervalSeconds = int(ts.Interval().Seconds())
 			}
 
+			// Where this pipeline's event times come from, through the same
+			// pointer for the same reason: the source is built below.
+			eventBasisFn := func() string {
+				if tb := liveTurbine.Load(); tb != nil {
+					return tb.EventBasis()
+				}
+				return ""
+			}
+
 			meterProvider, collectBundle, err := newMeterProvider(metricsExporter, serveTurbostats,
-				static, l, statsFn, progressFn, hs.Snapshot, lastErrorFn, flushInterval)
+				static, l, statsFn, progressFn, hs.Snapshot, lastErrorFn, eventBasisFn, flushInterval)
 			if err != nil {
 				return err
 			}
