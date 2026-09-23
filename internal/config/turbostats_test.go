@@ -177,3 +177,14 @@ func TestTurboStats_ChecksANilBlock(t *testing.T) {
 	var ts *TurboStats
 	assert.Equal(t, 0, len(ts.Check([]string{"serve", "turbostats"})))
 }
+
+// Labels reach the bundle from a block that need not exist, and need not
+// report anywhere.
+func TestTurboStats_LabelSetIsNilSafe(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	var absent *TurboStats
+	assert.Equal(t, 0, len(absent.LabelSet()))
+
+	local := &TurboStats{Labels: map[string]string{"region": "eu_west"}}
+	assert.Equal(t, "eu_west", local.LabelSet()["region"])
+}

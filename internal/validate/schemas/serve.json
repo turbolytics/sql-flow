@@ -184,6 +184,13 @@
             "interval_seconds": {
               "type": "integer",
               "description": "IntervalSeconds is how often to report. Absent means the default."
+            },
+            "labels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object",
+              "description": "Labels are the operator's own, copied into every report. They are\nfixed for the life of the process: a receiver stores a series per\nfield, and a set that changed mid-run would split one instance's\nhistory in two."
             }
           },
           "additionalProperties": false,

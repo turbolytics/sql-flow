@@ -65,6 +65,18 @@ var reservedLabels = map[string]bool{
 // Enabled reports whether this instance posts anywhere.
 func (t *TurboStats) Enabled() bool { return t != nil && t.ReportTo != "" }
 
+// LabelSet is the operator's labels, or none.
+//
+// Labels reach the bundle whether or not reporting is on: the local
+// endpoint serves the same document. A config with no turbostats block at
+// all is the ordinary case, so this is nil-safe the way Enabled is.
+func (t *TurboStats) LabelSet() map[string]string {
+	if t == nil {
+		return nil
+	}
+	return t.Labels
+}
+
 // Interval is how often to report, defaulted.
 func (t *TurboStats) Interval() time.Duration {
 	if t == nil || t.IntervalSeconds <= 0 {

@@ -204,3 +204,37 @@ pipeline:
 	assert.That(t, strings.Contains(err.Error(), "plaintext"))
 	assert.That(t, strings.Contains(err.Error(), "pipeline.turbostats.report_to"))
 }
+
+// run refuses a label set the bundle cannot carry, whether or not the
+// pipeline reports anywhere.
+//
+// The labels reach the local endpoint either way, and the rules are what
+// keep a report a fixed shape. serve checks its whole block at startup;
+// run checked nothing unless report_to was set, so a set validate rejects
+// started anyway and served itself at GET /turbostats/v1.
+func TestObservabilityTurbostatsReporter_RunRefusesALabelItCannotCarry(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	path := writeConfig(t, `
+pipeline:
+  name: reporting_pipeline
+  turbostats:
+    labels:
+      Region: eu-west
+  source:
+    type: webhook
+    webhook:
+      addr: 127.0.0.1:0
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT 1 AS n
+  sink:
+    type: noop
+`)
+	cmd := NewCommand()
+	cmd.SetArgs([]string{path})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.ExecuteContext(context.Background())
+
+	assert.That(t, err != nil)
+	assert.That(t, strings.Contains(err.Error(), "pipeline.turbostats.labels"))
+}

@@ -245,6 +245,12 @@ pipeline:
     key: <string>
     # IntervalSeconds is how often to report. Absent means the default.
     interval_seconds: <integer>
+    # Labels are the operator's own, copied into every report. They are
+    # fixed for the life of the process: a receiver stores a series per
+    # field, and a set that changed mid-run would split one instance's
+    # history in two.
+    labels:
+      <name>:
 # Predefined SQL tables used in the pipeline.
 tables:
   # List of tables with their SQL definitions and management configurations.

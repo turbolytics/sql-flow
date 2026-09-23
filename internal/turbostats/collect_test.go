@@ -510,3 +510,36 @@ func TestCollect_ActivityIsNeverAfterSentAt(t *testing.T) {
 	assert.That(t, b.LastActivityAt != nil)
 	assert.That(t, !b.LastActivityAt.After(b.SentAt))
 }
+
+func TestCollect_CarriesTheTypesAndLabels(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	src := runSource(reader, nil)
+	src.Static.SourceType = "kafka"
+	src.Static.SinkType = "postgres"
+	src.Static.HandlerType = "structured"
+	src.Static.Labels = map[string]string{"region": "eu_west"}
+
+	b, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.Equal(t, "kafka", b.Instance.SourceType)
+	assert.Equal(t, "postgres", b.Instance.SinkType)
+	assert.Equal(t, "structured", b.Instance.HandlerType)
+	assert.Equal(t, "eu_west", b.Instance.Labels["region"])
+}
+
+// The labels a process reports are the ones it started with. Collect copies
+// the map so a caller that mutates its own cannot change a bundle already
+// built, or a bundle being built on another goroutine.
+func TestCollect_CopiesTheLabels(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	labels := map[string]string{"region": "eu_west"}
+	src := runSource(reader, nil)
+	src.Static.Labels = labels
+
+	b, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	labels["region"] = "us_east"
+	assert.Equal(t, "eu_west", b.Instance.Labels["region"])
+}

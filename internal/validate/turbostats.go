@@ -22,19 +22,25 @@ func checkTurboStats(rendered []byte, rep *Report) {
 			"the config did not parse, so there was no block to check")
 		return
 	}
-	if !conf.Pipeline.TurboStats.Enabled() {
+	if conf.Pipeline.TurboStats == nil {
 		rep.SetCheck("turbostats.rules", StatusSkipped,
-			"this pipeline reports to no control plane")
+			"this pipeline has no turbostats block")
 		return
 	}
 
 	var root yaml.Node
 	_ = yaml.Unmarshal(rendered, &root)
 
+	// A block that reports nowhere is still checked. Its labels reach the
+	// local endpoint, and a rule that would refuse the config the moment
+	// someone sets report_to is a defect in it now.
 	violations := conf.Pipeline.TurboStats.Check([]string{"pipeline", "turbostats"})
 	for _, v := range violations {
-		// The block hangs off pipeline, and Check names its own keys.
-		path := append([]string{"pipeline"}, v.Path...)
+		// Check was given the path to its own block, so v.Path is already
+		// rooted at the document. Prefixing it again resolved nothing, and
+		// lineOf falls back to the enclosing node, so every one of these
+		// pointed at the pipeline's first line instead of the bad key.
+		path := v.Path
 		var pos *Position
 		if line, col, ok := lineOf(&root, path); ok {
 			pos = &Position{Source: "config", Line: line, Column: col}
