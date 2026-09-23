@@ -400,8 +400,18 @@ func NewCommand() *cobra.Command {
 				return ""
 			}
 
-			meterProvider, collectBundle, err := newMeterProvider(metricsExporter, serveTurbostats,
-				static, l, statsFn, progressFn, hs.Snapshot, lastErrorFn, eventBasisFn, flushInterval)
+			meterProvider, collectBundle, err := newMeterProvider(
+				withExporter(metricsExporter),
+				withTurbostatsRoute(serveTurbostats),
+				withStatic(static),
+				withLogger(l),
+				withStateStats(statsFn),
+				withProgress(progressFn),
+				withHealth(hs.Snapshot),
+				withLastError(lastErrorFn),
+				withEventBasis(eventBasisFn),
+				withFlushInterval(flushInterval),
+			)
 			if err != nil {
 				return err
 			}

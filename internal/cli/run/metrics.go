@@ -158,6 +158,98 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 	return mux
 }
 
+// meterOption configures newMeterProvider.
+//
+// The provider is built from ten independent facts. A positional parameter
+// for each made every call site a row of nils whose meaning depended on
+// counting commas. Each option below names one fact and says what its
+// absence means.
+type meterOption func(*meterOptions)
+
+// meterOptions is what newMeterProvider builds from. Every zero is a working
+// default: no exporter, no HTTP routes, and a logger that drops what it is
+// told.
+type meterOptions struct {
+	exporter        string
+	serveTurbostats bool
+	static          turbostats.Static
+	logger          *zap.Logger
+	stats           statsFunc
+	progress        progressFunc
+	health          healthFunc
+	lastError       lastErrorFunc
+	eventBasis      eventBasisFunc
+	interval        time.Duration
+}
+
+// withExporter names the exporter --metrics asked for. Empty means none, and
+// the manual reader the bundle reads is attached either way. An unsupported
+// name fails the build rather than starting a pipeline that exports nothing.
+func withExporter(name string) meterOption {
+	return func(o *meterOptions) { o.exporter = name }
+}
+
+// withTurbostatsRoute serves the bundle at GET /turbostats/v1. The bundle is
+// built either way, because the reporter reads the same one and has no HTTP
+// server of its own.
+func withTurbostatsRoute(serve bool) meterOption {
+	return func(o *meterOptions) { o.serveTurbostats = serve }
+}
+
+// withStatic supplies what the bundle says this process is: name, version,
+// commit, config hash and labels. Absent, the bundle reports only what the
+// instruments carry.
+func withStatic(s turbostats.Static) meterOption {
+	return func(o *meterOptions) { o.static = s }
+}
+
+// withLogger supplies the logger the HTTP server and the bundle handler
+// report failures through. Without one those failures are dropped.
+func withLogger(l *zap.Logger) meterOption {
+	return func(o *meterOptions) { o.logger = l }
+}
+
+// withStateStats supplies the pipeline's durable-state reader. It serves GET
+// /stats and fills the bundle's state section. Absent, neither reports state,
+// which is the right answer for a pipeline that has no state database.
+func withStateStats(f statsFunc) meterOption {
+	return func(o *meterOptions) { o.stats = f }
+}
+
+// withProgress supplies the pipeline's liveness snapshot. It registers GET
+// /stats and GET /healthz. Without it neither route exists, because a health
+// check that cannot read progress would answer healthy for a dead pipeline.
+func withProgress(f progressFunc) meterOption {
+	return func(o *meterOptions) { o.progress = f }
+}
+
+// withHealth supplies the process's health snapshot, which /healthz reads
+// beside progress. It does nothing without withProgress, because /healthz is
+// registered on progress.
+func withHealth(f healthFunc) meterOption {
+	return func(o *meterOptions) { o.health = f }
+}
+
+// withLastError supplies the code and time of the pipeline's last error.
+// Absent, the bundle omits both: a pipeline whose last error is unknown is
+// not a pipeline that has had none.
+func withLastError(f lastErrorFunc) meterOption {
+	return func(o *meterOptions) { o.lastError = f }
+}
+
+// withEventBasis supplies where the pipeline's event times come from. Absent,
+// the bundle omits event lag, because a lag whose basis is unknown is a
+// number no reader can compare.
+func withEventBasis(f eventBasisFunc) meterOption {
+	return func(o *meterOptions) { o.eventBasis = f }
+}
+
+// withFlushInterval tells /healthz how long the pipeline may go without a
+// commit before it is stuck. It does nothing without withProgress.
+func withFlushInterval(d time.Duration) meterOption {
+	return func(o *meterOptions) { o.interval = d }
+}
+
 // newMeterProvider builds the provider every instrument records into, and
 // starts the HTTP server when anything needs it.
 //
@@ -171,16 +263,17 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 // the route serves. One builder, two transports, is the property the contract
 // exists for: a second one here would let what an operator curls and what a
 // control plane stores drift apart.
-func newMeterProvider(exporter string, serveTurbostats bool,
-	static turbostats.Static, l *zap.Logger, stats statsFunc,
-	progress progressFunc, health healthFunc, lastError lastErrorFunc,
-	eventBasis eventBasisFunc, interval time.Duration) (metric.MeterProvider, collectFunc, error) {
+func newMeterProvider(opts ...meterOption) (metric.MeterProvider, collectFunc, error) {
+	o := meterOptions{logger: zap.NewNop()}
+	for _, opt := range opts {
+		opt(&o)
+	}
 
 	reader := sdkmetric.NewManualReader()
-	opts := []sdkmetric.Option{sdkmetric.WithReader(reader)}
+	providerOpts := []sdkmetric.Option{sdkmetric.WithReader(reader)}
 
 	var registry *prom.Registry
-	switch strings.ToLower(strings.TrimSpace(exporter)) {
+	switch strings.ToLower(strings.TrimSpace(o.exporter)) {
 	case "":
 	case "prometheus":
 		registry = prom.NewRegistry()
@@ -188,28 +281,28 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 		if err != nil {
 			return nil, nil, fmt.Errorf("prometheus exporter: %w", err)
 		}
-		opts = append(opts, sdkmetric.WithReader(exp))
+		providerOpts = append(providerOpts, sdkmetric.WithReader(exp))
 	default:
-		return nil, nil, fmt.Errorf("unsupported --metrics exporter: %q (supported: prometheus)", exporter)
+		return nil, nil, fmt.Errorf("unsupported --metrics exporter: %q (supported: prometheus)", o.exporter)
 	}
 
-	mp := sdkmetric.NewMeterProvider(opts...)
+	mp := sdkmetric.NewMeterProvider(providerOpts...)
 
 	// Built whether or not anything serves it: the reporter reads the same
 	// one, and it has no HTTP server of its own.
 	collect := func(ctx context.Context) (turbostats.Bundle, error) {
 		return turbostats.Collect(ctx, turbostats.Source{
-			Static: static,
+			Static: o.static,
 			Reader: reader,
 			Pipeline: &turbostats.PipelineSource{
-				Stats: stats, LastError: lastError, EventBasis: basisOf(eventBasis),
+				Stats: o.stats, LastError: o.lastError, EventBasis: basisOf(o.eventBasis),
 			},
 		})
 	}
 
 	// Nothing to serve: the provider still exists, so the instruments record
 	// and a later reporter can read them without an HTTP server.
-	if registry == nil && !serveTurbostats && progress == nil {
+	if registry == nil && !o.serveTurbostats && o.progress == nil {
 		return mp, collect, nil
 	}
 
@@ -218,27 +311,27 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 	// route is unauthenticated, and a state backend's error can name its
 	// connection string.
 	var bundle http.Handler
-	if serveTurbostats {
+	if o.serveTurbostats {
 		bundle = turbostats.Handler(collect, func(err error) {
-			l.Error("building turbostats bundle", zap.Error(err))
+			o.logger.Error("building turbostats bundle", zap.Error(err))
 		})
 	}
-	mux := newHTTPMux(registry, stats, bundle, progress, health, interval, time.Now)
+	mux := newHTTPMux(registry, o.stats, bundle, o.progress, o.health, o.interval, time.Now)
 
 	go func() {
 		routes := []string{}
 		if registry != nil {
 			routes = append(routes, "/metrics")
 		}
-		if serveTurbostats {
+		if o.serveTurbostats {
 			routes = append(routes, "/turbostats/v1")
 		}
-		if progress != nil {
+		if o.progress != nil {
 			routes = append(routes, "/healthz")
 		}
-		l.Info("serving http", zap.String("addr", metricsPort), zap.Strings("routes", routes))
+		o.logger.Info("serving http", zap.String("addr", metricsPort), zap.Strings("routes", routes))
 		if err := http.ListenAndServe(metricsPort, mux); err != nil {
-			l.Error("http server stopped", zap.Error(err))
+			o.logger.Error("http server stopped", zap.Error(err))
 		}
 	}()
 
