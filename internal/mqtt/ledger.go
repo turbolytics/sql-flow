@@ -18,6 +18,11 @@ type held struct {
 	via acker
 }
 
+// maxRetired is the number of retired clients the ledger remembers. A late
+// publish can only come from a router that was just retired, so only recent
+// clients matter.
+const maxRetired = 8
+
 // ledger holds every QoS 1 publish the pipeline has not committed, and
 // acknowledges them only once it has.
 //
@@ -31,14 +36,24 @@ type ledger struct {
 	// acked is the highest sequence acknowledged. It only moves forward.
 	acked int64
 	// current is the client of the live connection, set by its first
-	// publish. retired holds the clients whose connections went down.
+	// publish. retired holds the most recent clients whose connections went down.
 	current acker
-	retired map[acker]struct{}
+	retired []acker
 	held    []held
 }
 
 func newLedger() *ledger {
-	return &ledger{acked: -1, retired: map[acker]struct{}{}}
+	return &ledger{acked: -1, retired: []acker{}}
+}
+
+// isRetired reports whether via is in the retired clients list.
+func (l *ledger) isRetired(via acker) bool {
+	for _, r := range l.retired {
+		if r == via {
+			return true
+		}
+	}
+	return false
 }
 
 // receive records a publish and returns its sequence number. The sequence
@@ -52,7 +67,7 @@ func (l *ledger) receive(pub *paho.Publish, via acker) int64 {
 	if pub.QoS == 0 {
 		return seq
 	}
-	if _, gone := l.retired[via]; gone {
+	if l.isRetired(via) {
 		return seq
 	}
 	if l.current == nil {
@@ -73,7 +88,10 @@ func (l *ledger) disconnected() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.current != nil {
-		l.retired[l.current] = struct{}{}
+		l.retired = append(l.retired, l.current)
+		if len(l.retired) > maxRetired {
+			l.retired = l.retired[1:]
+		}
 	}
 	l.current = nil
 	l.held = l.held[:0]

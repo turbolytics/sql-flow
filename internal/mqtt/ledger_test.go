@@ -131,3 +131,24 @@ func TestSourceMqtt_AckFailureKeepsTheRemainderHeld(t *testing.T) {
 	assert.Equal(t, 2, n)
 	assert.DeepEqual(t, []uint16{1, 2}, c.acked)
 }
+
+// The retired clients list is bounded. A flaky network that reconnects many
+// times would otherwise leak memory indefinitely.
+func TestSourceMqtt_RetiredClientsAreBounded(t *testing.T) {
+	coverage.Covers(t, "source.mqtt")
+	l := newLedger()
+	var ackers []*fakeAcker
+	for i := 0; i < 20; i++ {
+		acker := &fakeAcker{}
+		ackers = append(ackers, acker)
+		l.receive(pub(uint16(i)), acker)
+		l.disconnected()
+	}
+	assert.Equal(t, maxRetired, len(l.retired))
+	// The most recently retired client should be refused.
+	lastClient := ackers[19]
+	l.receive(pub(99), lastClient)
+	n, err := l.ackThrough(1000)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
