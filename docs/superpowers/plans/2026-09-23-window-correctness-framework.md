@@ -704,8 +704,14 @@ Replace `#NNN` with the multi-worker issue number once it is filed.
 
 - [ ] **Step 2: Run the ledger's checks**
 
-Run: `go test ./internal/coverage/ -count=1 && make coverage-page && git status --short docs/coverage`
-Expected: PASS, and the matrix regenerates with the new row rendered as declared-unenforced.
+Run: `go test ./internal/coverage/ -count=1 && make coverage-matrix && git status --short docs/coverage`
+Expected: PASS, and the new row renders as declared-unenforced.
+
+`coverage-matrix`, not `coverage-page`. The page target writes `matrix.md`
+alone and leaves the per-feature files in `docs/coverage/status/` untouched,
+which the gate also reads: a declared invariant owes a row to every feature it
+applies to. Running the page target alone leaves CI red with a diff naming
+`pipeline.stateful.yml` and `pipeline.stateless.yml`.
 
 - [ ] **Step 3: Commit**
 
