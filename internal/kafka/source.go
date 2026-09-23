@@ -266,14 +266,7 @@ func (k *Source) Stream() <-chan []core.Message {
 			batch := make([]core.Message, 0, fetches.NumRecords())
 			fetches.EachPartition(func(p kgo.FetchTopicPartition) {
 				for _, r := range p.Records {
-					batch = append(batch, core.Message{
-						Value:         r.Value,
-						Topic:         r.Topic,
-						Partition:     r.Partition,
-						Offset:        r.Offset,
-						LeaderEpoch:   r.LeaderEpoch,
-						HighWatermark: p.HighWatermark,
-					})
+					batch = append(batch, messageFrom(r, p.HighWatermark))
 				}
 			})
 
@@ -292,3 +285,25 @@ func (k *Source) Stream() <-chan []core.Message {
 	}()
 	return k.streamChan
 }
+
+// messageFrom is the record-to-message conversion, lifted out of the fetch
+// loop so a test can reach it without a broker.
+//
+// EventAt is the record's own timestamp, which is what the broker stamped
+// when the producer wrote it: a pipeline behind by an hour is handling
+// records stamped an hour ago.
+func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
+	return core.Message{
+		Value:         r.Value,
+		EventAt:       r.Timestamp,
+		Topic:         r.Topic,
+		Partition:     r.Partition,
+		Offset:        r.Offset,
+		LeaderEpoch:   r.LeaderEpoch,
+		HighWatermark: highWatermark,
+	}
+}
+
+// EventTimeBasis is the record's own timestamp, which is what the broker
+// stamped when the producer wrote it.
+func (s *Source) EventTimeBasis() string { return core.EventBasisKafkaTimestamp }

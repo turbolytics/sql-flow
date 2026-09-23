@@ -349,7 +349,10 @@ func (s *Source) receiveEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	case s.streamChan <- []core.Message{{Value: body}}:
+	// A webhook carries no event time of its own, so arrival is the event.
+	// The lag that follows is queueing inside this process, and the basis
+	// says so.
+	case s.streamChan <- []core.Message{{Value: body, EventAt: time.Now()}}:
 		writeJSON(w, http.StatusOK, `{"status":"received"}`)
 	case <-s.done:
 		writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
@@ -374,3 +377,7 @@ func writeJSON(w http.ResponseWriter, status int, body string) {
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(body))
 }
+
+// EventTimeBasis is arrival: this protocol carries no event time, so the
+// moment the message reached this process is the best there is.
+func (s *Source) EventTimeBasis() string { return core.EventBasisArrival }

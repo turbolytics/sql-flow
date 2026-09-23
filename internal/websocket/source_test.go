@@ -220,3 +220,24 @@ func TestSourceWebsocket_DeliversWhileConnected(t *testing.T) {
 	_, ok = s.Delivering()
 	assert.That(t, !ok)
 }
+
+// No event time in the frame, so arrival is the event and the basis says so.
+func TestSourceWebsocket_StampsArrival(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	srv, _ := newServer(t, []string{"one"}, true)
+
+	s, err := NewSource(wsURL(srv))
+	assert.NoError(t, err)
+	assert.NoError(t, s.Start())
+	defer s.Close()
+
+	before := time.Now()
+	select {
+	case batch := <-s.Stream():
+		assert.That(t, !batch[0].EventAt.Before(before.Add(-time.Second)))
+		assert.That(t, !batch[0].EventAt.After(time.Now()))
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the message")
+	}
+	assert.Equal(t, core.EventBasisArrival, s.EventTimeBasis())
+}

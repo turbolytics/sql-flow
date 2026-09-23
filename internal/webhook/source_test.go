@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
@@ -590,4 +591,31 @@ func TestSourceWebhook_HealthzAnswersWhileADeliveryWaits(t *testing.T) {
 	assert.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// A webhook carries no event time of its own, so arrival is the event: the
+// lag that follows is queueing inside this process, which is what the basis
+// says.
+func TestSourceWebhook_StampsArrival(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	s, err := NewSource()
+	assert.NoError(t, err)
+	defer s.Close()
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	before := time.Now()
+	resp := post(t, srv.URL+"/events", []byte(`{"a":1}`), "", "")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	select {
+	case batch := <-s.Stream():
+		assert.That(t, !batch[0].EventAt.Before(before))
+		assert.That(t, !batch[0].EventAt.After(time.Now()))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the message")
+	}
+	assert.Equal(t, core.EventBasisArrival, s.EventTimeBasis())
 }

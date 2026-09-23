@@ -138,7 +138,9 @@ func (s *Source) Stream() <-chan []core.Message {
 			}
 
 			select {
-			case s.streamChan <- []core.Message{{Value: data}}:
+			// No event time in the frame, so arrival is the event. The
+			// basis says the lag is queueing inside this process.
+			case s.streamChan <- []core.Message{{Value: data, EventAt: time.Now()}}:
 			case <-s.done:
 				return
 			}
@@ -256,3 +258,7 @@ func (s *Source) closeConn(graceful bool) {
 	}
 	c.CloseNow()
 }
+
+// EventTimeBasis is arrival: this protocol carries no event time, so the
+// moment the message reached this process is the best there is.
+func (s *Source) EventTimeBasis() string { return core.EventBasisArrival }

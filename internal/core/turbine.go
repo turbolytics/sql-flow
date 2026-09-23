@@ -21,7 +21,12 @@ import (
 // Message is one record from a source, with whatever provenance the source
 // knows about it. Only Kafka populates the metadata fields.
 type Message struct {
-	Value     []byte
+	Value []byte
+	// EventAt is when the event happened, as the source knows it: a Kafka
+	// record's timestamp, or the moment a webhook or websocket message
+	// arrived. Zero for a source with no event time, which is why the
+	// pipeline's lag fields are absent for one.
+	EventAt   time.Time
 	Topic     string
 	Partition int32
 	Offset    int64
@@ -34,6 +39,25 @@ type Message struct {
 	// can be computed against the position last processed. Zero for sources
 	// without one.
 	HighWatermark int64
+}
+
+// The bases an event time can have. It travels with every lag reading,
+// because a lag from a broker's timestamp and a lag from arrival measure
+// different spans and comparing them is meaningless.
+//
+// This is an open vocabulary. A source whose protocol carries no event
+// time, and whose broker can hold a message before delivering it, is
+// honestly described by neither of these and gets its own name rather than
+// borrowing arrival.
+const (
+	EventBasisKafkaTimestamp = "kafka_timestamp"
+	EventBasisArrival        = "arrival"
+)
+
+// EventTimeSource is a source that stamps Message.EventAt. A source that
+// does not implement it reports no lag, rather than a lag of zero.
+type EventTimeSource interface {
+	EventTimeBasis() string
 }
 
 // Mark is the position of the last message the pipeline has finished with in
