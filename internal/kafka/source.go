@@ -106,9 +106,9 @@ func (k *Source) OnPartitions(assigned, released, lost func(map[string][]int32))
 // Delivering implements core.Deliverer through the partition relay. A
 // source built without the relay cannot tell, and reports delivering, which
 // is what the engine assumed before ownership was tracked.
-func (k *Source) Delivering() (time.Time, bool) {
+func (k *Source) Delivering() (time.Duration, bool) {
 	if k.partitions == nil {
-		return time.Time{}, true
+		return 0, true
 	}
 	return k.partitions.Delivering()
 }

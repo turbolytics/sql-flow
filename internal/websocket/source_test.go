@@ -211,11 +211,10 @@ func TestSourceWebsocket_DeliversWhileConnected(t *testing.T) {
 	_, ok := s.Delivering()
 	assert.That(t, !ok)
 
-	before := time.Now()
 	assert.NoError(t, s.Start())
-	since, ok := s.Delivering()
+	deliveringFor, ok := s.Delivering()
 	assert.That(t, ok)
-	assert.That(t, !since.Before(before))
+	assert.That(t, deliveringFor >= 0 && deliveringFor < time.Second)
 
 	assert.NoError(t, s.Close())
 	_, ok = s.Delivering()

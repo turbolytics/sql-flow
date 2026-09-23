@@ -229,6 +229,22 @@ func (c *Conf) HasWindow() bool {
 	return false
 }
 
+// HasIdleClose reports whether any window closes on idleness, which is
+// what decides whether the engine confirms a quiet stream: without one,
+// nothing reads the progress row between batches and the idle tick writes
+// nothing.
+func (c *Conf) HasIdleClose() bool {
+	if c.Tables == nil {
+		return false
+	}
+	for _, table := range c.Tables.SQL {
+		if table.Window != nil && table.Window.IdleCloseSeconds > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // UDF registers a user-defined function the handler SQL can call.
 type UDF struct {
 	FunctionName string `yaml:"function_name"`

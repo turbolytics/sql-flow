@@ -2,7 +2,6 @@ package kafka
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -68,12 +67,10 @@ func TestPartitionEvents_DeliversWhileHoldingAPartition(t *testing.T) {
 	_, ok := e.Delivering()
 	assert.That(t, !ok)
 
-	before := time.Now()
 	e.onAssigned(ctx, nil, map[string][]int32{"events": {0, 1}})
-	since, ok := e.Delivering()
+	deliveringFor, ok := e.Delivering()
 	assert.That(t, ok)
-	assert.That(t, !since.Before(before))
-	assert.That(t, strings.Contains(since.String(), " m=")) // a monotonic reading
+	assert.That(t, deliveringFor >= 0 && deliveringFor < time.Second)
 
 	e.onRevoked(ctx, nil, map[string][]int32{"events": {1}})
 	_, ok = e.Delivering()
@@ -84,10 +81,11 @@ func TestPartitionEvents_DeliversWhileHoldingAPartition(t *testing.T) {
 	assert.That(t, !ok)
 
 	// A rejoin: delivering again, from the new assignment, not the old.
+	e.assignedAt = time.Now().Add(-time.Hour)
 	e.onAssigned(ctx, nil, map[string][]int32{"events": {0}})
 	again, ok := e.Delivering()
 	assert.That(t, ok)
-	assert.That(t, !again.Before(since))
+	assert.That(t, again < time.Second)
 
 	// A source with no relay cannot tell, and reports delivering.
 	_, ok = (&Source{}).Delivering()

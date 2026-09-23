@@ -182,10 +182,13 @@ func (s *Source) dial() error {
 // Delivering implements core.Deliverer: connected, and since the dial. A
 // reconnect that takes longer than idle_close_seconds is not a quiet
 // stream, and the engine counts no quiet across it.
-func (s *Source) Delivering() (time.Time, bool) {
+func (s *Source) Delivering() (time.Duration, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.connectedAt, s.conn != nil
+	if s.conn == nil {
+		return 0, false
+	}
+	return time.Since(s.connectedAt), true
 }
 
 // read blocks on the current connection. Reads are not given a deadline: the

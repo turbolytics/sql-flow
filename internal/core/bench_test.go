@@ -84,7 +84,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx, false); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -97,7 +97,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx, false); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -116,7 +116,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx, false); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -144,7 +144,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx, false); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -172,7 +172,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx, false); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -191,7 +191,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx, false); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -268,7 +268,7 @@ func BenchmarkCommitStateArrivalForced(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			tb.quietSince = time.Now().UTC()
-			if err := tb.commitState(ctx, false); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}

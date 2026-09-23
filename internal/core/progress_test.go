@@ -381,11 +381,11 @@ func TestStateDurability_TheDrainWritesAnArrivalTheIntervalSkipped(t *testing.T)
 	ctx := context.Background()
 	first := time.Now().UTC()
 	tb.quietSince = first
-	assert.NoError(t, tb.commitState(ctx, false)) // always due: writes `first`
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval)) // always due: writes `first`
 
 	newest := first.Add(time.Second)
 	tb.quietSince = newest
-	assert.NoError(t, tb.commitState(ctx, false)) // inside the interval, not owed
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval)) // inside the interval, not owed
 
 	last, n := rec.last()
 	assert.Equal(t, 1, n)
@@ -478,7 +478,7 @@ func TestStateDurability_AFailingProgressStoreRecoversOnItsFirstSuccessfulWrite(
 		newest = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
 		tb.quietSince = newest
 		// Stateless, so the commit itself succeeds whatever the write did.
-		assert.NoError(t, tb.commitState(ctx, false))
+		assert.NoError(t, tb.commitState(ctx, progressOnInterval))
 	}
 
 	attempts, recs := store.state()
@@ -508,7 +508,7 @@ func TestStateDurability_AFailingProgressStoreIsRetriedOnTheInterval(t *testing.
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
 		tb.quietSince = time.Now().UTC().Add(time.Duration(i) * time.Millisecond)
-		assert.NoError(t, tb.commitState(ctx, false))
+		assert.NoError(t, tb.commitState(ctx, progressOnInterval))
 	}
 	if n, _ := store.state(); n != 1 {
 		t.Fatalf("a failing store was attempted %d times in 50 commits inside one interval", n)
@@ -529,11 +529,11 @@ func TestStateDurability_TheDrainWritesTheArrivalAFailedWriteLeftBehind(t *testi
 	ctx := context.Background()
 	arrival := time.Now().UTC()
 	tb.quietSince = arrival
-	assert.NoError(t, tb.commitState(ctx, false)) // due, and the write fails
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval)) // due, and the write fails
 
 	// Silence: an idle commit sees no newer arrival and sits inside the
 	// interval, so it does not write.
-	assert.NoError(t, tb.commitState(ctx, false))
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval))
 	if n, _ := store.state(); n != 1 {
 		t.Fatalf("an idle commit inside the interval wrote: %d attempts", n)
 	}
@@ -625,7 +625,7 @@ func TestStateDurability_AProgressWriteTheStateTransactionRefusesFailsTheCommit(
 	exec(t, conn, `INSERT INTO out VALUES (1)`)
 	tb.quietSince = time.Now().UTC()
 
-	err = tb.commitState(ctx, false)
+	err = tb.commitState(ctx, progressOnInterval)
 	if err == nil && countCommitted(t, db, "out") == 0 {
 		t.Fatal("commitState reported success and the batch's row is not durable: " +
 			"the batch was discarded without an error")
@@ -658,7 +658,7 @@ func TestStateDurability_AClockThatStepsBackDoesNotStopTheProgressWrite(t *testi
 		WithProgressStore(rec), WithProgressWriteInterval(time.Hour))
 
 	ctx := context.Background()
-	assert.NoError(t, tb.commitState(ctx, false)) // the first write, always due
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval)) // the first write, always due
 	if _, n := rec.last(); n != 1 {
 		t.Fatalf("want one write, got %d", n)
 	}
@@ -668,7 +668,7 @@ func TestStateDurability_AClockThatStepsBackDoesNotStopTheProgressWrite(t *testi
 	tb.progressWrittenAt = time.Now().UTC().Add(24 * time.Hour)
 	tb.lock.Unlock()
 
-	assert.NoError(t, tb.commitState(ctx, false))
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval))
 	if _, n := rec.last(); n != 2 {
 		t.Fatalf("after the clock stepped back the write was skipped: %d writes, want 2", n)
 	}
@@ -744,7 +744,7 @@ func TestStateDurability_ARestartConfirmsNoQuietItDidNotSee(t *testing.T) {
 	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
 		&sync.Mutex{}, PipelineErrorPolicies{},
 		WithProgressStore(store), WithProgressWriteInterval(0))
-	assert.NoError(t, tb.commitState(ctx, false))
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval))
 
 	stmt, err := conn.NewStatement()
 	assert.NoError(t, err)
@@ -848,10 +848,19 @@ func (s *rejoiningSource) assign() {
 	s.assignedAt = time.Now()
 }
 
-func (s *rejoiningSource) Delivering() (time.Time, bool) {
+func (s *rejoiningSource) Delivering() (time.Duration, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.assignedAt, !s.assignedAt.IsZero()
+	if s.assignedAt.IsZero() {
+		return 0, false
+	}
+	return time.Since(s.assignedAt), true
+}
+
+func (s *rejoiningSource) assignedSince() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.assignedAt
 }
 
 // progress.quiet_is_watched, for a source that cannot deliver.
@@ -876,7 +885,7 @@ func TestStateDurability_ASourceThatCannotDeliverConfirmsNoQuiet(t *testing.T) {
 		return n >= 5
 	})
 	src.assign()
-	assigned, _ := src.Delivering()
+	assigned := src.assignedSince()
 	// Then delivering, and quiet, for several more.
 	waitFor(t, "ticks while delivering", 5*time.Second, func() bool {
 		p, _ := rec.last()
@@ -907,4 +916,68 @@ func TestStateDurability_ASourceThatCannotDeliverConfirmsNoQuiet(t *testing.T) {
 	// confirms most of the time since the assignment.
 	last := rec.recs[len(rec.recs)-1]
 	assert.That(t, last.LastCommit.Sub(last.LastArrival) > 100*time.Millisecond)
+}
+
+// A pipeline with no window closing on idleness has no reader of the row
+// between batches, so its idle ticks write nothing: no statement, no WAL
+// append, no fsync. That is the accounting a pipeline that is not a
+// windowed stream was never meant to pay. Batches still write on the
+// interval and the drain still writes once, so /stats and a soak reading
+// the table see the last batch and the clean stop.
+func TestStateDurability_IdleTicksWriteNothingWhereNoWindowClosesOnIdleness(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	src := newBlockingSource(messages(2))
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 2, 20*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(0), WithQuietConfirmation(false))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+
+	// The batch writes, once.
+	waitFor(t, "the batch's write", 5*time.Second, func() bool {
+		p, _ := rec.last()
+		return p.Messages == 2
+	})
+	// Then the stream is silent through many ticks, and nothing is written.
+	// The snapshot still moves on each, so /healthz reads them as commits;
+	// waiting on it is waiting on the ticks.
+	batch, _ := rec.last()
+	waitFor(t, "ten idle ticks", 5*time.Second, func() bool {
+		return tb.Progress().LastCommit.Sub(batch.LastCommit) > 10*20*time.Millisecond
+	})
+	_, n := rec.last()
+	assert.Equal(t, 1, n)
+
+	// The drain writes once more.
+	assert.NoError(t, tb.SyncState(context.Background()))
+	_, n = rec.last()
+	assert.Equal(t, 2, n)
+	close(src.release)
+	<-done
+}
+
+// progress.quiet_is_watched, on the drain.
+//
+// A signal during a rebalance: the source holds nothing, the drain forces
+// the write, and that write must not confirm the quiet since the loop's
+// last stamp, because the managers' final poll closes on it and the
+// backlog after the restart would be late.
+func TestStateDurability_TheDrainConfirmsNoQuietWhileTheSourceCannotDeliver(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	src := &rejoiningSource{idleSource: newIdleSource()} // never assigned
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(time.Hour))
+	tb.lock.Lock()
+	tb.quietSince = time.Now().Add(-time.Minute) // the last stamp, a minute ago
+	tb.lock.Unlock()
+
+	assert.NoError(t, tb.SyncState(context.Background()))
+	p, n := rec.last()
+	assert.Equal(t, 1, n)
+	if quiet := p.LastCommit.Sub(p.LastArrival); quiet > 10*time.Second {
+		t.Fatalf("the drain confirms %v of quiet while the source held nothing", quiet)
+	}
 }

@@ -47,5 +47,5 @@ Each is a claim with a check in the tests.
 |---|---|
 | `window.never_backwards` | No reading moves the watermark behind the committed one. Checked over ten thousand random readings. |
 | `window.idle_beats_grace` | Confirmed quiet with anything open closes by idle, and that close is never below the grace close. Checked over the same readings. |
-| `progress.quiet_is_watched` | The progress row never confirms more quiet than the engine spent waiting on a source that could deliver: a restart, a clock step, a sink write held in retries, a consumer between groups and a websocket reconnecting are not quiet. Checked in `internal/core`, `internal/kafka` and `internal/websocket`. |
+| `progress.quiet_is_watched` | The progress row never confirms more quiet than the engine spent waiting on a source that could deliver: a restart, a clock step, a sink write held in retries, a consumer between groups and a websocket reconnecting are not quiet, on the idle tick and on the drain alike. Checked in `internal/core`, `internal/kafka` and `internal/websocket`. |
 | `progress.late_never_early` | A progress write that is late, or fails, delays a close and never advances one. Checked in `internal/core` and here. |

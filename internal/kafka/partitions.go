@@ -23,9 +23,12 @@ type PartitionEvents struct {
 	mu      sync.Mutex
 	owned   map[string]map[int32]bool
 	closing bool
-	// assignedAt is when the group last assigned anything, with its
-	// monotonic reading: the earliest the consumer could have delivered from
-	// what it holds now.
+	// assignedAt is when the group last assigned anything: the earliest the
+	// consumer could have delivered from what it holds now. An incremental
+	// rebalance that only adds partitions moves it too, which restarts the
+	// engine's quiet clock and delays an idle close on a busy group; that is
+	// the late direction, and the added partitions' backlog was not
+	// deliverable before.
 	assignedAt time.Time
 	assigned   func(map[string][]int32)
 	released   func(map[string][]int32)
@@ -79,15 +82,15 @@ func (e *PartitionEvents) Subscribe(assigned, released, lost func(map[string][]i
 // engine counts no quiet while the consumer is between groups: a rejoin
 // after a crash waits out the session timeout holding nothing, and that
 // wait is not a silent stream.
-func (e *PartitionEvents) Delivering() (time.Time, bool) {
+func (e *PartitionEvents) Delivering() (time.Duration, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, ps := range e.owned {
 		if len(ps) > 0 {
-			return e.assignedAt, true
+			return time.Since(e.assignedAt), true
 		}
 	}
-	return time.Time{}, false
+	return 0, false
 }
 
 func (e *PartitionEvents) onAssigned(_ context.Context, _ *kgo.Client, parts map[string][]int32) {

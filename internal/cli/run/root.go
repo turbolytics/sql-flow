@@ -279,7 +279,12 @@ func NewCommand() *cobra.Command {
 			// State wiring. Everything below is skipped for a pipeline with no
 			// state path, which then behaves exactly as it did before.
 			var (
-				turbineOpts = []core.TurbineOption{core.WithProgressStore(progressStore)}
+				turbineOpts = []core.TurbineOption{
+					core.WithProgressStore(progressStore),
+					// No window closing on idleness, no reader between
+					// batches, no idle-tick write.
+					core.WithQuietConfirmation(conf.HasIdleClose()),
+				}
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)

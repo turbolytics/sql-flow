@@ -97,11 +97,20 @@
   in retries is not quiet, a wall clock stepping forward is not quiet, and a
   source that cannot deliver is not quiet: a Kafka consumer holding no
   partitions while it rejoins its group after a crash, or a websocket
-  reconnecting, holds the clock at zero until it can. A
+  reconnecting, holds the clock at zero until it can, on the idle tick and on
+  the drain. A source that never can, a consumer in a group with more members
+  than partitions, holds every bucket open, and the engine logs when a source
+  stops delivering and when it resumes. A
   quiet stream now closes on the first commit past the bound rather than the
   first poll, so the close can trail `idle_close_seconds` by up to one
   `flush_interval_seconds`; `validate` warns when the interval is the longer
   of the two, and `logs.rollup.clickhouse.yml` sets both to ten.
+- A pipeline with no window closing on idleness writes nothing on an idle
+  tick. The `sqlflow_progress` row's job between batches is to confirm a quiet
+  stream to such a window, and with none the tick wrote it anyway: one
+  statement, one WAL append and one fsync every `flush_interval_seconds`,
+  1.3 MB a day at the default, on a box whose state may live on an SD card.
+  Batches still write it, at most once a second, and the drain writes it once.
 - Every decision a window makes is a row in one of two truth tables in
   `internal/managers/decide.go`, checked when the package loads and rendered
   to `docs/windows/decisions.md` by a test.

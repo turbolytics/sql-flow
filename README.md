@@ -1183,8 +1183,16 @@ apart, so the close can trail `idle_close_seconds` by up to one flush
 interval; `validate` warns when the interval is the longer of the two. The
 manager's clock appears nowhere in the rule. A pipeline whose progress write
 is failing confirms nothing, and its open buckets stay open rather than
-closing on a stream that may still be live. On shutdown the drain commits
-first, so the final poll sees the quiet up to the signal.
+closing on a stream that may still be live; so does one whose source cannot
+deliver, and a source that never can, a consumer in a group with more
+members than partitions, holds every bucket open until it does, which the
+log says. On shutdown the drain commits first, so the final poll sees the
+quiet up to the signal.
+
+A pipeline with no window that closes on idleness has no reader of that
+confirmation, and its idle ticks write nothing: no statement, no WAL append,
+no fsync. Batches still record progress, at most once a second, and the
+drain records the clean stop.
 
 Every decision a window makes is a row in one of two tables, rendered from
 the code to [docs/windows/decisions.md](docs/windows/decisions.md).
