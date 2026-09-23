@@ -63,6 +63,17 @@ type Metrics struct {
 	// cannot: a websocket or webhook source has no offsets at all, and a
 	// per-partition lag is not one number.
 	PipelineLastMessage metric.Int64Gauge
+	// EventLagSeconds is how far behind the stream the pipeline ran at the
+	// last batch: now minus the newest event in it. EventLagMaxSeconds is
+	// the worst since the process started, and never resets, because two
+	// readers share the bundle this ends up in.
+	//
+	// EventLagObserved is when the reading was taken, as unix seconds. A
+	// consumer cut off from its brokers keeps its last reading, so the age
+	// of the reading is what says whether to believe it.
+	EventLagSeconds    metric.Float64Gauge
+	EventLagMaxSeconds metric.Float64Gauge
+	EventLagObserved   metric.Int64Gauge
 	// MessagePayloadBytes is the bytes of every message value received, the
 	// same messages message_count counts. It is payload, and named so: it
 	// excludes keys, headers, framing and TLS, and under Kafka compression
@@ -331,6 +342,28 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		); err != nil {
 			return nil, fmt.Errorf("%s: %w", f.name, err)
 		}
+	}
+
+	if m.EventLagSeconds, err = meter.Float64Gauge(
+		"pipeline_event_lag_seconds",
+		metric.WithDescription("How far behind the stream the pipeline ran at the last batch: now minus the newest event in it"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("pipeline_event_lag_seconds: %w", err)
+	}
+	if m.EventLagMaxSeconds, err = meter.Float64Gauge(
+		"pipeline_event_lag_max_seconds",
+		metric.WithDescription("The worst event lag since the process started"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("pipeline_event_lag_max_seconds: %w", err)
+	}
+	if m.EventLagObserved, err = meter.Int64Gauge(
+		"pipeline_event_lag_observed_timestamp",
+		metric.WithDescription("When the event lag was last measured, as unix seconds"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("pipeline_event_lag_observed_timestamp: %w", err)
 	}
 
 	if m.PipelineLastMessage, err = meter.Int64Gauge(

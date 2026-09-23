@@ -126,6 +126,11 @@ carries `pipeline` and no `serve`. A bundle from `sqlflow serve` carries
    one denormalized exception: `last_activity_at`.
 4. **Reserved names.** `commands` at the top level of the bundle and of the
    response. v1 never populates either.
+5. **Open vocabularies.** A field whose value is a name from a list, such as
+   `event_lag_basis`, may gain names. A reader that does not recognize one
+   keeps the reading and declines to compare it with a reading on a basis it
+   does know; it does not treat the bundle as invalid. Two lags on different
+   bases were never comparable anyway, which is why the basis is sent.
 
 ### New and changed fields
 
@@ -255,6 +260,81 @@ Invariants:
 - `error_count` is at least the sum of the per-phase counters.
 - Every one of these fields is absent from an engine that predates it, and a
   receiver treats absent as absent rather than zero.
+
+### Lag in time (added 2026-09-23)
+
+`pipeline.event_lag_seconds` is how far behind the stream the pipeline ran
+at its last batch: now minus the newest event in it, measured once per
+batch. The newest rather than the oldest, because the oldest adds the
+batch's own span and says as much about `batch_size` as about the stream.
+
+`event_lag_max_seconds` is the worst since the process started.
+`event_lag_observed_at` is when the reading was taken, which is how a
+receiver spots a reading that has stopped moving: a consumer cut off from
+its brokers keeps its last one. A negative lag is reported as zero, because
+a producer's clock ahead of the pipeline's is not a pipeline running ahead
+of its stream.
+
+`event_lag_basis` is where the event time came from. All four are absent for
+a source with no event time, and absent is not zero: a zero lag claims the
+pipeline has caught up with a stream it cannot measure.
+
+`event_lag_basis` is an open vocabulary, not an enum. v1 defines three
+values:
+
+- `kafka_create_time`: the record's timestamp as the producer set it. This
+  is Kafka's default, `message.timestamp.type = CreateTime`, so the reading
+  is only as good as the producer's clock.
+- `kafka_log_append_time`: the record's timestamp as the broker set it on
+  append, for a topic configured with `message.timestamp.type =
+  LogAppendTime`. One clock stamps every record.
+- `arrival`: the source stamped the message as it arrived. Queueing inside
+  the process, not transport.
+
+Kafka is two bases, not one, because the two measure different things and a
+reader cannot tell them apart from the number. Naming both was the point of
+the open vocabulary.
+
+**A record the pipeline cannot measure is skipped, not clamped.** Two kinds
+never contribute to a reading:
+
+- An event time before 2020-01-01. Nothing this engine reads is genuinely
+  that old; what arrives from the 1970s is a broken clock. Kafka encodes
+  "no timestamp" as -1, and a device without a real-time clock boots at the
+  epoch and stamps 1970 plus its uptime -- a millisecond past it, or a year,
+  but never exactly at it, so a guard against zero alone lets every one of
+  them through. One such record set a run's `event_lag_max_seconds` to 56
+  years, and the maximum never comes down. The cost of the floor is a
+  genuine replay of a pre-2020 archive, which reports no lag rather than a
+  wrong one.
+- An event time after now. That is a clock ahead of the pipeline's host, not
+  a pipeline ahead of its stream. Under `kafka_create_time` a single fast
+  device in a fleet wins "newest" for the whole batch; clamping its negative
+  lag to zero reported "caught up" while every other record in the batch was
+  an hour behind.
+
+A batch in which every record is skipped sends no reading, for the same
+reason a source with no event time sends none: absent is not zero.
+
+**The reading is taken when the batch arrives**, before the handler and the
+sink run. It is how far behind the stream the pipeline reads, not how long
+data takes to land. A slow flush shows up as `event_lag_observed_at` going
+stale, and in the batch and sink_flush durations beside it.
+
+`arrival` carries the same caveat wherever a server can deliver history. A
+websocket that replays from a cursor on reconnect -- Jetstream, say --
+hands over old events that this process stamps as arriving now, so the lag
+reads near zero exactly when the pipeline is furthest behind. `arrival`
+measures queueing inside the process and nothing before it, which is why it
+is a separate basis rather than a substitute for an event time.
+
+A source whose protocol carries no event time, and whose broker can hold a
+message before delivering it, is honestly described by neither. MQTT is the
+case in hand: it has no publish timestamp in 3.1.1 or 5.0, and a retained
+message or a QoS 1 redelivery after a reconnect arrives now however old it
+is, so `arrival` would report a lag near zero exactly when the pipeline is
+furthest behind. Such a source gets its own basis when it lands, or sends
+none of the four.
 
 ### The `serve` section
 

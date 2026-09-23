@@ -87,6 +87,10 @@ type PipelineSource struct {
 	// recorded, and false before the first. The message stays in the
 	// process: it carries the row that failed.
 	LastError func() (code string, at time.Time, ok bool)
+	// EventBasis is the source's event-time basis, empty for a source with
+	// none. The command knows it; the instruments do not carry it, because
+	// a string is not a metric.
+	EventBasis string
 }
 
 // ServeSource is what the serve section reads beyond the instruments. Both
