@@ -149,6 +149,7 @@ func TestIntegrationSourceMqtt_StreamsWithFilterAndSequence(t *testing.T) {
 // The commit acknowledges those 50 and no more, so the next process gets the
 // other 150.
 func TestIntegrationSourceMqtt_CommitMarksAcknowledgesOnlyTheProcessedPosition(t *testing.T) {
+	coverage.Covers(t, "source.mqtt")
 	coverage.Invariant(t, "source.commit.only_processed", integration)
 	broker := brokerOrFail(t)
 	prefix, client := uniq("only-processed"), uniq("c")
@@ -174,6 +175,7 @@ func TestIntegrationSourceMqtt_CommitMarksAcknowledgesOnlyTheProcessedPosition(t
 }
 
 func TestIntegrationSourceMqtt_ResumesFromTheCommittedPosition(t *testing.T) {
+	coverage.Covers(t, "source.mqtt")
 	coverage.Invariant(t, "source.resume.from_committed", integration)
 	broker := brokerOrFail(t)
 	prefix, client := uniq("resume"), uniq("c")

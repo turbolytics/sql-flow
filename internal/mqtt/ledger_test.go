@@ -31,6 +31,7 @@ func pub(id uint16) *paho.Publish { return &paho.Publish{PacketID: id, QoS: 1} }
 // received but not processed, and acknowledging them would let a crash
 // lose them.
 func TestSourceMqtt_AcksOnlyThroughTheCommittedSequence(t *testing.T) {
+	coverage.Covers(t, "source.mqtt")
 	coverage.Invariant(t, "source.commit.only_processed", integration)
 	l := newLedger()
 	c := &fakeAcker{}
@@ -44,6 +45,7 @@ func TestSourceMqtt_AcksOnlyThroughTheCommittedSequence(t *testing.T) {
 }
 
 func TestSourceMqtt_CommittedPositionNeverRegresses(t *testing.T) {
+	coverage.Covers(t, "source.mqtt")
 	coverage.Invariant(t, "source.marks.never_regress", integration)
 	l := newLedger()
 	c := &fakeAcker{}
