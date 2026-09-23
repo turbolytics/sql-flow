@@ -70,6 +70,15 @@ The source subscribes with Retain Handling 2. A retained reading is a stale valu
 
 `Delivering()` reports true while the client is connected. Reconnects back off from 1 s to 30 s, the same as the websocket source.
 
+`SeekTo` is a no-op. With a `state_path`, `run` passes the stored offsets to `SeekTo`, and a source without the method fails at startup (`internal/cli/run/root.go:523`). The stored offsets are the previous process's local sequence numbers and name nothing on the broker. The broker's session holds the position instead.
+
+A non-empty `Topic` has two side effects in the engine:
+
+- `handlers.InferredMemBatch` adds `kafka_topic`, `kafka_partition`, and `kafka_offset` columns to the batch. For MQTT they hold the filter, 0, and the local sequence number. The example configs select columns by name, so these never reach the sink. Renaming them to source-neutral names is out of scope.
+- With a `state_path`, the engine writes one offsets row per filter. The row is harmless, and `SeekTo` ignores it.
+
+A window with a `state_path` can count a reading twice after a crash. The state commit lands, then the process dies before the PUBACK, and the broker redelivers. The Kafka source avoids this by seeking to the offset in the state file. The MQTT source cannot seek. This is at-least-once, and the raw config, which the loss check reads, keeps no state.
+
 ### 2. Config
 
 ```yaml
@@ -91,27 +100,32 @@ Validation rejects three configs at startup:
 
 `receive_maximum` defaults to 65535, the protocol maximum.
 
+The first two checks run when the builder calls `Resolved*` methods on the config, following the webhook source. The builder never sees `batch_size`, so the third check is a method on the pipeline config. `sqlflow validate` and `sqlflow run` both call it, the same way both call `TurboStats.Check`.
+
 ### 3. Coverage declaration
 
-`TestToolingCoverageSourceRegistry_MatchesTheConstructorSwitch` requires every source kind to be declared in `docs/coverage/integrations/`. `source.mqtt` declares four source invariants:
+`TestToolingCoverageSourceRegistry_MatchesTheConstructorSwitch` requires every source kind to be declared in `docs/coverage/integrations/`. `source.mqtt` implements `Source` and `MarkCommitter`, and requires `unit` and `integration`. Its tests name their invariant with `coverage.Invariant(t, "<invariant>", "source.mqtt")`:
 
-- `source.commit.only_processed`: a unit test against a fake client.
+- `source.commit.only_processed`: a unit test against a fake acknowledger, and an integration test against Mosquitto.
 - `source.marks.never_regress`: a unit test.
 - `source.resume.from_committed`: an integration test against Mosquitto.
-- `source.commit.on_revoke`: exempt. MQTT has no partition assignment to revoke. A test proves the exemption.
+- `source.commit.on_revoke`: exempt. MQTT has no partition assignment to revoke. The `proven_by` test asserts that the source implements no revoke hook. That test must exist. The checker accepts any non-empty name, and `source.websocket.yml` names a test that does not exist.
 
 ### 4. Mosquitto (`dev/mosquitto/mosquitto.conf`)
 
-Mosquitto's defaults lose data under this contract. The POC overrides four settings:
+Mosquitto's defaults lose data under this contract. The POC overrides three settings:
 
 | Setting | Default | POC | Why |
 |---|---|---|---|
 | `max_queued_messages` | 1000 | 0 (unlimited) | The broker discards queued messages beyond the limit for a session. |
-| `max_inflight_messages` | 20 | 0 (unlimited) | It caps in-flight messages below the client's Receive Maximum and throttles each batch to 20. |
 | `persistence` | false | true, on a volume | Without it, a restart drops every session and queue. |
 | `autosave_interval` | 1800 s | 1 s | Mosquitto writes state to disk only at shutdown or on this interval. |
 
 A graceful restart saves state. A `kill -9` of the broker loses up to one `autosave_interval` of messages. That is a Mosquitto limit, not a SQLFlow limit. The POC reports it and does not test it.
+
+Mosquitto holds queued messages in memory. The persistence file is a snapshot of that memory, not a disk-backed queue. An unlimited queue trades silent loss for memory growth while SQLFlow is down. The crash scenario reports broker RSS per queued message. That number sizes `max_queued_bytes` for the Pi, where a bounded queue must fit the 1 GB budget.
+
+`max_inflight_messages` needs no override. Mosquitto 2.1.2 honors an MQTT 5 client's Receive Maximum with that setting at its default of 20.
 
 ### 5. Collector (`dev/iot/collector`, Python)
 
@@ -170,7 +184,7 @@ The check passes when every acknowledged `(device_id, metric, seq)` appears at l
 |---|---|---|---|
 | 1 | Steady state | 10 minutes at a fixed rate. | msgs/sec, peak RSS per service. |
 | 2 | Ceiling | Raise the rate until the broker queue for SQLFlow grows or a service nears its memory limit. | Highest sustained msgs/sec. |
-| 3 | SQLFlow crash | `docker kill` SQLFlow mid-stream, then start it again. | Loss check, duplicates, recovery time. |
+| 3 | SQLFlow crash | `docker kill` SQLFlow mid-stream, then start it again. | Loss check, duplicates, recovery time, broker RSS per queued message. |
 | 4 | Broker restart | `docker restart` Mosquitto mid-stream. | Loss check, duplicates, recovery time. |
 
 The agg config runs scenario 1 alone. It shows the window's output and its memory use.
@@ -186,8 +200,18 @@ The laptop numbers are a baseline for the stack, not a prediction for the Pi. Th
 - Exposing the concrete MQTT topic to SQL.
 - Shared subscriptions (`$share/...`) for more than one SQLFlow instance.
 
-## Risks to verify before the plan
+## Verified before the plan
 
-- paho.golang's manual acknowledgement API behaves as described. That includes acknowledging in order and rejecting an acknowledgement from a previous connection.
-- Mosquitto 2.x honors the client's Receive Maximum once `max_inflight_messages` is 0.
-- The window's `sqlcommand` sink can write to an attached database.
+A probe against Mosquitto 2.1.2 and paho.golang v0.23.0 confirmed the following:
+
+- **Receive Maximum:** a subscriber that held 5,000 publishes unacknowledged received all 5,000.
+- **Manual acknowledgement:** the subscriber acknowledged the first 2,000. After a graceful broker restart, the broker redelivered exactly 3,000.
+- **Default queue limit:** with the default `max_queued_messages`, an offline session kept 1,000 of 5,000 publishes. The broker dropped the rest without an error.
+
+paho.golang details that constrain the source:
+
+- The option is spelled `EnableManualAcknowledgment`.
+- `Client.Ack` releases PUBACKs in receive order through its `acksTracker`.
+- `Client.Ack` after its connection closes has undefined results (paho issue #160). Each held publish keeps the `*paho.Client` it arrived on, and the source acknowledges only through the current client.
+
+The window's `sqlcommand` sink runs on its own connection from the same DuckDB instance. `ATTACH` is instance-wide, and `dev/bench/bluesky/demo-10x-sqlcommand.yml` relies on it. The agg config's end-to-end run verifies it for this POC.
