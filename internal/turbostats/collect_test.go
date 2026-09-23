@@ -40,8 +40,14 @@ var static = Static{
 
 // runSource is what the run command hands Collect: a pipeline section, and
 // no serve section.
+//
+// It carries the three types and a label set, because every run process
+// does. The size guards measure a bundle nobody sends otherwise.
 func runSource(r *sdkmetric.ManualReader, stats func(context.Context) (*core.StateStats, error)) Source {
-	return Source{Static: static, Reader: r, Pipeline: &PipelineSource{Stats: stats}}
+	s := static
+	s.SourceType, s.SinkType, s.HandlerType = "kafka", "clickhouse", "inferred_mem"
+	s.Labels = map[string]string{"region": "eu_west", "env": "prod"}
+	return Source{Static: s, Reader: r, Pipeline: &PipelineSource{Stats: stats}}
 }
 
 func TestCollect_CountersAreTotalsSinceStart(t *testing.T) {
@@ -256,7 +262,12 @@ func TestCollect_ARealisticRunBundleStaysUnderOneKiB(t *testing.T) {
 	t.Logf("a realistic run bundle with lag, windows and retries is %d bytes", len(raw))
 	// Thirty-two partitions went in, and the bundle is no wider for them.
 	assert.Equal(t, 32, *b.Pipeline.LagPartitions)
-	assert.That(t, len(raw) < 1<<10)
+	// Two KiB, not one. The three types and a label set put a realistic run
+	// bundle at 1041 bytes, and the v1 signals amendment adds durations and
+	// lag on top. The receiver's limit is 16 KiB and a reporter sends once a
+	// minute; this number exists to catch a field that scales with data, not
+	// to shave bytes.
+	assert.That(t, len(raw) < 2<<10)
 }
 
 // A section's presence says what the process does. A run bundle has no serve
