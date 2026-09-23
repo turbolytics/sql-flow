@@ -61,17 +61,17 @@ func TestManagerWindow_ClosesAgainstTheStreamClock(t *testing.T) {
 	assert.Equal(t, 1, flushes)
 }
 
-// After the idle bound with no arrival, every bucket closes, the newest
-// included.
+// Once the engine has confirmed the idle bound with no arrival, every bucket
+// closes, the newest included. The confirmation is an idle tick: a commit
+// that late, still carrying the same arrival.
 func TestManagerWindow_IdleCloseClosesEverything(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
 	arrivedAt(t, d.pipeline, t0)
-	clock := t0.Add(time.Second)
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return clock })
+	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return t0.Add(time.Hour) })
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 1, "SF", 1)
@@ -79,13 +79,13 @@ func TestManagerWindow_IdleCloseClosesEverything(t *testing.T) {
 	rows, _ := sink.counts()
 	assert.Equal(t, int64(0), rows)
 
-	// One second short of the idle bound: still open.
-	clock = t0.Add(5*time.Minute - time.Second)
+	// An idle tick one second short of the idle bound: still open.
+	progressAt(t, d.pipeline, t0, t0.Add(5*time.Minute-time.Second))
 	assert.NoError(t, w.Poll(ctx))
 	rows, _ = sink.counts()
 	assert.Equal(t, int64(0), rows)
 
-	clock = t0.Add(5 * time.Minute)
+	progressAt(t, d.pipeline, t0, t0.Add(5*time.Minute))
 	assert.NoError(t, w.Poll(ctx))
 	rows, flushes := sink.counts()
 	assert.Equal(t, int64(2), rows)
@@ -95,6 +95,87 @@ func TestManagerWindow_IdleCloseClosesEverything(t *testing.T) {
 	wm, _, err := NewStore(d.pipeline).Load(ctx, testTable)
 	assert.NoError(t, err)
 	assert.That(t, wm.Equal(bucket(2)))
+}
+
+// A progress row that has stopped moving proves nothing about the stream. The
+// writes may be failing, or the pipeline may be wedged in a sink's retry
+// ladder with messages still waiting at the source. Read against the wall
+// clock, a frozen last_arrival looks exactly like a quiet stream, and the idle
+// rule closed every open bucket on a live one: the rows still arriving then
+// reopened the same bucket starts, which published a second time. Split and
+// duplicated rollups, pipeline still running.
+//
+// The row is the engine's statement that, as of last_commit, the newest
+// arrival was last_arrival. Only a commit made the idle bound after the
+// arrival says the stream was quiet that long, so however far the wall clock
+// runs, a frozen row closes nothing.
+func TestManagerWindow_AFrozenProgressRowNeverClosesOnIdleness(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	arrivedAt(t, d.pipeline, t0) // the last write that succeeded
+	clock := t0.Add(time.Second)
+	sink := &recordingSink{}
+	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return clock })
+
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	insertBucket(t, d.pipeline, 1, "SF", 1)
+
+	for _, after := range []time.Duration{5 * time.Minute, time.Hour, 24 * time.Hour} {
+		clock = t0.Add(after)
+		assert.NoError(t, w.Poll(ctx))
+		if rows, _ := sink.counts(); rows != 0 {
+			t.Fatalf("%v after a progress row froze, %d rows were published: "+
+				"the idle rule read a stale arrival as a quiet stream", after, rows)
+		}
+	}
+	assert.Equal(t, int64(2), countRows(t, d.pipeline, testTable))
+
+	// The engine writes again and confirms the quiet: now it closes.
+	progressAt(t, d.pipeline, t0, t0.Add(24*time.Hour))
+	assert.NoError(t, w.Poll(ctx))
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(2), rows)
+}
+
+// An arrival after the confirmation withdraws it. The stream was quiet, an
+// idle tick said so, and then a batch arrived before the manager polled: the
+// row now says the stream is live, and the poll must believe the row.
+func TestManagerWindow_AnArrivalAfterTheIdleTickKeepsBucketsOpen(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	sink := &recordingSink{}
+	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return t0.Add(time.Hour) })
+
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	insertBucket(t, d.pipeline, 1, "SF", 1)
+
+	// Quiet for six minutes and confirmed, then a batch at minute seven.
+	progressAt(t, d.pipeline, t0, t0.Add(6*time.Minute))
+	arrivedAt(t, d.pipeline, t0.Add(7*time.Minute))
+	assert.NoError(t, w.Poll(ctx))
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(0), rows)
+}
+
+// A progress table the engine has not written yet says nothing either way.
+func TestManagerWindow_AnUnwrittenProgressRowNeverClosesOnIdleness(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	exec(t, d.pipeline, `CREATE TABLE sqlflow_progress (last_arrival TIMESTAMPTZ, last_commit TIMESTAMPTZ, messages BIGINT NOT NULL)`)
+	exec(t, d.pipeline, `INSERT INTO sqlflow_progress VALUES (NULL, NULL, 0)`)
+	sink := &recordingSink{}
+	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return t0.Add(time.Hour) })
+
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	assert.NoError(t, w.Poll(ctx))
+	rows, _ := sink.counts()
+	assert.Equal(t, int64(0), rows)
 }
 
 // The watermark never moves backwards. Once bucket 0 has closed, deleting the
@@ -369,12 +450,16 @@ func TestManagerWindow_AQuietStreamAfterAnIdleCloseIsNotLag(t *testing.T) {
 	insertBucket(t, d.pipeline, 1, "SF", 1)
 	assert.NoError(t, w.Poll(ctx))
 
-	clock = t0.Add(5 * time.Minute) // the idle close
+	// The idle close: the engine commits five minutes after the newest
+	// arrival. The manager's own clock is not what closes it.
+	progressAt(t, d.pipeline, t0, t0.Add(5*time.Minute))
+	clock = t0.Add(5 * time.Minute)
 	assert.NoError(t, w.Poll(ctx))
 	assert.Equal(t, int64(0), countRows(t, d.pipeline, testTable))
 	assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
 
-	clock = t0.Add(time.Hour) // an hour of silence
+	progressAt(t, d.pipeline, t0, t0.Add(time.Hour)) // an hour of silence
+	clock = t0.Add(time.Hour)
 	assert.NoError(t, w.Poll(ctx))
 	assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
 }

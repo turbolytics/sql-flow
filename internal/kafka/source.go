@@ -103,6 +103,16 @@ func (k *Source) OnPartitions(assigned, released, lost func(map[string][]int32))
 	k.partitions.Subscribe(assigned, released, lost)
 }
 
+// Delivering implements core.Deliverer through the partition relay. A
+// source built without the relay cannot tell, and reports delivering, which
+// is what the engine assumed before ownership was tracked.
+func (k *Source) Delivering() (time.Duration, bool) {
+	if k.partitions == nil {
+		return 0, true
+	}
+	return k.partitions.Delivering()
+}
+
 func (k *Source) Start() error {
 	k.logger.Info("starting franz-go consumer")
 	return nil

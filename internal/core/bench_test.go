@@ -84,7 +84,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -97,7 +97,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -116,7 +116,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -144,7 +144,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -172,7 +172,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -191,7 +191,7 @@ func BenchmarkCommitState(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if err := tb.commitState(ctx); err != nil {
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -241,4 +241,80 @@ func BenchmarkProgressStoreRecord(b *testing.B) {
 			}
 		}
 	})
+}
+
+// BenchmarkCommitStateArrivalForced measures a commit that carries the
+// progress write against one that does not, which BenchmarkCommitState cannot:
+// its source never delivers, so it never gives a commit an arrival to carry.
+//
+// Here each iteration is a commit that follows a batch. With a zero write
+// interval every one writes, which is what every commit did when a newer
+// arrival forced the write; with the production interval the statement is
+// skipped, which is what a commit under load does now. The gap is the
+// per-commit UPDATE the interval buys back.
+//
+// Two configurations, because the run command has two. Without a state path
+// the progress connection autocommits. With one, autocommit is off and the
+// UPDATE rides the batch's own transaction into a file, which is the
+// configuration a durable pipeline actually runs and the one whose absolute
+// numbers the in-memory pair understates. The offsets stub writes nothing in
+// either, so the state-path pair prices the progress write and the commit
+// around it, not a Kafka source's offsets upsert.
+func BenchmarkCommitStateArrivalForced(b *testing.B) {
+	ctx := context.Background()
+
+	loop := func(b *testing.B, tb *Turbine) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			tb.quietSince = time.Now().UTC()
+			if err := tb.commitState(ctx, progressOnInterval); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+
+	inMemory := func(b *testing.B, opts ...TurbineOption) {
+		conn, cleanup := benchConn(b)
+		defer cleanup()
+		store := NewProgressStore(conn)
+		if err := store.Init(ctx); err != nil {
+			b.Fatal(err)
+		}
+		loop(b, benchTurbine(b, append([]TurbineOption{
+			WithStateStore(benchOffsets{}, benchTx{}),
+			WithProgressStore(store),
+		}, opts...)...))
+	}
+
+	onDisk := func(b *testing.B, opts ...TurbineOption) {
+		conn, cleanup := benchConnAt(b, filepath.Join(b.TempDir(), "state.db"))
+		defer cleanup()
+		// Init before autocommit goes off, the order root.go uses, so the
+		// CREATE TABLE commits on its own.
+		store := NewProgressStore(conn)
+		if err := store.Init(ctx); err != nil {
+			b.Fatal(err)
+		}
+		po, ok := conn.(adbc.PostInitOptions)
+		if !ok {
+			b.Fatal("connection does not support disabling autocommit")
+		}
+		if err := po.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled); err != nil {
+			b.Fatal(err)
+		}
+		tx, ok := conn.(stateTx)
+		if !ok {
+			b.Fatal("connection is not a transaction boundary")
+		}
+		loop(b, benchTurbine(b, append([]TurbineOption{
+			WithStateStore(benchOffsets{}, tx),
+			WithProgressStore(store),
+		}, opts...)...))
+	}
+
+	b.Run("in_memory/every_commit", func(b *testing.B) { inMemory(b, WithProgressWriteInterval(0)) })
+	b.Run("in_memory/on_the_interval", func(b *testing.B) { inMemory(b) })
+	b.Run("state_path/every_commit", func(b *testing.B) { onDisk(b, WithProgressWriteInterval(0)) })
+	b.Run("state_path/on_the_interval", func(b *testing.B) { onDisk(b) })
 }

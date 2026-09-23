@@ -1168,9 +1168,34 @@ pipeline:
 arrives the watermark is the newest bucket start the table holds, less
 `grace_seconds`: a bucket closes once the stream has moved past it, so a
 replay and a live run produce the same rows. The newest bucket start is what
-the table holds, so a grace shorter than one bucket rounds up to one. After
-`idle_close_seconds` with nothing arriving, the watermark moves past the newest
-bucket and every open bucket closes. Wall clock appears nowhere in the close.
+the table holds, so a grace shorter than one bucket rounds up to one. Once the
+engine has confirmed `idle_close_seconds` with nothing arriving, the watermark
+moves past the newest bucket and every open bucket closes.
+
+The confirmation is the engine's own: a commit that late which still reports
+the same newest arrival, and the quiet it counts is only the time the engine
+spent waiting on a source that could deliver, measured on the monotonic
+clock. A restart, a sink write held in retries, a wall clock stepping
+forward, a Kafka consumer waiting to rejoin its group and a websocket
+reconnecting are not quiet.
+With nothing arriving the commits are idle ticks, one `flush_interval_seconds`
+apart, so the close can trail `idle_close_seconds` by up to one flush
+interval; `validate` warns when the interval is the longer of the two. The
+manager's clock appears nowhere in the rule. A pipeline whose progress write
+is failing confirms nothing, and its open buckets stay open rather than
+closing on a stream that may still be live; so does one whose source cannot
+deliver, and a source that never can, a consumer in a group with more
+members than partitions, holds every bucket open until it does, which the
+log says. On shutdown the drain commits first, so the final poll sees the
+quiet up to the signal.
+
+A pipeline with no window that closes on idleness has no reader of that
+confirmation, and its idle ticks write nothing: no statement, no WAL append,
+no fsync. Batches still record progress, at most once a second, and the
+drain records the clean stop.
+
+Every decision a window makes is a row in one of two tables, rendered from
+the code to [docs/windows/decisions.md](docs/windows/decisions.md).
 
 **Late rows.** A row for a bucket below the watermark arrived after that
 bucket was published. `late_rows` is required, because the two policies are

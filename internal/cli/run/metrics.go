@@ -10,6 +10,7 @@ import (
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"go.opentelemetry.io/otel/exporters/prometheus"
@@ -234,13 +235,12 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 // flushIntervalFor is the one place the flush interval is decided. Absent,
 // zero and negative all mean the default: a ticker the pipeline cannot lose,
 // because a batch that a low-traffic topic never fills would otherwise wait
-// forever. The config schema's own floor is thirty seconds, so this only
-// ever fires for a config that omits the key.
+// forever.
 func flushIntervalFor(seconds int) time.Duration {
 	if seconds > 0 {
 		return time.Duration(seconds) * time.Second
 	}
-	return 30 * time.Second
+	return config.DefaultFlushIntervalSeconds * time.Second
 }
 
 // drainDeadlineFor is the one place the drain deadline is decided. Absent,

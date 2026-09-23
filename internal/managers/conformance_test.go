@@ -46,9 +46,11 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
 
-	// The idle rule closes everything: the stream went quiet an hour ago.
+	// The idle rule closes everything: the stream went quiet an hour ago, and
+	// the engine's idle ticks have said so ever since. The rule acts on that
+	// confirmation and not on the wall clock.
 	now := func() time.Time { return t0.Add(time.Hour) }
-	arrivedAt(t, d.pipeline, t0)
+	progressAt(t, d.pipeline, t0, t0.Add(time.Hour))
 
 	// The handler the bluesky demo runs, on the pipeline's connection. It
 	// checkpoints each time it re-initialises, which is the statement a

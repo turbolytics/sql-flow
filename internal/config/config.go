@@ -166,6 +166,9 @@ type Window struct {
 	GraceSeconds int `yaml:"grace_seconds,omitempty" jsonschema:"minimum=0"`
 	// How long the stream may be quiet before every open bucket closes.
 	// Absent means never: a stream that stops leaves its last bucket open.
+	// The quiet is the engine's to confirm, by a commit that late, so the
+	// close can trail this by up to one flush_interval_seconds; validate
+	// warns when that interval is the longer of the two.
 	IdleCloseSeconds int `yaml:"idle_close_seconds,omitempty" jsonschema:"minimum=0"`
 	// What happens to a row for a bucket that already closed. drop discards
 	// it and counts it. reemit publishes emit_sql over the late rows alone,
@@ -210,6 +213,36 @@ type TableSQL struct {
 type Tables struct {
 	// List of tables with their SQL definitions and management configurations.
 	SQL []TableSQL `yaml:"sql"`
+}
+
+// HasWindow reports whether any table declares a window, which is what
+// decides whether the watermark store is needed.
+func (c *Conf) HasWindow() bool {
+	if c.Tables == nil {
+		return false
+	}
+	for _, table := range c.Tables.SQL {
+		if table.Window != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// HasIdleClose reports whether any window closes on idleness, which is
+// what decides whether the engine confirms a quiet stream: without one,
+// nothing reads the progress row between batches and the idle tick writes
+// nothing.
+func (c *Conf) HasIdleClose() bool {
+	if c.Tables == nil {
+		return false
+	}
+	for _, table := range c.Tables.SQL {
+		if table.Window != nil && table.Window.IdleCloseSeconds > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // UDF registers a user-defined function the handler SQL can call.
@@ -437,6 +470,10 @@ type StateConf struct {
 }
 
 // Pipeline is the source, the query, and the destination.
+// DefaultFlushIntervalSeconds is the flush interval when the config sets
+// none. run and validate read the same number.
+const DefaultFlushIntervalSeconds = 30
+
 type Pipeline struct {
 	// Name of the pipeline.
 	Name string `yaml:"name,omitempty"`
@@ -449,7 +486,9 @@ type Pipeline struct {
 	// Messages accumulated before the handler runs. Larger batches trade
 	// latency for throughput.
 	BatchSize int `yaml:"batch_size,omitempty"`
-	// Longest a partial batch waits before it is invoked anyway.
+	// Longest a partial batch waits before it is invoked anyway. Absent
+	// means DefaultFlushIntervalSeconds. It also paces the idle tick, the
+	// commit that confirms a quiet stream to a window's idle close.
 	FlushIntervalSeconds int `yaml:"flush_interval_seconds,omitempty"`
 	// Longest a shutdown may take after SIGTERM. The final batch, the
 	// managers' final poll and the state syncs share it. Absent means 30.

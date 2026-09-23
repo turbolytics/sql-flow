@@ -91,6 +91,30 @@
   request, so a browser no longer sends a preflight before it. `client_id`
   reaches neither the SQL nor the cache key, and a dataset cannot declare a
   param of that name. The request log's `token` field is now `client`.
+- `sqlflow_progress` is written once a second, not on every commit. Any commit
+  that carried a newer arrival used to force the write, which under load is
+  every commit: one `UPDATE` per batch, about 8 to 9 percent of throughput at
+  batch 5000 and about a quarter at batch 500 on the container benchmark
+  (`BenchmarkCommitStateArrivalForced` isolates the per-commit cost, in memory
+  and on a state path). The forced write existed for an idle close that
+  compared `last_arrival` against the wall clock, where a late write meant an
+  early close; the idle close now reads the row's own two clocks, so a late
+  write is a late close and the interval is enough. Every write still carries
+  the newest arrival at its true time, so a skipped commit loses nothing, and
+  the shutdown drain forces one. Anything reading the row out of band --
+  handler SQL, `emit_sql`, a `sqlcommand` sink, `/debug`, the `slow-soak`
+  skill -- sees a value at most one second, or one idle tick, behind.
+- A failed `sqlflow_progress` write is no longer only a log line, and what it
+  means now depends on whether the pipeline has a state path. Without one the
+  write commits by itself, the batch is unaffected, the failure is recorded as
+  `system.state.progress_write_failed`, separate from a state commit failure,
+  and the retry is paced by the write interval. With a state path the write
+  runs inside the batch's transaction, and a statement DuckDB refuses aborts
+  that transaction; see Fixed.
+- The shutdown drain now forces the `sqlflow_progress` write. The managers'
+  final poll runs after it, and a write the interval had skipped, or one that
+  failed moments before the signal, would otherwise leave the quiet up to the
+  signal unconfirmed and that poll leaving buckets open.
 
 ### Deprecated
 
@@ -102,6 +126,47 @@
 
 ### Fixed
 
+- A window with `idle_close_seconds` could close every open bucket on a stream
+  that was still live. The idle rule compared the manager's clock with
+  `sqlflow_progress.last_arrival`, and that gap grows by itself whenever the
+  row stops being written: the write is failing, or the pipeline is held in a
+  sink's retries with messages still waiting at the source. Rows still
+  arriving then reopened the same buckets, which published a second time. The
+  rule now acts on what the row confirms, `last_commit - last_arrival`: a
+  commit made that long after the newest arrival. A row that has stopped moving
+  confirms nothing, and its buckets wait. The quiet the row confirms is only
+  the time the engine spent waiting on its source, on the monotonic clock: a
+  restarted process no longer confirms the outage before it, a sink write held
+  in retries is not quiet, a wall clock stepping forward is not quiet, and a
+  source that cannot deliver is not quiet: a Kafka consumer holding no
+  partitions while it rejoins its group after a crash, or a websocket
+  reconnecting, holds the clock at zero until it can, on the idle tick and on
+  the drain. A source that never can, a consumer in a group with more members
+  than partitions, holds every bucket open, and the engine logs when a source
+  stops delivering and when it resumes. A
+  quiet stream now closes on the first commit past the bound rather than the
+  first poll, so the close can trail `idle_close_seconds` by up to one
+  `flush_interval_seconds`; `validate` warns when the interval is the longer
+  of the two, and `logs.rollup.clickhouse.yml` sets both to ten.
+- A pipeline with no window closing on idleness writes nothing on an idle
+  tick. The `sqlflow_progress` row's job between batches is to confirm a quiet
+  stream to such a window, and with none the tick wrote it anyway: one
+  statement, one WAL append and one fsync every `flush_interval_seconds`,
+  1.3 MB a day at the default, on a box whose state may live on an SD card.
+  Batches still write it, at most once a second, and the drain writes it once.
+- Every decision a window makes is a row in one of two truth tables in
+  `internal/managers/decide.go`, checked when the package loads and rendered
+  to `docs/windows/decisions.md` by a test.
+- A pipeline with a state path and a source that has no offsets, such as a
+  webhook, could discard a whole batch without an error. The `sqlflow_progress`
+  write runs inside the batch's transaction, and a write DuckDB refused aborted
+  it. The failure was only logged, nothing was left to write before the commit,
+  and a commit on an aborted transaction reports success while keeping none of
+  the batch. The refused write now fails the commit as
+  `system.state.commit_failed`, so the batch rolls back and the pipeline stops
+  rather than carrying on without it. A Kafka source already stopped, because
+  saving its offsets hit the aborted transaction; its error now names the
+  cause.
 - `window_late_rows_total` counted rows twice when a close failed after
   counting them. The count was taken before the close committed, so a close
   that lost a write conflict rolled its delete back and kept its count, and

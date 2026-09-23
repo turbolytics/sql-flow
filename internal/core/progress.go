@@ -10,8 +10,11 @@ import (
 
 // progressTable is engine bookkeeping beside sqlflow_offsets: one row that
 // says when the newest batch arrived, when state last committed, and how many
-// messages have been consumed. The window predicate reads it to tell a quiet
-// stream from a replay; /stats and /healthz read the in-memory copy.
+// messages have been consumed. One UPDATE sets them together, so the row is
+// a statement: as of last_commit, the newest arrival was last_arrival. The
+// window predicate closes on idleness only when that gap reaches its bound,
+// so a row that stops being written confirms nothing. /stats and /healthz
+// read the in-memory copy.
 const progressTable = "sqlflow_progress"
 
 // Progress is the pipeline's liveness. Wall clock, UTC.
@@ -27,8 +30,10 @@ type Progress struct {
 	Errors    int64
 }
 
-// progressSaver is what the Turbine needs; ProgressStore is the DuckDB one.
-type progressSaver interface {
+// ProgressSaver is what the Turbine records liveness into; ProgressStore is
+// the DuckDB one. Exported so a caller outside core can wrap or replace the
+// store without redeclaring the interface.
+type ProgressSaver interface {
 	Record(ctx context.Context, p Progress) error
 }
 

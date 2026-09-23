@@ -227,3 +227,29 @@ pipeline:
 	}
 	assert.That(t, found)
 }
+
+// An idle close shorter than the flush interval is honoured late: the close
+// waits for a commit made past the bound, and a quiet stream commits once a
+// flush interval. validate says so, and says nothing once the interval is at
+// or below the bound.
+func TestValidateSchema_IdleCloseShorterThanTheFlushIntervalWarns(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	// The default flush interval is thirty seconds, and ten is below it.
+	rep := validateWindowed(t, "bucket TIMESTAMPTZ", "idle_close_seconds: 10")
+	assert.That(t, rep.OK)
+	diags := windowDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.That(t, strings.Contains(diags[0].Message, "close 10 to 40 seconds after the last arrival"))
+
+	// The interval brought down to the bound: nothing to say.
+	paced := strings.Replace(windowedConfig, "pipeline:\n  batch_size: 1\n",
+		"pipeline:\n  batch_size: 1\n  flush_interval_seconds: 10\n", 1)
+	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: strings.Replace(
+		strings.Replace(paced, "%s", "bucket TIMESTAMPTZ", 1), "%s", "idle_close_seconds: 10", 1)})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
+
+	// No idle close: nothing to trail.
+	assert.Equal(t, 0, len(windowDiagnostics(validateWindowed(t, "bucket TIMESTAMPTZ", ""))))
+}

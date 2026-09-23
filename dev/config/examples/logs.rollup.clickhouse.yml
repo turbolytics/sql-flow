@@ -43,6 +43,11 @@ tables:
         time_column: bucket
         size_seconds: 3600
         grace_seconds: 7200
+        # The close waits for the engine to commit ten seconds after the last
+        # arrival, and with nothing arriving it commits once a flush interval,
+        # so pipeline.flush_interval_seconds below is set to match. At the
+        # default of thirty the last buckets would close 10 to 40 seconds
+        # after the corpus ends.
         idle_close_seconds: 10
         # reemit, not drop, and this is the setting to understand.
         #
@@ -81,6 +86,7 @@ tables:
 pipeline:
   name: logs-rollup-clickhouse
   batch_size: {{ SQLFLOW_BATCH_SIZE|default(50000) }}
+  flush_interval_seconds: 10
 
   source:
     type: kafka

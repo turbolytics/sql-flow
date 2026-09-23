@@ -284,7 +284,7 @@ func NewCommand() *cobra.Command {
 			// State wiring. Everything below is skipped for a pipeline with no
 			// state path, which then behaves exactly as it did before.
 			var (
-				turbineOpts = []core.TurbineOption{core.WithProgressStore(progressStore)}
+				turbineOpts = progressOptions(conf, progressStore)
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)
@@ -585,19 +585,21 @@ func NewCommand() *cobra.Command {
 				// was not a signal, --max-msgs or a closed source, this starts
 				// the clock, and the steps finish in milliseconds.
 				drainCtx := budget.Context()
-				// Close the open transaction first. The managers' final poll
-				// runs on this connection, and its close predicate is
-				// evaluated against the transaction's clock -- which is
-				// frozen at the last commit until this runs.
+				// Commit first. The managers' final poll reads the progress
+				// row from a connection of its own, so it sees only what has
+				// been committed, and it closes on idleness only for the quiet
+				// that row confirms. This forces the write, so the poll sees
+				// the quiet up to the signal rather than up to the last
+				// interval write.
 				if err := turbine.SyncState(drainCtx); err != nil {
 					l.Error("failed to sync state before final poll", zap.Error(err))
 				}
 				stopManagers()
 				managerErr := group.wait()
-				// And again afterwards, so what that poll published is
-				// actually deleted. Without this the delete is rolled back
-				// when the connection closes, and every clean shutdown
-				// guarantees a republished window on the next start.
+				// And again afterwards, so the batch transaction closes
+				// with everything the drain wrote before the connection
+				// does. The managers' final poll committed on connections
+				// of its own; this is the engine's.
 				if err := turbine.SyncState(drainCtx); err != nil {
 					l.Error("failed to sync state after final poll", zap.Error(err))
 				}

@@ -32,19 +32,27 @@ func windowDeclaration(table config.TableSQL) managers.Declaration {
 	}
 }
 
+// progressOptions is run's wiring of the progress row: the store, and
+// whether idle ticks write it. They do only where a window closes on
+// idleness, because that is the only reader of the row between batches; a
+// pipeline with no such window does no accounting while it waits. Wired
+// backwards in either direction it fails silently, so it is one function
+// with a test of both shapes rather than a line in root.go.
+func progressOptions(conf *config.Conf, store core.ProgressSaver) []core.TurbineOption {
+	return []core.TurbineOption{
+		core.WithProgressStore(store),
+		core.WithQuietConfirmation(conf.HasIdleClose()),
+	}
+}
+
 // initWindowStores creates sqlflow_windows on the pipeline's connection,
 // under autocommit, so the DDL commits on its own the way the offsets and
 // progress tables' does. Nothing to do for a pipeline with no window.
 func initWindowStores(ctx context.Context, conf *config.Conf, conn adbc.Connection) error {
-	if conf.Tables == nil {
+	if !conf.HasWindow() {
 		return nil
 	}
-	for _, table := range conf.Tables.SQL {
-		if table.Window != nil {
-			return managers.NewStore(conn).Init(ctx)
-		}
-	}
-	return nil
+	return managers.NewStore(conn).Init(ctx)
 }
 
 // buildManagedTables constructs a watermark manager per table that declares
