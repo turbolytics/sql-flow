@@ -76,7 +76,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**52 invariants declared: 44 safety and 8 liveness. Of 181 (invariant, integration) cells: 96 proven, 51 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
+**53 invariants declared: 45 safety and 8 liveness. Of 183 (invariant, integration) cells: 96 proven, 53 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -160,6 +160,7 @@ drains. An invariant holds only if it holds on all four.
 | `pipeline.shutdown.commits_only_delivered` | After the consume loop returns, clean or failed, the commits the process makes on its way out never make a position durable past the last message the sink acknowledged. Not in the state database, and not at the source. *(violated once: #279)* | ✅ u | ✅ u |
 | `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u | ✅ u |
 | `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
+| `pipeline.window.counts_every_row` | A bucket's published value counts exactly the rows produced for it, once. Rows the engine dropped under late_rows drop are excluded and counted in window_late_rows_total; late_rows reemit publishes a different contract and is out of scope. *(declared, tracked by #183)* | ❌ missing | ❌ missing |
 
 ## Safety invariants: types
 
