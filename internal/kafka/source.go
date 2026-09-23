@@ -279,8 +279,20 @@ func (k *Source) Stream() <-chan []core.Message {
 				// is topic-level config, so the last record of a fetch
 				// speaks for the rest, and a lag reading can say whether it
 				// came from a producer's clock or the broker's.
+				//
+				// This assumes one timestamp type across the consumer. A
+				// topics: list mixing a CreateTime topic with a
+				// LogAppendTime one reports whichever was fetched last, and
+				// readings from the two are not comparable. Naming one basis
+				// for a consumer that has two is a contract problem rather
+				// than a code one.
+				//
+				// A pre-0.10.0 topic reports -1 and never overwrites a real
+				// type. Its records carry no usable time and the floor skips
+				// them anyway, so letting it clear the basis would drop the
+				// valid readings of every topic beside it.
 				if n := len(p.Records); n > 0 {
-					k.timestampType.Store(int32(p.Records[n-1].Attrs.TimestampType()))
+					k.observeTimestampType(p.Records[n-1].Attrs.TimestampType())
 				}
 			})
 
@@ -318,6 +330,15 @@ func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
 	}
 }
 
+// observeTimestampType records which clock stamped a fetch's records, and
+// is lifted out of the fetch loop so a test can reach it without a broker.
+// A -1 never overwrites a real type; see the call site in Stream.
+func (k *Source) observeTimestampType(ts int8) {
+	if ts >= 0 {
+		k.timestampType.Store(int32(ts))
+	}
+}
+
 // EventTimeBasis names the clock behind Message.EventAtNanos.
 //
 // A Kafka record's timestamp is the producer's own clock unless the topic
@@ -326,16 +347,12 @@ func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
 // fleet's clocks, the other is one broker's -- so a lag reading has to say
 // which it came from rather than claiming "the broker stamped it".
 //
-// Before the first fetch this reports the Kafka default. A pre-0.10.0
-// record carries no timestamp at all, and a basis of "" means the bundle
-// omits the lag rather than reporting one nothing stamped.
+// Before the first fetch this reports the Kafka default. A consumer reading
+// only pre-0.10.0 topics reports it too, and reports no lag at all: those
+// records carry no usable time, so no reading is ever taken from them.
 func (s *Source) EventTimeBasis() string {
-	switch s.timestampType.Load() {
-	case 1:
+	if s.timestampType.Load() == 1 {
 		return core.EventBasisKafkaLogAppendTime
-	case -1:
-		return ""
-	default:
-		return core.EventBasisKafkaCreateTime
 	}
+	return core.EventBasisKafkaCreateTime
 }

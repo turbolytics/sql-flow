@@ -389,28 +389,42 @@ func TestCoreConsumeLoop_AFutureEventDoesNotHideABacklog(t *testing.T) {
 	assert.That(t, lag > 3500 && lag < 3700)
 }
 
-// Kafka encodes "no timestamp" as -1, and kgo renders that as a moment just
-// before the epoch rather than Go's zero time, so IsZero() does not catch
-// it. One such record -- an RTC-less device that booted near 1970, a
-// producer sending -1, a v0 legacy message -- used to set the run's worst
-// lag to 56 years, and the worst lag never comes down.
-func TestCoreConsumeLoop_AnAbsentTimestampIsNotAnOldEvent(t *testing.T) {
+// A clock that never learned the date is not an old event. Kafka encodes
+// "no timestamp" as -1, and a device without a real-time clock boots at the
+// epoch and stamps 1970 plus its uptime -- a millisecond past it, or a day,
+// but never exactly at it. Each case used to set the run's worst lag to 56
+// years, and the worst lag never comes down.
+//
+// The uptime cases are the ones a zero check misses, which is what the
+// floor exists for.
+func TestCoreConsumeLoop_AClockBelowTheFloorIsNotAnOldEvent(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
-	bad := messages(1)
-	bad[0].EventAtNanos = time.Unix(0, -1e6).UnixNano()
-	// Not a zero value, which is why a zero check alone misses it.
-	assert.That(t, bad[0].EventAtNanos != 0)
+	epoch := time.Unix(0, 0)
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+	}{
+		{"kafka reports no timestamp", epoch.Add(-time.Millisecond)},
+		{"the zero value", time.Time{}},
+		{"device up one millisecond", epoch.Add(time.Millisecond)},
+		{"device up five minutes", epoch.Add(5 * time.Minute)},
+		{"device up a day", epoch.Add(24 * time.Hour)},
+		{"device up a decade", epoch.AddDate(10, 0, 0)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := messages(1)
+			bad[0].EventAtNanos = tc.at.UnixNano()
+			good := messages(1)
+			good[0].EventAtNanos = time.Now().Add(-time.Second).UnixNano()
 
-	good := messages(1)
-	good[0].EventAtNanos = time.Now().Add(-time.Second).UnixNano()
+			src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{bad, good}}}
+			tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
 
-	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{bad, good}}}
-	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
-
-	_, err := tb.ConsumeLoop(context.Background(), 0)
-	assert.NoError(t, err)
-	// The healthy batch decides both readings; the epoch record is absent,
-	// not ancient.
-	assert.That(t, flatFloat(t, reader, "pipeline_event_lag_seconds") < 60)
-	assert.That(t, flatFloat(t, reader, "pipeline_event_lag_max_seconds") < 60)
+			_, err := tb.ConsumeLoop(context.Background(), 0)
+			assert.NoError(t, err)
+			// The healthy batch decides both readings.
+			assert.That(t, flatFloat(t, reader, "pipeline_event_lag_seconds") < 60)
+			assert.That(t, flatFloat(t, reader, "pipeline_event_lag_max_seconds") < 60)
+		})
+	}
 }

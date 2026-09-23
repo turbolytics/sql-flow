@@ -15,9 +15,10 @@
     websocket sources stamp arrival and report `arrival`, which is queueing
     inside the process rather than transport. The basis travels with the
     number because they measure different spans.
-  - A record whose event time is at or before the epoch, or ahead of the
-    pipeline's own clock, never contributes to a reading. The first is an
-    absent timestamp, not an old event; the second is a producer's clock
+  - A record whose event time is before 2020, or ahead of the pipeline's own
+    clock, never contributes to a reading. The first is a clock that never
+    learned the date rather than an old event: a device without a real-time
+    clock stamps 1970 plus its uptime. The second is a producer's clock
     running fast, and taking it would report "caught up" during a real
     backlog.
   - Measured once per batch, from the newest event in it. A source with no

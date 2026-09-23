@@ -298,11 +298,15 @@ the open vocabulary.
 **A record the pipeline cannot measure is skipped, not clamped.** Two kinds
 never contribute to a reading:
 
-- An event time at or before the Unix epoch. Kafka encodes "no timestamp" as
-  -1, and a client renders that as a moment just before the epoch rather
-  than a zero value. Devices without a real-time clock boot near 1970 and
-  stamp records from there. One such record set a run's `event_lag_max_seconds`
-  to 56 years, and the maximum never comes down.
+- An event time before 2020-01-01. Nothing this engine reads is genuinely
+  that old; what arrives from the 1970s is a broken clock. Kafka encodes
+  "no timestamp" as -1, and a device without a real-time clock boots at the
+  epoch and stamps 1970 plus its uptime -- a millisecond past it, or a year,
+  but never exactly at it, so a guard against zero alone lets every one of
+  them through. One such record set a run's `event_lag_max_seconds` to 56
+  years, and the maximum never comes down. The cost of the floor is a
+  genuine replay of a pre-2020 archive, which reports no lag rather than a
+  wrong one.
 - An event time after now. That is a clock ahead of the pipeline's host, not
   a pipeline ahead of its stream. Under `kafka_create_time` a single fast
   device in a fleet wins "newest" for the whole batch; clamping its negative

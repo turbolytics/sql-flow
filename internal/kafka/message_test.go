@@ -46,9 +46,26 @@ func TestSourceKafka_BasisNamesTheClockThatStamped(t *testing.T) {
 
 	s.timestampType.Store(0)
 	assert.Equal(t, core.EventBasisKafkaCreateTime, s.EventTimeBasis())
+}
 
-	// A pre-0.10.0 record carries no timestamp. No basis means the bundle
-	// omits the lag, rather than reporting one nothing stamped.
-	s.timestampType.Store(-1)
-	assert.Equal(t, "", s.EventTimeBasis())
+// A topic that stamps nothing must not silence the topics that do. topics:
+// is a list, so one pre-0.10.0 topic among several used to clear the basis
+// for the whole consumer, and the bundle then dropped valid readings from
+// every other topic in it.
+func TestSourceKafka_ATopicWithNoTimestampsKeepsTheBasis(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	s := &Source{}
+
+	s.observeTimestampType(1)
+	assert.Equal(t, core.EventBasisKafkaLogAppendTime, s.EventTimeBasis())
+
+	// The pre-0.10.0 topic's fetch lands next. Its own records carry no
+	// usable time and the floor skips them; the basis stays what the
+	// stamping topic set.
+	s.observeTimestampType(-1)
+	assert.Equal(t, core.EventBasisKafkaLogAppendTime, s.EventTimeBasis())
+
+	// A real type still overwrites a real type.
+	s.observeTimestampType(0)
+	assert.Equal(t, core.EventBasisKafkaCreateTime, s.EventTimeBasis())
 }
