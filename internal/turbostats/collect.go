@@ -135,6 +135,10 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 		p.Duration = &PipelineDurations{Batch: batch, SinkFlush: flush}
 	}
 
+	if wait, ok := floats["pipeline_recv_wait_seconds"]; ok {
+		p.RecvWaitSeconds = &wait
+	}
+
 	// Always sent, zeros included: the engine counts these, and a pipeline
 	// that has failed nothing has failed nothing. Source is the exception,
 	// above.

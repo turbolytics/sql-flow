@@ -712,3 +712,13 @@ func TestCollect_NoErrorYetCarriesNoCode(t *testing.T) {
 	assert.That(t, b.Pipeline.LastErrorCode == nil)
 	assert.That(t, b.Pipeline.LastErrorAt == nil)
 }
+
+func TestCollect_CarriesTheConsumeLoopsWait(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	m.RecvWaitSeconds.Add(context.Background(), 1.5)
+
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, 1.5, *b.Pipeline.RecvWaitSeconds)
+}

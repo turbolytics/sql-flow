@@ -235,3 +235,42 @@ func TestCoreRecordError_KeepsTheLastCode(t *testing.T) {
 	assert.Equal(t, string(errs.CodeSinkUnreachable), code)
 	assert.That(t, !at.IsZero())
 }
+
+// flatFloat is flatValue for a float counter.
+func flatFloat(t *testing.T, r *sdkmetric.ManualReader, name string) float64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, r.Collect(context.Background(), &rm))
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[float64])
+			if !ok {
+				t.Fatalf("%s is not a float sum", name)
+			}
+			for _, dp := range sum.DataPoints {
+				if dp.Attributes.Len() == 0 {
+					return dp.Value
+				}
+			}
+		}
+	}
+	t.Fatalf("%s was never recorded", name)
+	return 0
+}
+
+// A quiet source and a saturated engine look identical from outside: both
+// report a low rate. The wait separates them, so it is a counter the bundle
+// can read rather than a number in a log line.
+func TestCoreConsumeLoop_CountsTimeWaitingForInput(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	src := &fakeSource{batches: [][]Message{messages(10)}}
+	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	assert.That(t, flatFloat(t, reader, "pipeline_recv_wait_seconds") >= 0)
+}
