@@ -25,13 +25,17 @@ import (
 // The wire types, aliased so the engine names one package for the collector
 // and its document.
 type (
-	Bundle     = wire.Bundle
-	Instance   = wire.Instance
-	Process    = wire.Process
-	Pipeline   = wire.Pipeline
-	Serve      = wire.Serve
-	ServeCache = wire.ServeCache
-	Exit       = wire.Exit
+	Bundle   = wire.Bundle
+	Duration = wire.Duration
+	Instance = wire.Instance
+	Process  = wire.Process
+	Pipeline = wire.Pipeline
+	Serve    = wire.Serve
+	// The duration groups, one per section.
+	PipelineDurations = wire.PipelineDurations
+	ServeDurations    = wire.ServeDurations
+	ServeCache        = wire.ServeCache
+	Exit              = wire.Exit
 )
 
 const (

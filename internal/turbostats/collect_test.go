@@ -13,6 +13,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"github.com/zeebo/assert"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -134,7 +135,11 @@ func TestCollect_OmitsTheLastMessageBeforeAnyArrive(t *testing.T) {
 	assert.That(t, !strings.Contains(string(raw), "last_activity_at"))
 }
 
-func TestCollect_HistogramsAreNotInTheBundle(t *testing.T) {
+// The bundle carries the contract's coarse distribution, never the engine's
+// histogram. The engine has sixteen boundaries and names its instruments
+// after itself; the wire has eight, fixed, so a fleet's buckets can be
+// summed and a receiver needs no instrument names.
+func TestCollect_TheEnginesHistogramIsNotInTheBundle(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, m, _ := provider(t)
 	ctx := context.Background()
@@ -145,7 +150,9 @@ func TestCollect_HistogramsAreNotInTheBundle(t *testing.T) {
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
 	assert.That(t, !strings.Contains(string(raw), "latency"))
-	assert.That(t, !strings.Contains(string(raw), "bucket"))
+	assert.That(t, !strings.Contains(string(raw), "bounds"))
+	// Nine counts, whatever the engine recorded into sixteen.
+	assert.Equal(t, len(wire.DurationBounds)+1, len(b.Pipeline.Duration.SinkFlush.Buckets))
 }
 
 // Absent state and empty state are different facts, the same rule /stats
@@ -509,4 +516,86 @@ func TestCollect_ActivityIsNeverAfterSentAt(t *testing.T) {
 	assert.NoError(t, err)
 	assert.That(t, b.LastActivityAt != nil)
 	assert.That(t, !b.LastActivityAt.After(b.SentAt))
+}
+
+// The engine's boundaries are finer than the wire's, and every wire
+// boundary is one of them, so the coarse counts are sums of fine ones and
+// nothing is interpolated. If a boundary is ever dropped from
+// latencyBuckets this test fails rather than silently reporting a
+// distribution that is wrong.
+func TestDurationOf_SumsTheEnginesBucketsIntoTheWires(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+	for _, seconds := range []float64{0.0005, 0.002, 0.02, 0.2, 0.7, 3, 40, 120} {
+		m.BatchProcessingLatency.Record(ctx, seconds)
+	}
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	d := b.Pipeline.Duration.Batch
+	assert.Equal(t, uint64(8), d.Count)
+	assert.Equal(t, 9, len(d.Buckets))
+	// Each sample lands in the first wire bucket whose boundary is at or
+	// above it. Nothing lands in the 30 s bucket: the 40 s sample is the
+	// next one up.
+	assert.DeepEqual(t, []uint64{1, 1, 1, 1, 1, 1, 0, 1, 1}, d.Buckets)
+
+	var sum float64
+	for _, c := range d.Buckets {
+		sum += float64(c)
+	}
+	assert.Equal(t, float64(d.Count), sum)
+	assert.Equal(t, 0.0005, d.MinSeconds)
+	assert.Equal(t, float64(120), d.MaxSeconds)
+}
+
+// A phase nothing recorded is absent, and so is the group when no phase
+// recorded anything. Zeros would say the work happened and took no time.
+func TestCollect_DurationsAreAbsentUntilRecorded(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.Duration == nil)
+}
+
+func TestCollect_SinkFlushDurationIsItsOwnPhase(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+	m.SinkFlushLatency.Record(ctx, 0.3)
+	m.SinkFlushLatency.Record(ctx, 0.4)
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.Duration.Batch == nil)
+	assert.Equal(t, uint64(2), b.Pipeline.Duration.SinkFlush.Count)
+	assert.Equal(t, 0.3, b.Pipeline.Duration.SinkFlush.MinSeconds)
+	assert.Equal(t, 0.4, b.Pipeline.Duration.SinkFlush.MaxSeconds)
+}
+
+// The contract claims a phase's buckets sum to its count, and that min is
+// at most max. A receiver that trusts the first claim reads a percentile
+// from the buckets alone; a fold that drops or double-counts a bucket makes
+// every one of those wrong, quietly. So a real bundle asserts it.
+func TestCollect_ADurationHoldsItsInvariants(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+	for _, seconds := range []float64{0.0005, 0.004, 0.02, 0.1, 0.5, 2, 12, 40, 90} {
+		m.BatchProcessingLatency.Record(ctx, seconds)
+	}
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	d := b.Pipeline.Duration.Batch
+	var summed uint64
+	for _, c := range d.Buckets {
+		summed += c
+	}
+	assert.Equal(t, d.Count, summed)
+	assert.Equal(t, uint64(9), d.Count)
+	assert.That(t, d.MinSeconds <= d.MaxSeconds)
+	assert.Equal(t, len(wire.DurationBounds)+1, len(d.Buckets))
 }

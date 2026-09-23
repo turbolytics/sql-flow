@@ -382,6 +382,15 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 				if at == ".Bundle.Commands" {
 					continue
 				}
+				// A duration's buckets are a fixed-length array whose length
+				// the contract sets: len(wire.DurationBounds)+1, the same
+				// for every process forever. It is the one shape a receiver
+				// can sum across a fleet, which is why the length is in the
+				// contract rather than in the bundle.
+				// TestCollect_ADurationHoldsItsInvariants pins the length.
+				if rt == reflect.TypeOf(wire.Duration{}) && f.Name == "Buckets" {
+					continue
+				}
 				*bad = append(*bad, at)
 			default:
 				walk(ft, at, bad)
