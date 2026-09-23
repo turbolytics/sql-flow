@@ -53,6 +53,21 @@ pipeline:
       # Open connections the listener holds. Past it a new connection waits
       # in the backlog until one closes.
       max_connections: <integer>
+    mqtt:
+      # The broker URL, tcp:// or mqtt://. TLS is not supported yet.
+      broker: <string>
+      # Fixed across restarts. The broker keys the session by it, so a new ID
+      # starts an empty session and abandons the old one's publishes.
+      client_id: <string>
+      # Topic filters, subscribed at QoS 1. Wildcards + and # are allowed.
+      topics:
+        - <array>
+      # How long the broker keeps the session after a disconnect. Defaults to
+      # 3600.
+      session_expiry_seconds: <integer>
+      # Unacknowledged publishes the broker may send. Must be at least
+      # pipeline.batch_size. Defaults to 65535.
+      receive_maximum: <integer>
     error:
       policy: <string>
   handler:

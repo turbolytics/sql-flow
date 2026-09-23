@@ -192,6 +192,43 @@
               "additionalProperties": false,
               "type": "object"
             },
+            "mqtt": {
+              "properties": {
+                "broker": {
+                  "type": "string",
+                  "description": "The broker URL, tcp:// or mqtt://. TLS is not supported yet."
+                },
+                "client_id": {
+                  "type": "string",
+                  "description": "Fixed across restarts. The broker keys the session by it, so a new ID\nstarts an empty session and abandons the old one's publishes."
+                },
+                "topics": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "description": "Topic filters, subscribed at QoS 1. Wildcards + and # are allowed."
+                },
+                "session_expiry_seconds": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "How long the broker keeps the session after a disconnect. Defaults to\n3600."
+                },
+                "receive_maximum": {
+                  "type": "integer",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "description": "Unacknowledged publishes the broker may send. Must be at least\npipeline.batch_size. Defaults to 65535."
+                }
+              },
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "broker",
+                "client_id",
+                "topics"
+              ]
+            },
             "error": {
               "properties": {
                 "policy": {

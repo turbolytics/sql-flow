@@ -2,6 +2,7 @@ package config
 
 import (
 	"math"
+	"net/url"
 
 	"github.com/turbolytics/sql-flow/internal/errs"
 )
@@ -432,12 +433,95 @@ func (w *WebhookSource) ResolvedAddr() (string, error) {
 	return w.Addr, nil
 }
 
+// DefaultMqttSessionExpirySeconds keeps the broker's session, and every
+// publish it holds for SQLFlow, for an hour after a disconnect. Zero is never
+// sent: with zero the broker drops the session on disconnect, and a crash
+// loses everything that was in flight.
+const DefaultMqttSessionExpirySeconds = 3600
+
+// DefaultMqttReceiveMaximum is the protocol maximum. The source acknowledges
+// only on commit, so this bounds the unacknowledged publishes a batch can
+// hold.
+const DefaultMqttReceiveMaximum = 65535
+
+type MqttSource struct {
+	// The broker URL, tcp:// or mqtt://. TLS is not supported yet.
+	Broker string `yaml:"broker"`
+	// Fixed across restarts. The broker keys the session by it, so a new ID
+	// starts an empty session and abandons the old one's publishes.
+	ClientID string `yaml:"client_id"`
+	// Topic filters, subscribed at QoS 1. Wildcards + and # are allowed.
+	Topics []string `yaml:"topics"`
+	// How long the broker keeps the session after a disconnect. Defaults to
+	// 3600.
+	SessionExpirySeconds int `yaml:"session_expiry_seconds,omitempty" jsonschema:"minimum=0"`
+	// Unacknowledged publishes the broker may send. Must be at least
+	// pipeline.batch_size. Defaults to 65535.
+	ReceiveMaximum int `yaml:"receive_maximum,omitempty" jsonschema:"minimum=0,maximum=65535"`
+}
+
+// MqttResolved is an mqtt block with its defaults filled and its values
+// checked.
+type MqttResolved struct {
+	Broker         *url.URL
+	ClientID       string
+	Topics         []string
+	SessionExpiry  uint32
+	ReceiveMaximum uint16
+}
+
+// Resolved checks the block and fills its defaults. A nil receiver is the
+// absent block, which an mqtt source cannot run without.
+func (m *MqttSource) Resolved() (MqttResolved, error) {
+	if m == nil {
+		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: missing mqtt configuration")
+	}
+	if m.Broker == "" {
+		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: broker is required")
+	}
+	u, err := url.Parse(m.Broker)
+	if err != nil {
+		return MqttResolved{}, errs.Wrap(errs.CodeSourceInvalid, err, "mqtt source: broker %q is not a URL", m.Broker)
+	}
+	if u.Scheme != "tcp" && u.Scheme != "mqtt" {
+		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: broker scheme %q is not supported; use tcp:// or mqtt://", u.Scheme)
+	}
+	if m.ClientID == "" {
+		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: client_id is required; a generated one starts an empty session on every restart")
+	}
+	if len(m.Topics) == 0 {
+		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: topics is required")
+	}
+	expiry := m.SessionExpirySeconds
+	if expiry < 0 {
+		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: session_expiry_seconds must not be negative, got %d", expiry)
+	}
+	if expiry == 0 {
+		expiry = DefaultMqttSessionExpirySeconds
+	}
+	recvMax := m.ReceiveMaximum
+	if recvMax < 0 || recvMax > 65535 {
+		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: receive_maximum must be between 1 and 65535, got %d", recvMax)
+	}
+	if recvMax == 0 {
+		recvMax = DefaultMqttReceiveMaximum
+	}
+	return MqttResolved{
+		Broker:         u,
+		ClientID:       m.ClientID,
+		Topics:         m.Topics,
+		SessionExpiry:  uint32(expiry),
+		ReceiveMaximum: uint16(recvMax),
+	}, nil
+}
+
 // Source
 type Source struct {
 	Type      string           `yaml:"type"`
 	Kafka     *KafkaSource     `yaml:"kafka,omitempty"`
 	Websocket *WebsocketSource `yaml:"websocket,omitempty"`
 	Webhook   *WebhookSource   `yaml:"webhook,omitempty"`
+	Mqtt      *MqttSource      `yaml:"mqtt,omitempty"`
 	Error     *Error           `yaml:"error,omitempty"`
 }
 
@@ -503,6 +587,25 @@ type Pipeline struct {
 	// Where this instance reports itself. Absent means it reports nowhere,
 	// which is the ordinary case for a pipeline with no control plane.
 	TurboStats *TurboStats `yaml:"turbostats,omitempty"`
+}
+
+// CheckMQTT holds an mqtt source to the pipeline's batch size. It is a
+// method on the pipeline, not the source, because the source builder never
+// sees batch_size. validate and run both call it.
+func (p *Pipeline) CheckMQTT() error {
+	if p.Source.Type != "mqtt" {
+		return nil
+	}
+	r, err := p.Source.Mqtt.Resolved()
+	if err != nil {
+		return err
+	}
+	if p.BatchSize > int(r.ReceiveMaximum) {
+		return errs.New(errs.CodeConfigInvalid,
+			"mqtt source: receive_maximum %d is below pipeline.batch_size %d; the broker stops sending at receive_maximum unacknowledged publishes and the source acknowledges only on commit, so every batch would wait out flush_interval_seconds",
+			r.ReceiveMaximum, p.BatchSize)
+	}
+	return nil
 }
 
 // Conf is a whole pipeline file.
