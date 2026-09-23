@@ -23,6 +23,12 @@ type Progress struct {
 	LastCommit  time.Time
 	Messages    int64
 
+	// DeliveringSince is when the source last became able to deliver: a Kafka
+	// consumer's assignment, a websocket's dial. Zero while it cannot, and
+	// zero for a source that has no opinion. It is on the same clock as the
+	// two above, so a reader subtracts row values and never its own now.
+	DeliveringSince time.Time
+
 	// LastError is when the loop last recorded an error, and Errors is how
 	// many it has recorded. In memory only: they describe this process, not
 	// the durable state, so the progress table does not carry them.
@@ -53,10 +59,14 @@ func NewProgressStore(conn adbc.Connection) *ProgressStore {
 func (s *ProgressStore) Init(ctx context.Context) error {
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS ` + progressTable + ` (
-		    last_arrival TIMESTAMPTZ,
-		    last_commit  TIMESTAMPTZ,
-		    messages     BIGINT NOT NULL
+		    last_arrival     TIMESTAMPTZ,
+		    last_commit      TIMESTAMPTZ,
+		    delivering_since TIMESTAMPTZ,
+		    messages         BIGINT NOT NULL
 		)`,
+		// A state database written before the column existed opens without
+		// it, and the manager's read names it.
+		`ALTER TABLE ` + progressTable + ` ADD COLUMN IF NOT EXISTS delivering_since TIMESTAMPTZ`,
 		`INSERT INTO ` + progressTable + ` (last_arrival, last_commit, messages)
 		 SELECT NULL, NULL, 0 WHERE NOT EXISTS (SELECT 1 FROM ` + progressTable + `)`,
 	} {
@@ -84,6 +94,14 @@ func (s *ProgressStore) Record(ctx context.Context, p Progress) error {
 		progressTable, utcLiteral(p.LastCommit), p.Messages)
 	if !p.LastArrival.IsZero() {
 		q += fmt.Sprintf(`, last_arrival = TIMESTAMPTZ '%s'`, utcLiteral(p.LastArrival))
+	}
+	// Cleared rather than left, because a stale instant reads as a source
+	// that is still delivering and the manager would count quiet across an
+	// outage.
+	if p.DeliveringSince.IsZero() {
+		q += `, delivering_since = NULL`
+	} else {
+		q += fmt.Sprintf(`, delivering_since = TIMESTAMPTZ '%s'`, utcLiteral(p.DeliveringSince))
 	}
 	if err := s.exec(ctx, q); err != nil {
 		return fmt.Errorf("recording progress: %w", err)

@@ -544,10 +544,20 @@ func (t *Turbine) recordProgress(ctx context.Context, write progressWrite) error
 	// monotonic clock measured, and a wall clock stepped forward between the
 	// two is not read as quiet. The arrival itself is written as stamped, so
 	// it is the same value on every write until the next batch.
+	// From the duration the source reports rather than an instant it holds:
+	// a duration cannot arrive with its monotonic reading stripped, which is
+	// the defect this column would otherwise reintroduce.
+	var deliveringSince time.Time
+	if d, ok := t.source.(Deliverer); ok {
+		if deliveringFor, delivering := d.Delivering(); delivering {
+			deliveringSince = now.Add(-deliveringFor)
+		}
+	}
 	p := Progress{
-		LastArrival: t.quietSince,
-		LastCommit:  t.quietSince.Add(now.Sub(t.quietSince)),
-		Messages:    t.stats.MessagesConsumed(),
+		DeliveringSince: deliveringSince,
+		LastArrival:     t.quietSince,
+		LastCommit:      t.quietSince.Add(now.Sub(t.quietSince)),
+		Messages:        t.stats.MessagesConsumed(),
 	}
 	t.snapshot.LastArrival = p.LastArrival
 	t.snapshot.LastCommit = p.LastCommit
