@@ -77,6 +77,7 @@ require (
 	github.com/goccy/go-yaml v1.17.1 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/gookit/color v1.6.0 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
