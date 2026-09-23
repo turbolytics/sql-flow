@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
@@ -382,6 +384,14 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 				if at == ".Bundle.Commands" {
 					continue
 				}
+				// labels are the operator's, from the config, and the config
+				// refuses more than config.MaxLabels of them. The width is
+				// set by the person who wrote the file, not by a broker's
+				// partition count or a stream's error codes, and it cannot
+				// change while the process runs.
+				if at == ".Bundle.Instance.Labels" {
+					continue
+				}
 				*bad = append(*bad, at)
 			default:
 				walk(ft, at, bad)
@@ -409,6 +419,8 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 			ID: strings.Repeat("i", 64), Name: strings.Repeat("n", 64),
 			Version: "v2026.09.21.12", Commit: strings.Repeat("c", 40),
 			Arch: "linux/arm64", ConfigHash: "sha256:" + strings.Repeat("f", 64),
+			SourceType: "websocket", SinkType: "clickhouse", HandlerType: "inferred_disk",
+			Labels: widestLabels(t),
 		},
 		Process: wire.Process{StartedAt: at, RSSBytes: big, Goroutines: n},
 		Pipeline: &wire.Pipeline{
@@ -432,4 +444,24 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	assert.NoError(t, err)
 	t.Logf("a bundle with every field at its widest is %d bytes", len(raw))
 	assert.That(t, len(raw) < 4<<10)
+}
+
+// widestLabels is the largest label set the config accepts: the most keys,
+// each at its length limit, each with a value at its length limit.
+//
+// The shape guard exempts the label map because the config bounds it. This
+// is what holds that exemption honest: the exemption is only true while
+// the widest legal set still fits in the ceiling.
+func widestLabels(t *testing.T) map[string]string {
+	t.Helper()
+	out := make(map[string]string, config.MaxLabels)
+	for i := 0; i < config.MaxLabels; i++ {
+		key := strings.Repeat("k", config.MaxLabelKeyLen-1) + fmt.Sprintf("%d", i)
+		out[key] = strings.Repeat("v", config.MaxLabelValueLen)
+	}
+	// The config has to accept it, or this is measuring a set nobody can
+	// write.
+	ts := &config.TurboStats{Labels: out}
+	assert.Equal(t, 0, len(ts.Check([]string{"pipeline", "turbostats"})))
+	return out
 }

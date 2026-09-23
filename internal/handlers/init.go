@@ -116,6 +116,14 @@ func ConfigTypes() []string {
 	return out
 }
 
+// Kind is the registry's short name for a config's handler type, and empty
+// for one the engine cannot build.
+//
+// The bundle reports it: a receiver groups a fleet by a word, not by a
+// Python-era Go type name. It reads the same map New dispatches on, so a
+// handler cannot be built under one name and reported under another.
+func Kind(configType string) string { return configTypes[configType] }
+
 func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
 	kind, ok := configTypes[c.Type]
 	if !ok {

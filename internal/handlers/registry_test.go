@@ -30,3 +30,18 @@ func TestToolingCoverageHandlerRegistry_EveryConfigTypeHasABuilder(t *testing.T)
 	}
 	assert.Equal(t, len(builders), len(configTypes))
 }
+
+// The bundle reports the short name, and Kind reads the map New dispatches
+// on. A second copy in the run command would let a pipeline be built as one
+// handler and reported as another.
+func TestObservabilityTurbostats_HandlerKindIsTheNameNewDispatchesOn(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	for _, configType := range ConfigTypes() {
+		kind := Kind(configType)
+		assert.That(t, kind != "")
+		_, ok := builders[kind]
+		assert.That(t, ok)
+	}
+	// An unknown handler reports no type rather than a guess.
+	assert.Equal(t, "", Kind("handlers.NotAHandler"))
+}

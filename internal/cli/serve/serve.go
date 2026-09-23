@@ -142,6 +142,10 @@ func serveConfig(ctx context.Context, path string, l *zap.Logger, onListen func(
 		ConfigHash: turbostats.HashConfig(rendered),
 		StartedAt:  clock.StartedAt(),
 		Clock:      clock,
+		// No source, sink or handler type: a server answers queries over
+		// datasets and has none of the three. The labels are the operator's
+		// either way.
+		Labels: ts.LabelSet(),
 	}
 	if ts.Enabled() {
 		static.ID = ts.ID

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/spf13/cobra"
 	"github.com/turbolytics/sql-flow/internal/activity"
@@ -364,6 +366,14 @@ func NewCommand() *cobra.Command {
 				ConfigHash: turbostats.HashConfig(rendered),
 				StartedAt:  clock.StartedAt(),
 				Clock:      clock,
+				// What this pipeline is made of. A receiver groups a fleet
+				// by these, so "every stream that reads from Kafka" is a
+				// query. The handler's short name comes from the registry,
+				// which is the map that built it.
+				SourceType:  strings.ToLower(conf.Pipeline.Source.Type),
+				SinkType:    strings.ToLower(conf.Pipeline.Sink.Type),
+				HandlerType: handlers.Kind(conf.Pipeline.Handler.Type),
+				Labels:      ts.LabelSet(),
 			}
 			if ts.Enabled() {
 				static.ID = ts.ID
@@ -382,17 +392,22 @@ func NewCommand() *cobra.Command {
 			// nothing it does can block the consume loop. It is started here
 			// rather than later so an instance appears on a fleet page while
 			// the pipeline is still connecting to its source.
+			// serve refuses an invalid block at startup and run did not, so a
+			// config `sqlflow validate` rejects started anyway. The reporter
+			// signs every bundle; a plaintext report_to then puts the
+			// document and its signature headers across a public network in
+			// the clear, which is what reportToProblem exists to refuse.
+			//
+			// This runs whether or not the pipeline reports anywhere. The
+			// destination rules only apply with a destination, but the label
+			// rules apply always: the labels reach GET /turbostats/v1 either
+			// way, and they are what keep a report a fixed shape.
+			if err := ts.CheckError([]string{"pipeline", "turbostats"}); err != nil {
+				return err
+			}
+
 			var stopReporter func(context.Context, turbostats.Exit)
 			if ts.Enabled() {
-				// serve refuses an invalid block at startup and run did not,
-				// so a config `sqlflow validate` rejects started anyway. The
-				// reporter signs every bundle; a plaintext report_to then puts
-				// the document and its signature headers across a public
-				// network in the clear, which is what reportToProblem exists
-				// to refuse.
-				if err := ts.CheckError([]string{"pipeline", "turbostats"}); err != nil {
-					return err
-				}
 				key, err := wire.ParseCredential(ts.Key)
 				if err != nil {
 					return errs.New(errs.CodeConfigInvalid,
