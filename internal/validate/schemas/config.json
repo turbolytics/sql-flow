@@ -211,6 +211,7 @@
                 },
                 "session_expiry_seconds": {
                   "type": "integer",
+                  "maximum": 4294967295,
                   "minimum": 0,
                   "description": "How long the broker keeps the session after a disconnect. Defaults to\n3600."
                 },

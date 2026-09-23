@@ -454,7 +454,7 @@ type MqttSource struct {
 	Topics []string `yaml:"topics"`
 	// How long the broker keeps the session after a disconnect. Defaults to
 	// 3600.
-	SessionExpirySeconds int `yaml:"session_expiry_seconds,omitempty" jsonschema:"minimum=0"`
+	SessionExpirySeconds int `yaml:"session_expiry_seconds,omitempty" jsonschema:"minimum=0,maximum=4294967295"`
 	// Unacknowledged publishes the broker may send. Must be at least
 	// pipeline.batch_size. Defaults to 65535.
 	ReceiveMaximum int `yaml:"receive_maximum,omitempty" jsonschema:"minimum=0,maximum=65535"`
@@ -495,6 +495,9 @@ func (m *MqttSource) Resolved() (MqttResolved, error) {
 	expiry := m.SessionExpirySeconds
 	if expiry < 0 {
 		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: session_expiry_seconds must not be negative, got %d", expiry)
+	}
+	if expiry > math.MaxUint32 {
+		return MqttResolved{}, errs.New(errs.CodeSourceInvalid, "mqtt source: session_expiry_seconds must not exceed %d, got %d", math.MaxUint32, expiry)
 	}
 	if expiry == 0 {
 		expiry = DefaultMqttSessionExpirySeconds
