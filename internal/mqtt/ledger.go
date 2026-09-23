@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/eclipse/paho.golang/paho"
@@ -87,18 +88,35 @@ func (l *ledger) receive(pub *paho.Publish, via acker) int64 {
 func (l *ledger) disconnected() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.current != nil {
-		l.retired = append(l.retired, l.current)
+	l.retire(l.current)
+}
+
+// retire drops every held publish and, if via is a live client, moves it to
+// the bounded retired list. Called with mu held.
+func (l *ledger) retire(via acker) {
+	if via != nil {
+		l.retired = append(l.retired, via)
 		if len(l.retired) > maxRetired {
 			l.retired = l.retired[1:]
 		}
 	}
-	l.current = nil
+	if l.current == via {
+		l.current = nil
+	}
 	l.held = l.held[:0]
 }
 
 // ackThrough acknowledges every held publish at or below seq, in receive
 // order, as MQTT 5 requires. It returns how many it acknowledged.
+//
+// autopaho calls OnConnectionDown, and so disconnected(), only after its
+// router has drained -- which can take a while when a full stream backs up
+// receive_maximum publishes behind it. A commit can land in that gap,
+// addressed to a client whose connection already ended: paho reports that
+// as ErrPacketNotFound, because the client reset its own ack tracker on
+// shutdown (paho/client.go's shutdown). Treat it as disconnected() arriving
+// late: retire the client, hold nothing for it, and let the commit succeed.
+// The broker redelivers what was held, same as any ordinary disconnect.
 func (l *ledger) ackThrough(seq int64) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -109,6 +127,10 @@ func (l *ledger) ackThrough(seq int64) (int, error) {
 	for len(l.held) > 0 && l.held[0].seq <= seq {
 		h := l.held[0]
 		if err := h.via.Ack(h.pub); err != nil {
+			if errors.Is(err, paho.ErrPacketNotFound) {
+				l.retire(h.via)
+				return 0, nil
+			}
 			return n, err
 		}
 		l.held = l.held[1:]

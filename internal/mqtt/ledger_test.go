@@ -152,3 +152,37 @@ func TestSourceMqtt_RetiredClientsAreBounded(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, n)
 }
+
+// autopaho calls OnConnectionDown only after its router drains, which can
+// take a while when a full stream backs up receive_maximum publishes behind
+// it. A commit can land in that gap, addressed to a client whose connection
+// is already gone: paho reports that as ErrPacketNotFound, because the
+// client reset its own ack tracker on shutdown. The commit must still
+// succeed -- the broker redelivers what was held, same as any ordinary
+// disconnect -- or a routine broker restart kills the pipeline.
+func TestSourceMqtt_AckOnAClosedConnectionRetiresIt(t *testing.T) {
+	coverage.Covers(t, "source.mqtt")
+	l := newLedger()
+	gone := &fakeAcker{fail: paho.ErrPacketNotFound}
+	l.receive(pub(1), gone) // seq 0
+	l.receive(pub(2), gone) // seq 1
+
+	n, err := l.ackThrough(1)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	// The retired client is dropped like any other: a later publish through
+	// it is never held.
+	l.receive(pub(3), gone) // seq 2, discarded: gone is retired
+	n, err = l.ackThrough(2)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	// A new client's publishes are held and acked normally.
+	fresh := &fakeAcker{}
+	l.receive(pub(4), fresh) // seq 3
+	n, err = l.ackThrough(3)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.DeepEqual(t, []uint16{4}, fresh.acked)
+}
