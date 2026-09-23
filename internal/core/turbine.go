@@ -290,6 +290,9 @@ type Turbine struct {
 	// confirmsQuiet is whether idle ticks write the row; see
 	// WithQuietConfirmation.
 	confirmsQuiet bool
+	// clock is where every instant a decision rests on comes from; nil means
+	// time.Now. See WithClock.
+	clock func() time.Time
 
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
@@ -450,7 +453,7 @@ func (t *Turbine) holdQuietWhileNotDelivering() {
 		return
 	}
 	deliveringFor, delivering := d.Delivering()
-	now := time.Now()
+	now := t.now()
 
 	// The transition is decided under the lock and logged after it: the
 	// lock is the connection's, which the debug API also takes, and a log
@@ -520,7 +523,7 @@ func (t *Turbine) recordProgress(ctx context.Context, write progressWrite) error
 	if t.progress == nil {
 		return nil
 	}
-	now := time.Now()
+	now := t.now()
 	// Held through the write below, because the debug API runs statements on
 	// this same connection and DuckDB closes a pending result the moment
 	// another statement runs on it. The window managers are not a party: they
@@ -621,14 +624,11 @@ func NewTurbine(
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
 		progressEvery: progressWriteInterval,
-		quietSince:    time.Now(),
 		confirmsQuiet: true,
 		lock:          lock,
 		running:       true,
-		stats: &Stats{
-			StartTime: time.Now().UTC(),
-		},
-		errorPolicy: policy,
+		stats:         &Stats{},
+		errorPolicy:   policy,
 
 		logger: zap.NewNop(),
 	}
@@ -656,6 +656,12 @@ func NewTurbine(
 	for _, opt := range opts {
 		opt(t)
 	}
+
+	// Seeded after the options, so WithClock governs the first instants as
+	// well as every later one. The quiet a row may confirm starts no earlier
+	// than the turbine itself.
+	t.quietSince = t.now()
+	t.stats.StartTime = t.now().UTC()
 
 	if t.drain == nil {
 		t.drain = NewDrainBudget(DefaultDrainDeadline)
@@ -741,12 +747,12 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		}
 	}()
 
-	t.stats.StartTime = time.Now().UTC()
+	t.stats.StartTime = t.now().UTC()
 	t.stats.SetNumMessagesConsumed(0)
 	// The quiet the row may confirm starts here, not at the previous
 	// process's last arrival, which the row still carries.
 	t.lock.Lock()
-	t.quietSince = time.Now()
+	t.quietSince = t.now()
 	t.lock.Unlock()
 	// Under the lock: the debug API may already be running statements on
 	// this connection.
@@ -1476,7 +1482,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	// sink held in retries was not watched, and messages may have waited at
 	// the source through all of it.
 	t.lock.Lock()
-	t.quietSince = time.Now()
+	t.quietSince = t.now()
 	t.lock.Unlock()
 
 	c0 := time.Now()
