@@ -236,7 +236,12 @@ func TestCoreRecordError_KeepsTheLastCode(t *testing.T) {
 	assert.That(t, !at.IsZero())
 }
 
-// flatFloat is flatValue for a float counter.
+// flatFloat is flatValue for a float instrument, counter or gauge.
+//
+// It reads both because the bundle's float fields are of both kinds:
+// recv_wait_seconds is a counter, the event lag readings are gauges, and a
+// test asking "what is the dimensionless value of this instrument" does
+// not care which.
 func flatFloat(t *testing.T, r *sdkmetric.ManualReader, name string) float64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -246,11 +251,16 @@ func flatFloat(t *testing.T, r *sdkmetric.ManualReader, name string) float64 {
 			if m.Name != name {
 				continue
 			}
-			sum, ok := m.Data.(metricdata.Sum[float64])
-			if !ok {
-				t.Fatalf("%s is not a float sum", name)
+			var points []metricdata.DataPoint[float64]
+			switch data := m.Data.(type) {
+			case metricdata.Sum[float64]:
+				points = data.DataPoints
+			case metricdata.Gauge[float64]:
+				points = data.DataPoints
+			default:
+				t.Fatalf("%s is neither a float sum nor a float gauge", name)
 			}
-			for _, dp := range sum.DataPoints {
+			for _, dp := range points {
 				if dp.Attributes.Len() == 0 {
 					return dp.Value
 				}
@@ -273,4 +283,69 @@ func TestCoreConsumeLoop_CountsTimeWaitingForInput(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.That(t, flatFloat(t, reader, "pipeline_recv_wait_seconds") >= 0)
+}
+
+// eventTimeSource is a fakeSource that declares a basis, which is what
+// makes the consume loop measure lag at all.
+type eventTimeSource struct{ fakeSource }
+
+func (eventTimeSource) EventTimeBasis() string { return EventBasisArrival }
+
+// The lag is how far behind the stream the pipeline runs: now minus the
+// newest event it just handled. One reading per batch, from the newest
+// event in it, because the oldest would add the batch's own span and say as
+// much about batch_size as about the stream.
+func TestCoreConsumeLoop_MeasuresLagPerBatch(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	old := time.Now().Add(-2 * time.Minute)
+	batch := messages(3)
+	for i := range batch {
+		batch[i].EventAt = old.Add(time.Duration(i) * time.Second)
+	}
+	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{batch}}}
+	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	lag := flatFloat(t, reader, "pipeline_event_lag_seconds")
+	// The newest event is two minutes old, less the two seconds it spans.
+	assert.That(t, lag > 110 && lag < 130)
+	assert.Equal(t, lag, flatFloat(t, reader, "pipeline_event_lag_max_seconds"))
+	assert.That(t, flatValue(t, reader, "pipeline_event_lag_observed_timestamp") > 0)
+}
+
+// A source with no event time reports no lag at all. Zero would say the
+// pipeline is caught up with a stream it cannot measure.
+func TestCoreConsumeLoop_NoEventTimeNoLag(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	src := &fakeSource{batches: [][]Message{messages(3)}}
+	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, reader.Collect(context.Background(), &rm))
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "pipeline_event_lag_seconds" {
+				t.Fatal("a source with no event time recorded a lag")
+			}
+		}
+	}
+}
+
+// A producer's clock ahead of this host's is not a pipeline running ahead
+// of its stream.
+func TestCoreConsumeLoop_ANegativeLagIsZero(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	batch := messages(1)
+	batch[0].EventAt = time.Now().Add(time.Hour)
+	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{batch}}}
+	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), flatFloat(t, reader, "pipeline_event_lag_seconds"))
 }

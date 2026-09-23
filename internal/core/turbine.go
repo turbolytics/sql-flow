@@ -345,6 +345,15 @@ type Turbine struct {
 	// hold it.
 	lastErrorUnixNano atomic.Int64
 	errorCount        atomic.Int64
+	// eventBasis is the source's event-time basis, empty for a source that
+	// has none. Read once at construction: a source does not change what
+	// it reads mid-run.
+	eventBasis string
+	// eventLagMax is the worst lag seen, in seconds. It never resets,
+	// because the reporter and GET /turbostats/v1 both read the bundle it
+	// ends up in. Written and read on the consume loop only.
+	eventLagMax float64
+
 	// lastErrorCode is the code of the last error recorded, for the bundle.
 	// An atomic.Value rather than the lock: recordError runs on the consume
 	// loop and the reporter reads from its own goroutine.
@@ -657,6 +666,13 @@ func NewTurbine(
 		logger: zap.NewNop(),
 	}
 
+	// A source that stamps event times says what they mean. One that does
+	// not leaves this empty, and the loop then measures no lag at all
+	// rather than a lag of zero.
+	if s, ok := source.(EventTimeSource); ok {
+		t.eventBasis = s.EventTimeBasis()
+	}
+
 	// Built once rather than per batch: metric.WithAttributes allocates on
 	// every call whatever the metrics config.
 	t.resultOKAttrs = []metric.AddOption{
@@ -887,8 +903,15 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// than processed, so bytes over count is a true average. One integer
 		// add per message and one record per batch.
 		var payload int64
+		var newest time.Time
 		for i := range msgBatch {
 			payload += int64(len(msgBatch[i].Value))
+			// The newest event in the batch, taken in the pass that already
+			// walks it. A separate pass would double the per-message work
+			// this loop exists to keep small.
+			if msgBatch[i].EventAt.After(newest) {
+				newest = msgBatch[i].EventAt
+			}
 		}
 		t.metrics.MessagePayloadBytes.Add(ctx, payload)
 		// Once per batch, not per message: the cost is one gauge record
@@ -896,6 +919,24 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// anything" cannot tell the two apart.
 		t.metrics.PipelineLastMessage.Record(ctx, time.Now().Unix())
 		t.metrics.Activity.Mark()
+
+		// One reading per batch, from the newest event in it: the oldest
+		// would add the batch's own span, which says as much about
+		// batch_size as about the stream.
+		if t.eventBasis != "" && !newest.IsZero() {
+			lag := time.Since(newest).Seconds()
+			if lag < 0 {
+				// A producer's clock ahead of this host's is not a pipeline
+				// running ahead of its stream.
+				lag = 0
+			}
+			t.metrics.EventLagSeconds.Record(ctx, lag)
+			if lag > t.eventLagMax {
+				t.eventLagMax = lag
+			}
+			t.metrics.EventLagMaxSeconds.Record(ctx, t.eventLagMax)
+			t.metrics.EventLagObserved.Record(ctx, time.Now().Unix())
+		}
 
 		// handler.write is timed by bracketing the whole loop and subtracting
 		// the batches that ran inside it, rather than by timing each
