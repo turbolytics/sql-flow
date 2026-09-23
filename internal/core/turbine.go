@@ -447,24 +447,36 @@ func (t *Turbine) holdQuietWhileNotDelivering() {
 	}
 	deliveringFor, delivering := d.Delivering()
 	now := time.Now()
+
+	// The transition is decided under the lock and logged after it: the
+	// lock is the connection's, which the debug API also takes, and a log
+	// line is I/O.
+	var stopped bool
+	var outage time.Duration
 	t.lock.Lock()
-	defer t.lock.Unlock()
 	switch {
 	case !delivering:
 		if t.notDeliveringSince.IsZero() {
 			t.notDeliveringSince = now
-			t.logger.Warn("source is not delivering; no window closes on idleness until it does")
+			stopped = true
 		}
 		t.quietSince = now
 	default:
 		if !t.notDeliveringSince.IsZero() {
-			t.logger.Info("source is delivering again",
-				zap.Duration("not_delivering_for", now.Sub(t.notDeliveringSince)))
+			outage = now.Sub(t.notDeliveringSince)
 			t.notDeliveringSince = time.Time{}
 		}
 		if since := now.Add(-deliveringFor); since.After(t.quietSince) {
 			t.quietSince = since
 		}
+	}
+	t.lock.Unlock()
+
+	if stopped {
+		t.logger.Warn("source is not delivering; no window closes on idleness until it does")
+	}
+	if outage > 0 {
+		t.logger.Info("source is delivering again", zap.Duration("not_delivering_for", outage))
 	}
 }
 
