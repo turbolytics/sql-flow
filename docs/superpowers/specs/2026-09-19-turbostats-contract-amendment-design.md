@@ -178,6 +178,59 @@ Every bundle holds three invariants:
 `instance.name` is `pipeline.name` under `run` and `serve.name` under `serve`.
 It is required when reporting is on, as `instance.id` is.
 
+### Signals (added 2026-09-22)
+
+`pipeline.duration` and `serve.duration` carry how long the work takes.
+`pipeline` has `batch` and `sink_flush`; `serve` has `request`. Each phase
+has `count`, `sum_seconds`, `min_seconds`, `max_seconds` and `buckets`.
+
+Count, sum and the buckets are counters since the process started, so a
+receiver subtracts two reports for the interval's distribution and sums
+buckets across a fleet. Min and max are since the process started and never
+reset, because the reporter and `GET /turbostats/v1` both read this bundle
+and a value reset on read would hide events from whichever reader did not
+see it. Per-interval movement comes from the buckets.
+
+The boundaries are fixed in this contract, in seconds: 0.001, 0.01, 0.05,
+0.25, 1, 5, 30, 60, with a ninth bucket above the last. They are not in the
+bundle: nine counts carry a distribution, and buckets that differ per
+instance cannot be summed across a fleet. Changing one is a contract change.
+A phase with no samples is absent.
+
+Min and max earn their place beside the buckets because nobody knows a
+customer's workload. One whose flushes all take 90 seconds puts every sample
+in the ninth bucket, and the distribution says nothing; count, sum, min and
+max stay true whatever the workload.
+
+`pipeline` carries errors by the phase they were attributed to:
+`handler_error_count`, `sink_error_count` and `state_error_count`, with
+`dlq_rows` for rows diverted rather than dropped, and `last_error_code` and
+`last_error_at`. `source_error_count` exists in this contract and is absent
+from an engine that attributes no error to a source phase, which every
+engine does today: a zero would say the source has never failed, which is a
+different claim. `error_count` remains the total and stays authoritative for
+it.
+
+**No error message, ever.** A message carries the row that failed, a
+connection string, a customer's data. The code is the taxonomy's, bounded
+and safe to store, and an operator with the code and the timestamp finds the
+message in their own logs. There is also no count per code: that map grows
+as new codes occur, which the shape rule refuses.
+
+`pipeline.recv_wait_seconds` is how long the consume loop has spent waiting
+for input, as a counter. It separates two states that look identical from
+outside: a pipeline waiting on a quiet source, and one saturated by its own
+work. Near the wall clock means the source is quiet; near zero means the
+engine is the bottleneck.
+
+Invariants:
+
+- A phase's buckets sum to its `count`, and `min_seconds` is at most
+  `max_seconds`.
+- `error_count` is at least the sum of the per-phase counters.
+- Every one of these fields is absent from an engine that predates it, and a
+  receiver treats absent as absent rather than zero.
+
 ### The `serve` section
 
 Every number is read from a dimensionless series, the same rule the
