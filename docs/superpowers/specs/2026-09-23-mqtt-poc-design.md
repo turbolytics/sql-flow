@@ -37,7 +37,7 @@ QoS 0 and auto-ack on receipt both lose the batch in flight when the process die
 │                                                                     │
 │  collector (Python)  ──QoS 1──▶  mosquitto  ──QoS 1──▶  sqlflow     │
 │  sensors/<dev>/<metric>          persistent    manual ack  │        │
-│  acked.json (ground truth)       session, disk             ▼        │
+│  acked.csv (ground truth)        session, disk             ▼        │
 │                                                  sqlcommand sink    │
 │                                                  ATTACH iot.duckdb  │
 └─────────────────────────────────────────────────────────────────────┘
@@ -95,10 +95,10 @@ source:
 Validation rejects three configs at startup:
 
 - An empty `client_id`. A generated ID starts a new session on every restart, and the broker discards the old session's messages.
-- `session_expiry_seconds` of 0. The broker drops the session on disconnect.
+- A negative `session_expiry_seconds`. An absent or zero value means the default, 3600. The source never sends 0, because with 0 the broker drops the session on disconnect.
 - `receive_maximum` below `pipeline.batch_size`. The broker stops sending when that many messages are unacknowledged. The source acknowledges only on commit, so every batch would wait out `flush_interval_seconds`.
 
-`receive_maximum` defaults to 65535, the protocol maximum.
+`receive_maximum` defaults to 65535, the protocol maximum. A value above 65535 fails.
 
 The first two checks run when the builder calls `Resolved*` methods on the config, following the webhook source. The builder never sees `batch_size`, so the third check is a method on the pipeline config. `sqlflow validate` and `sqlflow run` both call it, the same way both call `TurboStats.Check`.
 
@@ -142,7 +142,7 @@ A new sensor adds rows, not columns. Adding a sensor never changes the SQL or th
 
 The collector publishes to `sensors/<device_id>/<metric>`. `seq` counts from 1, per `(device_id, metric)`, with no gaps.
 
-The collector writes `acked.json`: for each `(device_id, metric)`, the set of `seq` values the broker acknowledged. That set is the ground truth for the loss check. A reading the broker never acknowledged may or may not reach the sink. The check makes no claim about it.
+The collector appends one row to `acked.csv` for each publish the broker acknowledges: `device_id,metric,seq`. Those rows are the ground truth. DuckDB reads the file directly in the loss check. A reading the broker never acknowledged may or may not reach the sink. The check makes no claim about it.
 
 ### 6. SQLFlow configs (`dev/config/examples/`)
 
@@ -173,7 +173,7 @@ Memory limits sum to 1 GB. SQLFlow gets the largest share. The POC measures actu
 
 Each scenario ends the same way:
 
-1. Stop the collector and wait for `acked.json`.
+1. Stop the collector. It writes its last `acked.csv` rows on exit.
 2. Wait for SQLFlow to drain.
 3. Stop SQLFlow. DuckDB allows one writer, so the check cannot read the file while SQLFlow holds it.
 4. Query `iot.readings` with DuckDB.
