@@ -321,6 +321,10 @@ type Turbine struct {
 	// hold it.
 	lastErrorUnixNano atomic.Int64
 	errorCount        atomic.Int64
+	// lastErrorCode is the code of the last error recorded, for the bundle.
+	// An atomic.Value rather than the lock: recordError runs on the consume
+	// loop and the reporter reads from its own goroutine.
+	lastErrorCode atomic.Value
 
 	// lagPending holds the newest lag seen per topic and partition since the
 	// last recordLag. A gauge is a last value, so recording it on every
@@ -850,6 +854,10 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			break
 		}
 		t.metrics.SourceReadLatency.Record(ctx, readLatency.Seconds())
+		// The same reading as the histogram beside it, as a counter: a
+		// receiver needs the total to compare against the wall clock, and a
+		// histogram's sum is not in the bundle.
+		t.metrics.RecvWaitSeconds.Add(ctx, readLatency.Seconds())
 		t.metrics.MessageCount.Add(ctx, int64(len(msgBatch)))
 		// Over the same messages message_count just counted, received rather
 		// than processed, so bytes over count is a true average. One integer
@@ -1061,6 +1069,7 @@ func (t *Turbine) recordError(ctx context.Context, err error, phase, message str
 	t.errorCount.Add(1)
 
 	code := errs.CodeOf(err)
+	t.lastErrorCode.Store(string(code))
 	t.metrics.ErrorCount.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("class", string(code.Class())),
 		attribute.String("domain", code.Domain()),
@@ -1074,6 +1083,21 @@ func (t *Turbine) recordError(ctx context.Context, err error, phase, message str
 		zap.String("error.code", string(code)),
 		zap.String("error.class", string(code.Class())),
 	)
+}
+
+// LastError is the code and time of the last error this pipeline recorded.
+// ok is false before the first one.
+//
+// The code only. A message carries the row that failed, a connection string
+// or a customer's data, and it is not going on a wire. An operator with the
+// code and the time finds the message in their own logs.
+func (t *Turbine) LastError() (string, time.Time, bool) {
+	nanos := t.lastErrorUnixNano.Load()
+	code, _ := t.lastErrorCode.Load().(string)
+	if nanos == 0 || code == "" {
+		return "", time.Time{}, false
+	}
+	return code, time.Unix(0, nanos), true
 }
 
 // applyErrorPolicy decides what happens to a failed message or batch. It

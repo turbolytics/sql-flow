@@ -15,6 +15,22 @@
   - `sqlflow validate` refuses a set that breaks the rules, and both
     commands refuse to start on one. All of it holds with reporting on or
     off: the labels reach `GET /turbostats/v1` either way.
+- The TurboStats bundle carries how long the work takes, which phase failed,
+  and how long the consume loop waited.
+  - `pipeline.duration.batch`, `pipeline.duration.sink_flush` and
+    `serve.duration.request` each carry a count, a sum, a min, a max and
+    nine bucket counts against boundaries the contract fixes, so a receiver
+    reads any percentile from one report and can sum a fleet. Min and max
+    never reset: two readers share the bundle.
+  - `pipeline` also carries `handler_error_count`, `sink_error_count`,
+    `state_error_count`, `dlq_rows`, `last_error_code`, `last_error_at` and
+    `recv_wait_seconds`. `error_count` stays the total.
+  - No error message crosses the wire. The code is bounded and safe to
+    store; the message carries the row that failed.
+  - `source_error_count` is absent rather than zero, because the engine
+    attributes no error to a source phase. It appears the day one is
+    recorded.
+  - All additive; the document stays v1.
 
 - The TurboStats bundle carries `process.uptime_seconds` and `idle_seconds`,
   measured on the process's monotonic clock. A wall-clock step cannot move

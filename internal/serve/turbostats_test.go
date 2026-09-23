@@ -173,3 +173,35 @@ func TestServeTurbostats_ARequestSetsIdleSeconds(t *testing.T) {
 	assert.That(t, after.IdleSeconds != nil)
 	assert.That(t, *after.IdleSeconds <= *after.Process.UptimeSeconds)
 }
+
+// The bundle's request duration is a flat twin, as its counters are: the
+// attributed histogram carries a dataset, a grain and a code, and a bundle
+// field is one number.
+func TestServeTurbostats_ReportsRequestDuration(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.serve")
+	ts := newTestServerWith(t, testServe, WithTurbostats(testStatic, true))
+	assert.Equal(t, http.StatusOK, ts.get(t, "/v1/datasets/status").status)
+
+	r := ts.do(t, http.MethodGet, "/turbostats/v1", nil)
+	var b wire.Bundle
+	assert.NoError(t, json.Unmarshal([]byte(r.raw), &b))
+	assert.Equal(t, uint64(1), b.Serve.Duration.Request.Count)
+	assert.Equal(t, len(wire.DurationBounds)+1, len(b.Serve.Duration.Request.Buckets))
+	assert.That(t, b.Serve.Duration.Request.MaxSeconds > 0)
+	var sum uint64
+	for _, c := range b.Serve.Duration.Request.Buckets {
+		sum += c
+	}
+	assert.Equal(t, b.Serve.Duration.Request.Count, sum)
+}
+
+// A server that has answered nothing sends no duration, the way it sends no
+// last_request_at.
+func TestServeTurbostats_NoRequestsNoDuration(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.serve")
+	ts := newTestServerWith(t, testServe, WithTurbostats(testStatic, true))
+	r := ts.do(t, http.MethodGet, "/turbostats/v1", nil)
+	var b wire.Bundle
+	assert.NoError(t, json.Unmarshal([]byte(r.raw), &b))
+	assert.That(t, b.Serve.Duration == nil)
+}

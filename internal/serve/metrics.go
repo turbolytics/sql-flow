@@ -7,6 +7,7 @@ import (
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/turbolytics/sql-flow/internal/activity"
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
@@ -39,13 +40,18 @@ type metrics struct {
 	// reads, recorded beside the attributed instrument it shadows, so which
 	// measurements count is decided here and the bundle's reader sums
 	// nothing. The cache ones are nil without a cache.
-	flatRequests      metric.Int64Counter
-	flatRequestErrors metric.Int64Counter
-	flatLastRequest   metric.Int64Gauge
-	flatCacheHits     metric.Int64Counter
-	flatCacheMisses   metric.Int64Counter
-	flatCacheShared   metric.Int64Counter
-	flatCacheEvicted  metric.Int64Counter
+	flatRequests metric.Int64Counter
+	// flatRequestDuration is the bundle's request duration. Its boundaries
+	// are the wire's, so the bundle copies its buckets rather than folding
+	// them: this server's own histograms stop at 16 s, and the wire's last
+	// boundary is 60.
+	flatRequestDuration metric.Float64Histogram
+	flatRequestErrors   metric.Int64Counter
+	flatLastRequest     metric.Int64Gauge
+	flatCacheHits       metric.Int64Counter
+	flatCacheMisses     metric.Int64Counter
+	flatCacheShared     metric.Int64Counter
+	flatCacheEvicted    metric.Int64Counter
 
 	// activity is the process's monotonic clock, marked with each request
 	// answered. Nil when the server has no TurboStats static.
@@ -67,14 +73,33 @@ func newMetrics(reg *prom.Registry, stats func() Stats, cacheStats func() (int64
 	reader := sdkmetric.NewManualReader()
 	opts := []sdkmetric.Option{
 		sdkmetric.WithReader(reader),
-		// One view, so every histogram here gets buckets chosen for this
-		// workload rather than the SDK's defaults, which stop at 10 s.
-		sdkmetric.WithView(sdkmetric.NewView(
-			sdkmetric.Instrument{Kind: sdkmetric.InstrumentKindHistogram},
-			sdkmetric.Stream{Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
-				Boundaries: latencyBuckets,
-			}},
-		)),
+		// One view for every histogram, so none of them falls back to the
+		// SDK's default boundaries, which stop at 10 s.
+		//
+		// It is one function rather than two views because the SDK applies
+		// the first view that matches: a second view naming the flat twin
+		// never ran, and the twin kept this server's boundaries, which stop
+		// at 16 s. The bundle then refused it, correctly -- a fold needs
+		// every wire boundary to be an engine boundary, and 30 and 60 were
+		// not there.
+		sdkmetric.WithView(func(i sdkmetric.Instrument) (sdkmetric.Stream, bool) {
+			if i.Kind != sdkmetric.InstrumentKindHistogram {
+				return sdkmetric.Stream{}, false
+			}
+			// The flat twin the bundle reads keeps the wire's boundaries,
+			// because buckets that differ per instance cannot be summed
+			// across a fleet.
+			boundaries := latencyBuckets
+			if i.Name == "serve_request_duration" {
+				boundaries = wire.DurationBounds
+			}
+			return sdkmetric.Stream{
+				Name: i.Name, Description: i.Description, Unit: i.Unit,
+				Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+					Boundaries: boundaries,
+				},
+			}, true
+		}),
 	}
 	if reg != nil {
 		exp, err := prometheus.New(prometheus.WithRegisterer(reg))
@@ -110,6 +135,11 @@ func newMetrics(reg *prom.Registry, stats func() Stats, cacheStats func() (int64
 
 	if mm.flatRequests, err = m.Int64Counter("serve_requests",
 		metric.WithDescription("Dataset requests answered, any dataset, any outcome. The TurboStats bundle's request_count.")); err != nil {
+		return nil, nil, err
+	}
+	if mm.flatRequestDuration, err = m.Float64Histogram("serve_request_duration",
+		metric.WithDescription("What a caller waited, any dataset, any outcome. The TurboStats bundle's duration.request."),
+		metric.WithUnit("s")); err != nil {
 		return nil, nil, err
 	}
 	if mm.flatRequestErrors, err = m.Int64Counter("serve_request_errors",
@@ -251,6 +281,7 @@ func (m *metrics) observeRequest(dataset, grain, code string, status int, query 
 	}
 
 	m.flatRequests.Add(ctx, 1)
+	m.flatRequestDuration.Record(ctx, total.Seconds())
 	// A 5xx is the server's failure. A 4xx is the caller's, and counting it
 	// would let one misbehaving client paint the server unhealthy.
 	if status >= http.StatusInternalServerError {

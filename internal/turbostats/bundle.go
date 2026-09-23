@@ -25,13 +25,17 @@ import (
 // The wire types, aliased so the engine names one package for the collector
 // and its document.
 type (
-	Bundle     = wire.Bundle
-	Instance   = wire.Instance
-	Process    = wire.Process
-	Pipeline   = wire.Pipeline
-	Serve      = wire.Serve
-	ServeCache = wire.ServeCache
-	Exit       = wire.Exit
+	Bundle   = wire.Bundle
+	Duration = wire.Duration
+	Instance = wire.Instance
+	Process  = wire.Process
+	Pipeline = wire.Pipeline
+	Serve    = wire.Serve
+	// The duration groups, one per section.
+	PipelineDurations = wire.PipelineDurations
+	ServeDurations    = wire.ServeDurations
+	ServeCache        = wire.ServeCache
+	Exit              = wire.Exit
 )
 
 const (
@@ -79,6 +83,10 @@ type PipelineSource struct {
 	// large state table holds a shutdown open past the deadline a supervisor
 	// is waiting on.
 	Stats func(context.Context) (*core.StateStats, error)
+	// LastError is the code and time of the last error the pipeline
+	// recorded, and false before the first. The message stays in the
+	// process: it carries the row that failed.
+	LastError func() (code string, at time.Time, ok bool)
 }
 
 // ServeSource is what the serve section reads beyond the instruments. Both

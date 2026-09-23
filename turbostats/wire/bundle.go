@@ -120,6 +120,49 @@ type Process struct {
 }
 
 // Pipeline carries the consume loop's totals since Process.StartedAt.
+// DurationBounds are the wire's histogram boundaries, in seconds, with a
+// ninth bucket for everything above the last.
+//
+// They live here rather than in the bundle: nine counts carry a
+// distribution, and a receiver knows what they mean without being told.
+// They are also fixed across a fleet on purpose, because buckets that
+// differ per instance cannot be summed.
+var DurationBounds = []float64{0.001, 0.01, 0.05, 0.25, 1, 5, 30, 60}
+
+// Duration is how long one kind of work takes.
+//
+// Count, SumSeconds and Buckets are counters since the process started, so a
+// receiver subtracts two reports for an interval's distribution and sums
+// buckets across a fleet. MinSeconds and MaxSeconds are since the process
+// started and never reset: the reporter and GET /turbostats/v1 both read
+// this, and a value reset on read would hide events from the other.
+//
+// Min and max earn their place beside the buckets because nobody knows a
+// customer's workload. One whose every sample lands above the last boundary
+// has a distribution that says nothing, and min, max, count and sum stay
+// true regardless.
+type Duration struct {
+	Count      uint64  `json:"count"`
+	SumSeconds float64 `json:"sum_seconds"`
+	MinSeconds float64 `json:"min_seconds"`
+	MaxSeconds float64 `json:"max_seconds"`
+	// Buckets is len(DurationBounds)+1 counts, the last for everything above
+	// the final boundary.
+	Buckets []uint64 `json:"buckets"`
+}
+
+// PipelineDurations is how long the pipeline's work takes. A phase that has
+// recorded nothing is absent.
+type PipelineDurations struct {
+	Batch     *Duration `json:"batch,omitempty"`
+	SinkFlush *Duration `json:"sink_flush,omitempty"`
+}
+
+// ServeDurations is how long the dataset API's work takes.
+type ServeDurations struct {
+	Request *Duration `json:"request,omitempty"`
+}
+
 type Pipeline struct {
 	MessageCount int64 `json:"message_count"`
 	// MessagePayloadBytes is the bytes of every message value received,
@@ -137,10 +180,34 @@ type Pipeline struct {
 	MessagePayloadBytes *int64 `json:"message_payload_bytes,omitempty"`
 	HandlerRowsRead     int64  `json:"handler_rows_read"`
 	ErrorCount          int64  `json:"error_count"`
-	SinkFlushCount      int64  `json:"sink_flush_count"`
-	SinkRowsAccepted    int64  `json:"sink_rows_accepted"`
-	SinkRowsWritten     int64  `json:"sink_rows_written"`
-	StateCommitCount    int64  `json:"state_commit_count"`
+	// The phases errors are attributed to. Absent from engines that predate
+	// them; zero is a reading, and means nothing failed in that phase.
+	//
+	// ErrorCount stays the total, and stays authoritative for it: a receiver
+	// that reads only it keeps working.
+	SourceErrorCount  *int64 `json:"source_error_count,omitempty"`
+	HandlerErrorCount *int64 `json:"handler_error_count,omitempty"`
+	SinkErrorCount    *int64 `json:"sink_error_count,omitempty"`
+	StateErrorCount   *int64 `json:"state_error_count,omitempty"`
+	// DLQRows is rows diverted to the dead-letter queue rather than dropped.
+	DLQRows *int64 `json:"dlq_rows,omitempty"`
+	// LastErrorCode is the engine's code, such as system.sink.unreachable.
+	// The message never crosses the wire: it carries the row that failed, a
+	// connection string, a customer's data. An operator with the code and
+	// the time finds the message in their own logs.
+	LastErrorCode *string    `json:"last_error_code,omitempty"`
+	LastErrorAt   *time.Time `json:"last_error_at,omitempty"`
+	// RecvWaitSeconds is how long the consume loop has spent waiting for
+	// input. It separates a pipeline waiting on a quiet source from one
+	// saturated by its own work: near the wall clock means the source is
+	// quiet, near zero means the engine is the bottleneck.
+	RecvWaitSeconds *float64 `json:"recv_wait_seconds,omitempty"`
+	// Duration is how long its work takes.
+	Duration         *PipelineDurations `json:"duration,omitempty"`
+	SinkFlushCount   int64              `json:"sink_flush_count"`
+	SinkRowsAccepted int64              `json:"sink_rows_accepted"`
+	SinkRowsWritten  int64              `json:"sink_rows_written"`
+	StateCommitCount int64              `json:"state_commit_count"`
 	// A pointer so a pipeline with no state path omits the field: absent
 	// state and empty state are different facts.
 	StateDBSizeBytes *int64 `json:"state_db_size_bytes,omitempty"`
@@ -230,8 +297,10 @@ type Serve struct {
 	RequestCount int64 `json:"request_count"`
 	// RequestErrorCount counts 5xx answers only. A 4xx is the caller's error.
 	RequestErrorCount int64 `json:"request_error_count"`
-	SessionsInUse     int   `json:"sessions_in_use"`
-	SessionsTotal     int   `json:"sessions_total"`
+	// Duration is how long a request takes, end to end.
+	Duration      *ServeDurations `json:"duration,omitempty"`
+	SessionsInUse int             `json:"sessions_in_use"`
+	SessionsTotal int             `json:"sessions_total"`
 	// Absent until the server answers a dataset request.
 	LastRequestAt *time.Time `json:"last_request_at,omitempty"`
 	// Cache is absent on a server where no dataset opted into the cache.

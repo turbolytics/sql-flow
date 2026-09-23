@@ -392,6 +392,15 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 				if at == ".Bundle.Instance.Labels" {
 					continue
 				}
+				// A duration's buckets are a fixed-length array whose length
+				// the contract sets: len(wire.DurationBounds)+1, the same
+				// for every process forever. It is the one shape a receiver
+				// can sum across a fleet, which is why the length is in the
+				// contract rather than in the bundle.
+				// TestCollect_ADurationHoldsItsInvariants pins the length.
+				if rt == reflect.TypeOf(wire.Duration{}) && f.Name == "Buckets" {
+					continue
+				}
 				*bad = append(*bad, at)
 			default:
 				walk(ft, at, bad)
@@ -403,16 +412,25 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 	assert.Equal(t, 0, len(bad))
 }
 
-// A bundle with every field at its widest value stays under 4 KiB.
+// A bundle with every field at its widest value stays under 8 KiB.
 //
-// A smoke alarm for the shape, not the budget: 64-character ids and 2^62 in
-// every counter are not a bundle anyone sends. The budget is the realistic
-// run bundle's 1 KiB guard.
+// A smoke alarm for the shape, not the budget: 64-character ids, ten
+// maximal labels and 2^62 in every counter and every bucket are not a
+// bundle anyone sends. The budget is the realistic run bundle's guard.
+//
+// It was 4 KiB until the durations landed. Three phases of nine 2^62
+// buckets took the widest bundle to 4212 bytes, which is the price of the
+// one nested array the shape guard exempts. The receiver's limit is 16 KiB,
+// so 8 leaves the alarm a margin without letting the shape double quietly.
 func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	big := int64(1) << 62
 	n := 1 << 30
 	at := time.Now().UTC()
+	// The longest code in the taxonomy is shorter than this; a code is a
+	// bounded string and this is the widest one worth pricing.
+	code := "system.internal.unexpected"
+	secs := 1e9
 	b := wire.Bundle{
 		V: wire.Version, SentAt: at, IntervalSeconds: 86400, LastActivityAt: &at,
 		Instance: wire.Instance{
@@ -431,19 +449,24 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 			LagPartitions: &n, LagObservedAt: &at, LateRowsDropped: &big,
 			LateRowsReemitted: &big, WindowClosedCount: &big,
 			WindowLagSeconds: &big, WindowNewestBucketAt: &at,
+			SourceErrorCount: &big, HandlerErrorCount: &big, SinkErrorCount: &big,
+			StateErrorCount: &big, DLQRows: &big, LastErrorCode: &code,
+			LastErrorAt: &at, RecvWaitSeconds: &secs,
+			Duration: &wire.PipelineDurations{Batch: widestDuration(), SinkFlush: widestDuration()},
 		},
 		Serve: &wire.Serve{
 			RequestCount: big, RequestErrorCount: big, SessionsInUse: n,
 			SessionsTotal: n, LastRequestAt: &at,
 			Cache: &wire.ServeCache{HitCount: big, MissCount: big, SharedCount: big,
 				EvictionCount: big, Bytes: big, Entries: n},
+			Duration: &wire.ServeDurations{Request: widestDuration()},
 		},
 		Exit: &wire.Exit{Reason: "system.internal.unexpected", Code: 255},
 	}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
 	t.Logf("a bundle with every field at its widest is %d bytes", len(raw))
-	assert.That(t, len(raw) < 4<<10)
+	assert.That(t, len(raw) < 8<<10)
 }
 
 // widestLabels is the largest label set the config accepts: the most keys,
@@ -464,4 +487,19 @@ func widestLabels(t *testing.T) map[string]string {
 	ts := &config.TurboStats{Labels: out}
 	assert.Equal(t, 0, len(ts.Check([]string{"pipeline", "turbostats"})))
 	return out
+}
+
+// widestDuration is a duration whose every number is as wide as JSON makes
+// it. Three of these ride in a full bundle, and the ceiling has to hold with
+// them in it: a phase's buckets are the one nested array the shape guard
+// exempts, so the size guard is what prices that exemption.
+func widestDuration() *wire.Duration {
+	buckets := make([]uint64, len(wire.DurationBounds)+1)
+	for i := range buckets {
+		buckets[i] = 1 << 62
+	}
+	return &wire.Duration{
+		Count: 1 << 62, SumSeconds: 1e9, MinSeconds: 1e-9, MaxSeconds: 1e9,
+		Buckets: buckets,
+	}
 }

@@ -18,12 +18,18 @@ type Metrics struct {
 	// checkpoints.
 	HandlerCheckpointsSkipped metric.Int64Counter
 	ErrorCount                metric.Int64Counter
-	SourceReadLatency         metric.Float64Histogram
-	SinkFlushLatency          metric.Float64Histogram
-	SinkFlushNumRows          metric.Int64Gauge
-	SinkFlushCount            metric.Int64Counter
-	BatchProcessingLatency    metric.Float64Histogram
-	StateCommitLatency        metric.Float64Histogram
+	// RecvWaitSeconds is how long the consume loop has spent waiting for a
+	// batch. A pipeline waiting on a quiet source and one saturated by its
+	// own work both report a low rate; this is what tells them apart. Near
+	// the wall clock means the source is quiet, near zero means the engine
+	// is the bottleneck.
+	RecvWaitSeconds        metric.Float64Counter
+	SourceReadLatency      metric.Float64Histogram
+	SinkFlushLatency       metric.Float64Histogram
+	SinkFlushNumRows       metric.Int64Gauge
+	SinkFlushCount         metric.Int64Counter
+	BatchProcessingLatency metric.Float64Histogram
+	StateCommitLatency     metric.Float64Histogram
 	// PhaseDuration is how long each stage of a batch took, labelled with the
 	// same phase the error taxonomy uses. It is the only instrument that
 	// decomposes batch time, and the only latency that counts failures.
@@ -154,6 +160,14 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("count"),
 	); err != nil {
 		return nil, fmt.Errorf("error_count: %w", err)
+	}
+
+	if m.RecvWaitSeconds, err = meter.Float64Counter(
+		"pipeline_recv_wait_seconds",
+		metric.WithDescription("Time the consume loop spent waiting for input"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("pipeline_recv_wait_seconds: %w", err)
 	}
 
 	if m.SourceReadLatency, err = meter.Float64Histogram(

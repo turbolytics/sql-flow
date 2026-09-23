@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -20,7 +22,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	if err := src.Reader.Collect(ctx, &rm); err != nil {
 		return Bundle{}, fmt.Errorf("turbostats: collecting instruments: %w", err)
 	}
-	flat, dim := walk(rm)
+	flat, floats, hist, dim := walk(rm)
 
 	// Not fatal. Every other number in the bundle is still true, and an
 	// instance that stops reporting is indistinguishable from one that died.
@@ -70,7 +72,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	}
 
 	if src.Pipeline != nil {
-		p, err := pipelineSection(ctx, flat, dim, b.SentAt, src.Pipeline)
+		p, err := pipelineSection(ctx, flat, floats, hist, dim, b.SentAt, src.Pipeline)
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -78,14 +80,15 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 		b.LastActivityAt = later(b.LastActivityAt, p.LastMessageAt)
 	}
 	if src.Serve != nil {
-		sv := serveSection(flat, src.Serve)
+		sv := serveSection(flat, hist, src.Serve)
 		b.Serve = sv
 		b.LastActivityAt = later(b.LastActivityAt, sv.LastRequestAt)
 	}
 	return b, nil
 }
 
-func pipelineSection(ctx context.Context, flat map[string]int64, dim *dimensional,
+func pipelineSection(ctx context.Context, flat map[string]int64, floats map[string]float64,
+	hist map[string]metricdata.HistogramDataPoint[float64], dim *dimensional,
 	sentAt time.Time, src *PipelineSource) (*Pipeline, error) {
 	p := &Pipeline{
 		MessageCount:        flat["message_count"],
@@ -129,6 +132,36 @@ func pipelineSection(ctx context.Context, flat map[string]int64, dim *dimensiona
 	// comparison with a clock someone trusts, and on a gateway with no
 	// real-time clock this host's is not it.
 	p.WindowNewestBucketAt = unixTime(dim.newestStartNewest)
+	// A name the map does not hold yields the zero data point, whose Count
+	// is zero, which durationOf already reads as absent.
+	batch, flush := durationOf(hist["batch_processing_latency"]), durationOf(hist["sink_flush_latency"])
+	if batch != nil || flush != nil {
+		p.Duration = &PipelineDurations{Batch: batch, SinkFlush: flush}
+	}
+
+	if wait, ok := floats["pipeline_recv_wait_seconds"]; ok {
+		p.RecvWaitSeconds = &wait
+	}
+
+	// Always sent, zeros included: the engine counts these, and a pipeline
+	// that has failed nothing has failed nothing. Source is the exception,
+	// above.
+	if dim.errSourceSeen {
+		p.SourceErrorCount = &dim.errSource
+	}
+	p.HandlerErrorCount = &dim.errHandler
+	p.SinkErrorCount = &dim.errSink
+	p.StateErrorCount = &dim.errState
+	p.DLQRows = &dim.dlqRows
+
+	if src.LastError != nil {
+		if code, at, ok := src.LastError(); ok {
+			p.LastErrorCode = &code
+			stamped := at.UTC().Truncate(time.Second)
+			p.LastErrorAt = &stamped
+		}
+	}
+
 	if src.Stats != nil {
 		st, err := src.Stats(ctx)
 		if err != nil {
@@ -144,11 +177,15 @@ func pipelineSection(ctx context.Context, flat map[string]int64, dim *dimensiona
 
 // serveSection reads the flat series internal/serve records. The names are
 // the contract between the two packages, and a test on each side pins them.
-func serveSection(flat map[string]int64, src *ServeSource) *Serve {
+func serveSection(flat map[string]int64,
+	hist map[string]metricdata.HistogramDataPoint[float64], src *ServeSource) *Serve {
 	sv := &Serve{
 		RequestCount:      flat["serve_requests"],
 		RequestErrorCount: flat["serve_request_errors"],
 		LastRequestAt:     unixTime(flat["serve_last_request_timestamp"]),
+	}
+	if d := durationOf(hist["serve_request_duration"]); d != nil {
+		sv.Duration = &ServeDurations{Request: d}
 	}
 	if src.Sessions != nil {
 		sv.SessionsInUse, sv.SessionsTotal = src.Sessions()
@@ -214,8 +251,12 @@ func later(a, b *time.Time) *time.Time {
 //
 // So flat keeps ignoring every attributed point, and dim collapses shards
 // only, splitting each outcome into a field of its own.
-func walk(rm metricdata.ResourceMetrics) (map[string]int64, *dimensional) {
+func walk(rm metricdata.ResourceMetrics) (map[string]int64, map[string]float64,
+	map[string]metricdata.HistogramDataPoint[float64], *dimensional) {
+
 	flat := map[string]int64{}
+	floats := map[string]float64{}
+	hist := map[string]metricdata.HistogramDataPoint[float64]{}
 	dim := &dimensional{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -236,10 +277,94 @@ func walk(rm metricdata.ResourceMetrics) (map[string]int64, *dimensional) {
 					}
 					dim.add(m.Name, dp.Attributes, dp.Value)
 				}
+			case metricdata.Sum[float64]:
+				// Seconds, not counts: recv_wait_seconds is the only one, and
+				// an attributed float series is a phase histogram's twin that
+				// the bundle does not carry.
+				for _, dp := range data.DataPoints {
+					if dp.Attributes.Len() == 0 {
+						floats[m.Name] = dp.Value
+					}
+				}
+			case metricdata.Histogram[float64]:
+				// Dimensionless only. serve's attributed request histogram
+				// has a flat twin, for the same reason its counters do: a
+				// bundle field is one number, and summing an attributed
+				// series here would invent one.
+				for _, dp := range data.DataPoints {
+					if dp.Attributes.Len() == 0 {
+						hist[m.Name] = dp
+					}
+				}
 			}
 		}
 	}
-	return flat, dim
+	return flat, floats, hist, dim
+}
+
+// durationOf folds an engine histogram into the wire's nine buckets.
+//
+// It works only when every wire boundary is also an engine boundary: then
+// each engine bucket sits wholly inside one wire bucket and a coarse count
+// is a sum of fine ones, with nothing interpolated. A histogram that does
+// not satisfy that is refused rather than folded into a distribution that
+// is quietly wrong.
+//
+// An empty histogram is absent, not a zero duration: work that has not
+// happened has no duration.
+func durationOf(dp metricdata.HistogramDataPoint[float64]) *Duration {
+	if dp.Count == 0 || !boundsCover(dp.Bounds) {
+		return nil
+	}
+	d := &Duration{
+		Count:      dp.Count,
+		SumSeconds: dp.Sum,
+		Buckets:    make([]uint64, len(wire.DurationBounds)+1),
+	}
+	if v, ok := dp.Min.Value(); ok {
+		d.MinSeconds = v
+	}
+	if v, ok := dp.Max.Value(); ok {
+		d.MaxSeconds = v
+	}
+	for i, count := range dp.BucketCounts {
+		if count == 0 {
+			continue
+		}
+		// Engine bucket i holds samples at or below Bounds[i]; the last
+		// holds everything above the final boundary. Each lands in the
+		// first wire bucket whose boundary is at or above that.
+		target := len(wire.DurationBounds)
+		if i < len(dp.Bounds) {
+			for j, w := range wire.DurationBounds {
+				if dp.Bounds[i] <= w {
+					target = j
+					break
+				}
+			}
+		}
+		d.Buckets[target] += count
+	}
+	return d
+}
+
+// boundsCover reports whether every wire boundary is one of the engine's.
+// Without that, an engine bucket straddles a wire boundary and its samples
+// cannot be attributed to either side.
+func boundsCover(bounds []float64) bool {
+	for _, w := range wire.DurationBounds {
+		found := false
+		for _, b := range bounds {
+			if b == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // dimensional accumulates the attributed series a bundle summarizes.
@@ -267,6 +392,19 @@ type dimensional struct {
 	closeLagSeen      bool
 	closeLagMax       int64
 	newestStartNewest int64
+
+	// Errors by the phase they were attributed to, and the rows the DLQ
+	// took. The phases are fixed by this contract, not discovered: the
+	// counter's phase label is the engine's, and one that matches no
+	// prefix joins no field rather than a fifth one appearing.
+	//
+	// errSourceSeen exists because the engine attributes nothing to a
+	// source phase today. A zero there would say the source has never
+	// failed, which is a different claim from "this engine does not count
+	// source failures".
+	errSourceSeen                            bool
+	errSource, errHandler, errSink, errState int64
+	dlqRows                                  int64
 }
 
 // int64Ptr takes a copy, so a field never aliases a map entry.
@@ -281,6 +419,29 @@ func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
 		d.lagTotal += v
 		if v > d.lagMax {
 			d.lagMax = v
+		}
+	case "error_count":
+		// The phases the engine attributes errors to. The keys are fixed:
+		// a map that grew with the data would make one instance an
+		// unbounded number of series, which the contract refuses.
+		phase, _ := attrs.Value(attribute.Key("phase"))
+		switch p := phase.AsString(); {
+		case strings.HasPrefix(p, "source."):
+			d.errSourceSeen = true
+			d.errSource += v
+		case strings.HasPrefix(p, "handler."):
+			d.errHandler += v
+		case strings.HasPrefix(p, "sink."):
+			d.errSink += v
+		case strings.HasPrefix(p, "state."):
+			d.errState += v
+		}
+	case "sink_rows_written":
+		// The DLQ's rows are not the pipeline's. role is an outcome, not a
+		// shard: collapsing it would add rows that landed to rows that
+		// failed.
+		if role, _ := attrs.Value(attribute.Key("role")); role.AsString() == "dlq" {
+			d.dlqRows += v
 		}
 	case "sink_retry_count":
 		// Collapses sink, a shard.

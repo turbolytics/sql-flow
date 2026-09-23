@@ -139,3 +139,49 @@ func TestInstance_TypesAndLabels(t *testing.T) {
 		}
 	}
 }
+
+// The wire's buckets are the contract's, not the engine's: nine counts
+// against eight boundaries, so a receiver reads a distribution without being
+// told the boundaries.
+func TestDuration_HasNineCountsAgainstEightBounds(t *testing.T) {
+	if len(DurationBounds) != 8 {
+		t.Fatalf("DurationBounds has %d entries", len(DurationBounds))
+	}
+	for i := 1; i < len(DurationBounds); i++ {
+		if DurationBounds[i] <= DurationBounds[i-1] {
+			t.Fatalf("DurationBounds is not ascending at %d", i)
+		}
+	}
+	d := Duration{Count: 3, SumSeconds: 0.5, MinSeconds: 0.1, MaxSeconds: 0.3,
+		Buckets: make([]uint64, len(DurationBounds)+1)}
+	raw := mustMarshal(t, d)
+	for _, want := range []string{`"count":3`, `"sum_seconds":0.5`,
+		`"min_seconds":0.1`, `"max_seconds":0.3`, `"buckets":[0,0,0,0,0,0,0,0,0]`} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("a duration is missing %s: %s", want, raw)
+		}
+	}
+}
+
+// A section that measured nothing sends no duration at all. Zeros would say
+// the work happened and took no time.
+func TestPipeline_DurationsAndErrorsAreAbsentUntilMeasured(t *testing.T) {
+	raw := mustMarshal(t, Bundle{V: Version, Pipeline: &Pipeline{}})
+	for _, absent := range []string{"duration", "source_error_count",
+		"handler_error_count", "sink_error_count", "state_error_count",
+		"dlq_rows", "last_error_code", "last_error_at", "recv_wait_seconds"} {
+		if strings.Contains(raw, absent) {
+			t.Errorf("an unmeasured pipeline carries %s: %s", absent, raw)
+		}
+	}
+}
+
+// Zero is a reading: a pipeline that has failed nothing reports zero
+// errors, which is different from one whose engine does not count them.
+func TestPipeline_ZeroErrorsArePresent(t *testing.T) {
+	zero := int64(0)
+	raw := mustMarshal(t, Bundle{V: Version, Pipeline: &Pipeline{SinkErrorCount: &zero}})
+	if !strings.Contains(raw, `"sink_error_count":0`) {
+		t.Errorf("a zero error count is absent: %s", raw)
+	}
+}

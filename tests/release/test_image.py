@@ -1410,7 +1410,27 @@ def test_turbostats_bundle_reports_consumer_lag(image, stack):
         assert pipeline["window_newest_bucket_at"].endswith("Z"), pipeline
 
     # No field is wider for the partitions behind it.
-    assert not any(isinstance(v, (list, dict)) for v in pipeline.values()), pipeline
+    #
+    # duration is the one nested field, and it is fixed: two phases the
+    # contract names, each with five keys, and buckets whose length is the
+    # contract's boundary count plus one. Nothing in it grows with a topic's
+    # partitions or a stream's error codes, which is what this line guards.
+    widths = {k: v for k, v in pipeline.items() if k != "duration"}
+    assert not any(isinstance(v, (list, dict)) for v in widths.values()), pipeline
+
+    for phase, d in pipeline.get("duration", {}).items():
+        assert set(d) == {
+            "count",
+            "sum_seconds",
+            "min_seconds",
+            "max_seconds",
+            "buckets",
+        }, (phase, d)
+        # Eight boundaries in the contract, nine counts, the same for every
+        # process forever: that is what lets a receiver sum a fleet.
+        assert len(d["buckets"]) == 9, (phase, d)
+        assert sum(d["buckets"]) == d["count"], (phase, d)
+        assert d["min_seconds"] <= d["max_seconds"], (phase, d)
 
 
 @pytest.mark.covers("observability.turbostats.reporter")
