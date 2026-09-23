@@ -28,6 +28,8 @@ The source uses MQTT 5 at QoS 1 with a persistent session. It sends PUBACK only 
 
 This is at-least-once, the same guarantee as the Kafka source. Duplicates are by design. The POC judges the source on loss, never on duplication.
 
+The guarantee starts at SQLFlow's first subscribe. MQTT drops a publish that matches no subscription, so a reading published before SQLFlow's session exists has nowhere to queue. The first smoke run lost the first 1.1 s of readings this way: the collector started before SQLFlow connected. On the Pi, this happens once, at first boot. After that the session persists across restarts of either process. The stack starts SQLFlow first and starts the collector after SQLFlow logs `mqtt connected`.
+
 QoS 0 and auto-ack on receipt both lose the batch in flight when the process dies. Sparkplug B is heavier than an MVP needs. Neither is in scope.
 
 ## Architecture

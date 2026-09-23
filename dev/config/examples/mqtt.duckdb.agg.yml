@@ -1,0 +1,95 @@
+# One-minute min, avg and max per device and metric, from MQTT into a DuckDB
+# file. SQL at the edge uploads one row per metric per minute, not one per
+# reading.
+commands:
+  - name: attach output
+    sql: |
+      ATTACH '{{ SQLFLOW_OUTPUT_DB|default('/data/iot.duckdb') }}' AS iot
+  - name: bound memory
+    sql: |
+      SET memory_limit = '{{ SQLFLOW_DUCKDB_MEMORY|default('256MB') }}'
+  - name: create readings_1m
+    sql: |
+      CREATE TABLE IF NOT EXISTS iot.readings_1m (
+        bucket TIMESTAMPTZ,
+        device_id VARCHAR,
+        metric VARCHAR,
+        n BIGINT,
+        min_value DOUBLE,
+        avg_value DOUBLE,
+        max_value DOUBLE
+      )
+
+tables:
+  sql:
+    - name: readings_1m_partial
+      # No index: DuckDB never frees rows deleted from an indexed table, and
+      # the engine deletes every closed window (#268).
+      sql: |
+        CREATE TABLE readings_1m_partial (
+          bucket TIMESTAMPTZ,
+          device_id VARCHAR,
+          metric VARCHAR,
+          n BIGINT,
+          sum_value DOUBLE,
+          min_value DOUBLE,
+          max_value DOUBLE
+        );
+      window:
+        time_column: bucket
+        size_seconds: 60
+        grace_seconds: 0
+        idle_close_seconds: 90
+        late_rows: drop
+        # Each batch appends its own partial aggregate. emit_sql combines the
+        # partials of every bucket that closed.
+        emit_sql: |
+          SELECT
+            bucket,
+            device_id,
+            metric,
+            sum(n)::BIGINT AS n,
+            min(min_value) AS min_value,
+            sum(sum_value) / sum(n) AS avg_value,
+            max(max_value) AS max_value
+          FROM closed
+          GROUP BY ALL
+        sink:
+          type: sqlcommand
+          sqlcommand:
+            sql: |
+              INSERT INTO iot.readings_1m BY NAME SELECT * FROM sqlflow_sink_batch
+
+pipeline:
+  name: mqtt-duckdb-agg
+  description: "One-minute sensor aggregates from MQTT into a DuckDB file"
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1000) }}
+  flush_interval_seconds: 5
+
+  source:
+    type: mqtt
+    mqtt:
+      broker: {{ SQLFLOW_MQTT_BROKER|default('tcp://localhost:1883') }}
+      client_id: {{ SQLFLOW_MQTT_CLIENT_ID|default('sqlflow-edge-agg-1') }}
+      topics: ["sensors/#"]
+
+  on_error:
+    policy: IGNORE
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      INSERT INTO readings_1m_partial BY NAME
+      SELECT
+        time_bucket(INTERVAL 1 MINUTE, CAST(ts AS TIMESTAMPTZ)) AS bucket,
+        device_id,
+        metric,
+        count(*) AS n,
+        sum(CAST(value AS DOUBLE)) AS sum_value,
+        min(CAST(value AS DOUBLE)) AS min_value,
+        max(CAST(value AS DOUBLE)) AS max_value
+      FROM batch
+      GROUP BY ALL
+
+  sink:
+    type: noop

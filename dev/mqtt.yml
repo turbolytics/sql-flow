@@ -1,0 +1,53 @@
+# The SQLFlow MQTT POC: the three processes that share a 1 GB Raspberry Pi,
+# capped at 1 GB combined.
+#
+#   make sqlflow-image
+#   SQLFLOW_IMAGE=turbolytics/sql-flow:<tag> docker compose -f dev/mqtt.yml up -d
+name: sqlflow-mqtt
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.1.2-alpine
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+    ports:
+      - "1883:1883"
+    mem_limit: 128m
+
+  collector:
+    build: ./iot/collector
+    environment:
+      MQTT_HOST: mosquitto
+      DEVICE_ID: ${DEVICE_ID:-pi-1}
+      RATE: ${RATE:-100}
+      DURATION: ${DURATION:-0}
+      OUT: /data/acked.csv
+    volumes:
+      - ./iot/data:/data
+    # A publish with no matching subscription is dropped. SQLFlow's session
+    # must exist before the first reading, so start the collector after
+    # SQLFlow has connected: scripts/mqtt-poc.sh waits for that.
+    depends_on:
+      - mosquitto
+      - sqlflow
+    mem_limit: 128m
+
+  sqlflow:
+    image: ${SQLFLOW_IMAGE:?set SQLFLOW_IMAGE to a sqlflow image tag}
+    command: ["run", "/config/${SQLFLOW_CONFIG:-mqtt.duckdb.raw.yml}"]
+    environment:
+      SQLFLOW_MQTT_BROKER: tcp://mosquitto:1883
+      SQLFLOW_OUTPUT_DB: /data/iot.duckdb
+      SQLFLOW_BATCH_SIZE: ${SQLFLOW_BATCH_SIZE:-1000}
+    volumes:
+      - ./config/examples:/config:ro
+      - ./iot/data:/data
+    depends_on:
+      - mosquitto
+    # Stands in for systemd on the Pi.
+    restart: unless-stopped
+    mem_limit: 768m
+
+volumes:
+  mosquitto_data:

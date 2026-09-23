@@ -1,0 +1,63 @@
+# Every sensor reading from MQTT into a DuckDB file. Production sets
+# SQLFLOW_OUTPUT_DB=md:iot and writes to MotherDuck with no other change.
+commands:
+  - name: attach output
+    sql: |
+      ATTACH '{{ SQLFLOW_OUTPUT_DB|default('/data/iot.duckdb') }}' AS iot
+  - name: bound memory
+    sql: |
+      SET memory_limit = '{{ SQLFLOW_DUCKDB_MEMORY|default('256MB') }}'
+  - name: create readings
+    sql: |
+      CREATE TABLE IF NOT EXISTS iot.readings (
+        device_id VARCHAR,
+        sensor VARCHAR,
+        metric VARCHAR,
+        value DOUBLE,
+        unit VARCHAR,
+        seq BIGINT,
+        ts TIMESTAMPTZ
+      )
+
+pipeline:
+  name: mqtt-duckdb-raw
+  description: "Sensor readings from MQTT into a DuckDB file"
+  # At most receive_maximum. The broker stops sending at that many
+  # unacknowledged publishes, and the source acknowledges only on commit.
+  batch_size: {{ SQLFLOW_BATCH_SIZE|default(1000) }}
+  flush_interval_seconds: 5
+
+  source:
+    type: mqtt
+    mqtt:
+      broker: {{ SQLFLOW_MQTT_BROKER|default('tcp://localhost:1883') }}
+      client_id: {{ SQLFLOW_MQTT_CLIENT_ID|default('sqlflow-edge-1') }}
+      topics: ["sensors/#"]
+
+  # One device sending a reading that is not JSON must not crash-loop the
+  # pipeline. The broker would redeliver it forever and stall every other
+  # sensor.
+  on_error:
+    policy: IGNORE
+
+  handler:
+    type: 'handlers.InferredMemBatch'
+    # Columns by name: the batch also carries kafka_topic, kafka_partition
+    # and kafka_offset, which hold the subscription filter and the source's
+    # sequence number.
+    sql: |
+      SELECT
+        device_id,
+        sensor,
+        metric,
+        CAST(value AS DOUBLE) AS value,
+        unit,
+        CAST(seq AS BIGINT) AS seq,
+        CAST(ts AS TIMESTAMPTZ) AS ts
+      FROM batch
+
+  sink:
+    type: sqlcommand
+    sqlcommand:
+      sql: |
+        INSERT INTO iot.readings BY NAME SELECT * FROM sqlflow_sink_batch
