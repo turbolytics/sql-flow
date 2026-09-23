@@ -432,7 +432,14 @@ func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPr
 	rule := watermarkRuleFor(state)
 	watermark, moved = rule.Action.Next(w.decl, newest, previous)
 	if moved {
-		w.logger.Debug("close decided",
+		// An idle close is the rare one and the one that explains an early
+		// close after the fact, so it is logged at Info with the quiet it
+		// acted on. Grace closes are routine and stay at Debug.
+		log := w.logger.Debug
+		if rule.Action == CloseByIdle {
+			log = w.logger.Info
+		}
+		log("close decided",
 			zap.String("rule", rule.Name),
 			zap.Stringer("state", state),
 			zap.Duration("quiet", quiet),
