@@ -10,6 +10,7 @@ require (
 	github.com/apache/iceberg-go v0.6.0
 	github.com/buger/jsonparser v1.6.1
 	github.com/coder/websocket v1.8.15
+	github.com/eclipse/paho.golang v0.23.0
 	github.com/google/uuid v1.6.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jackc/pgx/v5 v5.11.0
