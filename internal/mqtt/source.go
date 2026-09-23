@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
@@ -62,6 +63,13 @@ type Source struct {
 
 	cm     *autopaho.ConnectionManager
 	cancel context.CancelFunc
+
+	// firstSubscribed is set once Start's synchronous subscribe has run.
+	// Until then, onConnectionUp's async resubscribe stays out of the way:
+	// otherwise the first connection could subscribe twice, and a rejected
+	// filter caught by the async path would only be logged, not returned
+	// from Start.
+	firstSubscribed atomic.Bool
 
 	// mu guards connected and connectedAt, which the connection callbacks
 	// write while the engine reads Delivering.
@@ -165,6 +173,16 @@ func (s *Source) Start() error {
 	// AwaitConnection can return before OnConnectionUp runs, and the engine
 	// reads Delivering as soon as Start returns.
 	s.markConnected()
+
+	// Subscribe here, synchronously, rather than leaving the first
+	// connection to onConnectionUp's async path. A broker that refuses a
+	// filter -- an ACL denial, for instance -- must fail Start, not leave
+	// the source reporting Delivering() with nothing ever arriving.
+	err = s.subscribeNow(ctx, cm)
+	s.firstSubscribed.Store(true)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -192,13 +210,21 @@ func (s *Source) onConnectionUp(cm *autopaho.ConnectionManager, ca *paho.Connack
 	s.markConnected()
 	s.logger.Info("mqtt connected", zap.Bool("session_present", ca.SessionPresent))
 
-	// autopaho forbids blocking here. A resumed session keeps its
-	// subscriptions, and subscribing again costs nothing and covers a broker
-	// that lost them.
-	go s.subscribe(cm)
+	if !s.firstSubscribed.Load() {
+		// This is the first connection. Start's synchronous subscribeNow
+		// handles it and reports a refusal as a failed Start; subscribing
+		// again here would race that call and could double-subscribe.
+		return
+	}
+
+	// A reconnect: autopaho forbids blocking here. A resumed session keeps
+	// its subscriptions, and subscribing again costs nothing and covers a
+	// broker that lost them.
+	go s.subscribeAsync(cm)
 }
 
-func (s *Source) subscribe(cm *autopaho.ConnectionManager) {
+// subscribeOptions is one subscription per configured topic filter.
+func (s *Source) subscribeOptions() []paho.SubscribeOptions {
 	subs := make([]paho.SubscribeOptions, 0, len(s.cfg.Topics))
 	for _, t := range s.cfg.Topics {
 		// Retain handling 2: a retained reading is the last value a device
@@ -206,10 +232,60 @@ func (s *Source) subscribe(cm *autopaho.ConnectionManager) {
 		// subscribe.
 		subs = append(subs, paho.SubscribeOptions{Topic: t, QoS: 1, RetainHandling: 2})
 	}
+	return subs
+}
+
+// subscribeNow subscribes and waits for the SUBACK, so Start can fail when
+// the broker refuses a filter rather than leaving the source connected with
+// nothing ever arriving.
+func (s *Source) subscribeNow(ctx context.Context, cm *autopaho.ConnectionManager) error {
+	sctx, cancel := context.WithTimeout(ctx, s.connectTimeout)
+	defer cancel()
+	subs := s.subscribeOptions()
+	sa, err := cm.Subscribe(sctx, &paho.Subscribe{Subscriptions: subs})
+	if sa == nil {
+		// No Suback at all: the transport failed, not a specific filter.
+		return errs.Wrap(errs.CodeSourceUnreachable, err, "mqtt subscribe")
+	}
+	if topic, reason, refused := refusedSubscription(subs, sa.Reasons); refused {
+		return errs.New(errs.CodeSourceInvalid, "mqtt subscribe: broker refused %s (reason 0x%02x)", topic, reason)
+	}
+	return nil
+}
+
+// refusedSubscription reports the first subscription the broker refused,
+// paired with its topic filter. MQTT 5 section 3.9.3 marks any reason code
+// 0x80 or above as a failure; sa.Reasons is parallel to subs, one code per
+// requested filter.
+func refusedSubscription(subs []paho.SubscribeOptions, reasons []byte) (topic string, reason byte, refused bool) {
+	for i, code := range reasons {
+		if code < 0x80 {
+			continue
+		}
+		topic = "?"
+		if i < len(subs) {
+			topic = subs[i].Topic
+		}
+		return topic, code, true
+	}
+	return "", 0, false
+}
+
+// subscribeAsync resubscribes after a reconnect. autopaho forbids blocking
+// in OnConnectionUp, so this runs on its own goroutine and can only log a
+// failure -- Start already returned, so nothing is left to fail it.
+func (s *Source) subscribeAsync(cm *autopaho.ConnectionManager) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.connectTimeout)
 	defer cancel()
-	if _, err := cm.Subscribe(ctx, &paho.Subscribe{Subscriptions: subs}); err != nil {
-		s.logger.Error("mqtt subscribe failed", zap.Error(err))
+	if _, err := cm.Subscribe(ctx, &paho.Subscribe{Subscriptions: s.subscribeOptions()}); err != nil {
+		select {
+		case <-s.done:
+			// Close is already tearing the connection down; losing this
+			// race is expected, not a broker problem worth an Error log.
+			s.logger.Warn("mqtt resubscribe failed during shutdown", zap.Error(err))
+		default:
+			s.logger.Error("mqtt resubscribe failed", zap.Error(err))
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eclipse/paho.golang/paho"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -59,6 +60,26 @@ func marksThrough(m core.Message) *core.Marks {
 	marks := core.NewMarks()
 	marks.Advance(m.Topic, m.Partition, core.Mark{Offset: m.Offset})
 	return marks
+}
+
+// MQTT 5 section 3.9.3 marks any SUBACK reason code 0x80 or above as a
+// refusal -- an ACL denial, for instance. refusedSubscription is the pure
+// logic Start uses to turn that into an error naming the filter, so it
+// needs no broker to test.
+func TestSourceMqtt_RefusedSubscriptionNamesTheFilterAndReason(t *testing.T) {
+	coverage.Covers(t, "source.mqtt")
+	subs := []paho.SubscribeOptions{{Topic: "a/#"}, {Topic: "b/#"}}
+	topic, reason, ok := refusedSubscription(subs, []byte{0x00, 0x87})
+	assert.That(t, ok)
+	assert.Equal(t, "b/#", topic)
+	assert.Equal(t, byte(0x87), reason)
+}
+
+func TestSourceMqtt_RefusedSubscriptionAcceptsEveryGrantedReason(t *testing.T) {
+	coverage.Covers(t, "source.mqtt")
+	subs := []paho.SubscribeOptions{{Topic: "a/#"}, {Topic: "b/#"}}
+	_, _, ok := refusedSubscription(subs, []byte{0x00, 0x01})
+	assert.That(t, !ok)
 }
 
 func TestSourceMqtt_ImplementsTheEngineInterfaces(t *testing.T) {
