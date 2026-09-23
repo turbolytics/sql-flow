@@ -126,6 +126,11 @@ carries `pipeline` and no `serve`. A bundle from `sqlflow serve` carries
    one denormalized exception: `last_activity_at`.
 4. **Reserved names.** `commands` at the top level of the bundle and of the
    response. v1 never populates either.
+5. **Open vocabularies.** A field whose value is a name from a list, such as
+   `event_lag_basis`, may gain names. A reader that does not recognize one
+   keeps the reading and declines to compare it with a reading on a basis it
+   does know; it does not treat the bundle as invalid. Two lags on different
+   bases were never comparable anyway, which is why the basis is sent.
 
 ### New and changed fields
 
@@ -255,6 +260,38 @@ Invariants:
 - `error_count` is at least the sum of the per-phase counters.
 - Every one of these fields is absent from an engine that predates it, and a
   receiver treats absent as absent rather than zero.
+
+### Lag in time (added 2026-09-23)
+
+`pipeline.event_lag_seconds` is how far behind the stream the pipeline ran
+at its last batch: now minus the newest event in it, measured once per
+batch. The newest rather than the oldest, because the oldest adds the
+batch's own span and says as much about `batch_size` as about the stream.
+
+`event_lag_max_seconds` is the worst since the process started.
+`event_lag_observed_at` is when the reading was taken, which is how a
+receiver spots a reading that has stopped moving: a consumer cut off from
+its brokers keeps its last one. A negative lag is reported as zero, because
+a producer's clock ahead of the pipeline's is not a pipeline running ahead
+of its stream.
+
+`event_lag_basis` is where the event time came from. All four are absent for
+a source with no event time, and absent is not zero: a zero lag claims the
+pipeline has caught up with a stream it cannot measure.
+
+`event_lag_basis` is an open vocabulary, not an enum. v1 defines two values:
+
+- `kafka_timestamp`: the record's timestamp. Broker to processing.
+- `arrival`: the source stamped the message as it arrived. Queueing inside
+  the process, not transport.
+
+A source whose protocol carries no event time, and whose broker can hold a
+message before delivering it, is honestly described by neither. MQTT is the
+case in hand: it has no publish timestamp in 3.1.1 or 5.0, and a retained
+message or a QoS 1 redelivery after a reconnect arrives now however old it
+is, so `arrival` would report a lag near zero exactly when the pipeline is
+furthest behind. Such a source gets its own basis when it lands, or sends
+none of the four.
 
 ### The `serve` section
 

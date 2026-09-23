@@ -4,6 +4,22 @@
 
 ### Added
 
+- The TurboStats bundle says how far behind the stream a pipeline runs, in
+  time rather than in messages: `event_lag_seconds`, `event_lag_max_seconds`,
+  `event_lag_observed_at` and `event_lag_basis` in the `pipeline` section.
+  Offset lag is Kafka-only and counts messages; this works for any source
+  that has an event time.
+  - Kafka reports `kafka_timestamp`, the record's own. The webhook and
+    websocket sources stamp arrival and report `arrival`, which is queueing
+    inside the process rather than transport. The basis travels with the
+    number because the two measure different spans.
+  - Measured once per batch, from the newest event in it. A source with no
+    event time sends none of the four, because a zero lag would claim the
+    pipeline had caught up with a stream it cannot measure.
+  - `event_lag_basis` is an open vocabulary: a reader that meets a name it
+    does not know keeps the reading and declines to compare it, rather than
+    rejecting the bundle.
+
 - The TurboStats bundle says what a pipeline is made of: `source_type`,
   `sink_type` and `handler_type` in the `instance` section, so a fleet can be
   grouped by them rather than grepped. A `serve` process has none of the
