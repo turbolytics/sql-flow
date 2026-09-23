@@ -10,6 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -215,4 +216,22 @@ func TestCoreConsumeLoop_IdleTicksDoNotMarkTheActivityClock(t *testing.T) {
 
 	_, _, worked := m.Activity.Read()
 	assert.That(t, !worked)
+}
+
+// The bundle reports the last error's code, so the turbine keeps it beside
+// the timestamp it already kept.
+func TestCoreRecordError_KeepsTheLastCode(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	tb, _ := meteredTurbine(t, &fakeSource{}, &fakeSink{}, 10)
+	_, _, ok := tb.LastError()
+	assert.That(t, !ok)
+
+	tb.recordError(context.Background(),
+		errs.New(errs.CodeSinkUnreachable, "connection refused"),
+		phaseSinkFlush, "flush failed")
+
+	code, at, ok := tb.LastError()
+	assert.That(t, ok)
+	assert.Equal(t, string(errs.CodeSinkUnreachable), code)
+	assert.That(t, !at.IsZero())
 }

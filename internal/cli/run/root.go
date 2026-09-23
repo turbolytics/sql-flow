@@ -263,6 +263,15 @@ func NewCommand() *cobra.Command {
 				}
 				return core.Progress{}
 			}
+			// The bundle's last error reads through the same pointer, for
+			// the same reason. Before the turbine exists no error has been
+			// recorded, which is what false says.
+			lastErrorFn := func() (string, time.Time, bool) {
+				if tb := liveTurbine.Load(); tb != nil {
+					return tb.LastError()
+				}
+				return "", time.Time{}, false
+			}
 
 			flushInterval := flushIntervalFor(conf.Pipeline.FlushIntervalSeconds)
 
@@ -373,7 +382,7 @@ func NewCommand() *cobra.Command {
 			}
 
 			meterProvider, collectBundle, err := newMeterProvider(metricsExporter, serveTurbostats,
-				static, l, statsFn, progressFn, hs.Snapshot, flushInterval)
+				static, l, statsFn, progressFn, hs.Snapshot, lastErrorFn, flushInterval)
 			if err != nil {
 				return err
 			}

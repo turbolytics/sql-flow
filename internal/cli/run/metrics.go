@@ -34,6 +34,12 @@ type statsFunc func(context.Context) (*core.StateStats, error)
 // consumed.
 type progressFunc func() core.Progress
 
+// lastErrorFunc is the code and time of the pipeline's last error, and
+// false before the first one. The turbine is built after the meter
+// provider, so the command passes a closure over a holder rather than the
+// turbine itself.
+type lastErrorFunc func() (code string, at time.Time, ok bool)
+
 // stuckIntervals is how many flush intervals may pass with no commit before
 // /healthz calls the pipeline stuck. Three, so one slow sink flush cannot
 // flap it.
@@ -161,7 +167,7 @@ func newHTTPMux(registry *prom.Registry, stats statsFunc,
 // control plane stores drift apart.
 func newMeterProvider(exporter string, serveTurbostats bool,
 	static turbostats.Static, l *zap.Logger, stats statsFunc,
-	progress progressFunc, health healthFunc,
+	progress progressFunc, health healthFunc, lastError lastErrorFunc,
 	interval time.Duration) (metric.MeterProvider, collectFunc, error) {
 
 	reader := sdkmetric.NewManualReader()
@@ -189,7 +195,7 @@ func newMeterProvider(exporter string, serveTurbostats bool,
 		return turbostats.Collect(ctx, turbostats.Source{
 			Static:   static,
 			Reader:   reader,
-			Pipeline: &turbostats.PipelineSource{Stats: stats},
+			Pipeline: &turbostats.PipelineSource{Stats: stats, LastError: lastError},
 		})
 	}
 

@@ -599,3 +599,116 @@ func TestCollect_ADurationHoldsItsInvariants(t *testing.T) {
 	assert.That(t, d.MinSeconds <= d.MaxSeconds)
 	assert.Equal(t, len(wire.DurationBounds)+1, len(d.Buckets))
 }
+
+// One error_count told an operator that something failed. The phase tells
+// them where to look, and the three are the phases the engine attributes
+// errors to.
+func TestCollect_ErrorsAreCountedPerPhase(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+	// Both counters, the way recordError moves them: the attributed one
+	// carries the phase and the flat twin is the total.
+	record := func(phase string, n int) {
+		for i := 0; i < n; i++ {
+			m.ErrorCount.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("class", "system"),
+				attribute.String("domain", "sink"),
+				attribute.String("code", "system.sink.unreachable"),
+				attribute.String("phase", phase),
+			))
+			m.PipelineErrors.Add(ctx, 1)
+		}
+	}
+	record("handler.invoke", 3)
+	record("sink.flush", 5)
+	record("state.commit", 7)
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, int64(3), *b.Pipeline.HandlerErrorCount)
+	assert.Equal(t, int64(5), *b.Pipeline.SinkErrorCount)
+	assert.Equal(t, int64(7), *b.Pipeline.StateErrorCount)
+	// The total stays authoritative, and is at least the phases' sum.
+	assert.Equal(t, int64(15), b.Pipeline.ErrorCount)
+}
+
+// A pipeline that has failed nothing reports zeros, not absence: the engine
+// counts these, and zero is a reading.
+func TestCollect_NoErrorsReportsZeroPerPhase(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), *b.Pipeline.HandlerErrorCount)
+	assert.Equal(t, int64(0), *b.Pipeline.SinkErrorCount)
+	assert.Equal(t, int64(0), *b.Pipeline.StateErrorCount)
+}
+
+// The engine attributes no error to a source phase: a read that fails is
+// the source's own retry, and nothing calls recordError with one. So the
+// field is absent rather than zero, which would say the source has never
+// failed. It appears on its own the day a source phase is recorded.
+func TestCollect_NoSourcePhaseNoSourceErrorCount(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+	m.ErrorCount.Add(ctx, 1, metric.WithAttributes(attribute.String("phase", "sink.flush")))
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.SourceErrorCount == nil)
+
+	m.ErrorCount.Add(ctx, 4, metric.WithAttributes(attribute.String("phase", "source.read")))
+	b, err = Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, int64(4), *b.Pipeline.SourceErrorCount)
+}
+
+// The DLQ's rows are not the pipeline's rows, and they are not errors
+// either: they are what a row's failure cost. They come from the counting
+// sink's role attribute.
+func TestCollect_DLQRowsComeFromTheDLQsRole(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, meter := provider(t)
+	ctx := context.Background()
+	written, err := meter.Int64Counter("sink_rows_written")
+	assert.NoError(t, err)
+	written.Add(ctx, 9, metric.WithAttributes(
+		attribute.String("sink", "kafka"), attribute.String("role", "dlq")))
+	written.Add(ctx, 400, metric.WithAttributes(
+		attribute.String("sink", "postgres"), attribute.String("role", "pipeline")))
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, int64(9), *b.Pipeline.DLQRows)
+}
+
+// The code and the time, never the message: a message carries the row that
+// failed and whatever was in it.
+func TestCollect_CarriesTheLastErrorCodeAndTime(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	src := runSource(reader, nil)
+	src.Pipeline.LastError = func() (string, time.Time, bool) {
+		return "user.sink.encode_failed", at, true
+	}
+
+	b, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.Equal(t, "user.sink.encode_failed", *b.Pipeline.LastErrorCode)
+	assert.Equal(t, at, b.Pipeline.LastErrorAt.UTC())
+}
+
+func TestCollect_NoErrorYetCarriesNoCode(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	src := runSource(reader, nil)
+	src.Pipeline.LastError = func() (string, time.Time, bool) { return "", time.Time{}, false }
+
+	b, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.LastErrorCode == nil)
+	assert.That(t, b.Pipeline.LastErrorAt == nil)
+}

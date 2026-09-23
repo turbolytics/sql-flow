@@ -76,6 +76,10 @@ type PipelineSource struct {
 	// large state table holds a shutdown open past the deadline a supervisor
 	// is waiting on.
 	Stats func(context.Context) (*core.StateStats, error)
+	// LastError is the code and time of the last error the pipeline
+	// recorded, and false before the first. The message stays in the
+	// process: it carries the row that failed.
+	LastError func() (code string, at time.Time, ok bool)
 }
 
 // ServeSource is what the serve section reads beyond the instruments. Both

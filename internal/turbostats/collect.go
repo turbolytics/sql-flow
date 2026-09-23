@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/turbolytics/sql-flow/turbostats/wire"
@@ -132,6 +133,25 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 	batch, flush := durationOf(hist["batch_processing_latency"]), durationOf(hist["sink_flush_latency"])
 	if batch != nil || flush != nil {
 		p.Duration = &PipelineDurations{Batch: batch, SinkFlush: flush}
+	}
+
+	// Always sent, zeros included: the engine counts these, and a pipeline
+	// that has failed nothing has failed nothing. Source is the exception,
+	// above.
+	if dim.errSourceSeen {
+		p.SourceErrorCount = &dim.errSource
+	}
+	p.HandlerErrorCount = &dim.errHandler
+	p.SinkErrorCount = &dim.errSink
+	p.StateErrorCount = &dim.errState
+	p.DLQRows = &dim.dlqRows
+
+	if src.LastError != nil {
+		if code, at, ok := src.LastError(); ok {
+			p.LastErrorCode = &code
+			stamped := at.UTC().Truncate(time.Second)
+			p.LastErrorAt = &stamped
+		}
 	}
 
 	if src.Stats != nil {
@@ -364,6 +384,19 @@ type dimensional struct {
 	closeLagSeen      bool
 	closeLagMax       int64
 	newestStartNewest int64
+
+	// Errors by the phase they were attributed to, and the rows the DLQ
+	// took. The phases are fixed by this contract, not discovered: the
+	// counter's phase label is the engine's, and one that matches no
+	// prefix joins no field rather than a fifth one appearing.
+	//
+	// errSourceSeen exists because the engine attributes nothing to a
+	// source phase today. A zero there would say the source has never
+	// failed, which is a different claim from "this engine does not count
+	// source failures".
+	errSourceSeen                            bool
+	errSource, errHandler, errSink, errState int64
+	dlqRows                                  int64
 }
 
 // int64Ptr takes a copy, so a field never aliases a map entry.
@@ -378,6 +411,29 @@ func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
 		d.lagTotal += v
 		if v > d.lagMax {
 			d.lagMax = v
+		}
+	case "error_count":
+		// The phases the engine attributes errors to. The keys are fixed:
+		// a map that grew with the data would make one instance an
+		// unbounded number of series, which the contract refuses.
+		phase, _ := attrs.Value(attribute.Key("phase"))
+		switch p := phase.AsString(); {
+		case strings.HasPrefix(p, "source."):
+			d.errSourceSeen = true
+			d.errSource += v
+		case strings.HasPrefix(p, "handler."):
+			d.errHandler += v
+		case strings.HasPrefix(p, "sink."):
+			d.errSink += v
+		case strings.HasPrefix(p, "state."):
+			d.errState += v
+		}
+	case "sink_rows_written":
+		// The DLQ's rows are not the pipeline's. role is an outcome, not a
+		// shard: collapsing it would add rows that landed to rows that
+		// failed.
+		if role, _ := attrs.Value(attribute.Key("role")); role.AsString() == "dlq" {
+			d.dlqRows += v
 		}
 	case "sink_retry_count":
 		// Collapses sink, a shard.
