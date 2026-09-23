@@ -75,7 +75,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 		b.LastActivityAt = later(b.LastActivityAt, p.LastMessageAt)
 	}
 	if src.Serve != nil {
-		sv := serveSection(flat, src.Serve)
+		sv := serveSection(flat, hist, src.Serve)
 		b.Serve = sv
 		b.LastActivityAt = later(b.LastActivityAt, sv.LastRequestAt)
 	}
@@ -149,11 +149,15 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 
 // serveSection reads the flat series internal/serve records. The names are
 // the contract between the two packages, and a test on each side pins them.
-func serveSection(flat map[string]int64, src *ServeSource) *Serve {
+func serveSection(flat map[string]int64,
+	hist map[string]metricdata.HistogramDataPoint[float64], src *ServeSource) *Serve {
 	sv := &Serve{
 		RequestCount:      flat["serve_requests"],
 		RequestErrorCount: flat["serve_request_errors"],
 		LastRequestAt:     unixTime(flat["serve_last_request_timestamp"]),
+	}
+	if d := durationOf(hist["serve_request_duration"]); d != nil {
+		sv.Duration = &ServeDurations{Request: d}
 	}
 	if src.Sessions != nil {
 		sv.SessionsInUse, sv.SessionsTotal = src.Sessions()
