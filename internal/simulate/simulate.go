@@ -277,6 +277,9 @@ type run struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 
+	// window is set when the run pairs the loop with a real manager.
+	window *windowRun
+
 	mu       sync.Mutex
 	now      time.Time
 	produced int
@@ -296,6 +299,7 @@ func Run(t *testing.T, owned []int32, script []Step) Result {
 	}
 	r.start()
 	for _, s := range script {
+		r.elapse()
 		s.apply(r)
 	}
 	r.stop()
@@ -307,6 +311,15 @@ func Run(t *testing.T, owned []int32, script []Step) Result {
 		Duplicated: duplicated,
 		Missing:    r.missing(),
 	}
+}
+
+// elapse moves the simulated clock a second before every step, so a sequence
+// spans time without the script saying so and two commits never land on the
+// same instant, which the progress write's own throttle would skip.
+func (r *run) elapse() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.now = r.now.Add(time.Second)
 }
 
 func (r *run) clock() time.Time {
@@ -338,9 +351,18 @@ func (r *run) start() {
 }
 
 func (r *run) sinkTurbine() {
-	r.tb = core.NewTurbine(r.src, &handler{}, r.sink, 1, time.Hour,
-		&sync.Mutex{}, core.PipelineErrorPolicies{},
-		core.WithClock(r.clock), core.WithFlushTrigger(r.trigger))
+	opts := []core.TurbineOption{
+		core.WithClock(r.clock), core.WithFlushTrigger(r.trigger),
+	}
+	var h core.Handler = &handler{}
+	if r.window != nil {
+		// A windowed pipeline's handler writes the window table and its sink
+		// receives nothing; the progress row is what the manager reads.
+		h = r.window.handler
+		opts = append(opts, core.WithProgressStore(core.NewProgressStore(r.window.db.pipeline)))
+	}
+	r.tb = core.NewTurbine(r.src, h, r.sink, 1, time.Hour,
+		&sync.Mutex{}, core.PipelineErrorPolicies{}, opts...)
 }
 
 func (r *run) stop() {
@@ -362,15 +384,29 @@ func (r *run) deliver(p int32, ids []int64) {
 			Offset:    from + int64(i),
 		})
 	}
-	want, _ := r.sink.counts()
-	want += len(batch)
+	var want int
+	if r.window == nil {
+		total, _ := r.sink.counts()
+		want = total + len(batch)
+	} else {
+		want = int(r.windowRows()) + len(batch)
+	}
 
 	select {
 	case r.src.ch <- batch:
 	case <-time.After(5 * time.Second):
 		r.t.Fatal("the loop never took the batch")
 	}
-	r.await(func() bool { total, _ := r.sink.counts(); return total >= want })
+	if r.window == nil {
+		r.await(func() bool { total, _ := r.sink.counts(); return total >= want })
+		return
+	}
+	// The window table plus what the manager has already published: a close
+	// between the write and this read moves rows from one to the other.
+	r.await(func() bool {
+		published, _ := r.window.sink.counts()
+		return int(r.windowRows()+published) >= want
+	})
 }
 
 func (r *run) await(cond func() bool) {
@@ -418,10 +454,19 @@ func (p Produce) apply(r *run) {
 }
 
 func (IdleTick) apply(r *run) {
+	// The commit the tick causes is what a poll after it reads, so the step
+	// waits for it: handing off the trigger only means the loop woke up.
+	var before int64
+	if r.window != nil {
+		before = r.lastCommitMicros()
+	}
 	select {
 	case r.trigger <- r.clock():
 	case <-time.After(5 * time.Second):
 		r.t.Fatal("the loop never took the idle tick")
+	}
+	if r.window != nil {
+		r.await(func() bool { return r.lastCommitMicros() > before })
 	}
 }
 
