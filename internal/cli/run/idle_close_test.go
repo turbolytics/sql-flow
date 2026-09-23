@@ -147,11 +147,19 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSa
 	if wrap != nil {
 		recorder = wrap(store)
 	}
+	// The lock every party on this connection holds, the way run wires it.
+	// The turbine writes sqlflow_progress on it once a second; published()
+	// reads from it every 25ms. An anonymous mutex here made the turbine the
+	// only holder, so the two raced, DuckDB closed whichever result was
+	// pending, and the read came back with no rows at all -- #280's failure
+	// mode, manufactured by the rig rather than by the engine.
+	lock := &sync.Mutex{}
+
 	// A 20ms flush interval, so a quiet stream ticks often. The progress
 	// write interval stays at its production second, and the store is wired
 	// the one way run wires it.
 	tb := core.NewTurbine(src, nilHandler{}, noopSink{}, 1, 20*time.Millisecond,
-		&sync.Mutex{}, core.PipelineErrorPolicies{}, core.WithProgressStore(recorder))
+		lock, core.PipelineErrorPolicies{}, core.WithProgressStore(recorder))
 
 	loopCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -169,10 +177,14 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSa
 	t.Cleanup(stop)
 
 	return &idleCloseRig{
-		published: func() int64 { return sharedConnCount(t, conn, "published") },
-		poll:      func() error { return managed[0].Poll(ctx) },
-		turbine:   tb,
-		stop:      stop,
+		published: func() int64 {
+			lock.Lock()
+			defer lock.Unlock()
+			return sharedConnCount(t, conn, "published")
+		},
+		poll:    func() error { return managed[0].Poll(ctx) },
+		turbine: tb,
+		stop:    stop,
 	}
 }
 
