@@ -869,7 +869,7 @@ func (s *rejoiningSource) assignedSince() time.Time {
 // for. The quiet clock is held at zero on every tick until it does, and
 // once it does the clock runs from the assignment: a tick after a rebalance
 // confirms quiet since the partitions arrived, not since the loop started.
-func TestStateDurability_ASourceThatCannotDeliverConfirmsNoQuiet(t *testing.T) {
+func TestStateDurability_ASourceThatCannotDeliverSaysSoInTheRow(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	rec := &progressRecorder{}
 	src := &rejoiningSource{idleSource: newIdleSource()}
@@ -886,10 +886,10 @@ func TestStateDurability_ASourceThatCannotDeliverConfirmsNoQuiet(t *testing.T) {
 	})
 	src.assign()
 	assigned := src.assignedSince()
-	// Then delivering, and quiet, for several more.
+	// Then delivering, for several more.
 	waitFor(t, "ticks while delivering", 5*time.Second, func() bool {
 		p, _ := rec.last()
-		return p.LastCommit.Sub(assigned) > 100*time.Millisecond
+		return p.Delivering != nil && *p.Delivering && p.LastCommit.Sub(assigned) > 100*time.Millisecond
 	})
 	close(src.release)
 	<-done
@@ -898,72 +898,32 @@ func TestStateDurability_ASourceThatCannotDeliverConfirmsNoQuiet(t *testing.T) {
 	defer rec.mu.Unlock()
 	var afterAssignment int
 	for i, r := range rec.recs {
-		quiet := r.LastCommit.Sub(r.LastArrival)
+		if r.Delivering == nil {
+			t.Fatalf("record %d says nothing about delivering, from a source that answers", i)
+		}
 		if r.LastCommit.Before(assigned) {
-			// Held at zero: the tick stamped the clock just before it wrote.
-			if quiet > 10*time.Millisecond {
-				t.Fatalf("record %d confirms %v of quiet while the source held nothing", i, quiet)
+			// The row says it outright rather than by holding the arrival
+			// clock: the manager bounds the quiet it may confirm.
+			if *r.Delivering {
+				t.Fatalf("record %d claims delivering while the source held nothing", i)
+			}
+			if !r.DeliveringSince.IsZero() {
+				t.Fatalf("record %d carries a resumption while the source held nothing", i)
 			}
 			continue
 		}
 		afterAssignment++
-		if since := r.LastCommit.Sub(assigned); quiet > since+time.Millisecond {
-			t.Fatalf("record %d confirms %v of quiet, %v since the assignment", i, quiet, since)
+		if !*r.Delivering {
+			continue // a tick that read the source before the assignment landed
+		}
+		if r.DeliveringSince.Before(assigned.Add(-10 * time.Millisecond)) {
+			t.Fatalf("record %d resumed at %v, before the assignment at %v", i, r.DeliveringSince, assigned)
 		}
 	}
 	assert.That(t, afterAssignment >= 2)
-	// And the clock did run once the source could deliver: the last record
-	// confirms most of the time since the assignment.
-	last := rec.recs[len(rec.recs)-1]
-	assert.That(t, last.LastCommit.Sub(last.LastArrival) > 100*time.Millisecond)
 }
 
-// A pipeline with no window closing on idleness has no reader of the row
-// between batches, so its idle ticks write nothing: no statement, no WAL
-// append, no fsync. That is the accounting a pipeline that is not a
-// windowed stream was never meant to pay. Batches still write on the
-// interval and the drain still writes once, so /stats and a soak reading
-// the table see the last batch and the clean stop.
-func TestStateDurability_IdleTicksWriteNothingWhereNoWindowClosesOnIdleness(t *testing.T) {
-	coverage.Covers(t, "state.durability")
-	rec := &progressRecorder{}
-	src := newBlockingSource(messages(2))
-	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 2, 20*time.Millisecond,
-		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithProgressStore(rec), WithProgressWriteInterval(0), WithQuietConfirmation(false))
-	done := make(chan struct{})
-	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
-
-	// The batch writes, once.
-	waitFor(t, "the batch's write", 5*time.Second, func() bool {
-		p, _ := rec.last()
-		return p.Messages == 2
-	})
-	// Then the stream is silent through many ticks, and nothing is written.
-	// The snapshot still moves on each, so /healthz reads them as commits;
-	// waiting on it is waiting on the ticks.
-	batch, _ := rec.last()
-	waitFor(t, "ten idle ticks", 5*time.Second, func() bool {
-		return tb.Progress().LastCommit.Sub(batch.LastCommit) > 10*20*time.Millisecond
-	})
-	_, n := rec.last()
-	assert.Equal(t, 1, n)
-
-	// The drain writes once more.
-	assert.NoError(t, tb.SyncState(context.Background()))
-	_, n = rec.last()
-	assert.Equal(t, 2, n)
-	close(src.release)
-	<-done
-}
-
-// progress.quiet_is_watched, on the drain.
-//
-// A signal during a rebalance: the source holds nothing, the drain forces
-// the write, and that write must not confirm the quiet since the loop's
-// last stamp, because the managers' final poll closes on it and the
-// backlog after the restart would be late.
-func TestStateDurability_TheDrainConfirmsNoQuietWhileTheSourceCannotDeliver(t *testing.T) {
+func TestStateDurability_TheDrainSaysTheSourceHeldNothing(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	rec := &progressRecorder{}
 	src := &rejoiningSource{idleSource: newIdleSource()} // never assigned
@@ -977,7 +937,9 @@ func TestStateDurability_TheDrainConfirmsNoQuietWhileTheSourceCannotDeliver(t *t
 	assert.NoError(t, tb.SyncState(context.Background()))
 	p, n := rec.last()
 	assert.Equal(t, 1, n)
-	if quiet := p.LastCommit.Sub(p.LastArrival); quiet > 10*time.Second {
-		t.Fatalf("the drain confirms %v of quiet while the source held nothing", quiet)
-	}
+	// The drain's forced write says the source held nothing, so the final
+	// poll bounds the quiet it may confirm to none rather than to the minute
+	// since the last stamp.
+	assert.That(t, p.Delivering != nil && !*p.Delivering)
+	assert.That(t, p.DeliveringSince.IsZero())
 }

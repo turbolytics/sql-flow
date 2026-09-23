@@ -430,18 +430,28 @@ func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPr
 		newest = time.UnixMicro(newestMicros).UTC()
 	}
 
-	var quiet time.Duration
+	var (
+		quiet time.Duration
+		// A negative bound is a source that never said whether it could
+		// deliver, which bounds no quiet; a row that never said reads as
+		// delivering, which is what the engine assumed before the columns
+		// existed.
+		deliveringFor = time.Duration(-1)
+		delivering    = true
+	)
 	if w.decl.IdleClose > 0 && hasRows {
 		// A row the engine has not written yet is NULL, which reads as no
 		// quiet confirmed at all.
-		quietMicros, _, err := queryInt64(ctx, w.conn, confirmedQuietSQL())
+		quietMicros, deliveringMicros, ok, err := queryProgressRow(ctx, w.conn, confirmedQuietSQL())
 		if err != nil {
 			return time.Time{}, false, time.Time{}, false, fmt.Errorf("reading the progress row: %w", err)
 		}
 		quiet = time.Duration(quietMicros) * time.Microsecond
+		deliveringFor = time.Duration(deliveringMicros) * time.Microsecond
+		delivering = ok
 	}
 
-	state := StateOf(w.decl, newest, hasRows, previous, hadPrevious, quiet)
+	state := StateOf(w.decl, newest, hasRows, previous, hadPrevious, quiet, deliveringFor, delivering)
 	rule := watermarkRuleFor(state)
 	watermark, moved = rule.Action.Next(w.decl, newest, previous)
 	if moved {

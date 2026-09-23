@@ -107,6 +107,47 @@ func execRows(ctx context.Context, conn adbc.Connection, q string) (int64, error
 // queryInt64 runs a one-value query. found is false when the value is NULL
 // or there is no row, which is what an aggregate over an empty table and a
 // lookup of an unknown name both produce.
+// queryProgressRow reads the two engine durations the window decides on from
+// one row: the quiet the engine confirmed, and how long the source has been
+// able to deliver. A NULL second column is a source that cannot deliver.
+func queryProgressRow(ctx context.Context, conn adbc.Connection, q string) (quiet, deliveringFor int64, delivering bool, err error) {
+	// deliveringFor is -1 where the source never said, which StateOf reads as
+	// no bound rather than as an instant resumption.
+	stmt, err := conn.NewStatement()
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer stmt.Close()
+	if err := stmt.SetSqlQuery(q); err != nil {
+		return 0, 0, false, err
+	}
+	reader, _, err := stmt.ExecuteQuery(ctx)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer reader.Release()
+
+	for reader.Next() {
+		rec := reader.Record()
+		if rec.NumRows() == 0 {
+			continue
+		}
+		cols := make([]*array.Int64, 3)
+		for i := range cols {
+			col, ok := rec.Column(i).(*array.Int64)
+			if !ok {
+				return 0, 0, false, fmt.Errorf("%s: column %d wants BIGINT, got %T", q, i, rec.Column(i))
+			}
+			cols[i] = col
+		}
+		if cols[0].IsNull(0) {
+			return 0, -1, true, nil
+		}
+		return cols[0].Value(0), cols[1].Value(0), cols[2].Value(0) == 1, nil
+	}
+	return 0, 0, false, reader.Err()
+}
+
 func queryInt64(ctx context.Context, conn adbc.Connection, q string) (value int64, found bool, err error) {
 	stmt, err := conn.NewStatement()
 	if err != nil {

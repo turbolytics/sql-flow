@@ -446,56 +446,6 @@ func (t *Turbine) commitCount() int64 {
 // its two clocks against an idle bound measured in tens of seconds.
 const progressWriteInterval = time.Second
 
-// holdQuietWhileNotDelivering keeps the quiet clock from running over time
-// the source could not deliver. A source that is not delivering resets it
-// to now; one that resumed since the clock was last set moves it to the
-// resumption, so the tick after a rebalance ends confirms quiet from the
-// assignment rather than from the loop's last stamp. Called before every
-// commit that is not a batch's: the idle tick, and the drain, where a
-// forced write during a rebalance would otherwise span it.
-//
-// The transitions are logged once each, so a source that never resumes
-// shows up as a stop with no resumption after it.
-func (t *Turbine) holdQuietWhileNotDelivering() {
-	d, ok := t.source.(Deliverer)
-	if !ok {
-		return
-	}
-	deliveringFor, delivering := d.Delivering()
-	now := t.now()
-
-	// The transition is decided under the lock and logged after it: the
-	// lock is the connection's, which the debug API also takes, and a log
-	// line is I/O.
-	var stopped bool
-	var outage time.Duration
-	t.lock.Lock()
-	switch {
-	case !delivering:
-		if t.notDeliveringSince.IsZero() {
-			t.notDeliveringSince = now
-			stopped = true
-		}
-		t.quietSince = now
-	default:
-		if !t.notDeliveringSince.IsZero() {
-			outage = now.Sub(t.notDeliveringSince)
-			t.notDeliveringSince = time.Time{}
-		}
-		if since := now.Add(-deliveringFor); since.After(t.quietSince) {
-			t.quietSince = since
-		}
-	}
-	t.lock.Unlock()
-
-	if stopped {
-		t.logger.Warn("source is not delivering; no window closes on idleness until it does")
-	}
-	if outage > 0 {
-		t.logger.Info("source is delivering again", zap.Duration("not_delivering_for", outage))
-	}
-}
-
 // recordProgress runs at the top of every commit, before the state guard.
 //
 // Two audiences, and they are not the same requirement. The snapshot is what
@@ -547,13 +497,19 @@ func (t *Turbine) recordProgress(ctx context.Context, write progressWrite) error
 	// From the duration the source reports rather than an instant it holds:
 	// a duration cannot arrive with its monotonic reading stripped, which is
 	// the defect this column would otherwise reintroduce.
-	var deliveringSince time.Time
+	var (
+		deliveringSince time.Time
+		deliveringFlag  *bool
+	)
 	if d, ok := t.source.(Deliverer); ok {
-		if deliveringFor, delivering := d.Delivering(); delivering {
+		deliveringFor, delivering := d.Delivering()
+		deliveringFlag = &delivering
+		if delivering {
 			deliveringSince = now.Add(-deliveringFor)
 		}
 	}
 	p := Progress{
+		Delivering:      deliveringFlag,
 		DeliveringSince: deliveringSince,
 		LastArrival:     t.quietSince,
 		LastCommit:      t.quietSince.Add(now.Sub(t.quietSince)),
@@ -845,7 +801,6 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// pay for.
 			write := progressOnInterval
 			if t.confirmsQuiet {
-				t.holdQuietWhileNotDelivering()
 			} else {
 				write = progressSkipped
 			}
@@ -1387,7 +1342,6 @@ func (t *Turbine) SyncState(ctx context.Context) error {
 	// And the same hold the idle tick applies: a signal during a rebalance
 	// or a reconnect forced a write whose quiet spanned it, the final poll
 	// closed every open bucket, and the backlog after the restart was late.
-	t.holdQuietWhileNotDelivering()
 	return t.commitState(ctx, progressForced)
 }
 

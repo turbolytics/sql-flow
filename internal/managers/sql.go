@@ -63,7 +63,14 @@ func (d Declaration) newestSQL() string {
 //
 // NULL before the first write, when the row says nothing either way.
 func confirmedQuietSQL() string {
-	return "SELECT epoch_us(last_commit) - epoch_us(last_arrival) FROM sqlflow_progress"
+	// Three columns, one row: the quiet the engine confirmed, how long the
+	// source has been able to deliver (-1 where it never said), and whether
+	// it can at all (a row that never said reads as yes, which is what the
+	// engine assumed before the columns existed).
+	return `SELECT epoch_us(last_commit) - epoch_us(last_arrival),
+	               coalesce(epoch_us(last_commit) - epoch_us(delivering_since), -1),
+	               CASE WHEN coalesce(delivering, TRUE) THEN 1 ELSE 0 END::BIGINT
+	        FROM sqlflow_progress`
 }
 
 // countClosedSQL counts the rows a close at the instant would collect.

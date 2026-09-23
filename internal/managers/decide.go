@@ -49,13 +49,29 @@ const (
 	IdleConfirmed Idle = "confirmed"
 )
 
+// Source is whether the engine could have received anything at all.
+type Source string
+
+const (
+	// SourceDelivering is a source holding what it needs to deliver: a
+	// consumer with partitions, a connected websocket.
+	SourceDelivering Source = "delivering"
+	// SourceNotDelivering is a source that holds nothing: a consumer between
+	// assignments, a websocket reconnecting. Time it could not deliver is not
+	// quiet, so no bucket closes on idleness across it.
+	SourceNotDelivering Source = "not_delivering"
+)
+
 // State is what one poll knows before it decides.
 type State struct {
-	Data Data
-	Idle Idle
+	Data   Data
+	Idle   Idle
+	Source Source
 }
 
-func (s State) String() string { return fmt.Sprintf("data=%s idle=%s", s.Data, s.Idle) }
+func (s State) String() string {
+	return fmt.Sprintf("data=%s idle=%s source=%s", s.Data, s.Idle, s.Source)
+}
 
 // Action is what a poll does with the watermark.
 type Action string
@@ -112,9 +128,24 @@ const (
 //
 // newest is the newest bucket's start when hasRows; previous is the committed
 // watermark when hadPrevious; quiet is what the progress row confirms.
-func StateOf(decl Declaration, newest time.Time, hasRows bool, previous time.Time, hadPrevious bool, quiet time.Duration) State {
-	s := State{Idle: IdleOff}
+func StateOf(decl Declaration, newest time.Time, hasRows bool, previous time.Time,
+	hadPrevious bool, quiet, deliveringFor time.Duration, delivering bool) State {
+	s := State{Idle: IdleOff, Source: SourceDelivering}
+	if !delivering {
+		s.Source = SourceNotDelivering
+	}
 	if decl.IdleClose > 0 {
+		// The engine can only confirm quiet it could have heard. A source
+		// that resumed 30s ago has confirmed 30s at most, whatever the last
+		// arrival says, and one holding nothing has confirmed none. A
+		// negative deliveringFor is a source that never said, and bounds
+		// nothing.
+		switch {
+		case !delivering:
+			quiet = 0
+		case deliveringFor >= 0 && deliveringFor < quiet:
+			quiet = deliveringFor
+		}
 		s.Idle = IdleUnconfirmed
 		if quiet >= decl.IdleClose {
 			s.Idle = IdleConfirmed
@@ -154,6 +185,7 @@ type watermarkRule struct {
 	Name     string
 	Data     []Data
 	Idle     []Idle
+	Source   []Source
 	Action   Action
 	Deciding string
 	Claim    string
@@ -161,7 +193,8 @@ type watermarkRule struct {
 
 func (r watermarkRule) matches(s State) bool {
 	return (len(r.Data) == 0 || contains(r.Data, s.Data)) &&
-		(len(r.Idle) == 0 || contains(r.Idle, s.Idle))
+		(len(r.Idle) == 0 || contains(r.Idle, s.Idle)) &&
+		(len(r.Source) == 0 || contains(r.Source, s.Source))
 }
 
 // watermarkTable is the watermark's truth table. checkTables proves that
@@ -190,9 +223,19 @@ var watermarkTable = []watermarkRule{
 		Claim:    "A bucket is open, the stream has not moved past it by the grace, and the engine has not confirmed the stream quiet.",
 	},
 	{
+		Name:     "hold.not_delivering",
+		Data:     []Data{DataOpen, DataRipe},
+		Idle:     []Idle{IdleConfirmed},
+		Source:   []Source{SourceNotDelivering},
+		Action:   Hold,
+		Deciding: "source",
+		Claim:    "The source could not deliver, so silence says nothing about the stream and no bucket closes on idleness across it.",
+	},
+	{
 		Name:     "close.idle",
 		Data:     []Data{DataOpen, DataRipe},
 		Idle:     []Idle{IdleConfirmed},
+		Source:   []Source{SourceDelivering},
 		Action:   CloseByIdle,
 		Deciding: "idle",
 		Claim:    "The engine committed idle_close_seconds after the newest arrival with nothing else arriving, so every open bucket closes, up to the newest bucket's end.",
@@ -308,6 +351,7 @@ func contains[T comparable](vals []T, v T) bool {
 var (
 	dataValues   = []Data{DataNone, DataBehind, DataOpen, DataRipe}
 	idleValues   = []Idle{IdleOff, IdleUnconfirmed, IdleConfirmed}
+	sourceValues = []Source{SourceDelivering, SourceNotDelivering}
 	bucketValues = []Bucket{BucketLate, BucketDue, BucketOpen}
 	policyValues = []LatePolicy{LateDrop, LateReemit}
 )
@@ -316,7 +360,9 @@ func allStates() []State {
 	var out []State
 	for _, d := range dataValues {
 		for _, i := range idleValues {
-			out = append(out, State{Data: d, Idle: i})
+			for _, src := range sourceValues {
+				out = append(out, State{Data: d, Idle: i, Source: src})
+			}
 		}
 	}
 	return out

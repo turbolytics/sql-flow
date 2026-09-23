@@ -13,13 +13,14 @@ selects exactly one row and every row is reachable.
 | `data` | `none`, `behind`, `open`, `ripe` | The newest bucket's start, in event time, against the committed watermark. `none`: no rows. `behind`: newest + size is at or before the watermark, so everything held has closed. `open`: newest + size is after the watermark and newest - grace is not. `ripe`: newest - grace is after the watermark, or there is no watermark yet. |
 | `idle` | `off`, `unconfirmed`, `confirmed` | `idle_close_seconds` and the engine's progress row. `off` when not declared. `confirmed` when `last_commit - last_arrival` is at least the bound. `unconfirmed` otherwise, including a row the engine has not written. |
 
-12 combinations, 5 rows. A blank cell matches every value.
+24 combinations, 6 rows. A blank cell matches every value.
 
 | Rule | data | idle | Action | Watermark | Deciding | Claim |
 |---|---|---|---|---|---|---|
 | `hold.empty` | `none` |  | `hold` | unchanged | data | The window holds no rows, so there is nothing to close. |
 | `hold.behind` | `behind` |  | `hold` | unchanged | data | Everything the window holds ended at or before the watermark, so it has already closed; the watermark never moves backwards. |
 | `hold.open` | `open` | `off`, `unconfirmed` | `hold` | unchanged | idle | A bucket is open, the stream has not moved past it by the grace, and the engine has not confirmed the stream quiet. |
+| `hold.not_delivering` | `open`, `ripe` | `confirmed` | `hold` | unchanged | source | The source could not deliver, so silence says nothing about the stream and no bucket closes on idleness across it. |
 | `close.idle` | `open`, `ripe` | `confirmed` | `close.idle` | newest + size | idle | The engine committed idle_close_seconds after the newest arrival with nothing else arriving, so every open bucket closes, up to the newest bucket's end. |
 | `close.grace` | `ripe` | `off`, `unconfirmed` | `close.grace` | newest - grace | data | The stream has moved past the watermark by the grace, so the watermark follows it to the newest bucket's start less the grace. |
 

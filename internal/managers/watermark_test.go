@@ -167,8 +167,8 @@ func TestManagerWindow_AnUnwrittenProgressRowNeverClosesOnIdleness(t *testing.T)
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	exec(t, d.pipeline, `CREATE TABLE sqlflow_progress (last_arrival TIMESTAMPTZ, last_commit TIMESTAMPTZ, messages BIGINT NOT NULL)`)
-	exec(t, d.pipeline, `INSERT INTO sqlflow_progress VALUES (NULL, NULL, 0)`)
+	exec(t, d.pipeline, `CREATE TABLE sqlflow_progress (last_arrival TIMESTAMPTZ, last_commit TIMESTAMPTZ, delivering_since TIMESTAMPTZ, delivering BOOLEAN, messages BIGINT NOT NULL)`)
+	exec(t, d.pipeline, `INSERT INTO sqlflow_progress VALUES (NULL, NULL, NULL, NULL, 0)`)
 	sink := &recordingSink{}
 	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return t0.Add(time.Hour) })
 

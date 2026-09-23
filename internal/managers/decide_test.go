@@ -26,7 +26,7 @@ func TestManagerWindow_TheTableCheckerCatchesEveryFault(t *testing.T) {
 	watermarkTable = saved[1:]
 	err := checkTables()
 	assert.Error(t, err)
-	assert.That(t, strings.Contains(err.Error(), "data=none idle=off matches no row"))
+	assert.That(t, strings.Contains(err.Error(), "data=none idle=off source=delivering matches no row"))
 
 	// A row duplicated: its combinations match twice.
 	watermarkTable = append(append([]watermarkRule{}, saved...), saved[0])
@@ -72,7 +72,7 @@ func TestManagerWindow_EveryRuleHasAnExample(t *testing.T) {
 	}
 	for _, ex := range examples {
 		t.Run(ex.name, func(t *testing.T) {
-			state := StateOf(decl, ex.newest, ex.hasRows, ex.previous, ex.hadPrevious, ex.quiet)
+			state := StateOf(decl, ex.newest, ex.hasRows, ex.previous, ex.hadPrevious, ex.quiet, time.Hour, true)
 			assert.Equal(t, ex.rule, watermarkRuleFor(state).Name)
 			assert.Equal(t, ex.action, Decide(state))
 		})
@@ -81,8 +81,8 @@ func TestManagerWindow_EveryRuleHasAnExample(t *testing.T) {
 	// A window with no idle bound never confirms anything.
 	off := decl
 	off.IdleClose = 0
-	assert.Equal(t, IdleOff, StateOf(off, wm, true, wm, true, time.Hour).Idle)
-	assert.Equal(t, Hold, Decide(StateOf(off, wm, true, wm, true, time.Hour)))
+	assert.Equal(t, IdleOff, StateOf(off, wm, true, wm, true, time.Hour, time.Hour, true).Idle)
+	assert.Equal(t, Hold, Decide(StateOf(off, wm, true, wm, true, time.Hour, time.Hour, true)))
 }
 
 // The boundaries compare the way the SQL always has: a bucket that ends
@@ -93,12 +93,12 @@ func TestManagerWindow_TheBoundariesAreExact(t *testing.T) {
 	decl := testDecl()
 	wm := t0.Add(10 * time.Minute)
 
-	assert.Equal(t, DataBehind, StateOf(decl, wm.Add(-decl.Size), true, wm, true, 0).Data)
-	assert.Equal(t, DataOpen, StateOf(decl, wm.Add(-decl.Size+time.Microsecond), true, wm, true, 0).Data)
-	assert.Equal(t, DataOpen, StateOf(decl, wm.Add(decl.Grace), true, wm, true, 0).Data)
-	assert.Equal(t, DataRipe, StateOf(decl, wm.Add(decl.Grace+time.Microsecond), true, wm, true, 0).Data)
-	assert.Equal(t, IdleUnconfirmed, StateOf(decl, wm, true, wm, true, decl.IdleClose-time.Microsecond).Idle)
-	assert.Equal(t, IdleConfirmed, StateOf(decl, wm, true, wm, true, decl.IdleClose).Idle)
+	assert.Equal(t, DataBehind, StateOf(decl, wm.Add(-decl.Size), true, wm, true, 0, time.Hour, true).Data)
+	assert.Equal(t, DataOpen, StateOf(decl, wm.Add(-decl.Size+time.Microsecond), true, wm, true, 0, time.Hour, true).Data)
+	assert.Equal(t, DataOpen, StateOf(decl, wm.Add(decl.Grace), true, wm, true, 0, time.Hour, true).Data)
+	assert.Equal(t, DataRipe, StateOf(decl, wm.Add(decl.Grace+time.Microsecond), true, wm, true, 0, time.Hour, true).Data)
+	assert.Equal(t, IdleUnconfirmed, StateOf(decl, wm, true, wm, true, decl.IdleClose-time.Microsecond, time.Hour, true).Idle)
+	assert.Equal(t, IdleConfirmed, StateOf(decl, wm, true, wm, true, decl.IdleClose, time.Hour, true).Idle)
 
 	end := wm.Add(time.Hour)
 	assert.Equal(t, BucketLate, BucketStateOf(decl, wm, wm, end).Bucket)
@@ -125,8 +125,12 @@ func TestManagerWindow_InvariantsHoldOverRandomReadings(t *testing.T) {
 		hadPrevious := rng.Intn(4) != 0
 		hasRows := rng.Intn(8) != 0
 		quiet := time.Duration(rng.Intn(1200)) * time.Second
+		// The third fact is drawn too, so the watermark's monotonicity is
+		// checked across a source that comes and goes.
+		deliveringFor := time.Duration(rng.Intn(1200)) * time.Second
+		delivering := rng.Intn(8) != 0
 
-		state := StateOf(decl, newest, hasRows, previous, hadPrevious, quiet)
+		state := StateOf(decl, newest, hasRows, previous, hadPrevious, quiet, deliveringFor, delivering)
 		action := Decide(state)
 		next, moved := action.Next(decl, newest, previous)
 

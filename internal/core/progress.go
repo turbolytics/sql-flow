@@ -23,10 +23,16 @@ type Progress struct {
 	LastCommit  time.Time
 	Messages    int64
 
+	// Delivering is what the source says about whether it could deliver at
+	// all: nil from a source that has no opinion, which is every source but
+	// Kafka and the websocket. Three states, because a source that cannot
+	// deliver and a source that was never asked mean opposite things to a
+	// window: the first holds every bucket open, the second holds none.
+	Delivering *bool
 	// DeliveringSince is when the source last became able to deliver: a Kafka
 	// consumer's assignment, a websocket's dial. Zero while it cannot, and
-	// zero for a source that has no opinion. It is on the same clock as the
-	// two above, so a reader subtracts row values and never its own now.
+	// zero when nothing was asked. On the same clock as the two above, so a
+	// reader subtracts row values and never its own now.
 	DeliveringSince time.Time
 
 	// LastError is when the loop last recorded an error, and Errors is how
@@ -62,11 +68,13 @@ func (s *ProgressStore) Init(ctx context.Context) error {
 		    last_arrival     TIMESTAMPTZ,
 		    last_commit      TIMESTAMPTZ,
 		    delivering_since TIMESTAMPTZ,
+		    delivering       BOOLEAN,
 		    messages         BIGINT NOT NULL
 		)`,
-		// A state database written before the column existed opens without
-		// it, and the manager's read names it.
+		// A state database written before these columns existed opens
+		// without them, and the manager's read names both.
 		`ALTER TABLE ` + progressTable + ` ADD COLUMN IF NOT EXISTS delivering_since TIMESTAMPTZ`,
+		`ALTER TABLE ` + progressTable + ` ADD COLUMN IF NOT EXISTS delivering BOOLEAN`,
 		`INSERT INTO ` + progressTable + ` (last_arrival, last_commit, messages)
 		 SELECT NULL, NULL, 0 WHERE NOT EXISTS (SELECT 1 FROM ` + progressTable + `)`,
 	} {
@@ -102,6 +110,14 @@ func (s *ProgressStore) Record(ctx context.Context, p Progress) error {
 		q += `, delivering_since = NULL`
 	} else {
 		q += fmt.Sprintf(`, delivering_since = TIMESTAMPTZ '%s'`, utcLiteral(p.DeliveringSince))
+	}
+	switch {
+	case p.Delivering == nil:
+		q += `, delivering = NULL`
+	case *p.Delivering:
+		q += `, delivering = TRUE`
+	default:
+		q += `, delivering = FALSE`
 	}
 	if err := s.exec(ctx, q); err != nil {
 		return fmt.Errorf("recording progress: %w", err)

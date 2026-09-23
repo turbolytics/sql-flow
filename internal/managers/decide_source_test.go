@@ -1,0 +1,92 @@
+package managers
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/zeebo/assert"
+)
+
+// deliveringAt writes the progress row a source that can deliver produces:
+// quiet between arrival and commit, and a resumption the manager bounds that
+// quiet by.
+func deliveringAt(tb testing.TB, conn adbc.Connection, arrival, commit, since time.Time) {
+	tb.Helper()
+	progressAt(tb, conn, arrival, commit)
+	exec(tb, conn, fmt.Sprintf(
+		`UPDATE sqlflow_progress SET delivering = TRUE, delivering_since = TIMESTAMPTZ '%s'`,
+		since.UTC().Format("2006-01-02 15:04:05-07:00")))
+}
+
+// notDeliveringAt writes the row a source holding nothing produces, whatever
+// the arrival clock says.
+func notDeliveringAt(tb testing.TB, conn adbc.Connection, arrival, commit time.Time) {
+	tb.Helper()
+	progressAt(tb, conn, arrival, commit)
+	exec(tb, conn, `UPDATE sqlflow_progress SET delivering = FALSE, delivering_since = NULL`)
+}
+
+// A source that cannot deliver holds every open bucket, as a row of the table
+// rather than as a correction the engine applies before the table runs.
+func TestManagerWindow_NotDeliveringIsARowOfTheTable(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	decl := testDecl()
+	s := StateOf(decl, t0.Add(decl.Size), true, t0, true, time.Hour, 0, false)
+
+	assert.Equal(t, SourceNotDelivering, s.Source)
+	assert.Equal(t, IdleUnconfirmed, s.Idle)
+	assert.Equal(t, "hold.not_delivering", watermarkRuleFor(State{
+		Data: DataOpen, Idle: IdleConfirmed, Source: SourceNotDelivering,
+	}).Name)
+}
+
+// Quiet is bounded by the resumption: a source back for thirty seconds has
+// confirmed thirty seconds, however old the last arrival is.
+func TestManagerWindow_QuietIsBoundedByTheResumption(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	decl := testDecl() // IdleClose is five minutes
+
+	back := StateOf(decl, t0, true, t0, true, time.Hour, 30*time.Second, true)
+	assert.Equal(t, IdleUnconfirmed, back.Idle)
+
+	long := StateOf(decl, t0, true, t0, true, time.Hour, time.Hour, true)
+	assert.Equal(t, IdleConfirmed, long.Idle)
+
+	// A source that never said bounds nothing, which is what a row written
+	// before these columns existed reads as.
+	never := StateOf(decl, t0, true, t0, true, time.Hour, -1, true)
+	assert.Equal(t, IdleConfirmed, never.Idle)
+}
+
+// The close outcome the engine's hold used to produce, now produced by the
+// row: a bucket the idle bound would otherwise close stays open while the
+// source holds nothing, and closes once it is back.
+func TestManagerWindow_ARowThatCannotDeliverClosesNothingOnIdleness(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	decl := testDecl()
+
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	sink := &recordingSink{}
+	w := newTestWatermark(t, d, decl, sink, func() time.Time { return t0.Add(time.Hour) })
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+
+	// An hour of silence in the row, and a source that held nothing through
+	// it: nothing closes.
+	notDeliveringAt(t, d.pipeline, t0, t0.Add(time.Hour))
+	assert.NoError(t, w.Poll(ctx))
+	_, flushes := sink.counts()
+	assert.Equal(t, 0, flushes)
+
+	// The same silence, from a source that has been back longer than the
+	// bound: the bucket closes.
+	deliveringAt(t, d.pipeline, t0, t0.Add(time.Hour), t0)
+	assert.NoError(t, w.Poll(ctx))
+	_, flushes = sink.counts()
+	assert.Equal(t, 1, flushes)
+}

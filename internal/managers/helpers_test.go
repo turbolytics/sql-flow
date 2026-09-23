@@ -212,9 +212,12 @@ func arrivedAt(tb testing.TB, conn adbc.Connection, at time.Time) {
 // is a later commit against the same arrival.
 func progressAt(tb testing.TB, conn adbc.Connection, arrival, commit time.Time) {
 	tb.Helper()
-	exec(tb, conn, `CREATE TABLE IF NOT EXISTS sqlflow_progress (last_arrival TIMESTAMPTZ, last_commit TIMESTAMPTZ, messages BIGINT NOT NULL)`)
+	// The shape core.ProgressStore.Init creates, including the two columns a
+	// source's delivering answer lands in. delivering is NULL here: these
+	// tests describe a source that never said, which reads as delivering.
+	exec(tb, conn, `CREATE TABLE IF NOT EXISTS sqlflow_progress (last_arrival TIMESTAMPTZ, last_commit TIMESTAMPTZ, delivering_since TIMESTAMPTZ, delivering BOOLEAN, messages BIGINT NOT NULL)`)
 	exec(tb, conn, `DELETE FROM sqlflow_progress`)
-	exec(tb, conn, fmt.Sprintf(`INSERT INTO sqlflow_progress VALUES (TIMESTAMPTZ '%s', TIMESTAMPTZ '%s', 0)`,
+	exec(tb, conn, fmt.Sprintf(`INSERT INTO sqlflow_progress VALUES (TIMESTAMPTZ '%s', TIMESTAMPTZ '%s', NULL, NULL, 0)`,
 		arrival.UTC().Format("2006-01-02 15:04:05-07:00"), commit.UTC().Format("2006-01-02 15:04:05-07:00")))
 }
 
