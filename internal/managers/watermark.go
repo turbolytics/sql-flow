@@ -110,6 +110,8 @@ type Watermark struct {
 	// now is the clock the idle rule reads. Injected so a test can make the
 	// stream quiet without waiting.
 	now func() time.Time
+	// pollTrigger replaces the poll ticker when set; see WithPollTrigger.
+	pollTrigger <-chan time.Time
 
 	logger  *zap.Logger
 	drain   *core.DrainBudget
@@ -138,6 +140,13 @@ func WithDrainBudget(b *core.DrainBudget) Option {
 // through. Without one they record nothing.
 func WithMeterProvider(mp metric.MeterProvider) Option {
 	return func(w *Watermark) { w.metrics = NewWindowMetrics(mp, w.decl.Table) }
+}
+
+// WithPollTrigger replaces the poll ticker, so a caller decides when the
+// manager looks for closed buckets. A simulator owns the order of its events
+// this way; production leaves it nil and polls on the interval.
+func WithPollTrigger(c <-chan time.Time) Option {
+	return func(w *Watermark) { w.pollTrigger = c }
 }
 
 // WithClock replaces the wall clock the idle rule reads.
@@ -198,12 +207,16 @@ func (w *Watermark) Start(ctx context.Context) error {
 		zap.String("table", w.decl.Table),
 		zap.Duration("poll_interval", w.poll))
 
-	ticker := time.NewTicker(w.poll)
-	defer ticker.Stop()
+	pollC := w.pollTrigger
+	if pollC == nil {
+		ticker := time.NewTicker(w.poll)
+		defer ticker.Stop()
+		pollC = ticker.C
+	}
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-pollC:
 			err := w.Poll(ctx)
 			if err != nil && ctx.Err() == nil {
 				if isConflict(err) {

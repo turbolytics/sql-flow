@@ -293,6 +293,8 @@ type Turbine struct {
 	// clock is where every instant a decision rests on comes from; nil means
 	// time.Now. See WithClock.
 	clock func() time.Time
+	// flushTrigger replaces the flush ticker when set; see WithFlushTrigger.
+	flushTrigger <-chan time.Time
 
 	// stateStats reads a snapshot of durable state for the gauges. It reads a
 	// connection dedicated to reading, never the one batches are written on,
@@ -398,6 +400,13 @@ const (
 // WAL append, no fsync, which on a box that runs its state from an SD card
 // is the difference between a quiet pipeline and a busy one. Batches still
 // write on the interval, and the drain still writes once. On by default.
+// WithFlushTrigger replaces the flush ticker. A pipeline given one commits on
+// idleness only when the channel fires, which is how a caller owns the order
+// of a sequence of events rather than sharing it with a ticker.
+func WithFlushTrigger(c <-chan time.Time) TurbineOption {
+	return func(t *Turbine) { t.flushTrigger = c }
+}
+
 func WithQuietConfirmation(on bool) TurbineOption {
 	return func(t *Turbine) { t.confirmsQuiet = on }
 }
@@ -785,7 +794,10 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 	// low-traffic topic — and any push source between deliveries — stalls
 	// indefinitely.
 	var flushC <-chan time.Time
-	if t.flushInterval > 0 {
+	switch {
+	case t.flushTrigger != nil:
+		flushC = t.flushTrigger
+	case t.flushInterval > 0:
 		flushTicker := time.NewTicker(t.flushInterval)
 		defer flushTicker.Stop()
 		flushC = flushTicker.C
