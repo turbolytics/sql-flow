@@ -11,18 +11,27 @@ selects exactly one row and every row is reachable.
 | Fact | Values | Computed from |
 |---|---|---|
 | `data` | `none`, `behind`, `open`, `ripe` | The newest bucket's start, in event time, against the committed watermark. `none`: no rows. `behind`: newest + size is at or before the watermark, so everything held has closed. `open`: newest + size is after the watermark and newest - grace is not. `ripe`: newest - grace is after the watermark, or there is no watermark yet. |
-| `idle` | `off`, `unconfirmed`, `confirmed` | `idle_close_seconds` and the engine's progress row. `off` when not declared. `confirmed` when `last_commit - last_arrival` is at least the bound. `unconfirmed` otherwise, including a row the engine has not written. |
+| `idle` | `off`, `unconfirmed`, `confirmed` | `idle_close_seconds` and the engine's progress row. `off` when not declared. `confirmed` when `last_commit - last_arrival`, bounded by `last_commit - delivering_since`, is at least the bound. `unconfirmed` otherwise, including a row the engine has not written. |
+| `source` | `delivering`, `not_delivering` | The engine's progress row. `not_delivering` while the source holds nothing: a consumer between assignments, a websocket reconnecting. A row that never said reads as `delivering`. |
+
+Each fact is measured on one clock, and the two are never compared:
+
+| Fact | Clock | Measured from |
+|---|---|---|
+| `data` | `event_time` | the window table's newest bucket against the committed watermark |
+| `idle` | `engine` | last_commit - last_arrival, bounded by last_commit - delivering_since |
+| `source` | `engine` | delivering, which is NULL from a source that never said |
 
 24 combinations, 6 rows. A blank cell matches every value.
 
-| Rule | data | idle | Action | Watermark | Deciding | Claim |
-|---|---|---|---|---|---|---|
-| `hold.empty` | `none` |  | `hold` | unchanged | data | The window holds no rows, so there is nothing to close. |
-| `hold.behind` | `behind` |  | `hold` | unchanged | data | Everything the window holds ended at or before the watermark, so it has already closed; the watermark never moves backwards. |
-| `hold.open` | `open` | `off`, `unconfirmed` | `hold` | unchanged | idle | A bucket is open, the stream has not moved past it by the grace, and the engine has not confirmed the stream quiet. |
-| `hold.not_delivering` | `open`, `ripe` | `confirmed` | `hold` | unchanged | source | The source could not deliver, so silence says nothing about the stream and no bucket closes on idleness across it. |
-| `close.idle` | `open`, `ripe` | `confirmed` | `close.idle` | newest + size | idle | The engine committed idle_close_seconds after the newest arrival with nothing else arriving, so every open bucket closes, up to the newest bucket's end. |
-| `close.grace` | `ripe` | `off`, `unconfirmed` | `close.grace` | newest - grace | data | The stream has moved past the watermark by the grace, so the watermark follows it to the newest bucket's start less the grace. |
+| Rule | data | idle | source | Action | Watermark | Deciding | Claim |
+|---|---|---|---|---|---|---|---|
+| `hold.empty` | `none` |  |  | `hold` | unchanged | data | The window holds no rows, so there is nothing to close. |
+| `hold.behind` | `behind` |  |  | `hold` | unchanged | data | Everything the window holds ended at or before the watermark, so it has already closed; the watermark never moves backwards. |
+| `hold.open` | `open` | `off`, `unconfirmed` |  | `hold` | unchanged | idle | A bucket is open, the stream has not moved past it by the grace, and the engine has not confirmed the stream quiet. |
+| `hold.not_delivering` | `open`, `ripe` | `confirmed` | `not_delivering` | `hold` | unchanged | source | The source could not deliver, so silence says nothing about the stream and no bucket closes on idleness across it. |
+| `close.idle` | `open`, `ripe` | `confirmed` | `delivering` | `close.idle` | newest + size | idle | The engine committed idle_close_seconds after the newest arrival with nothing else arriving, so every open bucket closes, up to the newest bucket's end. |
+| `close.grace` | `ripe` | `off`, `unconfirmed` |  | `close.grace` | newest - grace | data | The stream has moved past the watermark by the grace, so the watermark follows it to the newest bucket's start less the grace. |
 
 ## Each bucket, given the poll's watermark
 

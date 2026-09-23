@@ -462,10 +462,16 @@ func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPr
 		if rule.Action == CloseByIdle {
 			log = w.logger.Info
 		}
+		facts := FactsOf(w.decl, state, quiet, deliveringFor, newest, previous)
+		strs := make([]string, len(facts))
+		for i, f := range facts {
+			strs[i] = f.String()
+		}
 		log("close decided",
 			zap.String("rule", rule.Name),
-			zap.Stringer("state", state),
-			zap.Duration("quiet", quiet),
+			zap.String("claim", rule.Claim),
+			zap.String("deciding", rule.Deciding),
+			zap.Strings("facts", strs),
 			zap.Time("watermark", watermark))
 	}
 	return watermark, moved, newest, hasRows, nil

@@ -186,15 +186,23 @@ selects exactly one row and every row is reachable.
 | Fact | Values | Computed from |
 |---|---|---|
 | ` + "`data`" + ` | ` + "`none`, `behind`, `open`, `ripe`" + ` | The newest bucket's start, in event time, against the committed watermark. ` + "`none`" + `: no rows. ` + "`behind`" + `: newest + size is at or before the watermark, so everything held has closed. ` + "`open`" + `: newest + size is after the watermark and newest - grace is not. ` + "`ripe`" + `: newest - grace is after the watermark, or there is no watermark yet. |
-| ` + "`idle`" + ` | ` + "`off`, `unconfirmed`, `confirmed`" + ` | ` + "`idle_close_seconds`" + ` and the engine's progress row. ` + "`off`" + ` when not declared. ` + "`confirmed`" + ` when ` + "`last_commit - last_arrival`" + ` is at least the bound. ` + "`unconfirmed`" + ` otherwise, including a row the engine has not written. |
+| ` + "`idle`" + ` | ` + "`off`, `unconfirmed`, `confirmed`" + ` | ` + "`idle_close_seconds`" + ` and the engine's progress row. ` + "`off`" + ` when not declared. ` + "`confirmed`" + ` when ` + "`last_commit - last_arrival`" + `, bounded by ` + "`last_commit - delivering_since`" + `, is at least the bound. ` + "`unconfirmed`" + ` otherwise, including a row the engine has not written. |
+| ` + "`source`" + ` | ` + "`delivering`, `not_delivering`" + ` | The engine's progress row. ` + "`not_delivering`" + ` while the source holds nothing: a consumer between assignments, a websocket reconnecting. A row that never said reads as ` + "`delivering`" + `. |
 
+Each fact is measured on one clock, and the two are never compared:
+
+| Fact | Clock | Measured from |
+|---|---|---|
 `)
-	fmt.Fprintf(&b, "%d combinations, %d rows. A blank cell matches every value.\n\n", len(allStates()), len(watermarkTable))
-	b.WriteString("| Rule | data | idle | Action | Watermark | Deciding | Claim |\n|---|---|---|---|---|---|---|\n")
+	for _, f := range factDescriptions() {
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s |\n", f.Name, f.Clock, f.From)
+	}
+	fmt.Fprintf(&b, "\n%d combinations, %d rows. A blank cell matches every value.\n\n", len(allStates()), len(watermarkTable))
+	b.WriteString("| Rule | data | idle | source | Action | Watermark | Deciding | Claim |\n|---|---|---|---|---|---|---|---|\n")
 	for _, r := range watermarkTable {
 		where := map[Action]string{Hold: "unchanged", CloseByGrace: "newest - grace", CloseByIdle: "newest + size"}[r.Action]
-		fmt.Fprintf(&b, "| `%s` | %s | %s | `%s` | %s | %s | %s |\n",
-			r.Name, joinValues(r.Data), joinValues(r.Idle), r.Action, where, r.Deciding, r.Claim)
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | `%s` | %s | %s | %s |\n",
+			r.Name, joinValues(r.Data), joinValues(r.Idle), joinValues(r.Source), r.Action, where, r.Deciding, r.Claim)
 	}
 
 	b.WriteString(`
