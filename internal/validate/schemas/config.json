@@ -789,6 +789,13 @@
             "interval_seconds": {
               "type": "integer",
               "description": "IntervalSeconds is how often to report. Absent means the default."
+            },
+            "labels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object",
+              "description": "Labels are the operator's own, copied into every report, so a fleet\ncan be filtered by region, tenant or environment.\n\nAt most 10. A key is lower case, starts with a letter, and is at most\n32 characters of [a-z0-9_]. A value is at most 64 characters. A key\nthe bundle already carries is refused: id, name, version, commit,\narch, config_hash, source_type, sink_type, handler_type.\n\nThey are fixed for the life of the process: a receiver stores a series\nper field, and a set that changed mid-run would split one instance's\nhistory in two."
             }
           },
           "additionalProperties": false,

@@ -4,6 +4,17 @@
 
 ### Added
 
+- The TurboStats bundle says what a pipeline is made of: `source_type`,
+  `sink_type` and `handler_type` in the `instance` section, so a fleet can be
+  grouped by them rather than grepped. A `serve` process has none of the
+  three and sends none of them.
+- The `turbostats` block takes `labels`, the operator's own key-value pairs,
+  copied into every report: at most 10, lower-case keys up to 32 characters,
+  values up to 64, and never a name the bundle already carries. The bounds
+  are what keep a report a fixed shape.
+  - `sqlflow validate` refuses a set that breaks the rules, and both
+    commands refuse to start on one. All of it holds with reporting on or
+    off: the labels reach `GET /turbostats/v1` either way.
 - The TurboStats bundle carries how long the work takes, which phase failed,
   and how long the consume loop waited.
   - `pipeline.duration.batch`, `pipeline.duration.sink_flush` and
@@ -46,6 +57,19 @@
   key never leaves the machine it was made on. Public keys are strings with
   the `sfp_` prefix, beside the `sfc_` credential. `keygen` refuses to
   overwrite an existing file.
+
+### Fixed
+
+- `sqlflow run` validated its `turbostats` block only when `report_to` was
+  set. A block `sqlflow validate` rejects could start anyway and serve
+  itself at `GET /turbostats/v1`. `sqlflow serve` has always checked its
+  whole block at startup.
+- `sqlflow validate` skipped the `turbostats` block entirely when a pipeline
+  reported nowhere, for the same reason.
+- Every `turbostats` diagnostic pointed at the pipeline's first line instead
+  of the key that was wrong. The path was rooted at the document twice, so
+  it resolved nothing and fell back to the enclosing node. An editor now
+  jumps to the offending line.
 
 ### Changed
 

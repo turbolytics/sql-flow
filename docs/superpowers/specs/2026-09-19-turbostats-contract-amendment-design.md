@@ -141,7 +141,7 @@ timestamps come from the instance's clock, so `sent_at − last_activity_at`
 cancels a constant skew. It does not cancel a clock step between the two
 readings, which is what the durations below are for.
 
-### Durations (added 2026-09-22)
+### Uptime and idle (added 2026-09-22)
 
 Two fields carry durations from the process's monotonic clock. A receiver
 judges start and work from these, and keeps `started_at` and
@@ -177,6 +177,31 @@ Every bundle holds three invariants:
 
 `instance.name` is `pipeline.name` under `run` and `serve.name` under `serve`.
 It is required when reporting is on, as `instance.id` is.
+
+### Metadata (added 2026-09-22)
+
+`instance` carries what the process is made of, read from its config at
+startup: `source_type`, `sink_type` and `handler_type`, lower case. A serve
+process has none of the three and sends none of them. The handler's short
+name is the registry's -- `structured`, `inferred_mem`, `inferred_disk` --
+not the long form the config writes.
+
+`instance.labels` is the operator's own map, declared in the `turbostats`
+block and fixed for the life of the process. At most 10 entries; a key
+matches `[a-z][a-z0-9_]*` and is at most 32 characters; a value is at most
+64. These names are refused, because a label that shadows a field this
+contract defines makes two different things share a name: `id`, `name`,
+`version`, `commit`, `arch`, `config_hash`, `source_type`, `sink_type`,
+`handler_type`.
+
+The bounds are what keep the map inside the shape rule. Its width is set by
+whoever wrote the config, never by a broker's partition count or a stream's
+error codes, and it cannot change while the process runs.
+
+`sqlflow validate` enforces every rule, and both commands refuse a config
+that breaks one. All of it holds whether or not reporting is on: the labels
+reach `GET /turbostats/v1` either way, and a rule that would refuse the
+config the moment someone sets `report_to` is a defect in it now.
 
 ### Signals (added 2026-09-22)
 
@@ -259,8 +284,17 @@ second reader when configured.
 
 ### Size
 
-The bound stays 1 KiB per bundle. A test holds a full `run` bundle and a full
-`serve` bundle under it, each separately.
+A realistic `serve` bundle stays under 1 KiB. A realistic `run` bundle stays
+under 2 KiB: the three types and a label set put it at 1041 bytes and the
+durations take it to 1121. Each has its own test.
+
+The numbers exist to catch a field that scales with data, not to shave
+bytes. The receiver's limit is 16 KiB and a reporter sends once a minute.
+
+A third test prices the shape rather than the budget: a bundle with every
+field at its widest, ten maximal labels and 2^62 in every counter and
+bucket, stays under 8 KiB. Nobody sends that bundle; the point is that the
+contract's widest legal shape still fits with room to spare.
 
 ## The response
 

@@ -118,6 +118,28 @@ func TestBundle_ZeroDurationsArePresentAndNilIsAbsent(t *testing.T) {
 	}
 }
 
+// What the pipeline is made of, so "every stream that reads from Kafka" is
+// a query. A serve process has none of the three, and sends none of them
+// rather than sending empty strings.
+func TestInstance_TypesAndLabels(t *testing.T) {
+	with := mustMarshal(t, Bundle{V: Version, Instance: Instance{
+		ID: "gw-1", SourceType: "kafka", SinkType: "postgres", HandlerType: "structured",
+		Labels: map[string]string{"region": "eu-west"}}})
+	for _, want := range []string{`"source_type":"kafka"`, `"sink_type":"postgres"`,
+		`"handler_type":"structured"`, `"labels":{"region":"eu-west"}`} {
+		if !strings.Contains(with, want) {
+			t.Errorf("the instance is missing %s: %s", want, with)
+		}
+	}
+
+	without := mustMarshal(t, Bundle{V: Version, Instance: Instance{ID: "gw-1"}})
+	for _, absent := range []string{"source_type", "sink_type", "handler_type", "labels"} {
+		if strings.Contains(without, absent) {
+			t.Errorf("an instance with no %s carries one: %s", absent, without)
+		}
+	}
+}
+
 // The wire's buckets are the contract's, not the engine's: nine counts
 // against eight boundaries, so a receiver reads a distribution without being
 // told the boundaries.

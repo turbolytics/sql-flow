@@ -43,12 +43,16 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 		SentAt:          time.Now().UTC().Truncate(time.Second),
 		IntervalSeconds: s.IntervalSeconds,
 		Instance: Instance{
-			ID:         s.ID,
-			Name:       s.Name,
-			Version:    s.Version,
-			Commit:     s.Commit,
-			Arch:       runtime.GOOS + "/" + runtime.GOARCH,
-			ConfigHash: s.ConfigHash,
+			ID:          s.ID,
+			Name:        s.Name,
+			Version:     s.Version,
+			Commit:      s.Commit,
+			Arch:        runtime.GOOS + "/" + runtime.GOARCH,
+			ConfigHash:  s.ConfigHash,
+			SourceType:  s.SourceType,
+			SinkType:    s.SinkType,
+			HandlerType: s.HandlerType,
+			Labels:      copyLabels(s.Labels),
 		},
 		Process: Process{
 			StartedAt:  s.StartedAt.UTC().Truncate(time.Second),
@@ -472,4 +476,20 @@ func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
 			d.newestStartNewest = v
 		}
 	}
+}
+
+// copyLabels copies the operator's labels into the bundle.
+//
+// Collect promises to touch nothing shared, because the reporter and the
+// HTTP handler call it at once. Handing out the same map would break that
+// promise the first time anything wrote to it.
+func copyLabels(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

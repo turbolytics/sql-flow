@@ -79,6 +79,19 @@ type Instance struct {
 	Commit     string `json:"commit"`
 	Arch       string `json:"arch"`
 	ConfigHash string `json:"config_hash"`
+	// What this instance is made of, from its config. A receiver groups a
+	// fleet by these: "every stream that reads from Kafka" is a query
+	// rather than a grep. A serve process has none of them and sends none of
+	// them.
+	SourceType  string `json:"source_type,omitempty"`
+	SinkType    string `json:"sink_type,omitempty"`
+	HandlerType string `json:"handler_type,omitempty"`
+	// Labels are the operator's own, declared in the config and fixed for
+	// the life of the process. At most 10, keys [a-z][a-z0-9_]* up to 32
+	// characters, values up to 64, and never a name this contract already
+	// defines. The bounds are what keep a report a fixed shape and a
+	// bounded size.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // Process is what the runtime and the kernel say about this process.

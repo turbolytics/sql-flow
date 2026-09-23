@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
@@ -382,6 +384,14 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 				if at == ".Bundle.Commands" {
 					continue
 				}
+				// labels are the operator's, from the config, and the config
+				// refuses more than config.MaxLabels of them. The width is
+				// set by the person who wrote the file, not by a broker's
+				// partition count or a stream's error codes, and it cannot
+				// change while the process runs.
+				if at == ".Bundle.Instance.Labels" {
+					continue
+				}
 				// A duration's buckets are a fixed-length array whose length
 				// the contract sets: len(wire.DurationBounds)+1, the same
 				// for every process forever. It is the one shape a receiver
@@ -402,22 +412,33 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 	assert.Equal(t, 0, len(bad))
 }
 
-// A bundle with every field at its widest value stays under 4 KiB.
+// A bundle with every field at its widest value stays under 8 KiB.
 //
-// A smoke alarm for the shape, not the budget: 64-character ids and 2^62 in
-// every counter are not a bundle anyone sends. The budget is the realistic
-// run bundle's 1 KiB guard.
+// A smoke alarm for the shape, not the budget: 64-character ids, ten
+// maximal labels and 2^62 in every counter and every bucket are not a
+// bundle anyone sends. The budget is the realistic run bundle's guard.
+//
+// It was 4 KiB until the durations landed. Three phases of nine 2^62
+// buckets took the widest bundle to 4212 bytes, which is the price of the
+// one nested array the shape guard exempts. The receiver's limit is 16 KiB,
+// so 8 leaves the alarm a margin without letting the shape double quietly.
 func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	big := int64(1) << 62
 	n := 1 << 30
 	at := time.Now().UTC()
+	// The longest code in the taxonomy is shorter than this; a code is a
+	// bounded string and this is the widest one worth pricing.
+	code := "system.internal.unexpected"
+	secs := 1e9
 	b := wire.Bundle{
 		V: wire.Version, SentAt: at, IntervalSeconds: 86400, LastActivityAt: &at,
 		Instance: wire.Instance{
 			ID: strings.Repeat("i", 64), Name: strings.Repeat("n", 64),
 			Version: "v2026.09.21.12", Commit: strings.Repeat("c", 40),
 			Arch: "linux/arm64", ConfigHash: "sha256:" + strings.Repeat("f", 64),
+			SourceType: "websocket", SinkType: "clickhouse", HandlerType: "inferred_disk",
+			Labels: widestLabels(t),
 		},
 		Process: wire.Process{StartedAt: at, RSSBytes: big, Goroutines: n},
 		Pipeline: &wire.Pipeline{
@@ -428,17 +449,57 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 			LagPartitions: &n, LagObservedAt: &at, LateRowsDropped: &big,
 			LateRowsReemitted: &big, WindowClosedCount: &big,
 			WindowLagSeconds: &big, WindowNewestBucketAt: &at,
+			SourceErrorCount: &big, HandlerErrorCount: &big, SinkErrorCount: &big,
+			StateErrorCount: &big, DLQRows: &big, LastErrorCode: &code,
+			LastErrorAt: &at, RecvWaitSeconds: &secs,
+			Duration: &wire.PipelineDurations{Batch: widestDuration(), SinkFlush: widestDuration()},
 		},
 		Serve: &wire.Serve{
 			RequestCount: big, RequestErrorCount: big, SessionsInUse: n,
 			SessionsTotal: n, LastRequestAt: &at,
 			Cache: &wire.ServeCache{HitCount: big, MissCount: big, SharedCount: big,
 				EvictionCount: big, Bytes: big, Entries: n},
+			Duration: &wire.ServeDurations{Request: widestDuration()},
 		},
 		Exit: &wire.Exit{Reason: "system.internal.unexpected", Code: 255},
 	}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
 	t.Logf("a bundle with every field at its widest is %d bytes", len(raw))
-	assert.That(t, len(raw) < 4<<10)
+	assert.That(t, len(raw) < 8<<10)
+}
+
+// widestLabels is the largest label set the config accepts: the most keys,
+// each at its length limit, each with a value at its length limit.
+//
+// The shape guard exempts the label map because the config bounds it. This
+// is what holds that exemption honest: the exemption is only true while
+// the widest legal set still fits in the ceiling.
+func widestLabels(t *testing.T) map[string]string {
+	t.Helper()
+	out := make(map[string]string, config.MaxLabels)
+	for i := 0; i < config.MaxLabels; i++ {
+		key := strings.Repeat("k", config.MaxLabelKeyLen-1) + fmt.Sprintf("%d", i)
+		out[key] = strings.Repeat("v", config.MaxLabelValueLen)
+	}
+	// The config has to accept it, or this is measuring a set nobody can
+	// write.
+	ts := &config.TurboStats{Labels: out}
+	assert.Equal(t, 0, len(ts.Check([]string{"pipeline", "turbostats"})))
+	return out
+}
+
+// widestDuration is a duration whose every number is as wide as JSON makes
+// it. Three of these ride in a full bundle, and the ceiling has to hold with
+// them in it: a phase's buckets are the one nested array the shape guard
+// exempts, so the size guard is what prices that exemption.
+func widestDuration() *wire.Duration {
+	buckets := make([]uint64, len(wire.DurationBounds)+1)
+	for i := range buckets {
+		buckets[i] = 1 << 62
+	}
+	return &wire.Duration{
+		Count: 1 << 62, SumSeconds: 1e9, MinSeconds: 1e-9, MaxSeconds: 1e9,
+		Buckets: buckets,
+	}
 }

@@ -50,6 +50,13 @@ type Static struct {
 	StartedAt                             time.Time
 	// IntervalSeconds is the reporter's interval, and 0 without a reporter.
 	IntervalSeconds int
+	// What this process is made of, from its config. A serve process leaves
+	// all three empty: it answers queries over datasets.
+	SourceType  string
+	SinkType    string
+	HandlerType string
+	// Labels are the operator's, already validated by the config.
+	Labels map[string]string
 	// Clock is the process's monotonic start and last work. Nil sends no
 	// uptime_seconds or idle_seconds, which a receiver reads as an older
 	// engine rather than as a process that just started.
