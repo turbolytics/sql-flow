@@ -1,11 +1,13 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
@@ -120,4 +122,58 @@ pipeline:
 	_, _, err := LoadRendered(path, map[string]string{})
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "allow"))
+}
+
+// The rules exist so a report keeps a fixed shape and a bounded size, and
+// so a label never shadows a field the contract defines.
+func TestTurboStatsLabels_RefusesWhatBreaksTheShape(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	tooMany := map[string]string{}
+	for i := 0; i < 11; i++ {
+		tooMany[fmt.Sprintf("k%d", i)] = "v"
+	}
+	cases := map[string]map[string]string{
+		"too many":      tooMany,
+		"reserved name": {"version": "v1"},
+		"upper case":    {"Region": "eu"},
+		"leading digit": {"1region": "eu"},
+		"long key":      {strings.Repeat("k", 33): "eu"},
+		"long value":    {"region": strings.Repeat("v", 65)},
+	}
+	for name, labels := range cases {
+		t.Run(name, func(t *testing.T) {
+			ts := valid()
+			ts.Labels = labels
+			assert.That(t, len(ts.Check([]string{"pipeline", "turbostats"})) > 0)
+		})
+	}
+}
+
+// The ordinary case passes, and so does no labels at all.
+func TestTurboStatsLabels_AcceptsABoundedSet(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	ts := valid()
+	ts.Labels = map[string]string{"region": "eu_west", "tenant": "acme", "env": "prod"}
+	assert.Equal(t, 0, len(ts.Check([]string{"pipeline", "turbostats"})))
+
+	ts.Labels = nil
+	assert.Equal(t, 0, len(ts.Check([]string{"pipeline", "turbostats"})))
+}
+
+// Labels are validated even with reporting off: a config that would be
+// refused the moment someone sets report_to is a config with a defect in
+// it now.
+func TestTurboStatsLabels_AreCheckedWithReportingOff(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	ts := &TurboStats{Labels: map[string]string{"Region": "eu"}}
+	assert.That(t, len(ts.Check([]string{"pipeline", "turbostats"})) > 0)
+}
+
+// A config with no turbostats block checks clean rather than panicking.
+// The label rules read the block before asking whether reporting is on, so
+// the nil case stopped being absorbed by Enabled().
+func TestTurboStats_ChecksANilBlock(t *testing.T) {
+	coverage.Covers(t, "config.validation")
+	var ts *TurboStats
+	assert.Equal(t, 0, len(ts.Check([]string{"serve", "turbostats"})))
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -34,6 +35,31 @@ type TurboStats struct {
 	Key string `yaml:"key,omitempty"`
 	// IntervalSeconds is how often to report. Absent means the default.
 	IntervalSeconds int `yaml:"interval_seconds,omitempty"`
+	// Labels are the operator's own, copied into every report. They are
+	// fixed for the life of the process: a receiver stores a series per
+	// field, and a set that changed mid-run would split one instance's
+	// history in two.
+	Labels map[string]string `yaml:"labels,omitempty"`
+}
+
+// The limits on labels. A report has to stay a fixed shape and a bounded
+// size: these hold on a cellular uplink at a report a minute, and they stop
+// a loop over a data value from growing the bundle.
+const (
+	MaxLabels        = 10
+	MaxLabelKeyLen   = 32
+	MaxLabelValueLen = 64
+)
+
+// labelKey is what a receiver can use as a column or a filter name without
+// escaping it.
+var labelKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// reservedLabels are the names this contract already defines. A label that
+// shadows one makes two different things share a name.
+var reservedLabels = map[string]bool{
+	"id": true, "name": true, "version": true, "commit": true, "arch": true,
+	"config_hash": true, "source_type": true, "sink_type": true, "handler_type": true,
 }
 
 // Enabled reports whether this instance posts anywhere.
@@ -58,10 +84,10 @@ func (t *TurboStats) Interval() time.Duration {
 // Order matters: the first violation is the one an operator reads, so the
 // destination comes before what is sent to it.
 func (t *TurboStats) Check(at []string) []Violation {
-	if !t.Enabled() {
-		// Nothing to validate. An instance with no control plane is the
-		// ordinary case, and a half-filled block that reports nowhere is not
-		// an error a pipeline should refuse to start over.
+	if t == nil {
+		// A config with no turbostats block at all. Enabled() used to absorb
+		// this, and the label rules read the block before asking whether
+		// reporting is on.
 		return nil
 	}
 
@@ -71,6 +97,37 @@ func (t *TurboStats) Check(at []string) []Violation {
 			Code: code, Path: append(append([]string{}, at...), key),
 			Message: fmt.Sprintf(format, args...),
 		})
+	}
+
+	// Labels are checked whether or not reporting is on. A label set that
+	// would be refused the moment someone sets report_to has the defect
+	// now, and finding it then means finding it in production.
+	if len(t.Labels) > MaxLabels {
+		add(errs.CodeConfigInvalid, "labels",
+			"turbostats.labels has %d entries; at most %d", len(t.Labels), MaxLabels)
+	}
+	for k, v := range t.Labels {
+		switch {
+		case reservedLabels[k]:
+			add(errs.CodeConfigInvalid, "labels",
+				"turbostats.labels.%s is a field the bundle already carries", k)
+		case !labelKey.MatchString(k):
+			add(errs.CodeConfigInvalid, "labels",
+				"turbostats.labels.%s is not a label name: lower case, starting with a letter, [a-z0-9_]", k)
+		case len(k) > MaxLabelKeyLen:
+			add(errs.CodeConfigInvalid, "labels",
+				"turbostats.labels.%s is %d characters; at most %d", k, len(k), MaxLabelKeyLen)
+		case len(v) > MaxLabelValueLen:
+			add(errs.CodeConfigInvalid, "labels",
+				"turbostats.labels.%s has a %d character value; at most %d", k, len(v), MaxLabelValueLen)
+		}
+	}
+
+	if !t.Enabled() {
+		// Nothing else to validate. An instance with no control plane is the
+		// ordinary case, and a half-filled block that reports nowhere is not
+		// an error a pipeline should refuse to start over.
+		return out
 	}
 
 	if reason := reportToProblem(t.ReportTo); reason != "" {
