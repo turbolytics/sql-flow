@@ -336,9 +336,26 @@ func TestCoreConsumeLoop_NoEventTimeNoLag(t *testing.T) {
 	}
 }
 
-// A producer's clock ahead of this host's is not a pipeline running ahead
-// of its stream.
-func TestCoreConsumeLoop_ANegativeLagIsZero(t *testing.T) {
+// noLagRecorded fails if the loop recorded any lag reading at all. Absent
+// and zero are different facts everywhere in this contract, and for lag the
+// difference is "cannot measure" against "caught up".
+func noLagRecorded(t *testing.T, reader *sdkmetric.ManualReader) {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	assert.NoError(t, reader.Collect(context.Background(), &rm))
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "pipeline_event_lag_seconds" {
+				t.Fatalf("a lag was recorded where none could be measured")
+			}
+		}
+	}
+}
+
+// A producer's clock ahead of this host's is not a pipeline running ahead of
+// its stream. The batch has nothing else to measure, so it reports nothing:
+// zero would claim the pipeline had caught up.
+func TestCoreConsumeLoop_AFutureEventIsNoReading(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	batch := messages(1)
 	batch[0].EventAt = time.Now().Add(time.Hour)
@@ -347,5 +364,52 @@ func TestCoreConsumeLoop_ANegativeLagIsZero(t *testing.T) {
 
 	_, err := tb.ConsumeLoop(context.Background(), 0)
 	assert.NoError(t, err)
-	assert.Equal(t, float64(0), flatFloat(t, reader, "pipeline_event_lag_seconds"))
+	noLagRecorded(t, reader)
+}
+
+// One device with a fast clock must not speak for the batch. Kafka's default
+// timestamp is the producer's own clock, so a mixed fleet sends these
+// routinely: 499 records an hour behind and one stamped five minutes ahead
+// used to report a lag of zero, which is exactly the "caught up" the field
+// exists to avoid.
+func TestCoreConsumeLoop_AFutureEventDoesNotHideABacklog(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	batch := messages(500)
+	for i := range batch {
+		batch[i].EventAt = time.Now().Add(-time.Hour)
+	}
+	batch[499].EventAt = time.Now().Add(5 * time.Minute)
+
+	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{batch}}}
+	tb, reader := meteredTurbine(t, src, &fakeSink{}, 1000)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+	lag := flatFloat(t, reader, "pipeline_event_lag_seconds")
+	assert.That(t, lag > 3500 && lag < 3700)
+}
+
+// Kafka encodes "no timestamp" as -1, and kgo renders that as a moment just
+// before the epoch rather than Go's zero time, so IsZero() does not catch
+// it. One such record -- an RTC-less device that booted near 1970, a
+// producer sending -1, a v0 legacy message -- used to set the run's worst
+// lag to 56 years, and the worst lag never comes down.
+func TestCoreConsumeLoop_AnAbsentTimestampIsNotAnOldEvent(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	bad := messages(1)
+	bad[0].EventAt = time.Unix(0, -1e6)
+	assert.That(t, !bad[0].EventAt.IsZero())
+
+	good := messages(1)
+	good[0].EventAt = time.Now().Add(-time.Second)
+
+	src := &eventTimeSource{fakeSource: fakeSource{batches: [][]Message{bad, good}}}
+	tb, reader := meteredTurbine(t, src, &fakeSink{}, 10)
+
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+	// The healthy batch decides both readings; the epoch record is absent,
+	// not ancient.
+	assert.That(t, flatFloat(t, reader, "pipeline_event_lag_seconds") < 60)
+	assert.That(t, flatFloat(t, reader, "pipeline_event_lag_max_seconds") < 60)
 }

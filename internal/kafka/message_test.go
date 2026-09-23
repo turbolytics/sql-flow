@@ -11,7 +11,7 @@ import (
 )
 
 // The record's own timestamp is the event time: a pipeline behind by an
-// hour is handling records the broker stamped an hour ago.
+// hour is handling records stamped an hour ago.
 func TestSourceKafka_CarriesTheRecordTimestamp(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	stamped := time.Now().Add(-90 * time.Second).Truncate(time.Millisecond)
@@ -28,5 +28,27 @@ func TestSourceKafka_CarriesTheRecordTimestamp(t *testing.T) {
 	assert.Equal(t, int64(42), msg.Offset)
 	assert.Equal(t, int32(7), msg.LeaderEpoch)
 	assert.Equal(t, int64(100), msg.HighWatermark)
-	assert.Equal(t, core.EventBasisKafkaTimestamp, (&Source{}).EventTimeBasis())
+	// Kafka's default is the producer's clock, and a source that has read
+	// nothing yet says so rather than claiming the broker stamped it.
+	assert.Equal(t, core.EventBasisKafkaCreateTime, (&Source{}).EventTimeBasis())
+}
+
+// The basis names the clock, because a lag from a producer's clock and a lag
+// from the broker's measure different things. A reader that cannot tell them
+// apart cannot compare two pipelines, and the fleet's clocks are the less
+// trustworthy of the two.
+func TestSourceKafka_BasisNamesTheClockThatStamped(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	s := &Source{}
+
+	s.timestampType.Store(1)
+	assert.Equal(t, core.EventBasisKafkaLogAppendTime, s.EventTimeBasis())
+
+	s.timestampType.Store(0)
+	assert.Equal(t, core.EventBasisKafkaCreateTime, s.EventTimeBasis())
+
+	// A pre-0.10.0 record carries no timestamp. No basis means the bundle
+	// omits the lag, rather than reporting one nothing stamped.
+	s.timestampType.Store(-1)
+	assert.Equal(t, "", s.EventTimeBasis())
 }

@@ -50,9 +50,27 @@ type Message struct {
 // honestly described by neither of these and gets its own name rather than
 // borrowing arrival.
 const (
-	EventBasisKafkaTimestamp = "kafka_timestamp"
-	EventBasisArrival        = "arrival"
+	// EventBasisKafkaCreateTime is a Kafka record's timestamp as the
+	// producer set it. This is Kafka's default, message.timestamp.type =
+	// CreateTime, so the reading is only as good as the producer's clock.
+	EventBasisKafkaCreateTime = "kafka_create_time"
+	// EventBasisKafkaLogAppendTime is a Kafka record's timestamp as the
+	// broker set it on append, for a topic configured with
+	// message.timestamp.type = LogAppendTime. One clock stamps every
+	// record, so a lag from this basis measures the stream rather than the
+	// fleet's clocks.
+	EventBasisKafkaLogAppendTime = "kafka_log_append_time"
+	EventBasisArrival            = "arrival"
 )
+
+// eventTimeFloor is the oldest event time a lag reading treats as real.
+//
+// Kafka encodes "no timestamp" as -1, and kgo renders that as a moment just
+// before the epoch rather than as Go's zero time, so IsZero() cannot be the
+// only guard. Devices without a real-time clock boot near 1970 and stamp
+// records from there. Nothing a pipeline reads is genuinely from 1970, and
+// one such record set a run's worst-lag reading to 56 years.
+var eventTimeFloor = time.Unix(0, 0)
 
 // EventTimeSource is a source that stamps Message.EventAt. A source that
 // does not implement it reports no lag, rather than a lag of zero.
@@ -345,10 +363,11 @@ type Turbine struct {
 	// hold it.
 	lastErrorUnixNano atomic.Int64
 	errorCount        atomic.Int64
-	// eventBasis is the source's event-time basis, empty for a source that
-	// has none. Read once at construction: a source does not change what
-	// it reads mid-run.
-	eventBasis string
+	// eventTimeSource is the source's event-time reporter, nil for a source
+	// that stamps none. The basis name is read from it at report time
+	// rather than cached, because a Kafka source learns whether its topic
+	// stamps CreateTime or LogAppendTime only once it has seen a record.
+	eventTimeSource EventTimeSource
 	// eventLagMax is the worst lag seen, in seconds. It never resets,
 	// because the reporter and GET /turbostats/v1 both read the bundle it
 	// ends up in. Written and read on the consume loop only.
@@ -670,7 +689,7 @@ func NewTurbine(
 	// not leaves this empty, and the loop then measures no lag at all
 	// rather than a lag of zero.
 	if s, ok := source.(EventTimeSource); ok {
-		t.eventBasis = s.EventTimeBasis()
+		t.eventTimeSource = s
 	}
 
 	// Built once rather than per batch: metric.WithAttributes allocates on
@@ -904,38 +923,62 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// add per message and one record per batch.
 		var payload int64
 		var newest time.Time
+		// One clock read for the whole batch. Two reads per message once
+		// took this loop from 22 ns/op to 91, and every comparison below
+		// has to be against the same now to be consistent.
+		now := time.Now()
 		for i := range msgBatch {
 			payload += int64(len(msgBatch[i].Value))
 			// The newest event in the batch, taken in the pass that already
 			// walks it. A separate pass would double the per-message work
 			// this loop exists to keep small.
-			if msgBatch[i].EventAt.After(newest) {
-				newest = msgBatch[i].EventAt
+			//
+			// Two kinds of record are skipped, because each reports a lag
+			// that is not this pipeline's:
+			//
+			// Below the floor is a record with no usable timestamp at all;
+			// see eventTimeFloor.
+			//
+			// After now is a clock ahead of this host's, not a pipeline
+			// ahead of its stream. A Kafka record carries the producer's
+			// clock unless the topic sets LogAppendTime, so one fast device
+			// in a fleet can win "newest" for the whole batch. Taking it and
+			// clamping the negative lag to zero reported "caught up" while
+			// the other 499 records in the batch were an hour behind.
+			at := msgBatch[i].EventAt
+			if at.After(eventTimeFloor) && !at.After(now) && at.After(newest) {
+				newest = at
 			}
 		}
 		t.metrics.MessagePayloadBytes.Add(ctx, payload)
 		// Once per batch, not per message: the cost is one gauge record
 		// against a whole batch, and a reader asking "is it still doing
 		// anything" cannot tell the two apart.
-		t.metrics.PipelineLastMessage.Record(ctx, time.Now().Unix())
+		t.metrics.PipelineLastMessage.Record(ctx, now.Unix())
 		t.metrics.Activity.Mark()
 
-		// One reading per batch, from the newest event in it: the oldest
-		// would add the batch's own span, which says as much about
+		// One reading per batch, from the newest usable event in it: the
+		// oldest would add the batch's own span, which says as much about
 		// batch_size as about the stream.
-		if t.eventBasis != "" && !newest.IsZero() {
-			lag := time.Since(newest).Seconds()
-			if lag < 0 {
-				// A producer's clock ahead of this host's is not a pipeline
-				// running ahead of its stream.
-				lag = 0
-			}
+		//
+		// A batch in which every record was skipped reports nothing at all.
+		// Zero would claim the pipeline had caught up, which is the one
+		// wrong answer this field exists to avoid, and absent is not zero
+		// anywhere else in this contract either.
+		//
+		// The reading is taken when the batch arrives, before the handler
+		// and the sink run. It is how far behind the stream the pipeline
+		// reads, not how long the data takes to land; a slow flush shows up
+		// as event_lag_observed_at going stale, and in the batch and
+		// sink_flush durations beside it.
+		if t.eventTimeSource != nil && !newest.IsZero() {
+			lag := now.Sub(newest).Seconds()
 			t.metrics.EventLagSeconds.Record(ctx, lag)
 			if lag > t.eventLagMax {
 				t.eventLagMax = lag
 			}
 			t.metrics.EventLagMaxSeconds.Record(ctx, t.eventLagMax)
-			t.metrics.EventLagObserved.Record(ctx, time.Now().Unix())
+			t.metrics.EventLagObserved.Record(ctx, now.Unix())
 		}
 
 		// handler.write is timed by bracketing the whole loop and subtracting
@@ -1153,10 +1196,16 @@ func (t *Turbine) recordError(ctx context.Context, err error, phase, message str
 // EventBasis is where this pipeline's event times come from, and empty for
 // a source that has none.
 //
-// The turbine resolved it once at construction, so the bundle reads the
-// same answer the consume loop measures against rather than asserting the
-// source's type a second time.
-func (t *Turbine) EventBasis() string { return t.eventBasis }
+// The turbine holds the source it resolved at construction and asks it each
+// time, rather than caching the name: a Kafka topic's timestamp type is not
+// known until a record arrives. The source is responsible for making that
+// read safe from this goroutine.
+func (t *Turbine) EventBasis() string {
+	if t.eventTimeSource == nil {
+		return ""
+	}
+	return t.eventTimeSource.EventTimeBasis()
+}
 
 // LastError is the code and time of the last error this pipeline recorded.
 // ok is false before the first one.

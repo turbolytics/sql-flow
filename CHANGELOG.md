@@ -9,10 +9,17 @@
   `event_lag_observed_at` and `event_lag_basis` in the `pipeline` section.
   Offset lag is Kafka-only and counts messages; this works for any source
   that has an event time.
-  - Kafka reports `kafka_timestamp`, the record's own. The webhook and
+  - Kafka reports `kafka_create_time` or `kafka_log_append_time`, naming the
+    clock that stamped the record: the producer's by default, the broker's
+    only for a topic that sets `message.timestamp.type`. The webhook and
     websocket sources stamp arrival and report `arrival`, which is queueing
     inside the process rather than transport. The basis travels with the
-    number because the two measure different spans.
+    number because they measure different spans.
+  - A record whose event time is at or before the epoch, or ahead of the
+    pipeline's own clock, never contributes to a reading. The first is an
+    absent timestamp, not an old event; the second is a producer's clock
+    running fast, and taking it would report "caught up" during a real
+    backlog.
   - Measured once per batch, from the newest event in it. A source with no
     event time sends none of the four, because a zero lag would claim the
     pipeline had caught up with a stream it cannot measure.

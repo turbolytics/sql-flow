@@ -279,11 +279,50 @@ of its stream.
 a source with no event time, and absent is not zero: a zero lag claims the
 pipeline has caught up with a stream it cannot measure.
 
-`event_lag_basis` is an open vocabulary, not an enum. v1 defines two values:
+`event_lag_basis` is an open vocabulary, not an enum. v1 defines three
+values:
 
-- `kafka_timestamp`: the record's timestamp. Broker to processing.
+- `kafka_create_time`: the record's timestamp as the producer set it. This
+  is Kafka's default, `message.timestamp.type = CreateTime`, so the reading
+  is only as good as the producer's clock.
+- `kafka_log_append_time`: the record's timestamp as the broker set it on
+  append, for a topic configured with `message.timestamp.type =
+  LogAppendTime`. One clock stamps every record.
 - `arrival`: the source stamped the message as it arrived. Queueing inside
   the process, not transport.
+
+Kafka is two bases, not one, because the two measure different things and a
+reader cannot tell them apart from the number. Naming both was the point of
+the open vocabulary.
+
+**A record the pipeline cannot measure is skipped, not clamped.** Two kinds
+never contribute to a reading:
+
+- An event time at or before the Unix epoch. Kafka encodes "no timestamp" as
+  -1, and a client renders that as a moment just before the epoch rather
+  than a zero value. Devices without a real-time clock boot near 1970 and
+  stamp records from there. One such record set a run's `event_lag_max_seconds`
+  to 56 years, and the maximum never comes down.
+- An event time after now. That is a clock ahead of the pipeline's host, not
+  a pipeline ahead of its stream. Under `kafka_create_time` a single fast
+  device in a fleet wins "newest" for the whole batch; clamping its negative
+  lag to zero reported "caught up" while every other record in the batch was
+  an hour behind.
+
+A batch in which every record is skipped sends no reading, for the same
+reason a source with no event time sends none: absent is not zero.
+
+**The reading is taken when the batch arrives**, before the handler and the
+sink run. It is how far behind the stream the pipeline reads, not how long
+data takes to land. A slow flush shows up as `event_lag_observed_at` going
+stale, and in the batch and sink_flush durations beside it.
+
+`arrival` carries the same caveat wherever a server can deliver history. A
+websocket that replays from a cursor on reconnect -- Jetstream, say --
+hands over old events that this process stamps as arriving now, so the lag
+reads near zero exactly when the pipeline is furthest behind. `arrival`
+measures queueing inside the process and nothing before it, which is why it
+is a separate basis rather than a substitute for an event time.
 
 A source whose protocol carries no event time, and whose broker can hold a
 message before delivering it, is honestly described by neither. MQTT is the

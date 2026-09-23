@@ -782,13 +782,13 @@ func TestCollect_CarriesTheEventLagAndItsBasis(t *testing.T) {
 	m.EventLagObserved.Record(ctx, time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC).Unix())
 
 	src := runSource(reader, nil)
-	src.Pipeline.EventBasis = "kafka_timestamp"
+	src.Pipeline.EventBasis = "kafka_create_time"
 	b, err := Collect(ctx, src)
 	assert.NoError(t, err)
 
 	assert.Equal(t, 12.5, *b.Pipeline.EventLagSeconds)
 	assert.Equal(t, float64(90), *b.Pipeline.EventLagMaxSeconds)
-	assert.Equal(t, "kafka_timestamp", *b.Pipeline.EventLagBasis)
+	assert.Equal(t, "kafka_create_time", *b.Pipeline.EventLagBasis)
 	assert.Equal(t, 2026, b.Pipeline.EventLagObservedAt.UTC().Year())
 }
 

@@ -139,7 +139,11 @@ func (s *Source) Stream() <-chan []core.Message {
 
 			select {
 			// No event time in the frame, so arrival is the event. The
-			// basis says the lag is queueing inside this process.
+			// basis says the lag is queueing inside this process, and
+			// nothing before it: a server that replays history from a
+			// cursor on reconnect hands over old events that this stamps as
+			// arriving now, so the reading is near zero exactly when the
+			// pipeline is furthest behind.
 			case s.streamChan <- []core.Message{{Value: data, EventAt: time.Now()}}:
 			case <-s.done:
 				return

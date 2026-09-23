@@ -10,6 +10,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kmsg"
 	"go.uber.org/zap"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,12 @@ type Source struct {
 	closeOnce     sync.Once
 	seeker        *OffsetSeeker
 	partitions    *PartitionEvents
+	// timestampType is the record timestamp type last observed, as
+	// kgo.RecordAttrs.TimestampType reports it: 0 the producer's clock, 1
+	// the broker's, -1 a pre-0.10.0 record carrying none. It decides which
+	// basis a lag reading travels with, and the bundle reads it from
+	// another goroutine while the poll loop writes it.
+	timestampType atomic.Int32
 
 	logger *zap.Logger
 }
@@ -268,6 +275,13 @@ func (k *Source) Stream() <-chan []core.Message {
 				for _, r := range p.Records {
 					batch = append(batch, messageFrom(r, p.HighWatermark))
 				}
+				// Which clock stamped these records. message.timestamp.type
+				// is topic-level config, so the last record of a fetch
+				// speaks for the rest, and a lag reading can say whether it
+				// came from a producer's clock or the broker's.
+				if n := len(p.Records); n > 0 {
+					k.timestampType.Store(int32(p.Records[n-1].Attrs.TimestampType()))
+				}
 			})
 
 			if len(batch) == 0 {
@@ -289,9 +303,9 @@ func (k *Source) Stream() <-chan []core.Message {
 // messageFrom is the record-to-message conversion, lifted out of the fetch
 // loop so a test can reach it without a broker.
 //
-// EventAt is the record's own timestamp, which is what the broker stamped
-// when the producer wrote it: a pipeline behind by an hour is handling
-// records stamped an hour ago.
+// EventAt is the record's own timestamp: a pipeline behind by an hour is
+// handling records stamped an hour ago. Which clock set it depends on the
+// topic, which is what EventTimeBasis reports.
 func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
 	return core.Message{
 		Value:         r.Value,
@@ -304,6 +318,24 @@ func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
 	}
 }
 
-// EventTimeBasis is the record's own timestamp, which is what the broker
-// stamped when the producer wrote it.
-func (s *Source) EventTimeBasis() string { return core.EventBasisKafkaTimestamp }
+// EventTimeBasis names the clock behind Message.EventAt.
+//
+// A Kafka record's timestamp is the producer's own clock unless the topic
+// sets message.timestamp.type to LogAppendTime, and CreateTime is the
+// default. The two measure different things -- one is only as good as the
+// fleet's clocks, the other is one broker's -- so a lag reading has to say
+// which it came from rather than claiming "the broker stamped it".
+//
+// Before the first fetch this reports the Kafka default. A pre-0.10.0
+// record carries no timestamp at all, and a basis of "" means the bundle
+// omits the lag rather than reporting one nothing stamped.
+func (s *Source) EventTimeBasis() string {
+	switch s.timestampType.Load() {
+	case 1:
+		return core.EventBasisKafkaLogAppendTime
+	case -1:
+		return ""
+	default:
+		return core.EventBasisKafkaCreateTime
+	}
+}
