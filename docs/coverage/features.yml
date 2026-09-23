@@ -50,6 +50,10 @@ features:
     description: Consumes a websocket stream, reconnecting on drop.
     requires: [unit, release]
 
+  - id: source.mqtt
+    description: Consumes MQTT 5 at QoS 1 on a persistent session, acknowledging on commit.
+    requires: [unit, integration]
+
   # --- Sinks --------------------------------------------------------------
   - id: sink.kafka
     description: Publishes result rows to a Kafka topic.

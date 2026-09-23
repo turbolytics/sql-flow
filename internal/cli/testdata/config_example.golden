@@ -6,7 +6,7 @@ pipeline:
   description: <string>
   # Configuration for the data source.
   source:
-    type: kafka | webhook | websocket
+    type: kafka | mqtt | webhook | websocket
     kafka:
       brokers:
         - <array>

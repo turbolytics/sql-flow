@@ -1,0 +1,8 @@
+id: source.mqtt
+kind: source
+implements: [Source, MarkCommitter]
+feature: source.mqtt
+exempt:
+  - invariant: source.commit.on_revoke
+    reason: MQTT has no partition assignment, so nothing is revoked
+    proven_by: TestSourceMqtt_HasNoPartitionAssignmentToRevoke

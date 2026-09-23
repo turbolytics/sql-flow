@@ -23,7 +23,7 @@ func TestToolingCoverageRegistry_ListsSources(t *testing.T) {
 	Covers(t, "tooling.coverage")
 	got, err := Integrations("source")
 	assert.NoError(t, err)
-	assert.DeepEqual(t, []string{"kafka", "webhook", "websocket"}, got)
+	assert.DeepEqual(t, []string{"kafka", "mqtt", "webhook", "websocket"}, got)
 }
 
 func TestToolingCoverageRegistry_ListsHandlers(t *testing.T) {

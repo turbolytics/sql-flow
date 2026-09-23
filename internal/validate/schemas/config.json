@@ -18,6 +18,7 @@
               "type": "string",
               "enum": [
                 "kafka",
+                "mqtt",
                 "webhook",
                 "websocket"
               ]
