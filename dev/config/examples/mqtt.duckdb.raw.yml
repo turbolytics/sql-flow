@@ -7,6 +7,22 @@ commands:
   - name: bound memory
     sql: |
       SET memory_limit = '{{ SQLFLOW_DUCKDB_MEMORY|default('256MB') }}'
+  # The declared shape of one reading. The structured handler parses each
+  # publish against it and writes NULL for a field that does not fit. The
+  # inferred handler instead fails the whole batch on one mistyped reading,
+  # and under IGNORE that batch's good readings were acknowledged and
+  # dropped: one {"value": "err"} lost 999 readings from every sensor.
+  - name: create reading buffer
+    sql: |
+      CREATE TABLE reading (
+        device_id VARCHAR,
+        sensor VARCHAR,
+        metric VARCHAR,
+        value DOUBLE,
+        unit VARCHAR,
+        seq BIGINT,
+        ts VARCHAR
+      )
   - name: create readings
     sql: |
       CREATE TABLE IF NOT EXISTS iot.readings (
@@ -34,27 +50,29 @@ pipeline:
       client_id: {{ SQLFLOW_MQTT_CLIENT_ID|default('sqlflow-edge-1') }}
       topics: ["sensors/#"]
 
-  # One device sending a reading that is not JSON must not crash-loop the
-  # pipeline. The broker would redeliver it forever and stall every other
-  # sensor.
+  # One device sending a bad reading must not crash-loop the pipeline. The
+  # broker would redeliver it forever and stall every other sensor. With the
+  # structured handler, a bad reading costs only itself.
   on_error:
     policy: IGNORE
 
   handler:
-    type: 'handlers.InferredMemBatch'
-    # Columns by name: the batch also carries kafka_topic, kafka_partition
-    # and kafka_offset, which hold the subscription filter and the source's
-    # sequence number.
+    type: 'handlers.StructuredBatch'
+    table: reading
+    # TRY_CAST, because a failed cast fails the batch as surely as a failed
+    # parse. A reading with no seq is not a reading: a publish that was not
+    # JSON parses to all NULLs.
     sql: |
       SELECT
         device_id,
         sensor,
         metric,
-        CAST(value AS DOUBLE) AS value,
+        value,
         unit,
-        CAST(seq AS BIGINT) AS seq,
-        CAST(ts AS TIMESTAMPTZ) AS ts
-      FROM batch
+        seq,
+        TRY_CAST(ts AS TIMESTAMPTZ) AS ts
+      FROM reading
+      WHERE seq IS NOT NULL
 
   sink:
     type: sqlcommand

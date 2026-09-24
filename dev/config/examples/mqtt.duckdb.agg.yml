@@ -26,7 +26,7 @@ tables:
       # No index: DuckDB never frees rows deleted from an indexed table, and
       # the engine deletes every closed window (#268).
       sql: |
-        CREATE TABLE readings_1m_partial (
+        CREATE TABLE IF NOT EXISTS readings_1m_partial (
           bucket TIMESTAMPTZ,
           device_id VARCHAR,
           metric VARCHAR,
@@ -66,6 +66,15 @@ pipeline:
   batch_size: {{ SQLFLOW_BATCH_SIZE|default(1000) }}
   flush_interval_seconds: 5
 
+  # The open window's partial aggregates live here. Without a state file
+  # they are in memory, and a crash loses up to size_seconds plus
+  # idle_close_seconds of readings the broker has already been told were
+  # delivered. With it, a crash can count a reading twice: the state commit
+  # lands, the process dies before the acknowledgement, and the broker
+  # redelivers. At-least-once allows that; it does not allow the loss.
+  state:
+    path: {{ SQLFLOW_STATE_PATH|default('/data/agg.state.duckdb') }}
+
   source:
     type: mqtt
     mqtt:
@@ -77,18 +86,25 @@ pipeline:
     policy: IGNORE
 
   handler:
+    # The inferred handler, not the structured one: the structured handler
+    # checkpoints inside the state transaction and crash-loops under a
+    # state path. The cost is that one reading whose type conflicts with the
+    # batch, such as {"value": "err"}, fails and drops its batch under
+    # IGNORE. See the spec's Known limits.
     type: 'handlers.InferredMemBatch'
     sql: |
       INSERT INTO readings_1m_partial BY NAME
       SELECT
-        time_bucket(INTERVAL 1 MINUTE, CAST(ts AS TIMESTAMPTZ)) AS bucket,
+        time_bucket(INTERVAL 1 MINUTE, TRY_CAST(ts AS TIMESTAMPTZ)) AS bucket,
         device_id,
         metric,
         count(*) AS n,
-        sum(CAST(value AS DOUBLE)) AS sum_value,
-        min(CAST(value AS DOUBLE)) AS min_value,
-        max(CAST(value AS DOUBLE)) AS max_value
+        sum(TRY_CAST(value AS DOUBLE)) AS sum_value,
+        min(TRY_CAST(value AS DOUBLE)) AS min_value,
+        max(TRY_CAST(value AS DOUBLE)) AS max_value
       FROM batch
+      WHERE TRY_CAST(value AS DOUBLE) IS NOT NULL
+        AND TRY_CAST(ts AS TIMESTAMPTZ) IS NOT NULL
       GROUP BY ALL
 
   sink:
