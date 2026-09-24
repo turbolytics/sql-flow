@@ -34,14 +34,14 @@ func TestSourceMqtt_ResolvedRefusesWhatLosesTheSession(t *testing.T) {
 		edit func(*MqttSource)
 		want string
 	}{
-		"no client id":     {func(m *MqttSource) { m.ClientID = "" }, "client_id is required"},
-		"no topics":        {func(m *MqttSource) { m.Topics = nil }, "topics is required"},
-		"no broker":        {func(m *MqttSource) { m.Broker = "" }, "broker is required"},
-		"tls scheme":       {func(m *MqttSource) { m.Broker = "ssl://b:8883" }, "scheme"},
-		"negative expiry":  {func(m *MqttSource) { m.SessionExpirySeconds = -1 }, "session_expiry_seconds"},
+		"no client id":        {func(m *MqttSource) { m.ClientID = "" }, "client_id is required"},
+		"no topics":           {func(m *MqttSource) { m.Topics = nil }, "topics is required"},
+		"no broker":           {func(m *MqttSource) { m.Broker = "" }, "broker is required"},
+		"tls scheme":          {func(m *MqttSource) { m.Broker = "ssl://b:8883" }, "scheme"},
+		"negative expiry":     {func(m *MqttSource) { m.SessionExpirySeconds = -1 }, "session_expiry_seconds"},
 		"expiry above uint32": {func(m *MqttSource) { m.SessionExpirySeconds = 1 << 32 }, "session_expiry_seconds"},
-		"receive max high": {func(m *MqttSource) { m.ReceiveMaximum = 70000 }, "receive_maximum"},
-		"receive max neg":  {func(m *MqttSource) { m.ReceiveMaximum = -5 }, "receive_maximum"},
+		"receive max high":    {func(m *MqttSource) { m.ReceiveMaximum = 70000 }, "receive_maximum"},
+		"receive max neg":     {func(m *MqttSource) { m.ReceiveMaximum = -5 }, "receive_maximum"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
