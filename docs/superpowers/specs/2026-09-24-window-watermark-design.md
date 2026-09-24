@@ -3,6 +3,11 @@
 **Status:** proposal, for discussion alongside #369.
 **Relates to:** #369 (the correctness framework), #374 (a burst's rows dropped as late), #183 (a bucket split across workers).
 
+No windowed pipeline outside this repository depends on the current design, so
+this is a redesign rather than a migration: the old facts are deleted, not
+deprecated, and #374's workaround should be dropped rather than shipped ahead
+of it.
+
 ## The problem this solves
 
 A window manager needs one thing: how far the stream has got. Today it is never
@@ -184,21 +189,30 @@ facts are written separately, and it can be deleted.
 - **Sink-side exactly-once is unchanged**: at-least-once plus an idempotent
   keyed sink, as the ledger says.
 
-## Migration
+## How this lands
 
-1. Add the watermark table and write it in the batch transaction, alongside the
-   existing facts. Nothing reads it yet.
-2. Add a conformance test asserting the asserted watermark and the inferred one
-   agree, over the simulator's existing scenarios. Any disagreement is a bug in
-   one of them, and finding out which is the point.
-3. Switch the manager to read the asserted watermark. Keep the old path behind
-   nothing — delete it in the same commit, so there is one source of truth.
-4. Delete the `idle` and `source` facts, `delivering_for_us`, and the rules that
-   served them.
-5. Add per-partition watermarks and the minimum, which is the step #183 needs.
+No windowed pipeline outside this repository depends on any of it, so there is
+no compatibility to preserve and no reason to stage the change. One change:
+write the watermark, read the watermark, delete the facts it replaces, in the
+same commit. Two sources of truth for a window's progress is the condition this
+proposal exists to end, and introducing it temporarily to be careful would be
+the same mistake at a smaller scale.
 
-Steps 1 and 2 are additive and safe to land independently; the design is worth
-little until step 3.
+Specifically, and in one piece:
+
+- the watermark table, written in the batch's transaction;
+- the manager reading it and nothing else;
+- `delivering_for_us` dropped from `sqlflow_progress` outright — no
+  deprecation, no `IF EXISTS` migration to carry, since there are no old state
+  files that matter;
+- `idle`, `source`, `confirmedQuietSQL`, `announceArrival` and five of the
+  seven table rows deleted;
+- per-partition watermarks and the minimum, which is what #183 needs, in the
+  same design rather than bolted on afterwards.
+
+`poll_interval_seconds` becomes vestigial: with a watermark asserted at commit,
+the poll is only a bound on how soon a closed bucket is noticed, not a
+correctness parameter. The key stays in the schema and stops mattering.
 
 ## Cost and risk
 
@@ -206,13 +220,18 @@ little until step 3.
   UPDATE in a transaction the batch already has. Against today: one fewer
   column written per commit, and the `idle`/`source` reads disappear from every
   poll.
-- **The risk is concentrated in step 3**, where a wrong watermark silently
-  closes buckets early — the same failure #374 produced. Step 2 exists to spend
-  that risk before the switch, and #369's simulator is the instrument for it.
-- **The framework in #369 is what makes this tractable**, and its gaps matter
-  more under this design, not less: the model must be able to place a poll
-  inside a batch, and the counting property must be able to fail on a bucket
-  that never closes. Both are prerequisites rather than follow-ups.
+- **The risk is a wrong watermark silently closing buckets early** — the same
+  failure #374 produced, and the reason this is worth care even with no users
+  to break. What absorbs that risk is not a staged rollout; it is the
+  simulator. The scenarios in `internal/simulate` are written against
+  behaviour, not against the three facts, so they transfer to the new model
+  unchanged and are the instrument that says whether it is right.
+- **That makes #369's two known gaps prerequisites, not follow-ups**, and more
+  load-bearing than they were: with no dual-write to cross-check against, the
+  model must be able to place a poll inside a batch, and the counting property
+  must be able to fail on a bucket that never closes. Without those, the suite
+  cannot distinguish this design working from this design closing everything
+  early.
 
 ## Why this is the right shape for IoT
 
