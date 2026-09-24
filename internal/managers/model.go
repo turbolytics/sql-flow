@@ -46,6 +46,17 @@ type Publication struct {
 	Rows   int
 }
 
+// Decision is one poll: the rule the facts selected, and the facts. Counting
+// the rows a run published cannot fail on a close that came early, so the
+// evidence each close rested on is kept for the property to read.
+type Decision struct {
+	Rule          string
+	Action        Action
+	Quiet         time.Duration
+	DeliveringFor time.Duration
+	Delivering    bool
+}
+
 // Model is one pipeline: its buckets, its watermark, and the three engine
 // instants the window decides on.
 type Model struct {
@@ -67,10 +78,23 @@ type Model struct {
 	watermark    time.Time
 	hadWatermark bool
 
-	lastArrival     time.Time
-	lastCommit      time.Time
+	// What the loop holds in memory: when its quiet began, and what the
+	// source is doing right now.
+	quietSince      time.Time
 	deliveringSince time.Time
 	delivering      bool
+
+	// What the progress row holds, which is the whole of what the manager
+	// can see. The loop asks the source when it commits and at no other
+	// time, so a source that goes or comes back changes nothing the manager
+	// reads until a commit writes it down.
+	rowArrival    time.Time
+	rowCommit     time.Time
+	rowFor        time.Duration
+	rowDelivering bool
+
+	// Decisions is every poll's rule and the facts it read, in order.
+	Decisions []Decision
 }
 
 var modelEpoch = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
@@ -83,12 +107,29 @@ func NewModel(decl Declaration) *Model {
 		mono:    modelEpoch,
 		buckets: map[time.Time]int{},
 
-		lastArrival:     modelEpoch,
-		lastCommit:      modelEpoch,
+		quietSince:      modelEpoch,
 		deliveringSince: modelEpoch,
 		delivering:      true,
+
+		// A progress table with no row in it reads as never said: no quiet,
+		// no duration, and nothing denying that the source delivers.
+		rowArrival:    modelEpoch,
+		rowCommit:     modelEpoch,
+		rowFor:        -1,
+		rowDelivering: true,
 	}
 	return m
+}
+
+// commit is a progress write, which is the only moment the row changes and
+// the only moment the loop asks the source anything.
+func (m *Model) commit() {
+	m.rowArrival, m.rowCommit = m.quietSince, m.mono
+	m.rowDelivering = m.delivering
+	m.rowFor = -1
+	if m.delivering && !m.deliveringSince.IsZero() {
+		m.rowFor = m.mono.Sub(m.deliveringSince)
+	}
 }
 
 // wall is the clock the data is stamped on.
@@ -115,16 +156,21 @@ func (m *Model) Apply(e Event) []Publication {
 			}
 			// The engine stamps the quiet clock after the sink write, so an
 			// arrival ends whatever quiet was accruing.
-			m.lastArrival = m.mono
+			m.quietSince = m.mono
 		}
-		m.lastCommit = m.mono
+		m.commit()
 	case IdleTick:
-		m.lastCommit = m.mono
+		m.commit()
 	case Restart:
-		// The loop seeds the quiet clock at its start, so the outage before
-		// it is not quiet this process watched.
-		m.lastArrival = m.mono
-		m.lastCommit = m.mono
+		// The loop seeds its quiet clock at its start, so the outage before
+		// it is not quiet this process watched — but it writes no row until
+		// its first commit, so until then the manager is still polling the
+		// dead process's. The source is new too: it has delivered since this
+		// instant and no longer.
+		m.quietSince = m.mono
+		if m.delivering {
+			m.deliveringSince = m.mono
+		}
 	case SourceLost:
 		m.delivering = false
 		m.deliveringSince = time.Time{}
@@ -148,15 +194,17 @@ func (m *Model) poll() []Publication {
 	}
 	hasRows := len(m.buckets) > 0
 
-	quiet := m.lastCommit.Sub(m.lastArrival)
-	deliveringFor := time.Duration(-1)
-	if m.delivering && !m.deliveringSince.IsZero() {
-		deliveringFor = m.lastCommit.Sub(m.deliveringSince)
-	}
+	// Three readings of one row, which is all the manager gets.
+	quiet := m.rowCommit.Sub(m.rowArrival)
 
 	state := StateOf(m.decl, newest, hasRows, m.watermark, m.hadWatermark,
-		quiet, deliveringFor, m.delivering)
-	next, moved := Decide(state).Next(m.decl, newest, m.watermark)
+		quiet, m.rowFor, m.rowDelivering)
+	rule := watermarkRuleFor(state)
+	m.Decisions = append(m.Decisions, Decision{
+		Rule: rule.Name, Action: rule.Action,
+		Quiet: quiet, DeliveringFor: m.rowFor, Delivering: m.rowDelivering,
+	})
+	next, moved := rule.Action.Next(m.decl, newest, m.watermark)
 	if !moved || (m.hadWatermark && !next.After(m.watermark)) {
 		return nil
 	}
