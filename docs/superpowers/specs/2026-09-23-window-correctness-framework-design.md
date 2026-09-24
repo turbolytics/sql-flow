@@ -84,9 +84,18 @@ visible in review rather than in a chart.
 `last_commit`: for Kafka, since the group last assigned it a partition; for a
 websocket, since the connection was dialled. Three states in one column,
 because a source that cannot deliver and one that was never asked mean
-opposite things to a window. Negative says it holds nothing and every bucket
-stays open; NULL says nothing was asked and bounds no quiet; a duration says
-how much of the silence it could have heard.
+opposite things to a window. Negative says it holds nothing, so no bucket
+closes on the silence — a ripe one still closes on the grace, which is the
+stream's own evidence and needs no source to confirm it; NULL says nothing was
+asked and bounds no quiet; a duration says how much of the silence it could
+have heard.
+
+The engine never corrects a reading before the table sees it. An earlier cut
+zeroed the quiet where the source held nothing, which said the same thing
+twice: the idle fact came out unconfirmed, the row that states the hold became
+unreachable, and the table was left claiming a ripe bucket holds through an
+outage — which is wrong, and which only the correction prevented. The row
+reports what it measured and the table decides.
 
 A duration rather than an instant, which is what `core.Deliverer` already
 answers. An instant would have to be written from that duration and read back

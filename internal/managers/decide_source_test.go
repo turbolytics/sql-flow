@@ -34,13 +34,25 @@ func notDeliveringAt(tb testing.TB, conn adbc.Connection, arrival, commit time.T
 func TestManagerWindow_NotDeliveringIsARowOfTheTable(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	decl := testDecl()
-	s := StateOf(decl, t0.Add(decl.Size), true, t0, true, time.Hour, 0, false)
+	// The reading the engine writes while the source holds nothing: an hour
+	// of silence in the row and a negative duration beside it. The silence is
+	// reported as the hour it was — the row is not corrected before the table
+	// sees it — and the table is what refuses to close on it.
+	s := StateOf(decl, t0.Add(decl.Size), true, t0, true, time.Hour, -1, false)
 
 	assert.Equal(t, SourceNotDelivering, s.Source)
-	assert.Equal(t, IdleUnconfirmed, s.Idle)
-	assert.Equal(t, "hold.not_delivering", watermarkRuleFor(State{
-		Data: DataOpen, Idle: IdleConfirmed, Source: SourceNotDelivering,
-	}).Name)
+	assert.Equal(t, IdleConfirmed, s.Idle)
+	assert.Equal(t, DataOpen, s.Data)
+	assert.Equal(t, "hold.not_delivering", watermarkRuleFor(s).Name)
+	assert.Equal(t, Hold, Decide(s))
+
+	// A ripe bucket carries the stream's own evidence, so the same source
+	// holding nothing does not hold it: it closes on the grace, as it did
+	// before the row could say anything about the source at all.
+	ripe := StateOf(decl, t0.Add(decl.Size+decl.Grace+time.Microsecond), true, t0, true, time.Hour, -1, false)
+	assert.Equal(t, DataRipe, ripe.Data)
+	assert.Equal(t, "close.grace.not_delivering", watermarkRuleFor(ripe).Name)
+	assert.Equal(t, CloseByGrace, Decide(ripe))
 }
 
 // Quiet is bounded by the resumption: a source back for thirty seconds has

@@ -108,9 +108,12 @@ func TestManagerWindow_TheBoundariesAreExact(t *testing.T) {
 }
 
 // window.never_backwards: no reading moves the watermark behind the
-// committed one. window.idle_beats_grace: confirmed quiet with anything
-// open closes by idle, which is never lower than the grace close. Both are
-// checked over random readings, the second only where both closes apply.
+// committed one. window.idle_beats_grace: confirmed quiet from a source that
+// could deliver closes by idle, which is never lower than the grace close.
+// window.silence_needs_a_source: the same quiet from a source holding
+// nothing closes nothing on its own, and a ripe bucket closes on the grace
+// instead, which is the stream's own evidence. All three are checked over
+// random readings, the last two only where both closes apply.
 func TestManagerWindow_InvariantsHoldOverRandomReadings(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	rng := rand.New(rand.NewSource(1))
@@ -141,11 +144,25 @@ func TestManagerWindow_InvariantsHoldOverRandomReadings(t *testing.T) {
 			t.Fatalf("moved=%v for %s", moved, action)
 		}
 		if state.Idle == IdleConfirmed && (state.Data == DataOpen || state.Data == DataRipe) {
-			if action != CloseByIdle {
-				t.Fatalf("window.idle_beats_grace: %v decided %s", state, action)
-			}
-			if byGrace, _ := CloseByGrace.Next(decl, newest, previous); next.Before(byGrace) {
-				t.Fatalf("window.idle_beats_grace: idle close %s is below the grace close %s", next, byGrace)
+			switch {
+			case state.Source == SourceDelivering:
+				if action != CloseByIdle {
+					t.Fatalf("window.idle_beats_grace: %v decided %s", state, action)
+				}
+				if byGrace, _ := CloseByGrace.Next(decl, newest, previous); next.Before(byGrace) {
+					t.Fatalf("window.idle_beats_grace: idle close %s is below the grace close %s", next, byGrace)
+				}
+			// The same quiet from a source that held nothing is not the
+			// stream's silence. An open bucket has no other evidence and
+			// holds; a ripe one has the stream's own and closes on the grace.
+			case state.Data == DataOpen:
+				if action != Hold {
+					t.Fatalf("window.silence_needs_a_source: %v decided %s", state, action)
+				}
+			default:
+				if action != CloseByGrace {
+					t.Fatalf("window.silence_needs_a_source: %v decided %s", state, action)
+				}
 			}
 		}
 	}
@@ -229,7 +246,8 @@ Each is a claim with a check in the tests.
 | ID | Claim |
 |---|---|
 | ` + "`window.never_backwards`" + ` | No reading moves the watermark behind the committed one. Checked over ten thousand random readings. |
-| ` + "`window.idle_beats_grace`" + ` | Confirmed quiet with anything open closes by idle, and that close is never below the grace close. Checked over the same readings. |
+| ` + "`window.idle_beats_grace`" + ` | Confirmed quiet from a source that could deliver, with anything open, closes by idle, and that close is never below the grace close. Checked over the same readings. |
+| ` + "`window.silence_needs_a_source`" + ` | The same quiet from a source holding nothing closes nothing on its own: an open bucket holds, and a ripe one closes on the grace, which the stream carries and no source has to confirm. Checked over the same readings. |
 | ` + "`progress.quiet_is_watched`" + ` | The progress row never confirms more quiet than the engine spent waiting on a source that could deliver: a restart, a clock step, a sink write held in retries, a consumer between groups and a websocket reconnecting are not quiet, on the idle tick and on the drain alike. Checked in ` + "`internal/core`" + `, ` + "`internal/kafka`" + ` and ` + "`internal/websocket`" + `. |
 | ` + "`progress.late_never_early`" + ` | A progress write that is late, or fails, delays a close and never advances one. Checked in ` + "`internal/core`" + ` and here. |
 `)

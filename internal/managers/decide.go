@@ -135,15 +135,18 @@ func StateOf(decl Declaration, newest time.Time, hasRows bool, previous time.Tim
 		s.Source = SourceNotDelivering
 	}
 	if decl.IdleClose > 0 {
-		// The engine can only confirm quiet it could have heard. A source
+		// The engine can only confirm quiet it could have heard: a source
 		// that resumed 30s ago has confirmed 30s at most, whatever the last
-		// arrival says, and one holding nothing has confirmed none. A
-		// negative deliveringFor is a source that never said, and bounds
-		// nothing.
-		switch {
-		case !delivering:
-			quiet = 0
-		case deliveringFor >= 0 && deliveringFor < quiet:
+		// arrival says. A negative deliveringFor is a source that never said,
+		// and bounds nothing.
+		//
+		// What a source holding nothing means is the table's to say, not
+		// this function's. Zeroing the quiet here instead said it twice: the
+		// idle fact came out unconfirmed, hold.not_delivering became a row no
+		// reading could select, and the table was left claiming that a ripe
+		// bucket holds through an outage — which is wrong, and which only
+		// the zeroing prevented.
+		if deliveringFor >= 0 && deliveringFor < quiet {
 			quiet = deliveringFor
 		}
 		s.Idle = IdleUnconfirmed
@@ -224,12 +227,21 @@ var watermarkTable = []watermarkRule{
 	},
 	{
 		Name:     "hold.not_delivering",
-		Data:     []Data{DataOpen, DataRipe},
+		Data:     []Data{DataOpen},
 		Idle:     []Idle{IdleConfirmed},
 		Source:   []Source{SourceNotDelivering},
 		Action:   Hold,
 		Deciding: "source",
 		Claim:    "The source could not deliver, so silence says nothing about the stream and no bucket closes on idleness across it.",
+	},
+	{
+		Name:     "close.grace.not_delivering",
+		Data:     []Data{DataRipe},
+		Idle:     []Idle{IdleConfirmed},
+		Source:   []Source{SourceNotDelivering},
+		Action:   CloseByGrace,
+		Deciding: "data",
+		Claim:    "The stream itself moved past the watermark by the grace, which is evidence the data carries and no source has to confirm, so the bucket closes by the grace however long the source held nothing.",
 	},
 	{
 		Name:     "close.idle",

@@ -73,7 +73,7 @@ func TestManagerWindow_EverySequenceCountsEveryRowOnce(t *testing.T) {
 	// These four are the rules a sequence of these events must be able to
 	// reach, and a declaration or an alphabet that stops reaching one of them
 	// fails here rather than quietly going blind.
-	for _, rule := range []string{"hold.empty", "hold.open", "close.grace", "close.idle"} {
+	for _, rule := range []string{"hold.empty", "hold.open", "hold.not_delivering", "close.grace", "close.idle"} {
 		if fired[rule] == 0 {
 			t.Fatalf("no sequence reached %s, so nothing here tests it: %v", rule, fired)
 		}
