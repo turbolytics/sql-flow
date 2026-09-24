@@ -15,8 +15,8 @@ import (
 // pipeline.window.counts_every_row as declared-unenforced against #183, and
 // these are the scenarios that would enforce it.
 func TestSimulate_ScaleOutKeepsEveryRow(t *testing.T) {
-	t.Skip("tracked by #183: a bucket split across workers publishes one worker's share")
 	coverage.Covers(t, "core.consume_loop")
+	t.Skip("tracked by #183: a bucket split across workers publishes one worker's share")
 
 	// The script this would run:
 	//   Produce{Partition: 0, Rows: 100}, Produce{Partition: 1, Rows: 100},
@@ -31,6 +31,6 @@ func TestSimulate_ScaleOutKeepsEveryRow(t *testing.T) {
 // fix is partition-keyed state or additive publication, neither of which
 // exists yet.
 func TestSimulate_AKilledWorkerStrandsNoState(t *testing.T) {
-	t.Skip("tracked by #183: a dead worker's committed-but-unpublished rows are stranded")
 	coverage.Covers(t, "core.consume_loop")
+	t.Skip("tracked by #183: a dead worker's committed-but-unpublished rows are stranded")
 }

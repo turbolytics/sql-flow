@@ -8,18 +8,17 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// A restart, a clock step in each direction and an idle tick in one run: every
-// row the source delivered reaches the sink, once.
+// A restart, time passing and an idle tick in one run: every row the source
+// delivered reaches the sink, once.
 func TestSimulate_ASingleWorkerPublishesEveryRow(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 	r := Run(t, []int32{0}, []Step{
 		Produce{Partition: 0, Rows: 10},
 		IdleTick{},
-		StepClock{By: time.Minute},
+		Elapse{By: time.Minute},
 		Produce{Partition: 0, Rows: 10},
 		Restart{},
 		Produce{Partition: 0, Rows: 10},
-		StepClock{By: -2 * time.Minute},
 		Produce{Partition: 0, Rows: 10},
 		IdleTick{},
 	})

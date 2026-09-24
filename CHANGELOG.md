@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Changed
+
+- A window's idle close reads one more fact: whether the source could deliver
+  at all. `sqlflow_progress` gains `delivering_for_us`, which a Kafka source
+  fills from its assignment and a websocket from its dial, and the manager
+  bounds the quiet it may confirm by it. The fact was already enforced, as a
+  correction the engine applied to its own clock before the manager read it;
+  it is now a column and a row of the decision table, which is what makes it
+  visible in the close log line, on the rendered decisions page, and to
+  anything reading the row through `GET /debug?sql=`. No window closes at a
+  different moment.
+
+- `/stats` reports `arrival_age_seconds` growing through a source outage,
+  where it used to hold at zero. The hold that pinned it moved into the
+  manager's reading of the row, so the engine's own clock now says what it
+  actually saw: a source that held nothing for two minutes reports two
+  minutes of silence, and the window still does not close on it.
+
 ### Added
 
 - The TurboStats bundle says what a pipeline is made of: `source_type`,

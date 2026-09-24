@@ -922,6 +922,39 @@ func TestStateDurability_ASourceThatCannotDeliverSaysSoInTheRow(t *testing.T) {
 	assert.That(t, afterAssignment >= 2)
 }
 
+func TestStateDurability_IdleTicksWriteNothingWhereNoWindowClosesOnIdleness(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	rec := &progressRecorder{}
+	src := newBlockingSource(messages(2))
+	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 2, 20*time.Millisecond,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithProgressStore(rec), WithProgressWriteInterval(0), WithQuietConfirmation(false))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+
+	// The batch writes, once.
+	waitFor(t, "the batch's write", 5*time.Second, func() bool {
+		p, _ := rec.last()
+		return p.Messages == 2
+	})
+	// Then the stream is silent through many ticks, and nothing is written.
+	// The snapshot still moves on each, so /healthz reads them as commits;
+	// waiting on it is waiting on the ticks.
+	batch, _ := rec.last()
+	waitFor(t, "ten idle ticks", 5*time.Second, func() bool {
+		return tb.Progress().LastCommit.Sub(batch.LastCommit) > 10*20*time.Millisecond
+	})
+	_, n := rec.last()
+	assert.Equal(t, 1, n)
+
+	// The drain writes once more.
+	assert.NoError(t, tb.SyncState(context.Background()))
+	_, n = rec.last()
+	assert.Equal(t, 2, n)
+	close(src.release)
+	<-done
+}
+
 func TestStateDurability_TheDrainSaysTheSourceHeldNothing(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	rec := &progressRecorder{}

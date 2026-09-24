@@ -41,8 +41,13 @@ type Produce struct {
 // IdleTick fires the flush trigger: a commit with nothing buffered.
 type IdleTick struct{}
 
-// StepClock moves the wall clock, as NTP does, in either direction.
-type StepClock struct{ By time.Duration }
+// Elapse moves the simulated clock forward, as time passing does.
+//
+// Not a clock step: the turbine reads one injected instant, so a fake cannot
+// move its wall reading while holding its monotonic one, and a step would be
+// indistinguishable from elapsing. Clock steps are checked in the model,
+// which carries both readings (internal/managers/model.go).
+type Elapse struct{ By time.Duration }
 
 // Revoke takes a partition away, as a rebalance does.
 type Revoke struct{ Partition int32 }
@@ -470,7 +475,7 @@ func (IdleTick) apply(r *run) {
 	}
 }
 
-func (s StepClock) apply(r *run) {
+func (s Elapse) apply(r *run) {
 	r.mu.Lock()
 	r.now = r.now.Add(s.By)
 	r.mu.Unlock()

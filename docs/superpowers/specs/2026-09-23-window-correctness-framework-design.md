@@ -142,9 +142,16 @@ and this PR does not fix that.
 
 A deterministic replay drives a real turbine and a real window manager against
 a scripted sequence of events, then asserts the property over what the sink
-received. The events are the ones that have produced defects: a batch arrives,
-an idle tick fires, the process restarts, partitions are revoked, the wall
-clock steps forward or back, a sink write stalls, the progress store fails.
+received. The events are the ones that have produced defects: a batch arrives, an idle
+tick fires, the process restarts, partitions are revoked, time passes, a sink
+write stalls, the progress store fails.
+
+A wall-clock step is not among them, and cannot be. The turbine reads one
+injected instant, so a fake cannot move its wall reading while holding its
+monotonic one; a step would be indistinguishable from elapsing. Steps are
+checked in the model instead, which carries both readings, and the engine's
+protection against them is pinned by
+`TestStateDurability_TheQuietIsMeasuredOnTheMonotonicClock`.
 
 The simulator asserts three things: the property above, that no fact mixes
 clock domains, and that a watermark never moves backwards.

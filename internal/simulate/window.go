@@ -36,6 +36,10 @@ type windowDB struct {
 	db       *duckdb.DB
 	pipeline adbc.Connection
 	manager  adbc.Connection
+	// reader is the script's own connection. The loop owns the pipeline one
+	// and takes no lock on the runner's behalf, and two statements on one
+	// DuckDB connection close each other's pending results (#280).
+	reader adbc.Connection
 }
 
 func openWindowDB(t *testing.T) *windowDB {
@@ -71,12 +75,18 @@ func openWindowDB(t *testing.T) *windowDB {
 		t.Fatal(err)
 	}
 
+	reader, err := db.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	t.Cleanup(func() {
+		reader.Close()
 		manager.Close()
 		pipeline.Close()
 		db.Close()
 	})
-	return &windowDB{db: db, pipeline: pipeline, manager: manager}
+	return &windowDB{db: db, pipeline: pipeline, manager: manager, reader: reader}
 }
 
 func execSQL(t *testing.T, conn adbc.Connection, q string) {
@@ -277,7 +287,7 @@ func RunWindowed(t *testing.T, owned []int32, decl managers.Declaration, script 
 	return WindowResult{
 		Produced:    r.produced,
 		Published:   rows,
-		StillOpen:   queryInt(t, db.pipeline, fmt.Sprintf(`SELECT coalesce(sum(n), 0)::BIGINT FROM %s`, windowTable)),
+		StillOpen:   queryInt(t, db.reader, fmt.Sprintf(`SELECT coalesce(sum(n), 0)::BIGINT FROM %s`, windowTable)),
 		Republished: republished,
 		LateDropped: r.window.lateDropped,
 	}
@@ -306,12 +316,12 @@ func (Poll) apply(r *run) {
 // lastCommitMicros is the commit clock the manager reads, so a step can wait
 // for the commit it caused rather than for a duration.
 func (r *run) lastCommitMicros() int64 {
-	return queryInt(r.t, r.window.db.pipeline,
+	return queryInt(r.t, r.window.db.reader,
 		`SELECT coalesce(epoch_us(last_commit), 0)::BIGINT FROM sqlflow_progress`)
 }
 
 // windowRows is what the window table still holds.
 func (r *run) windowRows() int64 {
-	return queryInt(r.t, r.window.db.pipeline,
+	return queryInt(r.t, r.window.db.reader,
 		fmt.Sprintf(`SELECT coalesce(sum(n), 0)::BIGINT FROM %s`, windowTable))
 }

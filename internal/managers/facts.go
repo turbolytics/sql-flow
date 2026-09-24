@@ -74,7 +74,7 @@ func FactsOf(decl Declaration, s State, quiet, deliveringFor time.Duration,
 func factDescriptions() []Fact {
 	return []Fact{
 		{Name: "data", Value: "none | behind | open | ripe", Clock: EventTime, From: "the window table's newest bucket against the committed watermark"},
-		{Name: "idle", Value: "off | unconfirmed | confirmed", Clock: EngineClock, From: "last_commit - last_arrival, bounded by last_commit - delivering_since"},
-		{Name: "source", Value: "delivering | not_delivering", Clock: EngineClock, From: "delivering, which is NULL from a source that never said"},
+		{Name: "idle", Value: "off | unconfirmed | confirmed", Clock: EngineClock, From: "last_commit - last_arrival, bounded by delivering_for_us"},
+		{Name: "source", Value: "delivering | not_delivering", Clock: EngineClock, From: "delivering_for_us, which is negative while the source holds nothing and NULL from one that never said"},
 	}
 }

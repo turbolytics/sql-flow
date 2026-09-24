@@ -495,17 +495,33 @@ func (t *Turbine) recordProgress(ctx context.Context, write progressWrite) error
 	// two is not read as quiet. The arrival itself is written as stamped, so
 	// it is the same value on every write until the next batch.
 	// From the duration the source reports rather than an instant it holds:
-	// a duration cannot arrive with its monotonic reading stripped, which is
-	// the defect this column would otherwise reintroduce.
 	// Straight from the source's own answer: a duration needs no clock to be
 	// read against, and a source that cannot deliver says so as a negative
 	// one rather than as an absence, which is what a source that was never
 	// asked leaves behind.
-	var deliveringFor *time.Duration
+	//
+	// The transition is logged here because this is the only place left that
+	// asks the source. A window that holds because of it moves no watermark,
+	// so the manager logs nothing, and an operator watching a rebalance would
+	// otherwise see silence from both.
+	var (
+		deliveringFor *time.Duration
+		// Flags rather than durations: an outage that began and ended inside
+		// one instant is still a transition worth a line.
+		stopped, resumed bool
+		outage           time.Duration
+	)
 	if d, ok := t.source.(Deliverer); ok {
 		for_, delivering := d.Delivering()
-		if !delivering {
+		switch {
+		case !delivering:
 			for_ = -time.Microsecond
+			if t.notDeliveringSince.IsZero() {
+				t.notDeliveringSince, stopped = now, true
+			}
+		case !t.notDeliveringSince.IsZero():
+			outage, resumed = now.Sub(t.notDeliveringSince), true
+			t.notDeliveringSince = time.Time{}
 		}
 		deliveringFor = &for_
 	}
@@ -518,6 +534,12 @@ func (t *Turbine) recordProgress(ctx context.Context, write progressWrite) error
 	t.snapshot.LastArrival = p.LastArrival
 	t.snapshot.LastCommit = p.LastCommit
 	t.snapshot.Messages = p.Messages
+	if stopped {
+		t.logger.Warn("source is not delivering; no window closes on idleness until it does")
+	}
+	if resumed {
+		t.logger.Info("source is delivering again", zap.Duration("not_delivering_for", outage))
+	}
 
 	// The clock term is load-bearing for windows, not only housekeeping. An
 	// idle tick is due on it alone, and that write, a later last_commit
@@ -800,8 +822,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// accounting a pipeline that is not a windowed stream does not
 			// pay for.
 			write := progressOnInterval
-			if t.confirmsQuiet {
-			} else {
+			if !t.confirmsQuiet {
 				write = progressSkipped
 			}
 			if err := t.commitState(batchCtx, write); err != nil {

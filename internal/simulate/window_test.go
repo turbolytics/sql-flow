@@ -27,9 +27,9 @@ func TestSimulate_AWindowedRunAccountsForEveryRow(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 4},
-		StepClock{By: time.Minute},
+		Elapse{By: time.Minute},
 		Produce{Partition: 0, Rows: 6},
-		StepClock{By: time.Minute},
+		Elapse{By: time.Minute},
 		Produce{Partition: 0, Rows: 5},
 		Poll{},
 	})
@@ -49,7 +49,7 @@ func TestSimulate_AnIdleCloseNeedsTheLoopToConfirmTheQuiet(t *testing.T) {
 		// A poll before any quiet is confirmed closes nothing: one bucket,
 		// no grace passed, no idle bound reached.
 		Poll{},
-		StepClock{By: 30 * time.Second},
+		Elapse{By: 30 * time.Second},
 		IdleTick{},
 		Poll{},
 	})
@@ -69,7 +69,7 @@ func TestSimulate_ASourceThatCannotDeliverStopsTheIdleClose(t *testing.T) {
 		Produce{Partition: 0, Rows: 9},
 		Revoke{Partition: 0},
 		// Far past the idle bound, with the loop committing all the while.
-		StepClock{By: 5 * time.Minute},
+		Elapse{By: 5 * time.Minute},
 		IdleTick{},
 		Poll{},
 		IdleTick{},
@@ -88,11 +88,11 @@ func TestSimulate_TheIdleCloseResumesWhenTheSourceIsBack(t *testing.T) {
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 9},
 		Revoke{Partition: 0},
-		StepClock{By: 5 * time.Minute},
+		Elapse{By: 5 * time.Minute},
 		IdleTick{},
 		Poll{},
 		Assign{Partition: 0},
-		StepClock{By: time.Minute},
+		Elapse{By: time.Minute},
 		IdleTick{},
 		Poll{},
 	})

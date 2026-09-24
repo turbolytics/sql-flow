@@ -145,7 +145,9 @@ func queryProgressRow(ctx context.Context, conn adbc.Connection, q string) (quie
 		}
 		return cols[0].Value(0), cols[1].Value(0), cols[2].Value(0) == 1, nil
 	}
-	return 0, 0, false, reader.Err()
+	// No row at all: nothing said anything, which reads as delivering and
+	// bounds no quiet, the same as a row whose column is NULL.
+	return 0, -1, true, reader.Err()
 }
 
 func queryInt64(ctx context.Context, conn adbc.Connection, q string) (value int64, found bool, err error) {

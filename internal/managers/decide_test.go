@@ -186,7 +186,7 @@ selects exactly one row and every row is reachable.
 | Fact | Values | Computed from |
 |---|---|---|
 | ` + "`data`" + ` | ` + "`none`, `behind`, `open`, `ripe`" + ` | The newest bucket's start, in event time, against the committed watermark. ` + "`none`" + `: no rows. ` + "`behind`" + `: newest + size is at or before the watermark, so everything held has closed. ` + "`open`" + `: newest + size is after the watermark and newest - grace is not. ` + "`ripe`" + `: newest - grace is after the watermark, or there is no watermark yet. |
-| ` + "`idle`" + ` | ` + "`off`, `unconfirmed`, `confirmed`" + ` | ` + "`idle_close_seconds`" + ` and the engine's progress row. ` + "`off`" + ` when not declared. ` + "`confirmed`" + ` when ` + "`last_commit - last_arrival`" + `, bounded by ` + "`last_commit - delivering_since`" + `, is at least the bound. ` + "`unconfirmed`" + ` otherwise, including a row the engine has not written. |
+| ` + "`idle`" + ` | ` + "`off`, `unconfirmed`, `confirmed`" + ` | ` + "`idle_close_seconds`" + ` and the engine's progress row. ` + "`off`" + ` when not declared. ` + "`confirmed`" + ` when ` + "`last_commit - last_arrival`" + `, bounded by ` + "`delivering_for_us`" + `, is at least the bound. ` + "`unconfirmed`" + ` otherwise, including a row the engine has not written. |
 | ` + "`source`" + ` | ` + "`delivering`, `not_delivering`" + ` | The engine's progress row. ` + "`not_delivering`" + ` while the source holds nothing: a consumer between assignments, a websocket reconnecting. A row that never said reads as ` + "`delivering`" + `. |
 
 Each fact is measured on one clock, and the two are never compared:
