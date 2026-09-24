@@ -100,7 +100,30 @@ func checkSequence(t *testing.T, seq []Event, fired map[string]int) {
 			published += p.Rows
 		}
 	}
-	published += m.Drain()
+	// Liveness, before the counting. Drain counted whatever a run ended
+	// holding as though it had been published, so the counting property could
+	// not fail on a bucket that never closes: publishing nothing at all
+	// satisfied it. That is the #183 failure mode, and it is what an early
+	// close gets traded for by a careless fix -- the worse of the two, because
+	// it has no late rows and no error to notice.
+	//
+	// So the run is quiesced instead: the source comes back and the stream
+	// goes quiet, which is the one condition under which every open bucket
+	// must close. Whatever is still open after that was never going to close.
+	for _, e := range []Event{{Kind: SourceBack},
+		{Kind: IdleTick}, {Kind: IdleTick}, {Kind: IdleTick}, {Kind: IdleTick}} {
+		for _, p := range m.Apply(e) {
+			if seen[p.Bucket] {
+				t.Fatalf("quiescing %v: bucket %s published twice", kinds(seq), p.Bucket)
+			}
+			seen[p.Bucket] = true
+			published += p.Rows
+		}
+	}
+	if stuck := m.Drain(); stuck != 0 {
+		t.Fatalf("%v: %d rows still open after the source returned and the stream "+
+			"went quiet: nothing will ever close them", kinds(seq), stuck)
+	}
 
 	if m.Produced != published+m.Dropped {
 		t.Fatalf("%v: produced %d, published %d, dropped %d",
