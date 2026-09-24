@@ -1,11 +1,12 @@
 """Checks the POC's sink against what the broker acknowledged.
 
-    mqtt_poc_check.py <data dir>          loss check; exits 1 on any missing reading
+    mqtt_poc_check.py <data dir>          loss check; exits 1 on a missing reading or an empty run
     mqtt_poc_check.py --peak-mem <csv>    peak MiB per service from docker stats samples
 
-The loss check passes when every (device_id, metric, seq) in acked.csv
-appears in iot.readings at least once. Duplicates are reported, never failed:
-the pipeline is at-least-once by design.
+The loss check passes when acked.csv holds at least one reading and every
+(device_id, metric, seq) in it appears in iot.readings at least once.
+Duplicates are reported, never failed: the pipeline is at-least-once by
+design.
 """
 import json
 import sys
@@ -22,7 +23,9 @@ def loss(data):
     rows = c.sql("SELECT count(*) FROM iot.readings").fetchone()[0]
     distinct = c.sql("SELECT count(*) FROM (SELECT DISTINCT device_id, metric, seq FROM iot.readings)").fetchone()[0]
     print(json.dumps({"acked": acked, "missing": missing, "rows": rows, "duplicates": rows - distinct}))
-    return 1 if missing else 0
+    # No acked reading means nothing was tested: a collector that crashed
+    # after writing its header would otherwise pass with nothing missing.
+    return 1 if missing or not acked else 0
 
 
 def peak_mem(csv):

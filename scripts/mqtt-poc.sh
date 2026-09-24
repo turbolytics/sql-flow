@@ -14,6 +14,8 @@ COMPOSE=(docker compose -f dev/mqtt.yml)
 DATA=dev/iot/data
 DUCKDB_PY=$(sed 's/^v//' DUCKDB_VERSION)
 SCENARIO=${1:-all}
+# A failing scenario exits under set -e. The stack must not outlive it.
+trap '"${COMPOSE[@]}" down -v >/dev/null 2>&1 || true' EXIT
 
 reset() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -36,18 +38,35 @@ sample_mem() {
   done
 }
 
-queued() {
-  "${COMPOSE[@]}" exec -T mosquitto mosquitto_sub -t '$SYS/broker/store/messages/count' -C 1 -W 5 2>/dev/null || echo "?"
+sys_count() {
+  "${COMPOSE[@]}" exec -T mosquitto mosquitto_sub -t "\$SYS/broker/$1" -C 1 -W 5 2>/dev/null || echo "?"
 }
 
-# Waits until the broker holds no stored publishes, meaning SQLFlow has
-# acknowledged everything, or 120 s pass.
+# Readings the broker holds that SQLFlow has not acknowledged. The store
+# count includes retained messages, and Mosquitto's own $SYS topics are
+# retained: an idle broker's count rose from 2 to 55 in 12 s. The retained
+# count tracks that exactly, so the difference is the readings alone.
+backlog() {
+  local stored retained
+  stored=$(sys_count "store/messages/count")
+  retained=$(sys_count "retained messages/count")
+  if [ "$stored" = "?" ] || [ "$retained" = "?" ]; then
+    echo "?"
+    return
+  fi
+  echo $((stored - retained))
+}
+
+# Waits until SQLFlow has acknowledged every reading, or 600 s pass. Stopping
+# SQLFlow with a backlog would report readings still queued as missing, so a
+# drain that never finishes fails the scenario rather than the loss check.
 drain() {
-  for _ in $(seq 60); do
-    [ "$(queued)" = "0" ] && return 0
+  for _ in $(seq 300); do
+    [ "$(backlog)" = "0" ] && return 0
     sleep 2
   done
-  echo "broker still holds $(queued) publishes after 120 s" >&2
+  echo "backlog of $(backlog) readings after 600 s; not checking for loss" >&2
+  return 1
 }
 
 finish() {
@@ -55,14 +74,14 @@ finish() {
   "${COMPOSE[@]}" stop collector
   drain
   "${COMPOSE[@]}" stop sqlflow
-  local check
-  check=$(uv run -q --with "duckdb==$DUCKDB_PY" python scripts/mqtt_poc_check.py "$DATA") || true
+  local check ok=0
+  check=$(uv run -q --with "duckdb==$DUCKDB_PY" python scripts/mqtt_poc_check.py "$DATA") || ok=$?
   local collector
   collector=$("${COMPOSE[@]}" logs --no-log-prefix collector | tail -1)
   local peak
   peak=$(uv run -q --with "duckdb==$DUCKDB_PY" python scripts/mqtt_poc_check.py --peak-mem "$DATA/mem.csv")
   echo "{\"scenario\":\"$name\",\"check\":$check,\"collector\":$collector,\"peak_mib\":$peak}" | tee "$DATA/../report-$name.json"
-  echo "$check" | grep -q '"missing": 0'
+  return "$ok"
 }
 
 # Starts the stack in the order the delivery contract needs. MQTT drops a
@@ -70,19 +89,27 @@ finish() {
 # SQLFlow's session exists.
 start_stack() {
   local rate=$1 duration=$2
-  RATE=$rate DURATION=$duration "${COMPOSE[@]}" up -d --build mosquitto sqlflow >/dev/null 2>&1
+  RATE=$rate DURATION=$duration "${COMPOSE[@]}" up -d --build mosquitto sqlflow >>"$DATA/compose.log" 2>&1
+  local subscribed=""
   for _ in $(seq 60); do
-    "${COMPOSE[@]}" logs sqlflow 2>/dev/null | grep -q "mqtt connected" && break
+    if "${COMPOSE[@]}" logs sqlflow 2>/dev/null | grep -q "mqtt subscribed"; then
+      subscribed=1
+      break
+    fi
     sleep 1
   done
-  RATE=$rate DURATION=$duration "${COMPOSE[@]}" up -d --no-deps collector >/dev/null 2>&1
+  if [ -z "$subscribed" ]; then
+    echo "SQLFlow did not subscribe within 60 s; see $DATA/compose.log" >&2
+    return 1
+  fi
+  RATE=$rate DURATION=$duration "${COMPOSE[@]}" up -d --no-deps collector >>"$DATA/compose.log" 2>&1
 }
 
 run_steady() {
   reset; sample_mem & local mp=$!
   start_stack "${RATE:-1000}" 600
   sleep 610
-  kill $mp; finish steady
+  kill $mp; wait $mp 2>/dev/null || true; finish steady
 }
 
 run_crash() {
@@ -90,13 +117,13 @@ run_crash() {
   start_stack "${RATE:-1000}" 120
   sleep 40
   "${COMPOSE[@]}" kill -s KILL sqlflow
-  local q_before; q_before=$(queued)
+  local q_before; q_before=$(backlog)
   sleep 20
-  local q_after; q_after=$(queued)
-  echo "broker queue while SQLFlow was down: $q_before -> $q_after" | tee "$DATA/queue.txt"
+  local q_after; q_after=$(backlog)
+  echo "backlog while SQLFlow was down: $q_before -> $q_after" | tee "$DATA/queue.txt"
   "${COMPOSE[@]}" start sqlflow
   sleep 70
-  kill $mp; finish crash
+  kill $mp; wait $mp 2>/dev/null || true; finish crash
 }
 
 run_broker() {
@@ -105,7 +132,7 @@ run_broker() {
   sleep 40
   "${COMPOSE[@]}" restart mosquitto
   sleep 90
-  kill $mp; finish broker
+  kill $mp; wait $mp 2>/dev/null || true; finish broker
 }
 
 # Steps the rate up and records, for each step, the collector's achieved rate
@@ -116,12 +143,12 @@ run_ceiling() {
   for rate in 1000 2000 5000 10000 20000; do
     reset
     start_stack "$rate" 60
-    sleep 30; local q1; q1=$(queued)
-    sleep 30; local q2; q2=$(queued)
+    sleep 30; local q1; q1=$(backlog)
+    sleep 30; local q2; q2=$(backlog)
     "${COMPOSE[@]}" stop collector
     local achieved
     achieved=$("${COMPOSE[@]}" logs --no-log-prefix collector | tail -1)
-    echo "rate=$rate queue_30s=$q1 queue_60s=$q2 collector=$achieved" | tee -a "$DATA/../ceiling.txt"
+    echo "rate=$rate backlog_30s=$q1 backlog_60s=$q2 collector=$achieved" | tee -a "$DATA/../ceiling.txt"
   done
   reset
 }

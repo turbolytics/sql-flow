@@ -28,7 +28,7 @@ The source uses MQTT 5 at QoS 1 with a persistent session. It sends PUBACK only 
 
 This is at-least-once, the same guarantee as the Kafka source. Duplicates are by design. The POC judges the source on loss, never on duplication.
 
-The guarantee starts at SQLFlow's first subscribe. MQTT drops a publish that matches no subscription, so a reading published before SQLFlow's session exists has nowhere to queue. The first smoke run lost the first 1.1 s of readings this way: the collector started before SQLFlow connected. On the Pi, this happens once, at first boot. After that the session persists across restarts of either process. The stack starts SQLFlow first and starts the collector after SQLFlow logs `mqtt connected`.
+The guarantee starts at SQLFlow's first subscribe. MQTT drops a publish that matches no subscription, so a reading published before SQLFlow's session exists has nowhere to queue. The first smoke run lost the first 1.1 s of readings this way: the collector started before SQLFlow connected. On the Pi, this happens once, at first boot. After that the session persists across restarts of either process. The stack starts SQLFlow first and starts the collector after SQLFlow logs `mqtt subscribed`. `mqtt connected` comes too early: it logs before the subscription exists.
 
 QoS 0 and auto-ack on receipt both lose the batch in flight when the process dies. Sparkplug B is heavier than an MVP needs. Neither is in scope.
 
@@ -217,6 +217,15 @@ paho.golang details that constrain the source:
 - `Client.Ack` after its connection closes has undefined results (paho issue #160). Each held publish keeps the `*paho.Client` it arrived on, and the source acknowledges only through the current client.
 
 The window's `sqlcommand` sink runs on its own connection from the same DuckDB instance. `ATTACH` is instance-wide, and `dev/bench/bluesky/demo-10x-sqlcommand.yml` relies on it. The agg config's end-to-end run verifies it for this POC.
+
+## Known limits
+
+The final review and its fixes found four engine behaviors that bear on MQTT. None is fixed in this POC:
+
+- **IGNORE on the inferred handler drops a batch of good readings.** `handlers.InferredMemBatch` fails the whole batch when one reading's type conflicts with the others, such as `{"value": "err"}` among numbers. Under `on_error.policy: IGNORE`, the engine then commits the source, and the MQTT source acknowledges every reading in the batch. One such reading lost 999 good readings from every sensor. The raw config uses `handlers.StructuredBatch` with a declared schema instead. It writes NULL for the field that does not fit, and the same reading then cost only itself. The engine fix is to retry a failed batch one message at a time.
+- **The structured handler crash-loops under a state path.** On reinitialization it truncates its table and runs `CHECKPOINT`. With a `state_path`, that runs inside the batch transaction, and DuckDB refuses it: "Cannot CHECKPOINT: the current transaction has transaction local changes". So the agg config, which needs a state file, keeps the inferred handler and its batch-drop exposure. A power cut on a Pi is routine. A mistyped reading needs a broken driver.
+- **State stats log a false error with an attached database.** With a `state_path`, the stats loop lists the attached `iot` database's tables and queries them without the `iot.` prefix. The pipeline logs "Table with name readings_1m does not exist" every 5 s. The error is noise, not a failure.
+- **A receive window of only rejected publishes wedges the source.** A publish the handler rejects at write time advances the marks but not the batch count. The flush tick commits the source only when the batch holds a message. If all `receive_maximum` unacknowledged publishes are rejected, the broker stops sending, and SQLFlow never acknowledges. A restart replays the same window. It needs every sensor to send only unparsable readings. The engine fix is to commit the source on the idle tick when the marks have moved past the committed position.
 
 ## Results
 
