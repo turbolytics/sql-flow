@@ -889,7 +889,7 @@ func TestStateDurability_ASourceThatCannotDeliverSaysSoInTheRow(t *testing.T) {
 	// Then delivering, for several more.
 	waitFor(t, "ticks while delivering", 5*time.Second, func() bool {
 		p, _ := rec.last()
-		return p.Delivering != nil && *p.Delivering && p.LastCommit.Sub(assigned) > 100*time.Millisecond
+		return p.DeliveringFor != nil && *p.DeliveringFor >= 0 && p.LastCommit.Sub(assigned) > 100*time.Millisecond
 	})
 	close(src.release)
 	<-done
@@ -898,26 +898,25 @@ func TestStateDurability_ASourceThatCannotDeliverSaysSoInTheRow(t *testing.T) {
 	defer rec.mu.Unlock()
 	var afterAssignment int
 	for i, r := range rec.recs {
-		if r.Delivering == nil {
+		if r.DeliveringFor == nil {
 			t.Fatalf("record %d says nothing about delivering, from a source that answers", i)
 		}
 		if r.LastCommit.Before(assigned) {
 			// The row says it outright rather than by holding the arrival
 			// clock: the manager bounds the quiet it may confirm.
-			if *r.Delivering {
-				t.Fatalf("record %d claims delivering while the source held nothing", i)
-			}
-			if !r.DeliveringSince.IsZero() {
-				t.Fatalf("record %d carries a resumption while the source held nothing", i)
+			if *r.DeliveringFor >= 0 {
+				t.Fatalf("record %d claims %v of delivering while the source held nothing",
+					i, *r.DeliveringFor)
 			}
 			continue
 		}
 		afterAssignment++
-		if !*r.Delivering {
+		if *r.DeliveringFor < 0 {
 			continue // a tick that read the source before the assignment landed
 		}
-		if r.DeliveringSince.Before(assigned.Add(-10 * time.Millisecond)) {
-			t.Fatalf("record %d resumed at %v, before the assignment at %v", i, r.DeliveringSince, assigned)
+		if since := r.LastCommit.Sub(assigned); *r.DeliveringFor > since+10*time.Millisecond {
+			t.Fatalf("record %d claims %v of delivering, %v since the assignment",
+				i, *r.DeliveringFor, since)
 		}
 	}
 	assert.That(t, afterAssignment >= 2)
@@ -940,6 +939,5 @@ func TestStateDurability_TheDrainSaysTheSourceHeldNothing(t *testing.T) {
 	// The drain's forced write says the source held nothing, so the final
 	// poll bounds the quiet it may confirm to none rather than to the minute
 	// since the last stamp.
-	assert.That(t, p.Delivering != nil && !*p.Delivering)
-	assert.That(t, p.DeliveringSince.IsZero())
+	assert.That(t, p.DeliveringFor != nil && *p.DeliveringFor < 0)
 }

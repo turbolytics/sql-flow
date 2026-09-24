@@ -23,17 +23,17 @@ type Progress struct {
 	LastCommit  time.Time
 	Messages    int64
 
-	// Delivering is what the source says about whether it could deliver at
-	// all: nil from a source that has no opinion, which is every source but
-	// Kafka and the websocket. Three states, because a source that cannot
-	// deliver and a source that was never asked mean opposite things to a
-	// window: the first holds every bucket open, the second holds none.
-	Delivering *bool
-	// DeliveringSince is when the source last became able to deliver: a Kafka
-	// consumer's assignment, a websocket's dial. Zero while it cannot, and
-	// zero when nothing was asked. On the same clock as the two above, so a
-	// reader subtracts row values and never its own now.
-	DeliveringSince time.Time
+	// DeliveringFor is how long the source has been able to deliver, as of
+	// LastCommit. Nil from a source that never said, which is every source
+	// but Kafka and the websocket, and negative from one that cannot deliver
+	// at all.
+	//
+	// Three states in one column, because a source that cannot deliver and a
+	// source that was never asked mean opposite things to a window: the first
+	// holds every bucket open, the second holds none. A duration rather than
+	// an instant because that is what core.Deliverer answers, and a duration
+	// needs no clock to be read against.
+	DeliveringFor *time.Duration
 
 	// LastError is when the loop last recorded an error, and Errors is how
 	// many it has recorded. In memory only: they describe this process, not
@@ -67,14 +67,12 @@ func (s *ProgressStore) Init(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS ` + progressTable + ` (
 		    last_arrival     TIMESTAMPTZ,
 		    last_commit      TIMESTAMPTZ,
-		    delivering_since TIMESTAMPTZ,
-		    delivering       BOOLEAN,
-		    messages         BIGINT NOT NULL
+		    delivering_for_us BIGINT,
+		    messages          BIGINT NOT NULL
 		)`,
-		// A state database written before these columns existed opens
-		// without them, and the manager's read names both.
-		`ALTER TABLE ` + progressTable + ` ADD COLUMN IF NOT EXISTS delivering_since TIMESTAMPTZ`,
-		`ALTER TABLE ` + progressTable + ` ADD COLUMN IF NOT EXISTS delivering BOOLEAN`,
+		// A state database written before the column existed opens without
+		// it, and the manager's read names it.
+		`ALTER TABLE ` + progressTable + ` ADD COLUMN IF NOT EXISTS delivering_for_us BIGINT`,
 		`INSERT INTO ` + progressTable + ` (last_arrival, last_commit, messages)
 		 SELECT NULL, NULL, 0 WHERE NOT EXISTS (SELECT 1 FROM ` + progressTable + `)`,
 	} {
@@ -103,21 +101,13 @@ func (s *ProgressStore) Record(ctx context.Context, p Progress) error {
 	if !p.LastArrival.IsZero() {
 		q += fmt.Sprintf(`, last_arrival = TIMESTAMPTZ '%s'`, utcLiteral(p.LastArrival))
 	}
-	// Cleared rather than left, because a stale instant reads as a source
-	// that is still delivering and the manager would count quiet across an
-	// outage.
-	if p.DeliveringSince.IsZero() {
-		q += `, delivering_since = NULL`
+	// Written on every record rather than left, because a stale value reads
+	// as a source that is still delivering and the manager would count quiet
+	// across an outage.
+	if p.DeliveringFor == nil {
+		q += `, delivering_for_us = NULL`
 	} else {
-		q += fmt.Sprintf(`, delivering_since = TIMESTAMPTZ '%s'`, utcLiteral(p.DeliveringSince))
-	}
-	switch {
-	case p.Delivering == nil:
-		q += `, delivering = NULL`
-	case *p.Delivering:
-		q += `, delivering = TRUE`
-	default:
-		q += `, delivering = FALSE`
+		q += fmt.Sprintf(`, delivering_for_us = %d`, p.DeliveringFor.Microseconds())
 	}
 	if err := s.exec(ctx, q); err != nil {
 		return fmt.Errorf("recording progress: %w", err)

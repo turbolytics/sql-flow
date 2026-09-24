@@ -497,23 +497,23 @@ func (t *Turbine) recordProgress(ctx context.Context, write progressWrite) error
 	// From the duration the source reports rather than an instant it holds:
 	// a duration cannot arrive with its monotonic reading stripped, which is
 	// the defect this column would otherwise reintroduce.
-	var (
-		deliveringSince time.Time
-		deliveringFlag  *bool
-	)
+	// Straight from the source's own answer: a duration needs no clock to be
+	// read against, and a source that cannot deliver says so as a negative
+	// one rather than as an absence, which is what a source that was never
+	// asked leaves behind.
+	var deliveringFor *time.Duration
 	if d, ok := t.source.(Deliverer); ok {
-		deliveringFor, delivering := d.Delivering()
-		deliveringFlag = &delivering
-		if delivering {
-			deliveringSince = now.Add(-deliveringFor)
+		for_, delivering := d.Delivering()
+		if !delivering {
+			for_ = -time.Microsecond
 		}
+		deliveringFor = &for_
 	}
 	p := Progress{
-		Delivering:      deliveringFlag,
-		DeliveringSince: deliveringSince,
-		LastArrival:     t.quietSince,
-		LastCommit:      t.quietSince.Add(now.Sub(t.quietSince)),
-		Messages:        t.stats.MessagesConsumed(),
+		DeliveringFor: deliveringFor,
+		LastArrival:   t.quietSince,
+		LastCommit:    t.quietSince.Add(now.Sub(t.quietSince)),
+		Messages:      t.stats.MessagesConsumed(),
 	}
 	t.snapshot.LastArrival = p.LastArrival
 	t.snapshot.LastCommit = p.LastCommit

@@ -30,8 +30,8 @@ func TestManagerWindow_GeneratedSQL(t *testing.T) {
 		d.newestSQL())
 	assert.Equal(t,
 		`SELECT epoch_us(last_commit) - epoch_us(last_arrival),
-	               coalesce(epoch_us(last_commit) - epoch_us(delivering_since), -1),
-	               CASE WHEN coalesce(delivering, TRUE) THEN 1 ELSE 0 END::BIGINT
+	               coalesce(delivering_for_us, -1),
+	               CASE WHEN coalesce(delivering_for_us, 0) >= 0 THEN 1 ELSE 0 END::BIGINT
 	        FROM sqlflow_progress`,
 		confirmedQuietSQL())
 	assert.Equal(t,

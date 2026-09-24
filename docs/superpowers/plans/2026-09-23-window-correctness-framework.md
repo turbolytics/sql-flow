@@ -260,7 +260,13 @@ git commit -m "core, managers: a caller can own when a tick and a poll happen"
 
 ---
 
-### Task 3: `delivering_since` in the progress row
+### Task 3: the source's answer in the progress row
+
+> Landed as one column, `delivering_for_us BIGINT`, rather than the
+> `delivering_since TIMESTAMPTZ` below. Three states are needed, not two — a
+> source that cannot deliver and one that was never asked mean opposite things
+> to a window — and a duration is what `core.Deliverer` answers, so it needs no
+> clock to be read against and no second column to disambiguate.
 
 **Files:**
 - Modify: `internal/core/progress.go`, `internal/core/turbine.go` (`recordProgress`)

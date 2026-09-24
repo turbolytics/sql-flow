@@ -36,7 +36,7 @@ none owns the result.
 **Three facts, one table.** `Source` joins `Data` and `Idle` as a dimension,
 so the hold becomes a row rather than a correction applied beforehand.
 
-**The row carries the facts.** `sqlflow_progress` gains `delivering_since`,
+**The row carries the facts.** `sqlflow_progress` gains `delivering_for_us`,
 and the manager derives both `Idle` and `Source` from one read of one row.
 
 **Every fact carries its provenance.** What was measured, the limit it was
@@ -61,10 +61,11 @@ Two clocks decide a close, and nothing may compare across them.
 the committed watermark. It decides the grace path, where a bucket closes once
 the stream has moved past its end by the grace.
 
-*The engine's clock* comes from the progress row: `last_arrival`,
-`last_commit`, and now `delivering_since`. It decides the idle path. All three
-are written from one reading, and the manager only ever subtracts one from
-another, so a wall-clock step moves none of them relative to the others.
+*The engine's clock* comes from the progress row: `last_arrival` and
+`last_commit`, both written from one monotonic reading, so the manager
+subtracts one from the other and a wall-clock step moves neither relative to
+the other. `delivering_for_us` sits beside them as a duration, which belongs
+to no clock at all and bounds what that subtraction may confirm.
 
 The manager's own `now()` belongs to neither. Comparing it against
 `last_arrival` read a sparse stream as stalled and a skewed clock as dead; #352
@@ -76,20 +77,26 @@ visible in review rather than in a chart.
 | Fact | Values | Computed from | Clock |
 |---|---|---|---|
 | `Data` | `none`, `behind`, `open`, `ripe` | the newest bucket against the committed watermark | event time |
-| `Idle` | `off`, `unconfirmed`, `confirmed` | `last_commit − last_arrival`, bounded by `last_commit − delivering_since` | engine |
-| `Source` | `delivering`, `not_delivering` | `delivering_since` present or empty | engine |
+| `Idle` | `off`, `unconfirmed`, `confirmed` | `last_commit − last_arrival`, bounded by `delivering_for_us` | engine |
+| `Source` | `delivering`, `not_delivering` | `delivering_for_us` negative or not | engine |
 
-`delivering_since` is the instant from which the source has been continuously
-able to deliver: for Kafka, when the group last assigned it a partition; for a
-websocket, when the connection was dialled; empty while it holds nothing or is
-disconnected. The engine writes it as `now − deliveringFor`, from the monotonic
-duration `core.Deliverer` already returns, so it lands on the same clock as the
-other two columns.
+`delivering_for_us` is how long the source has been able to deliver, as of
+`last_commit`: for Kafka, since the group last assigned it a partition; for a
+websocket, since the connection was dialled. Three states in one column,
+because a source that cannot deliver and one that was never asked mean
+opposite things to a window. Negative says it holds nothing and every bucket
+stays open; NULL says nothing was asked and bounds no quiet; a duration says
+how much of the silence it could have heard.
+
+A duration rather than an instant, which is what `core.Deliverer` already
+answers. An instant would have to be written from that duration and read back
+as one, and would need the argument that every column is on one clock; a
+duration needs no clock to be read against at all.
 
 Bounding the quiet by the resumption is what the hold does today, stated as a
 fact instead of a rewrite. A websocket that dropped at 11:59:00 and reconnected
 at 12:00:30, with `idle_close_seconds: 60`, has a row at 12:01:00 reading
-`last_arrival 11:58:58, last_commit 12:01:00, delivering_since 12:00:30`. The
+`last_arrival 11:58:58, last_commit 12:01:00, delivering_for_us 30s`. The
 subtraction alone says two minutes of quiet and closes everything. The bound
 says the source has been able to deliver for thirty seconds, and the window
 holds. Same outcome as today; the difference is that the row now explains it.

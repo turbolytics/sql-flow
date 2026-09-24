@@ -12,14 +12,13 @@ import (
 )
 
 // deliveringAt writes the progress row a source that can deliver produces:
-// quiet between arrival and commit, and a resumption the manager bounds that
-// quiet by.
-func deliveringAt(tb testing.TB, conn adbc.Connection, arrival, commit, since time.Time) {
+// quiet between arrival and commit, and how long it has been able to deliver,
+// which bounds that quiet.
+func deliveringAt(tb testing.TB, conn adbc.Connection, arrival, commit time.Time, for_ time.Duration) {
 	tb.Helper()
 	progressAt(tb, conn, arrival, commit)
 	exec(tb, conn, fmt.Sprintf(
-		`UPDATE sqlflow_progress SET delivering = TRUE, delivering_since = TIMESTAMPTZ '%s'`,
-		since.UTC().Format("2006-01-02 15:04:05-07:00")))
+		`UPDATE sqlflow_progress SET delivering_for_us = %d`, for_.Microseconds()))
 }
 
 // notDeliveringAt writes the row a source holding nothing produces, whatever
@@ -27,7 +26,7 @@ func deliveringAt(tb testing.TB, conn adbc.Connection, arrival, commit, since ti
 func notDeliveringAt(tb testing.TB, conn adbc.Connection, arrival, commit time.Time) {
 	tb.Helper()
 	progressAt(tb, conn, arrival, commit)
-	exec(tb, conn, `UPDATE sqlflow_progress SET delivering = FALSE, delivering_since = NULL`)
+	exec(tb, conn, `UPDATE sqlflow_progress SET delivering_for_us = -1`)
 }
 
 // A source that cannot deliver holds every open bucket, as a row of the table
@@ -85,7 +84,7 @@ func TestManagerWindow_ARowThatCannotDeliverClosesNothingOnIdleness(t *testing.T
 
 	// The same silence, from a source that has been back longer than the
 	// bound: the bucket closes.
-	deliveringAt(t, d.pipeline, t0, t0.Add(time.Hour), t0)
+	deliveringAt(t, d.pipeline, t0, t0.Add(time.Hour), time.Hour)
 	assert.NoError(t, w.Poll(ctx))
 	_, flushes = sink.counts()
 	assert.Equal(t, 1, flushes)

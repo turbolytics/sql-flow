@@ -35,12 +35,13 @@ func TestStateDurability_TheRowCarriesWhenTheSourceCouldDeliver(t *testing.T) {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	last := rec.recs[len(rec.recs)-1]
-	assert.Equal(t, at.Add(-30*time.Second), last.DeliveringSince)
+	assert.That(t, last.DeliveringFor != nil)
+	assert.Equal(t, 30*time.Second, *last.DeliveringFor)
 }
 
-// A source that cannot deliver leaves the column empty rather than writing an
-// instant a reader would treat as a resumption.
-func TestStateDurability_ASourceThatCannotDeliverLeavesTheColumnEmpty(t *testing.T) {
+// A source that cannot deliver says so with a negative duration, which a
+// reader tells apart from the absence a source that was never asked leaves.
+func TestStateDurability_ASourceThatCannotDeliverSaysSoWithANegativeDuration(t *testing.T) {
 	coverage.Covers(t, "state.durability")
 	at := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 	rec := &progressRecorder{}
@@ -54,7 +55,8 @@ func TestStateDurability_ASourceThatCannotDeliverLeavesTheColumnEmpty(t *testing
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	last := rec.recs[len(rec.recs)-1]
-	assert.That(t, last.DeliveringSince.IsZero())
+	assert.That(t, last.DeliveringFor != nil)
+	assert.That(t, *last.DeliveringFor < 0)
 }
 
 // A source with no opinion on the matter -- one that does not implement
@@ -73,5 +75,5 @@ func TestStateDurability_ASourceWithoutDelivererLeavesTheColumnEmpty(t *testing.
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	last := rec.recs[len(rec.recs)-1]
-	assert.That(t, last.DeliveringSince.IsZero())
+	assert.That(t, last.DeliveringFor == nil)
 }
