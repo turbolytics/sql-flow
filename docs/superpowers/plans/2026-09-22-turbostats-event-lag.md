@@ -532,10 +532,40 @@ at its last batch: now minus the newest event in it, measured once per
 batch. `event_lag_max_seconds` is the worst since the process started;
 `event_lag_observed_at` is when the reading was taken, which is how a
 receiver spots a reading that has stopped moving; and `event_lag_basis` is
-where the event time came from, `kafka_timestamp` or `arrival`. All four are
-absent for a source with no event time, and a negative lag is reported as
-zero.
+where the event time came from. All four are absent for a source with no
+event time, and a negative lag is reported as zero.
+
+`event_lag_basis` is an open vocabulary, not an enum. v1 defines two values:
+
+- `kafka_timestamp`: the record's timestamp. Broker to processing.
+- `arrival`: the source stamped the message as it arrived. Queueing inside
+  the process, not transport.
+
+A source whose protocol carries no event time, and whose broker can hold a
+message before delivering it, is not honestly described by either. MQTT is
+the case in hand: it has no publish timestamp in 3.1.1 or 5.0, and a
+retained message or a QoS 1 redelivery after a reconnect arrives now
+however old it is, so `arrival` would report a lag near zero exactly when
+the pipeline is furthest behind. Such a source gets its own basis when it
+lands, or sends none of the four.
 ```
+
+- [ ] **Step 1b: Say that a receiver tolerates an unknown basis**
+
+In the contract's "Extensibility rules", after rule 4:
+
+```markdown
+5. **Open vocabularies.** A field whose value is a name from a list, such as
+   `event_lag_basis`, may gain names. A reader that does not recognize one
+   keeps the reading and declines to compare it with a reading on a basis it
+   does know; it does not treat the bundle as invalid. Two lags on different
+   bases were never comparable anyway, which is why the basis is sent.
+```
+
+Rules 1 and 2 cover unknown sections and unknown fields, and say nothing
+about unknown values. Without this, a receiver written against v1's two
+basis names can reject the third the day a source needs one, which is a
+break the contract promised not to have.
 
 - [ ] **Step 2: Add the changelog entry**
 

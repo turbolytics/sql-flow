@@ -21,10 +21,28 @@ import (
 // Message is one record from a source, with whatever provenance the source
 // knows about it. Only Kafka populates the metadata fields.
 type Message struct {
-	Value     []byte
-	Topic     string
-	Partition int32
-	Offset    int64
+	Value []byte
+	// EventAtNanos is when the event happened, as the source knows it, in
+	// Unix nanoseconds: a Kafka record's timestamp, or the moment a webhook
+	// or websocket message arrived. Zero for a source with no event time,
+	// which is why the pipeline's lag fields are absent for one.
+	//
+	// Nanoseconds rather than a time.Time because this field sits on every
+	// message on the hot path while one reading per batch is ever taken
+	// from it. A time.Time costs 24 bytes against 8, which measured at +24%
+	// B/op and +16% on the consume loop's own overhead.
+	//
+	// The monotonic reading goes with it. A Kafka record had none to lose,
+	// because its time comes from another machine's clock and the
+	// subtraction already fell back to wall clock. The arrival sources do
+	// stamp and read on one clock, so for those a wall-clock step between
+	// the two now skews that batch's reading. What is at stake there is a
+	// sub-second number, against 16 bytes on every message, and the step
+	// clears on the next batch rather than persisting.
+	EventAtNanos int64
+	Topic        string
+	Partition    int32
+	Offset       int64
 	// LeaderEpoch is the Kafka leader epoch the record was read under. It is
 	// carried through so a commit can name it, which lets the broker detect
 	// log truncation. Only meaningful when HasMetadata is true; a source with
@@ -34,6 +52,49 @@ type Message struct {
 	// can be computed against the position last processed. Zero for sources
 	// without one.
 	HighWatermark int64
+}
+
+// The bases an event time can have. It travels with every lag reading,
+// because a lag from a broker's timestamp and a lag from arrival measure
+// different spans and comparing them is meaningless.
+//
+// This is an open vocabulary. A source whose protocol carries no event
+// time, and whose broker can hold a message before delivering it, is
+// honestly described by neither of these and gets its own name rather than
+// borrowing arrival.
+const (
+	// EventBasisKafkaCreateTime is a Kafka record's timestamp as the
+	// producer set it. This is Kafka's default, message.timestamp.type =
+	// CreateTime, so the reading is only as good as the producer's clock.
+	EventBasisKafkaCreateTime = "kafka_create_time"
+	// EventBasisKafkaLogAppendTime is a Kafka record's timestamp as the
+	// broker set it on append, for a topic configured with
+	// message.timestamp.type = LogAppendTime. One clock stamps every
+	// record, so a lag from this basis measures the stream rather than the
+	// fleet's clocks.
+	EventBasisKafkaLogAppendTime = "kafka_log_append_time"
+	EventBasisArrival            = "arrival"
+)
+
+// eventTimeFloorNanos is the oldest event time a lag reading treats as real.
+//
+// Nothing this engine reads is genuinely from before 2020. What does arrive
+// from the 1970s is a broken clock. Kafka encodes "no timestamp" as -1, and
+// a device without a real-time clock boots at the epoch and stamps records
+// at 1970 plus its uptime: a millisecond past it, or a year, but never
+// exactly at it. A guard against zero alone let every one of those through,
+// and each set the run's worst lag to 56 years, which never comes down.
+// Fifty years of uptime still lands below this floor.
+//
+// The cost is a genuine replay of a pre-2020 archive, which reports no lag
+// rather than a wrong one. Absent is not zero, and a missing reading is
+// better than 56 years on a fleet dashboard.
+var eventTimeFloorNanos = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
+
+// EventTimeSource is a source that stamps Message.EventAtNanos. A source that
+// does not implement it reports no lag, rather than a lag of zero.
+type EventTimeSource interface {
+	EventTimeBasis() string
 }
 
 // Mark is the position of the last message the pipeline has finished with in
@@ -326,6 +387,22 @@ type Turbine struct {
 	// hold it.
 	lastErrorUnixNano atomic.Int64
 	errorCount        atomic.Int64
+	// eventTimeSource is the source's event-time reporter, nil for a source
+	// that stamps none. The basis name is read from it at report time
+	// rather than cached, because a Kafka source learns whether its topic
+	// stamps CreateTime or LogAppendTime only once it has seen a record.
+	eventTimeSource EventTimeSource
+	// eventLagMax is the worst lag seen, in seconds. It never resets, so a
+	// slow producer clock raises it for the life of the process: under
+	// kafka_create_time a device three hours behind sets three hours the
+	// first time its records fill a batch alone, which at low volume is
+	// routine. The basis travels with the number so a reader can discount
+	// it; the alternative, a maximum that decays, would hide the outage it
+	// exists to catch. It never resets,
+	// because the reporter and GET /turbostats/v1 both read the bundle it
+	// ends up in. Written and read on the consume loop only.
+	eventLagMax float64
+
 	// lastErrorCode is the code of the last error recorded, for the bundle.
 	// An atomic.Value rather than the lock: recordError runs on the consume
 	// loop and the reporter reads from its own goroutine.
@@ -630,6 +707,13 @@ func NewTurbine(
 		logger: zap.NewNop(),
 	}
 
+	// A source that stamps event times says what they mean. One that does
+	// not leaves this empty, and the loop then measures no lag at all
+	// rather than a lag of zero.
+	if s, ok := source.(EventTimeSource); ok {
+		t.eventTimeSource = s
+	}
+
 	// Built once rather than per batch: metric.WithAttributes allocates on
 	// every call whatever the metrics config.
 	t.resultOKAttrs = []metric.AddOption{
@@ -867,15 +951,65 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// than processed, so bytes over count is a true average. One integer
 		// add per message and one record per batch.
 		var payload int64
+		var newestNanos int64
+		// One clock read for the whole batch. Two reads per message once
+		// took this loop from 22 ns/op to 91, and every comparison below
+		// has to be against the same now to be consistent.
+		now := time.Now()
+		nowNanos := now.UnixNano()
 		for i := range msgBatch {
 			payload += int64(len(msgBatch[i].Value))
+			// The newest event in the batch, taken in the pass that already
+			// walks it. A separate pass would double the per-message work
+			// this loop exists to keep small.
+			//
+			// Two kinds of record are skipped, because each reports a lag
+			// that is not this pipeline's:
+			//
+			// Below the floor is a record with no usable timestamp, or a
+			// clock that never learned the date; see eventTimeFloorNanos.
+			//
+			// After now is a clock ahead of this host's, not a pipeline
+			// ahead of its stream. A Kafka record carries the producer's
+			// clock unless the topic sets LogAppendTime, so one fast device
+			// in a fleet can win "newest" for the whole batch. Taking it and
+			// clamping the negative lag to zero reported "caught up" while
+			// the other 499 records in the batch were an hour behind.
+			at := msgBatch[i].EventAtNanos
+			if at > eventTimeFloorNanos && at <= nowNanos && at > newestNanos {
+				newestNanos = at
+			}
 		}
 		t.metrics.MessagePayloadBytes.Add(ctx, payload)
 		// Once per batch, not per message: the cost is one gauge record
 		// against a whole batch, and a reader asking "is it still doing
 		// anything" cannot tell the two apart.
-		t.metrics.PipelineLastMessage.Record(ctx, time.Now().Unix())
+		t.metrics.PipelineLastMessage.Record(ctx, now.Unix())
 		t.metrics.Activity.Mark()
+
+		// One reading per batch, from the newest usable event in it: the
+		// oldest would add the batch's own span, which says as much about
+		// batch_size as about the stream.
+		//
+		// A batch in which every record was skipped reports nothing at all.
+		// Zero would claim the pipeline had caught up, which is the one
+		// wrong answer this field exists to avoid, and absent is not zero
+		// anywhere else in this contract either.
+		//
+		// The reading is taken when the batch arrives, before the handler
+		// and the sink run. It is how far behind the stream the pipeline
+		// reads, not how long the data takes to land; a slow flush shows up
+		// as event_lag_observed_at going stale, and in the batch and
+		// sink_flush durations beside it.
+		if t.eventTimeSource != nil && newestNanos > eventTimeFloorNanos {
+			lag := float64(nowNanos-newestNanos) / float64(time.Second)
+			t.metrics.EventLagSeconds.Record(ctx, lag)
+			if lag > t.eventLagMax {
+				t.eventLagMax = lag
+			}
+			t.metrics.EventLagMaxSeconds.Record(ctx, t.eventLagMax)
+			t.metrics.EventLagObserved.Record(ctx, now.Unix())
+		}
 
 		// handler.write is timed by bracketing the whole loop and subtracting
 		// the batches that ran inside it, rather than by timing each
@@ -1087,6 +1221,20 @@ func (t *Turbine) recordError(ctx context.Context, err error, phase, message str
 		zap.String("error.code", string(code)),
 		zap.String("error.class", string(code.Class())),
 	)
+}
+
+// EventBasis is where this pipeline's event times come from, and empty for
+// a source that has none.
+//
+// The turbine holds the source it resolved at construction and asks it each
+// time, rather than caching the name: a Kafka topic's timestamp type is not
+// known until a record arrives. The source is responsible for making that
+// read safe from this goroutine.
+func (t *Turbine) EventBasis() string {
+	if t.eventTimeSource == nil {
+		return ""
+	}
+	return t.eventTimeSource.EventTimeBasis()
 }
 
 // LastError is the code and time of the last error this pipeline recorded.

@@ -10,6 +10,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kmsg"
 	"go.uber.org/zap"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,12 @@ type Source struct {
 	closeOnce     sync.Once
 	seeker        *OffsetSeeker
 	partitions    *PartitionEvents
+	// timestampType is the record timestamp type last observed, as
+	// kgo.RecordAttrs.TimestampType reports it: 0 the producer's clock, 1
+	// the broker's, -1 a pre-0.10.0 record carrying none. It decides which
+	// basis a lag reading travels with, and the bundle reads it from
+	// another goroutine while the poll loop writes it.
+	timestampType atomic.Int32
 
 	logger *zap.Logger
 }
@@ -266,14 +273,26 @@ func (k *Source) Stream() <-chan []core.Message {
 			batch := make([]core.Message, 0, fetches.NumRecords())
 			fetches.EachPartition(func(p kgo.FetchTopicPartition) {
 				for _, r := range p.Records {
-					batch = append(batch, core.Message{
-						Value:         r.Value,
-						Topic:         r.Topic,
-						Partition:     r.Partition,
-						Offset:        r.Offset,
-						LeaderEpoch:   r.LeaderEpoch,
-						HighWatermark: p.HighWatermark,
-					})
+					batch = append(batch, messageFrom(r, p.HighWatermark))
+				}
+				// Which clock stamped these records. message.timestamp.type
+				// is topic-level config, so the last record of a fetch
+				// speaks for the rest, and a lag reading can say whether it
+				// came from a producer's clock or the broker's.
+				//
+				// This assumes one timestamp type across the consumer. A
+				// topics: list mixing a CreateTime topic with a
+				// LogAppendTime one reports whichever was fetched last, and
+				// readings from the two are not comparable. Naming one basis
+				// for a consumer that has two is a contract problem rather
+				// than a code one.
+				//
+				// A pre-0.10.0 topic reports -1 and never overwrites a real
+				// type. Its records carry no usable time and the floor skips
+				// them anyway, so letting it clear the basis would drop the
+				// valid readings of every topic beside it.
+				if n := len(p.Records); n > 0 {
+					k.observeTimestampType(p.Records[n-1].Attrs.TimestampType())
 				}
 			})
 
@@ -291,4 +310,49 @@ func (k *Source) Stream() <-chan []core.Message {
 		}
 	}()
 	return k.streamChan
+}
+
+// messageFrom is the record-to-message conversion, lifted out of the fetch
+// loop so a test can reach it without a broker.
+//
+// EventAtNanos is the record's own timestamp: a pipeline behind by an hour
+// is handling records stamped an hour ago. Which clock set it depends on the
+// topic, which is what EventTimeBasis reports.
+func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
+	return core.Message{
+		Value:         r.Value,
+		EventAtNanos:  r.Timestamp.UnixNano(),
+		Topic:         r.Topic,
+		Partition:     r.Partition,
+		Offset:        r.Offset,
+		LeaderEpoch:   r.LeaderEpoch,
+		HighWatermark: highWatermark,
+	}
+}
+
+// observeTimestampType records which clock stamped a fetch's records, and
+// is lifted out of the fetch loop so a test can reach it without a broker.
+// A -1 never overwrites a real type; see the call site in Stream.
+func (k *Source) observeTimestampType(ts int8) {
+	if ts >= 0 {
+		k.timestampType.Store(int32(ts))
+	}
+}
+
+// EventTimeBasis names the clock behind Message.EventAtNanos.
+//
+// A Kafka record's timestamp is the producer's own clock unless the topic
+// sets message.timestamp.type to LogAppendTime, and CreateTime is the
+// default. The two measure different things -- one is only as good as the
+// fleet's clocks, the other is one broker's -- so a lag reading has to say
+// which it came from rather than claiming "the broker stamped it".
+//
+// Before the first fetch this reports the Kafka default. A consumer reading
+// only pre-0.10.0 topics reports it too, and reports no lag at all: those
+// records carry no usable time, so no reading is ever taken from them.
+func (s *Source) EventTimeBasis() string {
+	if s.timestampType.Load() == 1 {
+		return core.EventBasisKafkaLogAppendTime
+	}
+	return core.EventBasisKafkaCreateTime
 }

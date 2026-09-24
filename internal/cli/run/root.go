@@ -391,8 +391,27 @@ func NewCommand() *cobra.Command {
 				static.IntervalSeconds = int(ts.Interval().Seconds())
 			}
 
-			meterProvider, collectBundle, err := newMeterProvider(metricsExporter, serveTurbostats,
-				static, l, statsFn, progressFn, hs.Snapshot, lastErrorFn, flushInterval)
+			// Where this pipeline's event times come from, through the same
+			// pointer for the same reason: the source is built below.
+			eventBasisFn := func() string {
+				if tb := liveTurbine.Load(); tb != nil {
+					return tb.EventBasis()
+				}
+				return ""
+			}
+
+			meterProvider, collectBundle, err := newMeterProvider(
+				withExporter(metricsExporter),
+				withTurbostatsRoute(serveTurbostats),
+				withStatic(static),
+				withLogger(l),
+				withStateStats(statsFn),
+				withProgress(progressFn),
+				withHealth(hs.Snapshot),
+				withLastError(lastErrorFn),
+				withEventBasis(eventBasisFn),
+				withFlushInterval(flushInterval),
+			)
 			if err != nil {
 				return err
 			}
@@ -478,6 +497,12 @@ func NewCommand() *cobra.Command {
 			// It runs here rather than beside InitTables because it records a
 			// gauge, and the metrics do not exist until now.
 			if err := core.CheckReferenceTables(ctx, conn, conf, pipelineMetrics, l); err != nil {
+				return err
+			}
+
+			// The source builder never sees batch_size, so the one rule that
+			// needs both runs here, as validate runs it.
+			if err := conf.Pipeline.CheckMQTT(); err != nil {
 				return err
 			}
 

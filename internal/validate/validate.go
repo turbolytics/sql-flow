@@ -54,6 +54,7 @@ func Validate(ctx context.Context, req Request) (Report, error) {
 		checkWindows(rendered, &rep)
 		checkSinks(rendered, &rep)
 		checkTurboStats(rendered, &rep)
+		checkMqtt(rendered, &rep)
 	}
 
 	demoteUnsuppliedVariableErrors(&rep)

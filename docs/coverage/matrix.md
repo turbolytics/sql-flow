@@ -25,6 +25,7 @@ added, and this page changes only when a status does.
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ |
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ |
+| `source.mqtt` | Consumes MQTT 5 at QoS 1 on a persistent session, acknowledging on commit. | ✅ | ✅ | — |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ |
 | `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ |
 | `sink.postgres` | Upserts or appends result batches into a Postgres table over a native client. | ✅ | ✅ | — |
@@ -68,7 +69,7 @@ added, and this page changes only when a status does.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**45 features declared. 44 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**46 features declared. 45 have at least one passing test attributed at every level they require, so 0 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -76,7 +77,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**53 invariants declared: 45 safety and 8 liveness. Of 183 (invariant, integration) cells: 96 proven, 53 missing, 0 skipped, 0 failing, 34 exempt. 0 gap(s).**
+**53 invariants declared: 45 safety and 8 liveness. Of 187 (invariant, integration) cells: 99 proven, 53 missing, 0 skipped, 0 failing, 35 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -133,18 +134,18 @@ drains. An invariant holds only if it holds on all four.
 
 ## Safety invariants: checkpoint
 
-| Invariant | Claim | `source.kafka` | `source.webhook` | `source.websocket` | `manager.watermark` |
-| --- | --- | --- | --- | --- | --- |
-| `source.commit.only_processed` | A source commits the marks the pipeline processed, never what it fetched. *(violated once: #154)* | ❌ missing | — exempt | — exempt | · |
-| `source.resume.from_committed` | Restart resumes at the committed position. No gap, and no replay before it. | ❌ missing | — exempt | — exempt | · |
-| `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | — exempt | — exempt | · |
-| `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt | · |
-| `manager.delete.after_flush` | Closed windows leave the state table only after the sink acknowledged them. The table still holds every one of them when Flush runs. | · | · | · | ✅ u |
-| `manager.delete.nothing_on_failure` | A failed flush deletes nothing. Every closed window stays in the state table for the next attempt. | · | · | · | ✅ u |
-| `manager.watermark.never_regresses` | The persisted watermark never moves backwards, across polls and across a restart. A manager built over the state another one saved publishes nothing that one published. | · | · | · | ✅ u |
-| `manager.close.committed_rows_only` | A close publishes rows the pipeline has committed and no others. Rows an open batch has written are not counted, so a batch that rolls back was never published. | · | · | · | ✅ u |
-| `manager.late.policy_holds` | A row for a bucket below the watermark is late. Under drop it is discarded and counted, and the bucket is never published again. Under reemit it is published once. | · | · | · | ✅ u |
-| `manager.late.counted_once` | A late row is counted once, when the close that dropped or reemitted it commits. A close that fails counts nothing; the close that later settles those rows counts them. *(violated once: #354)* | · | · | · | ✅ u |
+| Invariant | Claim | `source.kafka` | `source.mqtt` | `source.webhook` | `source.websocket` | `manager.watermark` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `source.commit.only_processed` | A source commits the marks the pipeline processed, never what it fetched. *(violated once: #154)* | ❌ missing | ✅ ui | — exempt | — exempt | · |
+| `source.resume.from_committed` | Restart resumes at the committed position. No gap, and no replay before it. | ❌ missing | ✅ i | — exempt | — exempt | · |
+| `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | ✅ u | — exempt | — exempt | · |
+| `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt | — exempt | · |
+| `manager.delete.after_flush` | Closed windows leave the state table only after the sink acknowledged them. The table still holds every one of them when Flush runs. | · | · | · | · | ✅ u |
+| `manager.delete.nothing_on_failure` | A failed flush deletes nothing. Every closed window stays in the state table for the next attempt. | · | · | · | · | ✅ u |
+| `manager.watermark.never_regresses` | The persisted watermark never moves backwards, across polls and across a restart. A manager built over the state another one saved publishes nothing that one published. | · | · | · | · | ✅ u |
+| `manager.close.committed_rows_only` | A close publishes rows the pipeline has committed and no others. Rows an open batch has written are not counted, so a batch that rolls back was never published. | · | · | · | · | ✅ u |
+| `manager.late.policy_holds` | A row for a bucket below the watermark is late. Under drop it is discarded and counted, and the bucket is never published again. Under reemit it is published once. | · | · | · | · | ✅ u |
+| `manager.late.counted_once` | A late row is counted once, when the close that dropped or reemitted it commits. A close that fails counts nothing; the close that later settles those rows counts them. *(violated once: #354)* | · | · | · | · | ✅ u |
 
 These checkpoint invariants are properties of the consume loop
 rather than of anything a config file names. The columns are

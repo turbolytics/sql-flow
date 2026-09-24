@@ -205,6 +205,12 @@ test-release: sqlflow-image
 soak:
 	./scripts/soak.sh $(or $(SOAK_MINUTES),10) $(or $(SOAK_LABEL),pr)
 
+# The MQTT POC: Mosquitto, the sensor collector and SQLFlow under a 1 GB cap.
+# SCENARIO is steady, ceiling, crash, broker or all.
+.PHONY: mqtt-poc
+mqtt-poc: sqlflow-image
+	SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) ./scripts/mqtt-poc.sh $(or $(SCENARIO),all)
+
 .PHONY: start-backing-services
 start-backing-services:
 	docker-compose -f dev/kafka-single.yml up -d

@@ -185,3 +185,19 @@ func TestPipeline_ZeroErrorsArePresent(t *testing.T) {
 		t.Errorf("a zero error count is absent: %s", raw)
 	}
 }
+
+// A lag of zero is a reading: a pipeline that has caught up is not a
+// pipeline with no event time.
+func TestPipeline_AZeroLagIsPresentAndNoBasisIsAbsent(t *testing.T) {
+	zero := 0.0
+	basis := "arrival"
+	with := mustMarshal(t, Bundle{V: Version, Pipeline: &Pipeline{
+		EventLagSeconds: &zero, EventLagBasis: &basis}})
+	if !strings.Contains(with, `"event_lag_seconds":0`) {
+		t.Errorf("a zero lag is absent: %s", with)
+	}
+	without := mustMarshal(t, Bundle{V: Version, Pipeline: &Pipeline{}})
+	if strings.Contains(without, "event_lag") {
+		t.Errorf("a pipeline with no event time carries a lag: %s", without)
+	}
+}

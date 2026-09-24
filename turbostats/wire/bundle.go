@@ -197,6 +197,25 @@ type Pipeline struct {
 	// the time finds the message in their own logs.
 	LastErrorCode *string    `json:"last_error_code,omitempty"`
 	LastErrorAt   *time.Time `json:"last_error_at,omitempty"`
+	// EventLagSeconds is how far behind the stream the pipeline ran at its
+	// last batch: now minus the newest event in it. EventLagMaxSeconds is
+	// the worst since the process started.
+	//
+	// EventLagObservedAt is when that reading was taken. A consumer cut off
+	// from its brokers keeps its last reading, so a receiver judges the
+	// reading by its age.
+	//
+	// EventLagBasis is where the event time came from: kafka_timestamp is
+	// broker to processing, arrival is queueing inside the process. It
+	// travels with the number because the two measure different spans, and
+	// it is an open vocabulary: a reader that meets a name it does not know
+	// keeps the reading and declines to compare it, rather than treating
+	// the bundle as invalid. All four are absent for a source with no
+	// event time.
+	EventLagSeconds    *float64   `json:"event_lag_seconds,omitempty"`
+	EventLagMaxSeconds *float64   `json:"event_lag_max_seconds,omitempty"`
+	EventLagObservedAt *time.Time `json:"event_lag_observed_at,omitempty"`
+	EventLagBasis      *string    `json:"event_lag_basis,omitempty"`
 	// RecvWaitSeconds is how long the consume loop has spent waiting for
 	// input. It separates a pipeline waiting on a quiet source from one
 	// saturated by its own work: near the wall clock means the source is

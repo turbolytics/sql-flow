@@ -172,7 +172,11 @@ Four fields in `pipeline`, measured once per batch:
 - `event_lag_max_seconds`: the worst reading since the process started.
 - `event_lag_basis`: where the event time came from, and it travels with the
   number so nobody compares two of them that mean different things.
-  - `kafka_timestamp`: the record's timestamp. Broker to processing.
+  - `kafka_create_time`: the record's timestamp as the producer set it.
+    Kafka's default. Only as good as the producer's clock.
+  - `kafka_log_append_time`: the record's timestamp as the broker set it on
+    append, for a topic that sets `message.timestamp.type`. One clock
+    stamps every record.
   - `arrival`: the webhook and websocket sources stamp each message as it
     arrives. Queueing inside the process, not transport.
 

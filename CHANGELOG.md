@@ -2,36 +2,31 @@
 
 ## Unreleased
 
-### Changed
-
-- A window's idle close reads one more fact: whether the source could deliver
-  at all. `sqlflow_progress` gains `delivering_for_us`, which a Kafka source
-  fills from its assignment and a websocket from its dial, and the manager
-  bounds the quiet it may confirm by it. The fact was already enforced, as a
-  correction the engine applied to its own clock before the manager read it;
-  it is now a column and a row of the decision table, which is what makes it
-  visible in the close log line, on the rendered decisions page, and to
-  anything reading the row through `GET /debug?sql=`. No window closes at a
-  different moment.
-
-  The column costs 154 bytes of write-ahead log per progress write on a
-  pipeline with a `state` path: 456 bytes an idle tick before, 610 after,
-  over a thousand writes in the shape the engine sends. Its value changes on
-  every commit, so it is rewritten on every commit. Once DuckDB checkpoints
-  the file both shapes get cheaper and the difference settles near 80 bytes a
-  write. At a tick a second that is roughly 13MB a day more before the first
-  checkpoint and 7MB a day after it. No additional fsync; a source that
-  implements no `Deliverer` writes NULL and costs nothing extra. On flash
-  that is written a finite number of times, it is worth knowing what the fact
-  cost.
-
-- `/stats` reports `arrival_age_seconds` growing through a source outage,
-  where it used to hold at zero. The hold that pinned it moved into the
-  manager's reading of the row, so the engine's own clock now says what it
-  actually saw: a source that held nothing for two minutes reports two
-  minutes of silence, and the window still does not close on it.
-
 ### Added
+
+- The TurboStats bundle says how far behind the stream a pipeline runs, in
+  time rather than in messages: `event_lag_seconds`, `event_lag_max_seconds`,
+  `event_lag_observed_at` and `event_lag_basis` in the `pipeline` section.
+  Offset lag is Kafka-only and counts messages; this works for any source
+  that has an event time.
+  - Kafka reports `kafka_create_time` or `kafka_log_append_time`, naming the
+    clock that stamped the record: the producer's by default, the broker's
+    only for a topic that sets `message.timestamp.type`. The webhook and
+    websocket sources stamp arrival and report `arrival`, which is queueing
+    inside the process rather than transport. The basis travels with the
+    number because they measure different spans.
+  - A record whose event time is before 2020, or ahead of the pipeline's own
+    clock, never contributes to a reading. The first is a clock that never
+    learned the date rather than an old event: a device without a real-time
+    clock stamps 1970 plus its uptime. The second is a producer's clock
+    running fast, and taking it would report "caught up" during a real
+    backlog.
+  - Measured once per batch, from the newest event in it. A source with no
+    event time sends none of the four, because a zero lag would claim the
+    pipeline had caught up with a stream it cannot measure.
+  - `event_lag_basis` is an open vocabulary: a reader that meets a name it
+    does not know keeps the reading and declines to compare it, rather than
+    rejecting the bundle.
 
 - The TurboStats bundle says what a pipeline is made of: `source_type`,
   `sink_type` and `handler_type` in the `instance` section, so a fleet can be
@@ -102,6 +97,32 @@
 
 ### Changed
 
+- A window's idle close reads one more fact: whether the source could deliver
+  at all. `sqlflow_progress` gains `delivering_for_us`, which a Kafka source
+  fills from its assignment and a websocket from its dial, and the manager
+  bounds the quiet it may confirm by it. The fact was already enforced, as a
+  correction the engine applied to its own clock before the manager read it;
+  it is now a column and a row of the decision table, which is what makes it
+  visible in the close log line, on the rendered decisions page, and to
+  anything reading the row through `GET /debug?sql=`. No window closes at a
+  different moment.
+
+  The column costs 154 bytes of write-ahead log per progress write on a
+  pipeline with a `state` path: 456 bytes an idle tick before, 610 after,
+  over a thousand writes in the shape the engine sends. Its value changes on
+  every commit, so it is rewritten on every commit. Once DuckDB checkpoints
+  the file both shapes get cheaper and the difference settles near 80 bytes a
+  write. At a tick a second that is roughly 13MB a day more before the first
+  checkpoint and 7MB a day after it. No additional fsync; a source that
+  implements no `Deliverer` writes NULL and costs nothing extra. On flash
+  that is written a finite number of times, it is worth knowing what the fact
+  cost.
+
+- `/stats` reports `arrival_age_seconds` growing through a source outage,
+  where it used to hold at zero. The hold that pinned it moved into the
+  manager's reading of the row, so the engine's own clock now says what it
+  actually saw: a source that held nothing for two minutes reports two
+  minutes of silence, and the window still does not close on it.
 - `source.kafka.fetch.max_bytes` defaults to 4 MiB, from 100 MiB, and
   `max_partition_bytes` to 1 MiB, from 10 MiB. Neither old value was chosen:
   they were what the source set before the fetch block existed. Read-ahead
