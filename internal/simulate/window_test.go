@@ -81,6 +81,34 @@ func TestSimulate_ASourceThatCannotDeliverStopsTheIdleClose(t *testing.T) {
 	assert.Equal(t, int64(9), r.StillOpen)
 }
 
+// A source that is back but has not been back long is the case the bound
+// exists for, and the only scenario where the bound is what decides. The
+// others elapse a minute after the reassignment, so the quiet the row shows
+// and the quiet the source could have filled are both past the idle close
+// and either one would close the bucket. Here they disagree: the row shows
+// five minutes of silence, the source has been back five seconds, and five
+// seconds is what the engine is entitled to call quiet.
+func TestSimulate_TheResumptionBoundsTheQuiet(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
+		Produce{Partition: 0, Rows: 9},
+		Revoke{Partition: 0},
+		Elapse{By: 5 * time.Minute},
+		IdleTick{},
+		Poll{},
+		Assign{Partition: 0},
+		// Three seconds, plus the second each step takes: under the ten the
+		// declaration closes on.
+		Elapse{By: 3 * time.Second},
+		IdleTick{},
+		Poll{},
+	})
+
+	assert.Equal(t, 9, r.Produced)
+	assert.Equal(t, int64(0), r.Published)
+	assert.Equal(t, int64(9), r.StillOpen)
+}
+
 // And the same silence closes once the partition is back, because the row
 // then says the source could have delivered through it.
 func TestSimulate_TheIdleCloseResumesWhenTheSourceIsBack(t *testing.T) {
