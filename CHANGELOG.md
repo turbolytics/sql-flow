@@ -14,6 +14,15 @@
   anything reading the row through `GET /debug?sql=`. No window closes at a
   different moment.
 
+  The column costs about 154 bytes of write-ahead log per progress write on a
+  pipeline with a `state` path: 302 bytes an idle tick before, 456 after,
+  measured over a thousand writes against the old table and the new one. Its
+  value changes on every commit, so it is rewritten on every commit. A
+  pipeline idling at a tick a second appends roughly 39MB a day before
+  checkpoint truncation, against 26MB before. No additional fsync, and
+  nothing changes for a pipeline with no state path. On flash that is written
+  a finite number of times, it is worth knowing what the fact cost.
+
 - `/stats` reports `arrival_age_seconds` growing through a source outage,
   where it used to hold at zero. The hold that pinned it moved into the
   manager's reading of the row, so the engine's own clock now says what it
