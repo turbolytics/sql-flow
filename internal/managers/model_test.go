@@ -8,9 +8,15 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// modelAlphabet is every event that has produced a defect in this package:
-// a batch, an idle tick, a restart, a source going and coming back, and the
-// wall clock stepping either way.
+// modelAlphabet is every event that has produced a defect in this package and
+// that the engine is meant to survive: a batch, an idle tick, a restart, a
+// source going and coming back, and the wall clock stepping either way.
+//
+// Insert is not here, deliberately. It produced #374, which the engine has
+// today and which the watermark design removes rather than patches; enumerating
+// it would turn every sequence red against a defect we have chosen not to fix
+// in this shape. It has its own test below, asserting the defect, and the
+// ledger carries it.
 func modelAlphabet() []Event {
 	return []Event{
 		{Kind: Arrive, Rows: 2},
