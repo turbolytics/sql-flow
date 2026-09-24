@@ -511,6 +511,17 @@ func (t *Turbine) commitCount() int64 {
 // its two clocks against an idle bound measured in tens of seconds.
 const progressWriteInterval = time.Second
 
+// arrivalAnnounceAfter is how much silence has to be standing before a batch
+// announces that it ended it; see announceArrival.
+//
+// One second because idle_close_seconds is whole seconds, so the smallest
+// bound anyone can configure is one: a window can never close on a silence
+// shorter than this, and a batch that follows one shorter has nothing to
+// correct. Tying it to the write interval instead made the announcement fire
+// on every batch wherever that interval was zero, which moved the arrival
+// clock twice for one batch and left a reader free to catch either stamp.
+const arrivalAnnounceAfter = time.Second
+
 // holdQuietWhileNotDelivering keeps the quiet clock from running over time
 // the source could not deliver. A source that is not delivering resets it
 // to now; one that resumed since the clock was last set moves it to the
@@ -1520,7 +1531,60 @@ func (t *Turbine) SyncState(ctx context.Context) error {
 // sink's own count can. BufferedRowReporter stays: the conformance harness
 // proves sink.buffer.reports_depth through the interface, not the metric.
 
+// announceArrival ends the quiet the progress row confirms, before this
+// batch's writes can be seen, so that no reader ever pairs new rows with the
+// silence that preceded them.
+//
+// Only where the handler's writes autocommit on their own. With a state path
+// they are invisible until the batch's transaction commits, and the progress
+// write rides that same transaction, so a reader sees both or neither and
+// there is nothing to announce.
+//
+// It costs at most one write per waking, because it stamps the quiet clock
+// as it goes: a stream whose batches are closer together than
+// arrivalAnnounceAfter never reaches the threshold and pays nothing at all,
+// and a slower one pays a single UPDATE beside the idle ticks it is already
+// paying for over the same second. Understating the quiet is the safe
+// direction -- it delays a close, it never brings one forward.
+func (t *Turbine) announceArrival(ctx context.Context) {
+	// Nobody reads this row for a close, so no reading of it can be early:
+	// a pipeline whose idle ticks write nothing pays nothing here either.
+	if t.progress == nil || !t.confirmsQuiet || (t.offsets != nil && t.stateTx != nil) {
+		return
+	}
+
+	now := time.Now()
+	t.lock.Lock()
+	quiet := now.Sub(t.quietSince)
+	announce := quiet >= arrivalAnnounceAfter
+	if announce {
+		t.quietSince = now
+	}
+	t.lock.Unlock()
+
+	if !announce {
+		return
+	}
+	if err := t.recordProgress(ctx, progressForced); err != nil {
+		// The batch is untouched: the row simply still confirms the silence
+		// this batch ended, and a window closing on it closes early. Same
+		// failure, same code, as the throttled write reports.
+		t.recordError(ctx, errs.Wrap(errs.CodeProgressWriteFailed, err,
+			"sqlflow_progress not written"), phaseStateCommit, "sqlflow_progress not written")
+	}
+}
+
 func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error {
+	// The waking is written before the rows it woke with can be seen. A
+	// windowed pipeline's handler writes this batch into the window table
+	// inside Invoke, and with no state path that INSERT autocommits as it
+	// runs -- while the arrival clock is stamped only after the sink has
+	// flushed, and that write is throttled besides. A window manager polling
+	// in between reads a burst's first rows beside the silence they ended,
+	// closes the bucket on an idle bound the burst has already broken, and
+	// drops every later row of the same burst as late.
+	t.announceArrival(ctx)
+
 	b0 := time.Now()
 
 	t.lock.Lock()
