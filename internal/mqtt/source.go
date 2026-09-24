@@ -31,7 +31,7 @@ const (
 	ackFlushInterval = 10 * time.Millisecond
 	// ackDrainWait is how long Close waits before disconnecting.
 	// paho.Client.Disconnect does not flush pending manual acks: shutdown
-	// only resets the tracker (paho.golang issue #160 territory). A
+	// resets the ack tracker and drops whatever it held. A
 	// CommitMarks call immediately followed by Close can otherwise race
 	// the flush ticker, so the broker never sees the PUBACK and
 	// redelivers a publish the pipeline already committed.
@@ -183,6 +183,9 @@ func (s *Source) Start() error {
 	if err != nil {
 		return err
 	}
+	// The broker queues for this session only from here on. Anything that
+	// must not publish before SQLFlow can receive it waits for this line.
+	s.logger.Info("mqtt subscribed", zap.Strings("topics", s.cfg.Topics))
 	return nil
 }
 
