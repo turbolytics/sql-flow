@@ -84,6 +84,18 @@
 
 ### Fixed
 
+- A windowed pipeline with `idle_close_seconds` and no `state.path` could
+  close a bucket on the first rows of a burst and drop the rest of that
+  burst as late. Without a state path the handler's rows autocommit as the
+  handler runs, while the arrival clock is stamped only after the sink has
+  flushed and that write is throttled besides, so for up to a second a
+  window manager read a burst's first rows beside the silence they had just
+  ended -- and closed the bucket on an idle bound the burst had already
+  broken. The engine now writes the waking before the rows it woke with can
+  be seen: one extra progress write per waking, none for a stream delivering
+  faster than the write interval, and none for a pipeline with a state path,
+  where the rows and the row already commit together.
+
 - `sqlflow run` validated its `turbostats` block only when `report_to` was
   set. A block `sqlflow validate` rejects could start anyway and serve
   itself at `GET /turbostats/v1`. `sqlflow serve` has always checked its
