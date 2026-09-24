@@ -35,6 +35,7 @@ sink.postgres: {unit: covered, integration: covered, release: not_required}
 sink.retry: {unit: covered, integration: not_required, release: not_required}
 sink.sqlcommand: {unit: covered, integration: not_required, release: not_required}
 source.kafka: {unit: covered, integration: covered, release: covered}
+source.mqtt: {unit: covered, integration: covered, release: not_required}
 source.webhook: {unit: covered, integration: not_required, release: not_required}
 source.websocket: {unit: covered, integration: not_required, release: covered}
 state.corruption: {unit: covered, integration: not_required, release: covered}

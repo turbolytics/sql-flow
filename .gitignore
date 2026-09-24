@@ -25,3 +25,8 @@ dist/
 
 # Memory soak output. The verdict goes in the PR body; the samples are local.
 soak-*/
+
+# MQTT POC run output: the collector ledger and the DuckDB sink.
+dev/iot/data/
+dev/iot/report-*.json
+dev/iot/ceiling.txt

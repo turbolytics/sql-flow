@@ -500,6 +500,12 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 
+			// The source builder never sees batch_size, so the one rule that
+			// needs both runs here, as validate runs it.
+			if err := conf.Pipeline.CheckMQTT(); err != nil {
+				return err
+			}
+
 			src, err := sources.New(
 				conf.Pipeline.Source,
 				logger,

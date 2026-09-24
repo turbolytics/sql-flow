@@ -8,6 +8,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/errs"
 	tkafka "github.com/turbolytics/sql-flow/internal/kafka"
+	tmqtt "github.com/turbolytics/sql-flow/internal/mqtt"
 	"github.com/turbolytics/sql-flow/internal/webhook"
 	"github.com/turbolytics/sql-flow/internal/websocket"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -143,6 +144,27 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		}
 
 		return webhook.NewSource(opts...)
+	},
+
+	"mqtt": func(c config.Source, l *zap.Logger, _ metric.MeterProvider) (core.Source, error) {
+		r, err := c.Mqtt.Resolved()
+		if err != nil {
+			return nil, err
+		}
+		l.Info("initializing mqtt source",
+			zap.String("broker", r.Broker.Redacted()),
+			zap.String("client_id", r.ClientID),
+			zap.Strings("topics", r.Topics),
+			zap.Uint32("session_expiry_seconds", r.SessionExpiry),
+			zap.Uint16("receive_maximum", r.ReceiveMaximum),
+		)
+		return tmqtt.NewSource(tmqtt.Config{
+			Broker:         r.Broker,
+			ClientID:       r.ClientID,
+			Topics:         r.Topics,
+			SessionExpiry:  r.SessionExpiry,
+			ReceiveMaximum: r.ReceiveMaximum,
+		}, tmqtt.WithLogger(l))
 	},
 }
 
