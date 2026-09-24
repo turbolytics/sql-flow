@@ -217,3 +217,36 @@ paho.golang details that constrain the source:
 - `Client.Ack` after its connection closes has undefined results (paho issue #160). Each held publish keeps the `*paho.Client` it arrived on, and the source acknowledges only through the current client.
 
 The window's `sqlcommand` sink runs on its own connection from the same DuckDB instance. `ATTACH` is instance-wide, and `dev/bench/bluesky/demo-10x-sqlcommand.yml` relies on it. The agg config's end-to-end run verifies it for this POC.
+
+## Results
+
+`make mqtt-poc` ran on 2026-09-23 on an Apple M1 Pro with Docker 29.8.0, which gives the VM 10 CPUs and 7.65 GiB. SQLFlow ran the linux/arm64 release image, and the collector published 6 metrics for one device. These are laptop numbers, not Pi numbers.
+
+Every scenario delivered every acknowledged reading:
+
+| Scenario | Acked | Missing | Duplicates | Peak MiB: SQLFlow / Mosquitto / collector |
+|---|---|---|---|---|
+| Steady, 10 min at 1,000/s | 600,000 | 0 | 0 | 78.9 / 4.8 / 14.8 |
+| SQLFlow `kill -9` at 40 s, down 20 s | 120,000 | 0 | 0 | 85.3 / 15.2 / 14.5 |
+| Mosquitto restart at 40 s | 120,000 | 0 | 252 | 53.0 / 4.5 / 16.1 |
+
+The broker restart produced 252 duplicates. At-least-once allows them.
+
+The whole stack peaked under 120 MiB against the 1 GB cap.
+
+While SQLFlow was down, Mosquitto's queue grew from 990 to 10,983 publishes, and its memory went from a 4.5 MiB baseline to 15.2 MiB. That is about 1 KB of broker memory per queued reading. On a 1 GB Pi, 100 MB of queue holds about 100,000 readings, which is 100 s at 1,000/s or about 3 hours at 10/s. Set `max_queued_bytes` from that budget before production.
+
+The ceiling ramp held each rate for 60 s. SQLFlow kept up whenever the broker's queue stayed flat:
+
+| Target rate | Collector achieved | Queue at 30 s / 60 s |
+|---|---|---|
+| 1,000/s | 998/s | 350 / 343 |
+| 2,000/s | 1,997/s | 107 / 251 |
+| 5,000/s | 5,000/s | 1,098 / 1,099 |
+| 10,000/s | 9,626/s | 108 / 75 |
+| 20,000/s | no summary | 66 / 66 |
+
+- **At 10,000/s,** the single-threaded Python collector topped out below its target while the queue stayed flat. The collector is the ceiling, not SQLFlow.
+- **At 20,000/s,** the collector printed no summary before compose stopped it. That step is inconclusive.
+
+A Pi run of the same script gives the real edge numbers.
