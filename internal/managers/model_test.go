@@ -110,6 +110,8 @@ func checkSequence(t *testing.T, seq []Event, fired map[string]int) {
 	// So the run is quiesced instead: the source comes back and the stream
 	// goes quiet, which is the one condition under which every open bucket
 	// must close. Whatever is still open after that was never going to close.
+	// Everything the run reached on its own, before the tail adds to it.
+	body := len(m.Decisions)
 	for _, e := range []Event{{Kind: SourceBack},
 		{Kind: IdleTick}, {Kind: IdleTick}, {Kind: IdleTick}, {Kind: IdleTick}} {
 		for _, p := range m.Apply(e) {
@@ -136,14 +138,35 @@ func checkSequence(t *testing.T, seq []Event, fired map[string]int) {
 	// evidence it rested on. The row must have said the source was
 	// delivering, and for at least the silence the close spent, because a
 	// source cannot confirm a quiet longer than it has been listening.
-	for _, d := range m.Decisions {
-		fired[d.Rule]++
+	for i, d := range m.Decisions {
+		// Only the run's own decisions count as reached. The tail ends every
+		// sequence with a source that is back and a stream going quiet, so
+		// counting it would have the coverage check confirm the tail rather
+		// than the alphabet: with the tail counted, a bound longer than a
+		// sequence can run still shows close.idle as reached, which is the
+		// blindness this check exists to catch.
+		if i < body {
+			fired[d.Rule]++
+		}
 		if d.Action != CloseByIdle {
 			continue
 		}
-		if !d.Delivering || d.DeliveringFor < m.decl.IdleClose {
-			t.Fatalf("%v: closed on %s of silence from a source delivering=%v for %s",
-				kinds(seq), d.Quiet, d.Delivering, d.DeliveringFor)
+		// Against the row's own instants, not the row's own claim. Comparing
+		// the duration with the bound proves only that StateOf honoured the
+		// row; a commit that writes a duration the model's world does not
+		// support passes it unseen, and the row is the half the model exists
+		// to stand in for.
+		truth := d.RowAt.Sub(d.RowSince)
+		switch {
+		case !d.Delivering:
+			t.Fatalf("%v: closed on idleness while the row said the source held nothing",
+				kinds(seq))
+		case d.DeliveringFor != truth:
+			t.Fatalf("%v: the row claims %s of delivering, its own instants say %s",
+				kinds(seq), d.DeliveringFor, truth)
+		case min(d.Quiet, truth) < m.decl.IdleClose:
+			t.Fatalf("%v: closed on %s of silence from a source delivering %s",
+				kinds(seq), d.Quiet, truth)
 		}
 	}
 }

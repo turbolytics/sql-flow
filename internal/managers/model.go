@@ -66,6 +66,14 @@ type Decision struct {
 	Quiet         time.Duration
 	DeliveringFor time.Duration
 	Delivering    bool
+
+	// What the row was computed from, so a reader can recompute the duration
+	// rather than take the row's word for it. Checking DeliveringFor against
+	// the bound alone only proves StateOf honours the row; it cannot see a
+	// row that lies, and a bookkeeping bug in commit is exactly a row that
+	// lies.
+	RowAt    time.Time
+	RowSince time.Time
 }
 
 // Model is one pipeline: its buckets, its watermark, and the three engine
@@ -103,6 +111,10 @@ type Model struct {
 	rowCommit     time.Time
 	rowFor        time.Duration
 	rowDelivering bool
+	// The two instants rowFor was computed from, kept so the property can
+	// recompute it instead of trusting it.
+	rowAt    time.Time
+	rowSince time.Time
 
 	// Decisions is every poll's rule and the facts it read, in order.
 	Decisions []Decision
@@ -157,6 +169,7 @@ func (m *Model) insert(rows int) {
 func (m *Model) commit() {
 	m.rowArrival, m.rowCommit = m.quietSince, m.mono
 	m.rowDelivering = m.delivering
+	m.rowAt, m.rowSince = m.mono, m.deliveringSince
 	m.rowFor = -1
 	if m.delivering && !m.deliveringSince.IsZero() {
 		m.rowFor = m.mono.Sub(m.deliveringSince)
@@ -223,6 +236,7 @@ func (m *Model) poll() []Publication {
 	m.Decisions = append(m.Decisions, Decision{
 		Rule: rule.Name, Action: rule.Action,
 		Quiet: quiet, DeliveringFor: m.rowFor, Delivering: m.rowDelivering,
+		RowAt: m.rowAt, RowSince: m.rowSince,
 	})
 	next, moved := rule.Action.Next(m.decl, newest, m.watermark)
 	if !moved || (m.hadWatermark && !next.After(m.watermark)) {
