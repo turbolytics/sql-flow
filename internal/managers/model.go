@@ -16,8 +16,19 @@ import "time"
 type EventKind string
 
 const (
-	// Arrive is a batch reaching the handler and committing.
+	// Arrive is a batch reaching the handler and committing, the two as one
+	// step. That is what a state path gives: the handler's rows and the
+	// progress row that accounts for them ride the same transaction, so a
+	// manager reading both sees them together or not at all.
 	Arrive EventKind = "arrive"
+	// Insert is the first half of that batch on its own: the rows reach the
+	// window table, where a manager on another connection can see them, and
+	// the commit that accounts for them has not happened yet. Without a state
+	// path that is every batch -- the handler's INSERT autocommits as it
+	// runs, while the arrival clock is stamped after the sink has flushed and
+	// its write is throttled besides -- and a poll landing in between reads
+	// the rows beside the silence they just ended (#374).
+	Insert EventKind = "insert"
 	// IdleTick is a commit with nothing buffered.
 	IdleTick EventKind = "idle_tick"
 	// Restart is the process dying and coming back: in-memory nothing
@@ -121,6 +132,26 @@ func NewModel(decl Declaration) *Model {
 	return m
 }
 
+// insert puts a batch's rows in their buckets, where a reader on another
+// connection can see them. It is the half of a batch that the handler does.
+func (m *Model) insert(rows int) {
+	if !m.delivering {
+		return
+	}
+	m.Produced += rows
+	bucket := m.wall().Truncate(m.decl.Size)
+	// A row for a bucket the watermark has passed is late, and the drop
+	// policy discards it.
+	if m.hadWatermark && !bucket.Add(m.decl.Size).After(m.watermark) {
+		m.Dropped += rows
+	} else {
+		m.buckets[bucket] += rows
+	}
+	// The engine stamps the quiet clock after the sink write, so an arrival
+	// ends whatever quiet was accruing.
+	m.quietSince = m.mono
+}
+
 // commit is a progress write, which is the only moment the row changes and
 // the only moment the loop asks the source anything.
 func (m *Model) commit() {
@@ -143,21 +174,10 @@ func (m *Model) Apply(e Event) []Publication {
 	m.mono = m.mono.Add(time.Second)
 
 	switch e.Kind {
+	case Insert:
+		m.insert(e.Rows)
 	case Arrive:
-		if m.delivering {
-			m.Produced += e.Rows
-			bucket := m.wall().Truncate(m.decl.Size)
-			// A row for a bucket the watermark has passed is late, and the
-			// drop policy discards it.
-			if m.hadWatermark && !bucket.Add(m.decl.Size).After(m.watermark) {
-				m.Dropped += e.Rows
-			} else {
-				m.buckets[bucket] += e.Rows
-			}
-			// The engine stamps the quiet clock after the sink write, so an
-			// arrival ends whatever quiet was accruing.
-			m.quietSince = m.mono
-		}
+		m.insert(e.Rows)
 		m.commit()
 	case IdleTick:
 		m.commit()

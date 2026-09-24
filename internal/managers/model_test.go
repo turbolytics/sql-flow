@@ -171,6 +171,52 @@ func TestManagerWindow_ASourceThatCannotDeliverPublishesNothing(t *testing.T) {
 	assert.Equal(t, 5, m.Drain())
 }
 
+// A burst's first rows, visible before the commit that accounts for them,
+// close the bucket on the silence they ended and take the rest of the burst
+// with them. This is #374, in the model, and it is the interleaving neither
+// layer of this framework could express until Insert existed: Arrive did the
+// handler's write and the progress write as one step, so there was nowhere to
+// put the poll.
+//
+// It asserts the defect rather than the fix, because the defect is what the
+// engine has: #375 fixed it, #377 reverted that to clear main, and the
+// watermark design in 2026-09-24-window-watermark-design.md removes the two
+// separate facts this depends on. When that lands, this test inverts -- the
+// burst survives, and the sequence below becomes indistinguishable from the
+// one above it.
+func TestManagerWindow_RowsSeenBeforeTheirCommitCloseTheBucketEarly(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	m := NewModel(modelDecl())
+
+	// A bucket, then silence long enough to close it: the ordinary path.
+	m.Apply(Event{Kind: Arrive, Rows: 2})
+	for i := 0; i < 3; i++ {
+		m.Apply(Event{Kind: IdleTick})
+	}
+	// The stream moves on two minutes, so the burst lands in a new bucket
+	// rather than the closed one.
+	m.Apply(Event{Kind: ClockStep, By: 2 * time.Minute})
+
+	// The burst. Its first rows are visible; the row still confirms the
+	// silence they just ended.
+	published := 0
+	for _, p := range m.Apply(Event{Kind: Insert, Rows: 5}) {
+		published += p.Rows
+	}
+	assert.Equal(t, 5, published)
+
+	// And the rest of the same burst is behind the watermark that close just
+	// moved, so it is late.
+	before := m.Dropped
+	m.Apply(Event{Kind: Insert, Rows: 10})
+	assert.Equal(t, before+10, m.Dropped)
+
+	// Ten of the fifteen rows the burst produced, gone, with the bucket
+	// published from the five that happened to be committed first.
+	assert.Equal(t, 17, m.Produced)
+	assert.Equal(t, 10, m.Dropped)
+}
+
 // The same silence from a source that is back does close, once it has been
 // back longer than the bound.
 func TestManagerWindow_ASourceThatIsBackClosesOnIdleness(t *testing.T) {
