@@ -26,6 +26,12 @@ func TestCliRollupRun_HealthzRulesInOrder(t *testing.T) {
 			"failed", http.StatusServiceUnavailable, "no database round trip for 46s"},
 		{"failed beats standby", snapshot{Role: roleStandby, LastContact: now.Add(-time.Hour)},
 			"failed", http.StatusServiceUnavailable, "no database round trip for 3600s"},
+		{"failed beats drift", snapshot{Role: roleLeader, LastContact: now.Add(-time.Hour), DriftTables: []string{"posts_by_lang_15m"}, DriftBuckets: 1},
+			"failed", http.StatusServiceUnavailable, "no database round trip for 3600s"},
+		{"drift", snapshot{Role: roleLeader, LastContact: now, DriftTables: []string{"posts_by_lang_15m", "posts_total_15m"}, DriftBuckets: 3},
+			"degraded", http.StatusOK, "3 buckets differ from the tables they are built from, in posts_by_lang_15m, posts_total_15m"},
+		{"drift beats backfilling", snapshot{Role: roleLeader, LastContact: now, PendingTables: 1, DriftTables: []string{"posts_by_lang_15m"}, DriftBuckets: 1},
+			"degraded", http.StatusOK, "1 buckets differ from the tables they are built from, in posts_by_lang_15m"},
 		{"standby", snapshot{Role: roleStandby, LastContact: now},
 			"standby", http.StatusOK, "another instance holds the leader lock"},
 		{"backfilling", snapshot{Role: roleLeader, LastContact: now, PendingTables: 2, Filling: "posts_by_lang_5m", Remaining: 36 * time.Hour},
@@ -34,7 +40,9 @@ func TestCliRollupRun_HealthzRulesInOrder(t *testing.T) {
 			"backfilling", http.StatusOK, "1 tables to fill"},
 		{"starting", snapshot{Role: roleStarting, LastContact: now},
 			"starting", http.StatusOK, "installing and taking the leader lock"},
-		{"healthy", snapshot{Role: roleLeader, LastContact: now},
+		{"a new leader that has not read its tables to fill", snapshot{Role: roleLeader, LastContact: now},
+			"starting", http.StatusOK, "reading the tables to fill"},
+		{"healthy", snapshot{Role: roleLeader, LastContact: now, PendingRead: true},
 			"healthy", http.StatusOK, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {

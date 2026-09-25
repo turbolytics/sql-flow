@@ -19,6 +19,10 @@ type instruments struct {
 	backfillBuckets metric.Int64Counter
 	backfillBusy    metric.Int64Counter
 	chunkDuration   metric.Float64Histogram
+	verifyBuckets   metric.Int64Counter
+	driftBuckets    metric.Int64Counter
+	verifyDuration  metric.Float64Histogram
+	newestBucket    metric.Float64Gauge
 	errors          metric.Int64Counter
 	leaderAcquired  metric.Int64Counter
 }
@@ -39,8 +43,25 @@ func newInstruments(mp metric.MeterProvider) (*instruments, error) {
 		metric.WithDescription("One backfill chunk's transaction"), metric.WithUnit("s")); err != nil {
 		return nil, err
 	}
+	if in.verifyBuckets, err = m.Int64Counter("rollup_verify_buckets",
+		metric.WithDescription("Buckets recomputed and compared")); err != nil {
+		return nil, err
+	}
+	if in.driftBuckets, err = m.Int64Counter("rollup_drift_buckets",
+		metric.WithDescription("Buckets that differed from the table they are built from")); err != nil {
+		return nil, err
+	}
+	if in.verifyDuration, err = m.Float64Histogram("rollup_verify_duration",
+		metric.WithDescription("One verify pass"), metric.WithUnit("s")); err != nil {
+		return nil, err
+	}
+	if in.newestBucket, err = m.Float64Gauge("rollup_newest_bucket_timestamp",
+		metric.WithDescription("The start of the newest bucket of each table and of the source, in Unix seconds"),
+		metric.WithUnit("s")); err != nil {
+		return nil, err
+	}
 	if in.errors, err = m.Int64Counter("rollup_errors",
-		metric.WithDescription("Errors by phase: install, backfill or lock")); err != nil {
+		metric.WithDescription("Errors by phase: install, backfill, verify, observe or lock")); err != nil {
 		return nil, err
 	}
 	if in.leaderAcquired, err = m.Int64Counter("rollup_leader_acquired",

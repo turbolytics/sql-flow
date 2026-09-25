@@ -2,6 +2,7 @@ system.batch.internal
 system.internal.unexpected
 system.lifecycle.drain_incomplete
 system.lifecycle.internal
+system.rollup.drift
 system.rollup.internal
 system.rollup.unreachable
 system.sink.internal

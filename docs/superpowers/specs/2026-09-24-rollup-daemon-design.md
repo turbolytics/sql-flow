@@ -436,9 +436,18 @@ through a full outer join on the table's key.
   the recomputed row exists and the stored one does not.
 - **Each edge is checked alone.** A table is compared with the table it is
   built from, never with the source, so a report names the broken edge.
+- **Rows pair on the table's key through `GROUP BY`** over both sides, not a
+  full join. Postgres refuses a full join on `IS NOT DISTINCT FROM`, and
+  grouping treats `NULL` dimension values as equal, as the unique index
+  does.
+- **A table still filling is skipped**, with every table its chunks'
+  upserts reach. It differs from its source by design until the fill
+  completes, and checking it would report `degraded` during every backfill.
 
-The loop checks the newest two buckets of every table. `sqlflow rollup
-verify` checks every bucket since `--since`.
+The loop checks the newest two buckets of every table. The newest is the
+later of the table's newest and the newest its from table makes, so a table
+whose trigger stopped is checked where it trails. `sqlflow rollup verify`
+checks every bucket since `--since`, a day of whole buckets per statement.
 
 ### Shutdown
 
@@ -536,6 +545,7 @@ restart. The first matching rule wins.
 | `degraded` | 200 | The last verify pass found drift |
 | `standby` | 200 | Another instance holds the leader lock |
 | `backfilling` | 200 | A backfill is running. The reason names the tables left and the source history left in the one filling. |
+| `starting` | 200 | The process is installing and taking the leader lock, or it leads and has not yet read which tables need filling. Before that read, no pending tables means unknown, not none. |
 | `healthy` | 200 | None of the above |
 
 ### TurboStats
@@ -726,7 +736,7 @@ tests stay, because the trigger SQL does not change.
 | `LeaderHandoff` | Only the leader backfills. After its lock connection drops, the standby leads within two observe intervals |
 | `TwoInstallsAtOnce` | Four concurrent installs succeed, and the objects exist once |
 | `DriftIsReported` | After `DISABLE TRIGGER` and a write, drift names the table and bucket, and `/healthz` reports `degraded` |
-| `VerifyUnderConcurrentWritesReportsNoDrift` | A verify loop beside four writers for 60 seconds reports no drift |
+| `VerifyUnderConcurrentWritesReportsNoDrift` | A verify loop beside four writers for 20 seconds reports no drift |
 | `ReconcileKeepsRemovedTables` | Removing a grain keeps its table and triggers, and restoring it needs no backfill |
 | `ChangedMeasureTypeRefused` | The daemon stops with `user.config.rollup_change`, and no DDL runs |
 | `OneStoreIDForTwoHostnames` | Two DSNs that reach one server by different names report one `store_id` |
@@ -835,7 +845,10 @@ the control repository's launch freeze to lift.
 | A chunk writes progress over an entry that moved | An install re-creates a table, and a chunk begun before it skips the history the new table lacks | `AChunkWritesNoProgressOverAMovedEntry` |
 | Adoption misreads an existing table | A trigger writes into a mismatched column, the pipeline's write fails, and the worker restart-loops | `AdoptionRefusesAMismatchedTable` |
 | Verify reads across two snapshots | Drift reported on correct rows, and `/healthz` stuck at `degraded` | `VerifyUnderConcurrentWritesReportsNoDrift` |
-| Verify compares doubles exactly | The same, for every `numeric: double` sum | A unit test that sums doubles in two orders |
+| Verify compares doubles exactly | The same, for every `numeric: double` sum: compared exactly, 4 of 12 correct buckets read as drift on 2026-09-25, because the trigger and the recompute sum in different orders | `ANullDimensionAndADoubleSumVerifyClean`, `OnlyADoubleSumMatchesWithinATolerance` |
+| Verify pairs rows on `=` | A `NULL` dimension value reads as a missing row and an extra one | `ANullDimensionAndADoubleSumVerifyClean` |
+| Verify checks a table still filling | `/healthz` reports `degraded` during every backfill | `VerifySkipsTablesStillFilling` |
+| A new leader reports before it reads its tables to fill | `/healthz` says `healthy` over empty tables, and a deploy check passes | `TheDaemonInstallsAndFillsHistory`, which fails once the verify pass widens that window |
 | Reconcile refuses a removal | A rollback fails every entrypoint that runs `install`, and the API goes down | `ReconcileKeepsRemovedTables` |
 | `store_id` differs between reporters | Control shows one table twice, each half as fresh | `OneStoreIDForTwoHostnames` |
 | The test clone keeps `CHECK` constraints | The generated workload fails on a correct declaration | `RollupTestCommand` on the Render template's `metrics_1m` |
