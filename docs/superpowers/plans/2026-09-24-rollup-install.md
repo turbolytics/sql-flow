@@ -2562,3 +2562,30 @@ gh pr view feat/rollup-install --repo turbolytics/sql-flow --json state,baseRefN
 ```
 
 Expected: `OPEN` and `main`.
+
+---
+
+## After the final review
+
+The whole-branch review of #380 found one Critical and four Important defects, three of them dictated by this plan. The code on #380 differs from the plan text above in these places. Plan 2 builds on the code, not on the text.
+
+- **Lock order (Task 2, Task 5).** `install` locks every source `IN SHARE ROW EXCLUSIVE MODE`, in name order, before its objects script. Without it, install deadlocked beside a live writer in 34 of 40 runs. `PostgresObjects` still takes no lock of its own.
+- **Lock timeout and retries (Task 5).** `installLockTimeout`, 2 seconds, is set with `SET LOCAL lock_timeout` after the install lock. `Install` makes up to three attempts on `55P03` or `40P01`.
+- **Isolation (Task 5).** `installOnce` begins with `pgx.TxOptions{IsoLevel: pgx.ReadCommitted}`.
+- **Source dimensions (Task 3).** `sameSource` compares table, time column and grain only.
+- **Retained tables (Tasks 3–5).** `State.Retained` and `Plan.Retain` are `[]RetainedTable{Table, Set, Grain, From, Shape}`. `PlanChange` takes `[]RetainedTable` and refuses a retained table declared again in another shape. `nextState` keeps a retained table's pending backfill.
+- **Coverage (Task 1).** Adding a feature also needs its row in `docs/coverage/status/features.yml`, not only `make coverage-page`.
+
+A second review (Fable) found no Critical defects and two Important ones, fixed on #380:
+
+- **Dependency lock order.** `lockOrder` locks a source that another declared rollup builds after that rollup's source, with name order as the tie break. `InstallReport.Attempts` records the retries a lock wait or a deadlock cost.
+- **Dropped retained tables.** `install` removes the record and pending backfill of a retained table that no longer exists, and reports it in `RollupInstall.Dropped`.
+
+It measured install at 19 to 34 ms, with the source locked for about 3 ms and no data row read, on a 1.3-million-row source.
+
+Carried to Plan 2:
+
+- Backfill fills declared tables only, and skips the pending entries of retained ones.
+- `DriftIsReported` must disable the trigger after install: `CREATE OR REPLACE TRIGGER` re-enables a disabled one.
+- Retry logic needs finer error codes than `system.rollup.internal`.
+- Align the spec or the code on the backfill-target rule: the code marks a new table whose from table exists, and the spec says whose from table's backfill is complete.

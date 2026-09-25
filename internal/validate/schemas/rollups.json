@@ -2,6 +2,67 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://turbolytics.io/schemas/rollups.json",
   "properties": {
+    "store": {
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "postgres"
+          ],
+          "description": "The kind of database. postgres is the only one this version runs."
+        },
+        "postgres": {
+          "properties": {
+            "dsn": {
+              "type": "string",
+              "description": "A libpq connection string or URL. It carries a password, so render it\nfrom an environment variable. There is no default: a daemon without a\ndatabase fails at startup rather than writing somewhere else."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "dsn"
+          ],
+          "description": "The Postgres the tables live in. Required when type is postgres."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "description": "Where the rollup tables live. `sqlflow rollup run`, `install` and\n`verify` connect to it. ddl, serve, check and test never read it, so a\ntest run cannot reach this database."
+    },
+    "turbostats": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID is the operator's name for this instance. The receiver files a\nbundle under it, so reporting without one cannot be filed at all."
+        },
+        "report_to": {
+          "type": "string",
+          "description": "ReportTo is where bundles are posted. Empty means reporting is off,\nwhich is the ordinary case for an instance with no control plane."
+        },
+        "key": {
+          "type": "string",
+          "description": "Key is the credential the control plane issued. It is the private half\nof an Ed25519 keypair and belongs in an environment variable, which the\ntemplate renders in."
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "description": "IntervalSeconds is how often to report. Absent means the default."
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Labels are the operator's own, copied into every report, so a fleet\ncan be filtered by region, tenant or environment.\n\nAt most 10. A key is lower case, starts with a letter, and is at most\n32 characters of [a-z0-9_]. A value is at most 64 characters. A key\nthe bundle already carries is refused: id, name, version, commit,\narch, config_hash, source_type, sink_type, handler_type.\n\nThey are fixed for the life of the process: a receiver stores a series\nper field, and a set that changed mid-run would split one instance's\nhistory in two."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "Where this instance reports itself: the block `sqlflow run` and\n`sqlflow serve` take."
+    },
     "rollups": {
       "items": {
         "properties": {

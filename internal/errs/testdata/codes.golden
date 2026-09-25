@@ -2,6 +2,8 @@ system.batch.internal
 system.internal.unexpected
 system.lifecycle.drain_incomplete
 system.lifecycle.internal
+system.rollup.internal
+system.rollup.unreachable
 system.sink.internal
 system.sink.unreachable
 system.sink.write_failed
@@ -15,6 +17,7 @@ user.config.invalid
 user.config.not_found
 user.config.parse_failed
 user.config.rollup
+user.config.rollup_change
 user.config.rollup_drift
 user.config.serve_dataset
 user.config.serve_reserved

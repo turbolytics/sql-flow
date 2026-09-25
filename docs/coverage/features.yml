@@ -218,6 +218,12 @@ features:
     description: Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted.
     requires: [unit, integration]
 
+  # The daemon that manages rollup tables: install, run and verify. The
+  # release level joins with the image test for `sqlflow rollup run`.
+  - id: cli.rollup_run
+    description: Installs, backfills, checks and reports on the rollup tables a rollups file declares.
+    requires: [unit, integration]
+
   # The template is YAML, SQL and shell, so what it promises under concurrency
   # is tested from Go against its migrations, in internal/rendertemplate.
   - id: template.render
