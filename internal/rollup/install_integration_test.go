@@ -354,3 +354,51 @@ func TestIntegrationRollupRun_InstallCreatesTablesInTheCurrentSchema(t *testing.
 	execSQL(t, conn, "INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-15T10:01:00Z', 'en', 5)")
 	assert.Equal(t, int64(5), count(t, conn, "SELECT posts FROM posts_by_lang_1d"))
 }
+
+// waitForLockWait returns once the backend pid is waiting on a lock.
+func waitForLockWait(t *testing.T, conn *pgx.Conn, pid uint32) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting bool
+		assert.NoError(t, conn.QueryRow(context.Background(),
+			"SELECT coalesce(bool_or(NOT granted), false) FROM pg_locks WHERE pid = $1", int(pid)).Scan(&waiting))
+		if waiting {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("backend %d never waited on a lock", pid)
+}
+
+// A deploy runs install beside a live pipeline. A writer locks the source,
+// then its statement's triggers lock the rollup tables; install must take
+// them in the same order or the two deadlock.
+func TestIntegrationRollupRun_InstallBesideAWriterMidTransaction(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	mustInstall(t, srv.conn, loadExample(t))
+
+	w := connectIn(t, srv.dsn, "UTC")
+	execSQL(t, w, "BEGIN")
+	execSQL(t, w, "LOCK TABLE posts_per_minute_by_lang IN ROW EXCLUSIVE MODE")
+
+	inst := connectIn(t, srv.dsn, "UTC")
+	conf := loadExample(t)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := Install(ctx, inst, conf, "test")
+		errc <- err
+	}()
+	waitForLockWait(t, srv.conn, inst.PgConn().PID())
+
+	_, werr := w.Exec(ctx, "INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-15T10:01:00Z', 'en', 5)")
+	assert.NoError(t, werr)
+	execSQL(t, w, "COMMIT")
+	assert.NoError(t, <-errc)
+	assertGrainsEqualSource(t, srv.conn)
+}

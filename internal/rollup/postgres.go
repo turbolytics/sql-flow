@@ -34,9 +34,10 @@ func PostgresDDL(conf *config.RollupsConf) (string, error) {
 }
 
 // PostgresObjects writes one rollup's tables, unique indexes, functions and
-// triggers: what `sqlflow rollup install` applies. It holds no lock on the
-// source and fills nothing, because install fills in chunks from `run`
-// instead of in the migration's one transaction.
+// triggers: what `sqlflow rollup install` applies. The script takes no lock
+// of its own and fills nothing: Install locks the source first, in the
+// writers' order, and `run` fills in chunks instead of in the migration's
+// one transaction.
 func PostgresObjects(r config.Rollup) (string, error) {
 	if err := checkNames(r); err != nil {
 		return "", err

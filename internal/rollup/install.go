@@ -43,9 +43,9 @@ type RollupInstall struct {
 // does.
 //
 // It runs in one transaction on conn, because Postgres DDL is transactional:
-// a violation or an error leaves the database as it was. The transaction
-// takes the source's trigger lock for its DDL only, never for a backfill, so
-// a pipeline's write waits milliseconds.
+// a violation or an error leaves the database as it was. It locks each
+// source before any rollup table, the order a pipeline's write takes them
+// in, and holds the lock for the DDL only, never for a backfill.
 func Install(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, version string) (*InstallReport, error) {
 	if err := conf.CheckError(); err != nil {
 		return nil, err
@@ -139,6 +139,21 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 	}
 	if len(violations) > 0 {
 		return nil, violationError(violations)
+	}
+
+	// A writer locks the source, then its statement's triggers lock the
+	// rollup tables. CREATE UNIQUE INDEX IF NOT EXISTS locks a rollup table
+	// even when the index exists, so an install that reached the tables
+	// first deadlocked beside a live writer, and lost. Taking every source
+	// first, in name order, puts install in the writers' order.
+	sources := map[string]bool{}
+	for _, p := range todo {
+		sources[p.r.Source.Table] = true
+	}
+	for _, src := range sortedKeys(sources) {
+		if _, err := tx.Exec(ctx, "LOCK TABLE "+quote(src)+" IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+			return nil, installError(err, "lock source "+src)
+		}
 	}
 
 	report := &InstallReport{}
