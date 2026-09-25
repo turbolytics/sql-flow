@@ -22,13 +22,19 @@ func withStore(t *testing.T, dsn string) string {
 	return path
 }
 
-func TestCliRollupRun_InstallIsHiddenUntilRunExists(t *testing.T) {
+// install and run are the daemon's two commands, listed now that run can
+// backfill what install creates.
+func TestCliRollupRun_InstallAndRunAreListed(t *testing.T) {
 	coverage.Covers(t, "cli.rollup_run")
 
-	install, _, err := NewCommand().Find([]string{"install"})
+	out, _, err := run(t, "--help")
 	assert.NoError(t, err)
-	assert.Equal(t, "install", install.Name())
-	assert.True(t, install.Hidden)
+	for _, name := range []string{"install", "run"} {
+		cmd, _, err := NewCommand().Find([]string{name})
+		assert.NoError(t, err)
+		assert.False(t, cmd.Hidden)
+		assert.That(t, strings.Contains(out, "\n  "+name+" "))
+	}
 }
 
 func TestCliRollupRun_InstallRefusesAnEmptyDSN(t *testing.T) {
