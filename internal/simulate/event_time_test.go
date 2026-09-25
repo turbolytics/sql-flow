@@ -44,12 +44,20 @@ func TestSimulate_ARowForAClosedBucketIsDropped(t *testing.T) {
 		Poll{},
 		// Back in the bucket that just closed.
 		Produce{Partition: 0, Rows: 6, At: base.Add(30 * time.Second)},
+		// The manager collects late rows on a poll that moves the watermark,
+		// not on every poll, so the run has to reach a close for the drop to
+		// have happened. Without this the count is whatever the timing gave:
+		// six without -race and four with it.
+		Elapse{By: 30 * time.Second},
+		IdleTick{},
 		Poll{},
 	})
 
 	assert.Equal(t, 15, r.Produced)
-	// The first nine close or stay open; the six that went back to a closed
-	// bucket are gone, which is what late_rows drop promises.
+	// The six that went back to a closed bucket are gone, which is what
+	// late_rows drop promises. How the surviving nine split between
+	// published and still open depends on whether the closing idle tick
+	// lands before the run stops, so only the loss is pinned.
 	assert.Equal(t, int64(6), r.LateDropped)
 }
 
@@ -75,21 +83,23 @@ func TestSimulate_AFastPartitionClosesASlowOnesBuckets(t *testing.T) {
 		// which the fast partition has just closed underneath it.
 		Produce{Partition: 1, Rows: 5, At: base.Add(45 * time.Second)},
 		Poll{},
+		// A close at the end, so late collection has certainly happened:
+		// the manager collects on a poll that moves the watermark, not on
+		// every poll.
+		Elapse{By: 30 * time.Second},
+		IdleTick{},
+		Poll{},
 	})
 
 	assert.Equal(t, 15, r.Produced)
-	// The early bucket closes holding only what had arrived when the fast
-	// partition dragged the stream past it: six of the eleven rows that
-	// belong to it.
-	assert.Equal(t, int64(6), r.Published)
 	if r.LateDropped == 0 {
 		t.Fatal("nothing was lost to the fast partition: the watermark is per " +
 			"partition now, so invert this test and assert every row is accounted for")
 	}
-	// How many are lost depends on when the manager collects late rows, which
-	// is tied to a close rather than to the poll. That is worth pinning on its
-	// own; what this scenario pins is that a partition racing ahead in event
-	// time costs a slower one rows at all.
+	// The slow partition's whole later share, lost because a partition it
+	// shares no data with moved the stream past the bucket they were both
+	// filling.
+	assert.Equal(t, int64(5), r.LateDropped)
 }
 
 // One row whose event time is years ahead advances the stream past every open
@@ -108,18 +118,22 @@ func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {
 		// The stream carries on where it actually is, and is now late.
 		Produce{Partition: 0, Rows: 7, At: base.Add(90 * time.Second)},
 		Poll{},
+		// A close at the end, so late collection has certainly happened:
+		// the manager collects on a poll that moves the watermark, not on
+		// every poll.
+		Elapse{By: 30 * time.Second},
+		IdleTick{},
+		Poll{},
 	})
 
 	assert.Equal(t, 13, r.Produced)
-	// Five published, and the stream that followed the bad row is mostly
-	// gone: one record from a device with a wrong clock took the rest with
-	// it.
-	assert.Equal(t, int64(5), r.Published)
 	if r.LateDropped == 0 {
 		t.Fatal("the stream survived a timestamp from 2099: the assigner refuses " +
 			"out-of-range event times now, so invert this test")
 	}
-	assert.That(t, r.LateDropped >= 6)
+	// Every row that arrived after the bad one, gone. One record from a
+	// device with a wrong clock took the rest of the stream with it.
+	assert.Equal(t, int64(7), r.LateDropped)
 }
 
 // Replay: every event delivered twice produces the same published totals as
