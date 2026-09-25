@@ -32,27 +32,80 @@ func windowDeclaration(table config.TableSQL) managers.Declaration {
 	}
 }
 
-// progressOptions is run's wiring of the progress row: the store, and
-// whether idle ticks write it. They do only where a window closes on
-// idleness, because that is the only reader of the row between batches; a
-// pipeline with no such window does no accounting while it waits. Wired
-// backwards in either direction it fails silently, so it is one function
-// with a test of both shapes rather than a line in root.go.
-func progressOptions(conf *config.Conf, store core.ProgressSaver) []core.TurbineOption {
-	return []core.TurbineOption{
-		core.WithProgressStore(store),
-		core.WithQuietConfirmation(conf.HasIdleClose()),
+// windowSpecs is what the engine asserts a watermark for: every table
+// with a window, with the durations its block declares.
+func windowSpecs(conf *config.Conf) []core.WindowSpec {
+	if conf.Tables == nil {
+		return nil
 	}
+	var specs []core.WindowSpec
+	for _, table := range conf.Tables.SQL {
+		if table.Window == nil {
+			continue
+		}
+		d := windowDeclaration(table)
+		specs = append(specs, core.WindowSpec{
+			Name: d.Table, Size: d.Size, Grace: d.Grace, IdleClose: d.IdleClose,
+		})
+	}
+	return specs
 }
 
-// initWindowStores creates sqlflow_windows on the pipeline's connection,
-// under autocommit, so the DDL commits on its own the way the offsets and
-// progress tables' does. Nothing to do for a pipeline with no window.
+// windowOptions is run's wiring of the watermark: the tracker the engine
+// observes records into and asserts from, and the store it writes through
+// on the pipeline's connection, so the assertion rides each batch's
+// transaction where there is one. Nothing for a pipeline with no window,
+// whose idle ticks then write nothing at all. Wired wrong in either
+// direction it fails silently, so it is one function with a test of both
+// shapes rather than a line in root.go.
+func windowOptions(conf *config.Conf, conn adbc.Connection) (*core.Watermarks, []core.TurbineOption) {
+	specs := windowSpecs(conf)
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	w := core.NewWatermarks(specs, time.Now)
+	return w, []core.TurbineOption{core.WithWindows(w, core.NewWatermarkStore(conn))}
+}
+
+// restoreWindows seeds the tracker with what a restart left behind: the
+// newest bucket each window's table holds, so a quiet stream's last buckets
+// still close by idleness when this process has seen none of their rows,
+// and the watermark last asserted, so the first assertion cannot land below
+// it. Called once the tables exist.
+func restoreWindows(ctx context.Context, conf *config.Conf, conn adbc.Connection, w *core.Watermarks) error {
+	if w == nil {
+		return nil
+	}
+	store := core.NewWatermarkStore(conn)
+	for _, table := range conf.Tables.SQL {
+		if table.Window == nil {
+			continue
+		}
+		newest, _, err := core.NewestBucketStart(ctx, conn, table.Name, table.Window.TimeColumn)
+		if err != nil {
+			return errs.Wrap(errs.CodeStateInternal, err, "table %q: reading its newest bucket", table.Name)
+		}
+		asserted, _, err := store.Load(ctx, table.Name)
+		if err != nil {
+			return errs.Wrap(errs.CodeStateInternal, err, "table %q: reading its watermark", table.Name)
+		}
+		w.Restore(table.Name, newest, asserted)
+	}
+	return nil
+}
+
+// initWindowStores creates sqlflow_windows and sqlflow_watermarks on the
+// pipeline's connection, under autocommit, so the DDL commits on its own
+// the way the offsets and progress tables' does. Nothing to do for a
+// pipeline with no window.
 func initWindowStores(ctx context.Context, conf *config.Conf, conn adbc.Connection) error {
 	if !conf.HasWindow() {
 		return nil
 	}
-	return managers.NewStore(conn).Init(ctx)
+	if err := managers.NewStore(conn).Init(ctx); err != nil {
+		return err
+	}
+	return core.NewWatermarkStore(conn).Init(ctx)
 }
 
 // buildManagedTables constructs a watermark manager per table that declares

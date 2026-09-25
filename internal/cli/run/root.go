@@ -292,8 +292,11 @@ func NewCommand() *cobra.Command {
 
 			// State wiring. Everything below is skipped for a pipeline with no
 			// state path, which then behaves exactly as it did before.
+			// The watermark tracker, for a pipeline that windows. Restored
+			// from the tables below, once they exist.
+			watermarks, windowOpts := windowOptions(conf, conn)
 			var (
-				turbineOpts = progressOptions(conf, progressStore)
+				turbineOpts = append([]core.TurbineOption{core.WithProgressStore(progressStore)}, windowOpts...)
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)
@@ -589,6 +592,11 @@ func NewCommand() *cobra.Command {
 			managedTables, closeWindowConns, err := buildManagedTables(ctx, conf, db, l,
 				meterProvider, budget, retryEvents)
 			if err != nil {
+				return err
+			}
+			// The window tables exist by now; seed the tracker with what they
+			// hold and what was last asserted for them.
+			if err := restoreWindows(ctx, conf, conn, watermarks); err != nil {
 				return err
 			}
 			// Registered before the managers' own deferred block, so it runs

@@ -221,19 +221,18 @@ func (w *Watermarks) hold(k partitionKey, now time.Time) {
 	w.parts[k] = &partitionState{heldSince: now}
 }
 
-// Observe records a placed record's event time. Only the engine's placement
-// rule decides what reaches here: a record it refused advances nothing, which
-// is what keeps one wrong clock from closing every window (#358). A zero is
-// a source that stamps nothing, and moves nothing either; such a pipeline
-// closes by idleness alone.
+// Observe records a placed record. Its event time moves the partition's
+// newest; its arrival, whatever it carries, is activity, so a partition
+// delivering records is never idle. Only the engine's placement rule decides
+// what reaches here: a record it refused advances nothing, which is what
+// keeps one wrong clock from closing every window (#358). A zero is a
+// source that stamps nothing: activity, but no event time to move, so such
+// a pipeline closes by idleness alone.
 //
 // A record from a partition not yet held is taken as held from now. A fetch
 // buffered before a revocation can deliver one; taking it is the late
 // direction, since it can only add a term to the minimum.
 func (w *Watermarks) Observe(topic string, partition int32, atNanos int64) {
-	if atNanos <= 0 {
-		return
-	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	now := w.now()
@@ -249,11 +248,11 @@ func (w *Watermarks) Observe(topic string, partition int32, atNanos int64) {
 	s.lastRow = now
 }
 
-// Advance computes every window's watermark and returns the ones that
-// moved, with their new value. The caller writes them; the tracker treats
-// a returned value as asserted, so a write that fails should be followed by
-// a rollback of the batch it rode with rather than a retry here.
-func (w *Watermarks) Advance() map[string]time.Time {
+// Next computes every window's watermark and returns the ones that would
+// move, with their new value. Nothing is recorded until Commit: the caller
+// writes them in the batch's transaction, and a batch that rolls back
+// leaves the tracker where it was, so the next commit asserts them again.
+func (w *Watermarks) Next() map[string]time.Time {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	now := w.now()
@@ -263,9 +262,27 @@ func (w *Watermarks) Advance() map[string]time.Time {
 		if !ok || next <= w.stored[spec.Name] {
 			continue
 		}
-		w.stored[spec.Name] = next
 		moved[spec.Name] = time.Unix(0, next).UTC()
 	}
+	return moved
+}
+
+// Commit records watermarks as asserted, once their write has committed.
+// Monotonic here too: a value below what is stored is ignored.
+func (w *Watermarks) Commit(moved map[string]time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for name, at := range moved {
+		if n := at.UnixNano(); n > w.stored[name] {
+			w.stored[name] = n
+		}
+	}
+}
+
+// Advance is Next then Commit, for a caller with no transaction to ride.
+func (w *Watermarks) Advance() map[string]time.Time {
+	moved := w.Next()
+	w.Commit(moved)
 	return moved
 }
 
