@@ -258,7 +258,7 @@ milliseconds, and never for a backfill.
 | A new SQLFlow version | Replace every function and trigger. The tables do not change. |
 | A removed rollup, grain or dimension set | Keep its tables and triggers. Log a warning that names them. Move them to `retained`. |
 | A changed measure type, dimension list, grain `from`, or source | Stop with `user.config.rollup_change` and the YAML path. |
-| A measure added to an existing dimension set | Stop with `user.config.rollup_change`. Declare a new dimension set instead. |
+| A measure added to or removed from an existing dimension set | Stop with `user.config.rollup_change`. A removed measure's column would go stale in every stored row. Declare a new dimension set instead. |
 | A declared table that is in `retained` | Move it back. Its triggers never stopped, so it needs no backfill. |
 
 Backfill targets are the new tables built from the source, or from a table
