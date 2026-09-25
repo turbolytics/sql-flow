@@ -165,6 +165,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_5m needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_5m:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '5 minutes', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -196,6 +197,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_15m needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_15m:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '15 minutes', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -227,6 +229,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_1h needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_1h:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '1 hours', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -258,6 +261,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_6h needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_6h:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '6 hours', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -289,6 +293,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_1d needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_1d:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '24 hours', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -320,6 +325,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_total_5m needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_total_5m:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '5 minutes', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -351,6 +357,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_total_15m needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_total_15m:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '15 minutes', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -382,6 +389,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_total_1h needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_total_1h:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '1 hours', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -413,6 +421,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_total_6h needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_total_6h:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '6 hours', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;
@@ -444,6 +453,7 @@ BEGIN
     RAISE EXCEPTION 'sqlflow rollup metrics_total_1d needs READ COMMITTED, not %', current_setting('transaction_isolation');
   END IF;
   IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('sqlflow_rollup:metrics', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended('metrics_total_1d:' || extract(epoch FROM touched.b)::bigint, 0))
     FROM (SELECT DISTINCT date_bin(INTERVAL '24 hours', "bucket", TIMESTAMPTZ '2000-01-01 00:00:00+00') AS b FROM changed ORDER BY 1) AS touched;
   END IF;

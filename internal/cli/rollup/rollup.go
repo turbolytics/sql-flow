@@ -16,12 +16,13 @@ import (
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rollup",
-		Short: "Generate rollup tables and the serve datasets that read them",
+		Short: "Declare rollup tables, keep them filled, and generate the serve datasets that read them",
 		Long: "Generate, from a rollups file, the migration that creates rollup tables and the " +
-			"triggers that keep them current, and the serve datasets that read them. " +
-			"check fails when a committed copy of either has drifted from the file.",
+			"triggers that keep them current, and the serve datasets that read them. install " +
+			"applies the tables and triggers itself, and run keeps them installed and fills " +
+			"their history. check fails when a committed copy of a generated file has drifted.",
 	}
-	cmd.AddCommand(newDDLCommand(), newServeCommand(), newCheckCommand(), newInstallCommand())
+	cmd.AddCommand(newDDLCommand(), newServeCommand(), newCheckCommand(), newInstallCommand(), newRunCommand())
 	return cmd
 }
 

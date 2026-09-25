@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -290,10 +291,22 @@ func withoutLocks(script string) string {
 	return out
 }
 
+// keyedOnText also drops the rollup's lock, which serializes writers by
+// itself, so the case measures the bucket key alone.
 func keyedOnText(script string) string {
 	out := strings.ReplaceAll(script, "extract(epoch FROM touched.b)::bigint", "touched.b::text")
 	if out == script {
 		panic("no epoch lock key in the script; the generator's lock SQL changed")
+	}
+	return withoutRollupLock(out)
+}
+
+var rollupLock = regexp.MustCompile(`    PERFORM pg_advisory_xact_lock\(hashtextextended\('sqlflow_rollup:[a-z0-9_]+', 0\)\);\n`)
+
+func withoutRollupLock(script string) string {
+	out := rollupLock.ReplaceAllString(script, "")
+	if out == script {
+		panic("no rollup lock in the script; the generator's lock SQL changed")
 	}
 	return out
 }
@@ -518,5 +531,58 @@ func TestIntegrationRollup_CountBuckets(t *testing.T) {
 
 	assert.Equal(t, int64(3), count(t, srv.conn, "SELECT minutes FROM posts_total_1d"))
 	assert.Equal(t, int64(6), count(t, srv.conn, "SELECT posts FROM posts_total_1d"))
+	assertGrainsEqualSource(t, srv.conn)
+}
+
+// randomMinutes is a flush of 20 minutes at random across three days from
+// start, in four languages. Against history in three of them, a flush both
+// inserts and updates.
+func randomMinutes(rng *rand.Rand, start time.Time) []minute {
+	langs := []string{"en", "ja", "de", "pt"}
+	rows := make([]minute, 20)
+	for j := range rows {
+		rows[j] = minute{
+			start.Add(time.Duration(rng.Intn(3*24*60)) * time.Minute),
+			langs[rng.Intn(len(langs))], int32(1 + rng.Intn(50)),
+		}
+	}
+	return rows
+}
+
+// An upsert fires each rollup trigger twice, for its inserted and its
+// updated rows, and each pass locks its buckets in order. Writers whose
+// flushes span several buckets lock them in opposite orders and deadlock:
+// 13 to 24 of 120 statements from two writers on 2026-09-25. Every trigger
+// takes its rollup's lock first, so writers take turns instead.
+func TestIntegrationRollup_ConcurrentWritersNeverDeadlock(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
+	mustInstall(t, srv.conn, loadExample(t))
+	fillAll(t, srv.conn, loadExample(t))
+
+	start := at("2026-09-10T00:00:00Z")
+	var wg sync.WaitGroup
+	errc := make(chan error, 160)
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(seed))
+			for i := 0; i < 40; i++ {
+				if err := flushMinutes(srv.dsn, randomMinutes(rng, start)); err != nil {
+					errc <- err
+				}
+			}
+		}(int64(w + 1))
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Errorf("a writer failed beside another: %v", err)
+	}
 	assertGrainsEqualSource(t, srv.conn)
 }

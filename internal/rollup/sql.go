@@ -153,8 +153,16 @@ func groupBy(n int) string {
 // writers in two zones would lock two keys for one bucket. The migration's
 // backfill sets sqlflow.rollup_backfill: it holds the source table's lock, and
 // a lock per bucket of a long history would exhaust the lock table.
-func lockSQL(table string, width time.Duration, timeColumn string) string {
+//
+// The rollup's lock comes first. An upsert fires the trigger twice, for its
+// inserted and its updated rows, and each pass locks its own buckets. Two
+// writers whose passes lock buckets in opposite orders deadlock; behind the
+// rollup's lock they take turns. The lock is taken after the statement has
+// written its rows, which is safe while each writer transaction writes the
+// source once, as the Postgres sink does.
+func lockSQL(rollup, table string, width time.Duration, timeColumn string) string {
 	return "  IF current_setting('sqlflow.rollup_backfill', true) IS DISTINCT FROM 'on' THEN\n" +
+		"    PERFORM pg_advisory_xact_lock(hashtextextended('" + rollupKey(rollup) + "', 0));\n" +
 		"    PERFORM pg_advisory_xact_lock(hashtextextended('" + table + ":' || extract(epoch FROM touched.b)::bigint, 0))\n" +
 		"    FROM (SELECT DISTINCT " + bin(width, quote(timeColumn)) + " AS b FROM changed ORDER BY 1) AS touched;\n" +
 		"  END IF;\n"

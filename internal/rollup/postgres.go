@@ -178,7 +178,7 @@ BEGIN
 %[4]s
   RETURN NULL;
 END $fn$;
-`, quote(fn), table, lockSQL(table, g.Width, r.Source.TimeColumn), indent(upsert.String(), "  "))
+`, quote(fn), table, lockSQL(r.Name, table, g.Width, r.Source.TimeColumn), indent(upsert.String(), "  "))
 
 	for _, ev := range []struct{ suffix, event string }{{"ins", "INSERT"}, {"upd", "UPDATE"}} {
 		fmt.Fprintf(b, "CREATE OR REPLACE TRIGGER %s\n  AFTER %s ON %s\n  REFERENCING NEW TABLE AS changed\n  FOR EACH STATEMENT EXECUTE FUNCTION %s();\n",
