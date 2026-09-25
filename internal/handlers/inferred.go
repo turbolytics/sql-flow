@@ -35,6 +35,9 @@ type InferredMemBatchHandler struct {
 	// Parallel to rawBatch, populated only when the source supplies
 	// provenance; empty for sources that do not.
 	metadata []core.Message
+	// exposesEventTime is whether the batch gains an event_time column; off,
+	// the batch's shape is what it was before the column existed.
+	exposesEventTime bool
 
 	alloc      memory.Allocator
 	conn       adbc.Connection
@@ -78,6 +81,12 @@ func NewInferredMemBatchHandler(
 }
 
 type InferredMemBatchHandlerOption func(*InferredMemBatchHandler)
+
+// InferredMemBatchWithEventTime adds the event_time column to the batch
+// when any record carries an assigned time; see handlers.WithEventTime.
+func InferredMemBatchWithEventTime(on bool) InferredMemBatchHandlerOption {
+	return func(h *InferredMemBatchHandler) { h.exposesEventTime = on }
+}
 
 func InferredMemBatchWithLogger(l *zap.Logger) InferredMemBatchHandlerOption {
 	return func(h *InferredMemBatchHandler) {
@@ -166,7 +175,7 @@ func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, erro
 	if err != nil {
 		return nil, fmt.Errorf("schema inference: %w", err)
 	}
-	schema = withMetadataFields(schema, anyMetadata(meta), anyEventTime(meta))
+	schema = withMetadataFields(schema, anyMetadata(meta), h.exposesEventTime && anyEventTime(meta))
 
 	record, err := buildRecord(h.alloc, schema, raw, meta)
 	if err != nil {
