@@ -103,6 +103,10 @@ const (
 	CodeDrainIncomplete   Code = "system.lifecycle.drain_incomplete"
 	CodeLifecycleInternal Code = "system.lifecycle.internal"
 
+	// The rollup daemon and install. A domain of its own, so a supervisor
+	// can tell the rollup process's failures from a pipeline's.
+	CodeRollupInternal Code = "system.rollup.internal"
+
 	// The last resort. CodeOf returns it for an error carrying no code, so an
 	// unclassified failure still reports as ours rather than the user's.
 	CodeInternalUnexpected Code = "system.internal.unexpected"
@@ -157,6 +161,11 @@ var registry = map[Code]Definition{
 		CodeConfigRollupDrift,
 		"A migration or serve dataset generated from a rollups file differs from what the file generates now.",
 		"Regenerate it with `sqlflow rollup ddl` or `sqlflow rollup serve` instead of editing it by hand.",
+	},
+	CodeRollupInternal: {
+		CodeRollupInternal,
+		"A rollup command failed on a database error it could not classify. Nothing it began was committed.",
+		"Read the wrapped database error. Retry once the database is healthy; if it repeats, report it with the message.",
 	},
 	CodeConfigRollupChange: {
 		CodeConfigRollupChange,
