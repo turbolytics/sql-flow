@@ -61,8 +61,8 @@ type Publication struct {
 // the rows a run published cannot fail on a close that came early, so the
 // evidence each close rested on is kept for the property to read.
 type Decision struct {
-	Rule          string
-	Action        Action
+	Rule   string
+	Action Action
 	Quiet  time.Duration
 	// The source as the loop saw it at the commit this row came from, and
 	// the two instants that say how long it had been delivering. The row
