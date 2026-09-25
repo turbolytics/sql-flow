@@ -71,6 +71,18 @@ func AppliedFrom(r config.Rollup) Applied {
 	return out
 }
 
+// RetainedTable is a table a later declaration removed, and the shape that
+// built it: its dimension set, its grain and the grain it was built from.
+// Declaring it again is checked against the shape, because its stored rows
+// were merged that way.
+type RetainedTable struct {
+	Table string     `json:"table"`
+	Set   string     `json:"set"`
+	Grain string     `json:"grain"`
+	From  string     `json:"from"`
+	Shape AppliedSet `json:"shape"`
+}
+
 // sortedCopy is never nil, so an empty list stores as [] and not null.
 func sortedCopy(in []string) []string {
 	out := append([]string{}, in...)

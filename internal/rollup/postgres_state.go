@@ -22,7 +22,8 @@ const stateDDL = `CREATE TABLE IF NOT EXISTS sqlflow_rollup_state (
   -- Each table still being filled, and the start of the oldest source day
   -- filled so far: null before the first chunk.
   backfill        JSONB       NOT NULL DEFAULT '{}',
-  -- Tables a later declaration removed. Their triggers still run.
+  -- Tables a later declaration removed, each with the shape that built it.
+  -- Their triggers still run, and a pending backfill stays pending.
   retained        JSONB       NOT NULL DEFAULT '[]'
 )`
 
@@ -37,7 +38,7 @@ type State struct {
 	// Backfill maps each table still being filled to the start of the oldest
 	// source day filled so far, and to nil before the first chunk.
 	Backfill map[string]*time.Time
-	Retained []string
+	Retained []RetainedTable
 }
 
 // querier is a connection or a transaction.
@@ -98,7 +99,7 @@ func writeState(ctx context.Context, q querier, s State) error {
 		s.Backfill = map[string]*time.Time{}
 	}
 	if s.Retained == nil {
-		s.Retained = []string{}
+		s.Retained = []RetainedTable{}
 	}
 	decl, err := json.Marshal(s.Declaration)
 	if err != nil {

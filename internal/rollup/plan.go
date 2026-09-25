@@ -18,9 +18,9 @@ type Plan struct {
 	// `sqlflow rollup run` fills them.
 	Backfill []string
 	// Retain lists the tables of a grain or dimension set the file no longer
-	// declares. They keep their rows and their triggers, so a rollback to
-	// the previous file loses nothing.
-	Retain []string
+	// declares, with the shape that built each. They keep their rows and
+	// their triggers, so a rollback to the previous file loses nothing.
+	Retain []RetainedTable
 	// Restore lists retained tables the file declares again. Their triggers
 	// never stopped, so they need no backfill.
 	Restore []string
@@ -41,7 +41,7 @@ const changeRemedy = "declare a new rollup or dimension set for the new shape"
 // missing holds each declared table that does not exist yet, and retained
 // the state row's retained tables. A change that would corrupt stored rows
 // is a violation, and the plan is empty.
-func PlanChange(r config.Rollup, path []string, prev *Applied, retained []string, missing map[string]bool) (Plan, []config.Violation) {
+func PlanChange(r config.Rollup, path []string, prev *Applied, retained []RetainedTable, missing map[string]bool) (Plan, []config.Violation) {
 	var plan Plan
 	es := edges(r)
 	if prev == nil {
@@ -52,13 +52,13 @@ func PlanChange(r config.Rollup, path []string, prev *Applied, retained []string
 		}
 		return plan, nil
 	}
-	if v := changes(r, path, *prev); len(v) > 0 {
+	if v := append(changes(r, path, *prev), restoreChanges(r, path, retained)...); len(v) > 0 {
 		return Plan{}, v
 	}
 
 	kept := map[string]bool{}
 	for _, t := range retained {
-		kept[t] = true
+		kept[t.Table] = true
 	}
 	declared := map[string]bool{}
 	for _, e := range es {
@@ -75,7 +75,9 @@ func PlanChange(r config.Rollup, path []string, prev *Applied, retained []string
 	for _, set := range sortedKeys(prev.DimensionSets) {
 		for _, g := range sortedKeys(prev.Grains) {
 			if t := set + "_" + g; !declared[t] && !kept[t] {
-				plan.Retain = append(plan.Retain, t)
+				plan.Retain = append(plan.Retain, RetainedTable{
+					Table: t, Set: set, Grain: g, From: prev.Grains[g], Shape: prev.DimensionSets[set],
+				})
 			}
 		}
 	}
@@ -136,6 +138,50 @@ func changes(r config.Rollup, path []string, prev Applied) []config.Violation {
 // source: the table, its time column and its grain. source.dimensions is
 // left out. Only the file's rules and serve read it, so adding one, to group
 // a new set by, changes no stored row.
+// restoreChanges returns a violation for each retained table the file
+// declares again in another shape: its set's dimensions or measures, or its
+// grain's from. The table's rows were merged the old way, and the triggers
+// would merge new rows the new way into the same table. One violation per
+// set and per grain, however many of their tables are retained.
+func restoreChanges(r config.Rollup, path []string, retained []RetainedTable) []config.Violation {
+	old := map[string]RetainedTable{}
+	for _, t := range retained {
+		old[t.Table] = t
+	}
+	next := AppliedFrom(r)
+	var out []config.Violation
+	sets, grains := map[int]bool{}, map[string]bool{}
+	for _, e := range edges(r) {
+		t, ok := old[e.Table]
+		if !ok {
+			continue
+		}
+		if !sameSet(t.Shape, next.DimensionSets[e.Set.Name]) && !sets[e.SetIndex] {
+			sets[e.SetIndex] = true
+			out = append(out, config.Violation{
+				Code: errs.CodeConfigRollupChange,
+				Path: yamlPath(path, "dimension_sets", strconv.Itoa(e.SetIndex)),
+				Message: fmt.Sprintf("rollup %s dimension set %s: retained table %s was built with other dimensions or measures, and its stored rows were merged that way; %s",
+					r.Name, e.Set.Name, e.Table, changeRemedy),
+			})
+		}
+		if t.From != e.Grain.From && !grains[e.Grain.Name] {
+			grains[e.Grain.Name] = true
+			out = append(out, config.Violation{
+				Code: errs.CodeConfigRollupChange,
+				Path: yamlPath(path, "grains", e.Grain.Name, "from"),
+				Message: fmt.Sprintf("rollup %s grain %s: retained table %s was built from %s, not %s, and its triggers read the old one; %s",
+					r.Name, e.Grain.Name, e.Table, t.From, e.Grain.From, changeRemedy),
+			})
+		}
+	}
+	return out
+}
+
+func sameSet(a, b AppliedSet) bool {
+	return slices.Equal(a.Dimensions, b.Dimensions) && maps.Equal(a.Measures, b.Measures)
+}
+
 func sameSource(a, b AppliedSource) bool {
 	return a.Table == b.Table && a.TimeColumn == b.TimeColumn && a.Grain == b.Grain
 }

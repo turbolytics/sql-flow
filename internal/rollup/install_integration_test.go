@@ -36,7 +36,10 @@ func TestIntegrationRollupRun_TheStateRowRoundTrips(t *testing.T) {
 	want := State{
 		Rollup: "posts", Declaration: AppliedFrom(exampleRollup(t)), Version: "test",
 		Backfill: map[string]*time.Time{"posts_by_lang_5m": nil, "posts_total_5m": &day},
-		Retained: []string{"posts_by_lang_7d"},
+		Retained: []RetainedTable{{
+			Table: "posts_by_lang_7d", Set: "posts_by_lang", Grain: "7d", From: "1d",
+			Shape: AppliedFrom(exampleRollup(t)).DimensionSets["posts_by_lang"],
+		}},
 	}
 	assert.NoError(t, writeState(ctx, srv.conn, want))
 
@@ -271,8 +274,8 @@ func TestIntegrationRollupRun_InstallKeepsARemovedGrain(t *testing.T) {
 	}
 	got := mustInstall(t, srv.conn, rollback).Rollups[0]
 	retained := []string{"posts_by_lang_1d", "posts_total_1d"}
-	assert.DeepEqual(t, retained, got.Plan.Retain)
-	assert.DeepEqual(t, retained, stateOf(t, srv.conn, "posts").Retained)
+	assert.DeepEqual(t, retained, tableNames(got.Plan.Retain))
+	assert.DeepEqual(t, retained, tableNames(stateOf(t, srv.conn, "posts").Retained))
 
 	// The retained tables keep their triggers, so they stay current.
 	writeMinutes(t, srv.dsn, minute{at("2026-09-15T10:01:00Z"), "en", 5})
@@ -514,4 +517,31 @@ func TestIntegrationRollupRun_FourInstallsUnderARepeatableReadDefault(t *testing
 		assert.NoError(t, <-errc)
 	}
 	assert.Equal(t, int64(1), count(t, srv.conn, "SELECT count(*) FROM sqlflow_rollup_state"))
+}
+
+// Render runs the old and the new instance side by side during a deploy, so
+// a file can go back and forth. A backfill still pending must survive it.
+func TestIntegrationRollupRun_ARollbackAndRollForwardKeepAPendingBackfill(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	mustInstall(t, srv.conn, loadExample(t))
+	withWeek := func() *config.RollupsConf {
+		conf := loadExample(t)
+		conf.Rollups[0].Grains["7d"] = config.RollupGrain{From: "1d"}
+		return conf
+	}
+
+	assert.DeepEqual(t, []string{"posts_by_lang_7d", "posts_total_7d"}, mustInstall(t, srv.conn, withWeek()).Rollups[0].Plan.Backfill)
+	mustInstall(t, srv.conn, loadExample(t))
+	restored := mustInstall(t, srv.conn, withWeek()).Rollups[0]
+	assert.DeepEqual(t, []string{"posts_by_lang_7d", "posts_total_7d"}, restored.Plan.Restore)
+
+	backfill := stateOf(t, srv.conn, "posts").Backfill
+	for _, table := range []string{"posts_by_lang_7d", "posts_total_7d"} {
+		_, pending := backfill[table]
+		assert.True(t, pending)
+	}
 }

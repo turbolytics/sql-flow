@@ -25,6 +25,14 @@ func appliedOf(r config.Rollup) *Applied {
 	return &a
 }
 
+func tableNames(rs []RetainedTable) []string {
+	var out []string
+	for _, r := range rs {
+		out = append(out, r.Table)
+	}
+	return out
+}
+
 func setMeasure(r *config.Rollup, set int, name string, m config.RollupMeasure) {
 	r.DimensionSets[set].Measures[name] = m
 }
@@ -127,7 +135,7 @@ func TestCliRollupRun_ARemovedGrainIsRetainedAndRestoredWhenDeclaredAgain(t *tes
 
 	plan, v := PlanChange(without, pathInFile, appliedOf(full), nil, map[string]bool{})
 	assert.Equal(t, 0, len(v))
-	assert.DeepEqual(t, []string{"posts_by_lang_1d", "posts_total_1d"}, plan.Retain)
+	assert.DeepEqual(t, []string{"posts_by_lang_1d", "posts_total_1d"}, tableNames(plan.Retain))
 	assert.Equal(t, 0, len(plan.Backfill))
 
 	// Its triggers never stopped, so declaring it again fills nothing.
@@ -206,5 +214,50 @@ func TestCliRollupRun_AnAddedSourceDimensionIsNoChange(t *testing.T) {
 
 	plan, v := PlanChange(r, pathInFile, prev, nil, map[string]bool{})
 	assert.Equal(t, 0, len(v))
+	assert.DeepEqual(t, Plan{}, plan)
+}
+
+func withPeak(r config.Rollup, measure config.RollupMeasure) config.Rollup {
+	r.DimensionSets = append(slices.Clone(r.DimensionSets), config.RollupDimensionSet{
+		Name: "posts_peak", Dimensions: []string{"lang"},
+		Measures: map[string]config.RollupMeasure{"peak": measure},
+	})
+	return r
+}
+
+// A retained table's rows were merged the way its old shape said. Declaring
+// it again in another shape would mix two kinds of row in one table.
+func TestCliRollupRun_ARetainedSetDeclaredAgainInAnotherShapeIsRefused(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+
+	max := withPeak(exampleRollup(t), config.RollupMeasure{Type: "max", Column: "posts"})
+	without := exampleRollup(t)
+	plan, v := PlanChange(without, pathInFile, appliedOf(max), nil, map[string]bool{})
+	assert.Equal(t, 0, len(v))
+	assert.Equal(t, 5, len(plan.Retain))
+
+	min := withPeak(exampleRollup(t), config.RollupMeasure{Type: "min", Column: "posts"})
+	plan, v = PlanChange(min, pathInFile, appliedOf(without), plan.Retain, map[string]bool{})
+	assert.Equal(t, 1, len(v))
+	assert.Equal(t, errs.CodeConfigRollupChange, v[0].Code)
+	assert.Equal(t, "rollups.0.dimension_sets.2", strings.Join(v[0].Path, "."))
+	assert.DeepEqual(t, Plan{}, plan)
+}
+
+func TestCliRollupRun_ARetainedGrainDeclaredAgainFromAnotherGrainIsRefused(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+
+	full := exampleRollup(t)
+	without := exampleRollup(t)
+	delete(without.Grains, "1d")
+	plan, v := PlanChange(without, pathInFile, appliedOf(full), nil, map[string]bool{})
+	assert.Equal(t, 0, len(v))
+
+	again := exampleRollup(t)
+	again.Grains["1d"] = config.RollupGrain{From: "1h"}
+	plan, v = PlanChange(again, pathInFile, appliedOf(without), plan.Retain, map[string]bool{})
+	assert.Equal(t, 1, len(v))
+	assert.Equal(t, errs.CodeConfigRollupChange, v[0].Code)
+	assert.Equal(t, "rollups.0.grains.1d.from", strings.Join(v[0].Path, "."))
 	assert.DeepEqual(t, Plan{}, plan)
 }

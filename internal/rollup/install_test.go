@@ -15,14 +15,14 @@ func TestCliRollupRun_NextStateKeepsProgressAndMovesRetainedTables(t *testing.T)
 	prev := &State{
 		Rollup:   "posts",
 		Backfill: map[string]*time.Time{"posts_by_lang_5m": &day, "posts_by_lang_1d": nil},
-		Retained: []string{"posts_by_lang_7d", "posts_total_7d"},
+		Retained: []RetainedTable{{Table: "posts_by_lang_7d"}, {Table: "posts_total_7d"}},
 	}
 	p := planned{
 		r:    exampleRollup(t),
 		prev: prev,
 		plan: Plan{
 			Backfill: []string{"posts_by_lang_1h"},
-			Retain:   []string{"posts_by_lang_1d"},
+			Retain:   []RetainedTable{{Table: "posts_by_lang_1d"}},
 			Restore:  []string{"posts_by_lang_7d"},
 		},
 	}
@@ -33,8 +33,9 @@ func TestCliRollupRun_NextStateKeepsProgressAndMovesRetainedTables(t *testing.T)
 	assert.That(t, s.Backfill["posts_by_lang_5m"].Equal(day))
 	_, pending := s.Backfill["posts_by_lang_1h"]
 	assert.True(t, pending)
-	// A retained table is no longer filled: nothing declares it.
+	// A retained table keeps a backfill still pending, so declaring it again
+	// finds it unfilled rather than silently complete.
 	_, filling := s.Backfill["posts_by_lang_1d"]
-	assert.False(t, filling)
-	assert.DeepEqual(t, []string{"posts_total_7d", "posts_by_lang_1d"}, s.Retained)
+	assert.True(t, filling)
+	assert.DeepEqual(t, []string{"posts_total_7d", "posts_by_lang_1d"}, tableNames(s.Retained))
 }

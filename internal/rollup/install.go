@@ -171,7 +171,7 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 		}
 
 		var prevApplied *Applied
-		var retained []string
+		var retained []RetainedTable
 		if prev != nil {
 			prevApplied, retained = &prev.Declaration, prev.Retained
 		}
@@ -244,7 +244,7 @@ func nextState(p planned, version string) State {
 			s.Backfill[t] = done
 		}
 		for _, t := range p.prev.Retained {
-			if !slices.Contains(p.plan.Restore, t) {
+			if !slices.Contains(p.plan.Restore, t.Table) {
 				s.Retained = append(s.Retained, t)
 			}
 		}
@@ -254,11 +254,10 @@ func nextState(p planned, version string) State {
 	for _, t := range p.plan.Backfill {
 		s.Backfill[t] = nil
 	}
-	// A retained table is no longer filled: nothing declares it.
-	for _, t := range p.plan.Retain {
-		delete(s.Backfill, t)
-		s.Retained = append(s.Retained, t)
-	}
+	// A retained table keeps a backfill still pending. `run` fills only
+	// declared tables, and a table declared again must still read as
+	// unfilled, not as complete.
+	s.Retained = append(s.Retained, p.plan.Retain...)
 	return s
 }
 
