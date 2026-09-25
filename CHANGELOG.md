@@ -4,6 +4,19 @@
 
 ### Added
 
+- `sqlflow rollup install` and `sqlflow rollup run` keep the rollup tables a
+  rollups file declares, where `sqlflow rollup ddl` printed a migration to
+  apply by hand.
+  - `install` creates the tables, functions and triggers in one transaction,
+    and refuses a change that would corrupt stored rows: a measure's type, a
+    set's dimensions, a grain's `from`. A removed grain keeps its tables, so
+    a rollback loses nothing.
+  - `run` installs, takes a leader lock, and fills history in chunks, newest
+    day first, beside a live pipeline. A chunk takes the triggers' own bucket
+    locks without ever waiting on them, so it cannot deadlock a writer. A
+    second instance stands by and takes over when the leader's session ends.
+  - `rollups.yml` gains `store` and `turbostats` blocks. `run --metrics
+    prometheus` serves `/metrics` and `/healthz` on `:8000`.
 - The TurboStats bundle says how far behind the stream a pipeline runs, in
   time rather than in messages: `event_lag_seconds`, `event_lag_max_seconds`,
   `event_lag_observed_at` and `event_lag_basis` in the `pipeline` section.

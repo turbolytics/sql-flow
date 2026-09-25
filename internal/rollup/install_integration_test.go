@@ -417,8 +417,11 @@ func withLockTimeout(t *testing.T, d time.Duration) {
 }
 
 // While install waits for the source, the pipeline's next writes queue
-// behind it. A write left open must fail the install, not stall the
-// pipeline until someone ends that transaction.
+// behind it. A transaction left open on the source must fail the install,
+// not stall the pipeline until someone ends it. The open transaction holds
+// the source's write lock without writing: a write would also hold its
+// rollup's lock, which holds up every other write to the rollup whatever
+// install does.
 func TestIntegrationRollupRun_InstallGivesUpOnALockRatherThanStallThePipeline(t *testing.T) {
 	coverage.Covers(t, "cli.rollup_run")
 	if testing.Short() {
@@ -431,7 +434,7 @@ func TestIntegrationRollupRun_InstallGivesUpOnALockRatherThanStallThePipeline(t 
 
 	open := connectIn(t, srv.dsn, "UTC")
 	execSQL(t, open, "BEGIN")
-	execSQL(t, open, "INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-15T10:01:00Z', 'en', 5)")
+	execSQL(t, open, "LOCK TABLE posts_per_minute_by_lang IN ROW EXCLUSIVE MODE")
 
 	ictx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -444,8 +447,8 @@ func TestIntegrationRollupRun_InstallGivesUpOnALockRatherThanStallThePipeline(t 
 	}()
 	waitForLockWait(t, srv.conn, inst.PgConn().PID())
 
-	// The pipeline's next write still lands. It is on the next day, so it
-	// shares no bucket, and no bucket lock, with the open write at any grain.
+	// The pipeline's next write still lands once install gives up its place
+	// in the source's lock queue.
 	w := connectIn(t, srv.dsn, "UTC")
 	execSQL(t, w, "SET statement_timeout = '3s'")
 	execSQL(t, w, "INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-16T11:01:00Z', 'ja', 3)")
