@@ -10,7 +10,7 @@ const WindowsTable = "sqlflow_windows"
 // EngineTables is every table the engine keeps for itself in the state
 // database. The stats endpoint leaves them out of the user's tables, and a
 // window declaration may not name one.
-var EngineTables = []string{offsetsTable, progressTable, WindowsTable}
+var EngineTables = []string{offsetsTable, progressTable, WindowsTable, WatermarksTable}
 
 // IsEngineTable reports whether a name is one of EngineTables or the batch
 // table a handler stages into.
