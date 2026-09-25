@@ -297,6 +297,10 @@ func NewCommand() *cobra.Command {
 				statsFn     statsFunc
 				storedMarks *core.Marks
 			)
+			// A pipeline that windows refuses a record whose event time it
+			// cannot place, because a window is what such a record damages;
+			// see core.WithEventTimePlacement.
+			turbineOpts = append(turbineOpts, core.WithEventTimePlacement(conf.HasWindow()))
 			if statePath != "" {
 				// Both calls are returned as-is. They already carry a code, and
 				// the outermost code wins: re-wrapping either as

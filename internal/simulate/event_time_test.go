@@ -180,31 +180,34 @@ func TestSimulate_AFastPartitionClosesASlowOnesBuckets(t *testing.T) {
 // One row whose event time is years ahead advances the stream past every open
 // bucket, closes them all, and makes everything after it late.
 //
-//	step         event time     bucket        window table         watermark
-//	----------------------------------------------------------------------------
-//	Produce 5    12:00:30       12:00         12:00: 5             -
-//	Produce 1    2099-01-01     2099-01-01    12:00: 5, 2099: 1    -
-//	               ^ one device with a wrong clock, or one bad field
-//	Poll         -              -             2099: 1              2098-12-31
-//	                                                               23:59
-//	               ^ grace close on the newest bucket it can see, which is
-//	                 now in 2099. Every real bucket ends before that, so
-//	                 12:00 publishes and the watermark is 73 years ahead
-//	                 of the stream.
-//	Produce 7    12:01:30       12:01         12:01: 7, 2099: 1    2098-12-31
-//	               ^ the stream carries on where it actually is, and every
-//	                 row of it is now behind the watermark: late on arrival
-//	Poll, Elapse, IdleTick, Poll               empty               2099-01-01
-//	               ^ the 7 are collected and dropped. One bad row cost the
-//	                 pipeline every record that followed it.
+//	step         event time     bucket        window table   watermark
+//	----------------------------------------------------------------------
+//	Produce 5    12:00:30       12:00         12:00: 5       -
+//	Produce 1    2099-01-01     (refused)     12:00: 5       -
+//	               ^ one device with a wrong clock, or one bad field. The
+//	                 engine cannot place an event time ahead of its own
+//	                 clock, so the record never reaches the handler, never
+//	                 enters the table, and never touches the watermark.
+//	Poll         -              -             12:00: 5       -
+//	               ^ nothing to close: one bucket, nothing past it
+//	Produce 7    12:01:30       12:01         12:00: 5, 12:01: 7
+//	               ^ the stream carries on where it actually is, and it is
+//	                 not late, because nothing moved
+//	Poll, Elapse, IdleTick, Poll               empty          12:02
+//	               ^ the idle close publishes both buckets, all 12 rows.
+//	                 The bad record cost the pipeline exactly itself.
 //
-// This is #358, reproduced end to end rather than against hand-written rows:
-// one device with a fast clock makes a whole fleet's records disappear. The
-// issue notes the fleets most exposed are the ones least able to prevent it,
-// the gateways with no battery-backed clock that boot to a fixed epoch.
+// This is #358, reproduced end to end rather than against hand-written rows.
+// Before the engine placed event time, that one record dragged the watermark
+// 73 years ahead and every correctly stamped row after it was dropped as
+// late: one device with a fast clock emptied a fleet's stream. The fleets
+// most exposed were the ones least able to prevent it, the gateways with no
+// battery-backed clock that boot to a fixed epoch.
 //
-// Asserts the defect: the watermark design refuses a timestamp outside the
-// engine's bounds, so it advances nothing.
+// The record is refused before the handler, not held in the table: it is
+// not late, because no earlier publication of its bucket exists to amend,
+// and it is not open, because no watermark this engine computes will reach
+// it. Unplaceable, so discarded, and counted in messages_unplaceable_total.
 func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -224,13 +227,11 @@ func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {
 	})
 
 	assert.Equal(t, 13, r.Produced)
-	if r.LateDropped == 0 {
-		t.Fatal("the stream survived a timestamp from 2099: the assigner refuses " +
-			"out-of-range event times now, so invert this test")
-	}
-	// Every row that arrived after the bad one, gone. One record from a
-	// device with a wrong clock took the rest of the stream with it.
-	assert.Equal(t, int64(7), r.LateDropped)
+	// Every honest row published; the only row unaccounted for is the
+	// dishonest one, refused before it could reach the table.
+	assert.Equal(t, int64(12), r.Published)
+	assert.Equal(t, int64(0), r.StillOpen)
+	assert.Equal(t, int64(1), r.LateDropped)
 }
 
 // Replay: the same rows delivered twice.

@@ -84,6 +84,21 @@
 
 ### Fixed
 
+- One record stamped in the future no longer empties a windowed stream
+  (#358). A windowing pipeline now refuses a record whose event time it
+  cannot place -- before 2020, or ahead of the engine's own clock -- before
+  the handler sees it, so it never reaches a window table and never moves a
+  watermark. Before this, one device with a fast clock dragged the watermark
+  past real time and every correctly stamped record after it was dropped as
+  late; a reproduction lost 7 of 12 honest rows to a single bad one. The
+  refused record is consumed and counted in `messages_unplaceable_total`,
+  with one warning per run naming the event time and the engine's clock.
+  The rule reads the host's clock, so a gateway with no real-time clock that
+  boots near 1970 would refuse every correctly stamped record until it
+  syncs; that deployment needs an explicit option, which this does not add.
+  A pipeline with no window keeps every record: it has nothing for a wrong
+  timestamp to damage.
+
 - `sqlflow run` validated its `turbostats` block only when `report_to` was
   set. A block `sqlflow validate` rejects could start anyway and serve
   itself at `GET /turbostats/v1`. `sqlflow serve` has always checked its
