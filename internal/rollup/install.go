@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/errs"
 )
@@ -16,6 +18,12 @@ import (
 // installLock serializes installs. Every entrypoint of a deploy can run
 // install at once, and CREATE TABLE IF NOT EXISTS is not safe against itself.
 const installLock = "SELECT pg_advisory_xact_lock(hashtextextended('sqlflow_rollup_install', 0))"
+
+// installLockTimeout bounds each lock wait after the install lock. While
+// install waits for a source, the pipeline's next writes queue behind it,
+// so a transaction left open on the source fails the install quickly
+// rather than stall the pipeline until someone ends it.
+var installLockTimeout = 2 * time.Second
 
 // InstallReport says what one install did.
 type InstallReport struct {
@@ -50,6 +58,33 @@ func Install(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, vers
 	if err := conf.CheckError(); err != nil {
 		return nil, err
 	}
+	for attempt := 1; ; attempt++ {
+		report, err := installOnce(ctx, conn, conf, version)
+		if err == nil || attempt == installAttempts || !retryable(err) {
+			return report, err
+		}
+		// Let the writers queued behind this attempt run before the next.
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(time.Duration(attempt) * 100 * time.Millisecond):
+		}
+	}
+}
+
+// installAttempts is how many times Install tries before it gives up on a
+// lock it could not get within installLockTimeout, or on a deadlock
+// Postgres broke by cancelling it.
+const installAttempts = 3
+
+// retryable reports a lock wait that timed out or a deadlock. Both clear when
+// the other transaction ends, so another attempt can succeed.
+func retryable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "40P01")
+}
+
+func installOnce(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, version string) (*InstallReport, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, installError(err, "begin")
@@ -87,7 +122,11 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 		return nil, errs.New(errs.CodeConfigInvalid,
 			"rollup install: no schema on the connection's search_path exists, so there is nowhere to create the rollup tables")
 	}
-	for _, stmt := range []string{installLock, stateDDL} {
+	// The lock timeout is set after the install lock, because lock_timeout
+	// bounds an advisory lock's wait too, and an install should queue behind
+	// another install for as long as it takes.
+	lockTimeout := fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", installLockTimeout.Milliseconds())
+	for _, stmt := range []string{installLock, lockTimeout, stateDDL} {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return nil, installError(err, "prepare")
 		}

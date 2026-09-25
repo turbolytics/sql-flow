@@ -5,12 +5,14 @@ package rollup
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -400,5 +402,85 @@ func TestIntegrationRollupRun_InstallBesideAWriterMidTransaction(t *testing.T) {
 	assert.NoError(t, werr)
 	execSQL(t, w, "COMMIT")
 	assert.NoError(t, <-errc)
+	assertGrainsEqualSource(t, srv.conn)
+}
+
+// withLockTimeout shortens install's lock wait for one test.
+func withLockTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	was := installLockTimeout
+	installLockTimeout = d
+	t.Cleanup(func() { installLockTimeout = was })
+}
+
+// While install waits for the source, the pipeline's next writes queue
+// behind it. A write left open must fail the install, not stall the
+// pipeline until someone ends that transaction.
+func TestIntegrationRollupRun_InstallGivesUpOnALockRatherThanStallThePipeline(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	mustInstall(t, srv.conn, loadExample(t))
+	withLockTimeout(t, 200*time.Millisecond)
+
+	open := connectIn(t, srv.dsn, "UTC")
+	execSQL(t, open, "BEGIN")
+	execSQL(t, open, "INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-15T10:01:00Z', 'en', 5)")
+
+	ictx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	inst := connectIn(t, srv.dsn, "UTC")
+	conf := loadExample(t)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := Install(ictx, inst, conf, "test")
+		errc <- err
+	}()
+	waitForLockWait(t, srv.conn, inst.PgConn().PID())
+
+	// The pipeline's next write still lands. It is on the next day, so it
+	// shares no bucket, and no bucket lock, with the open write at any grain.
+	w := connectIn(t, srv.dsn, "UTC")
+	execSQL(t, w, "SET statement_timeout = '3s'")
+	execSQL(t, w, "INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-16T11:01:00Z', 'ja', 3)")
+
+	err := <-errc
+	assert.Error(t, err)
+	var pgErr *pgconn.PgError
+	assert.That(t, errors.As(err, &pgErr))
+	assert.Equal(t, "55P03", pgErr.Code)
+
+	execSQL(t, open, "COMMIT")
+	mustInstall(t, srv.conn, loadExample(t))
+	assertGrainsEqualSource(t, srv.conn)
+}
+
+// A write that holds the source a little longer than the lock timeout costs
+// the install an attempt, not the deploy.
+func TestIntegrationRollupRun_InstallRetriesALockHeldBriefly(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	mustInstall(t, srv.conn, loadExample(t))
+	withLockTimeout(t, 200*time.Millisecond)
+
+	open := connectIn(t, srv.dsn, "UTC")
+	execSQL(t, open, "BEGIN")
+	execSQL(t, open, "INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-15T10:01:00Z', 'en', 5)")
+	committed := make(chan error, 1)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_, err := open.Exec(ctx, "COMMIT")
+		committed <- err
+	}()
+
+	mustInstall(t, connectIn(t, srv.dsn, "UTC"), loadExample(t))
+	assert.NoError(t, <-committed)
 	assertGrainsEqualSource(t, srv.conn)
 }
