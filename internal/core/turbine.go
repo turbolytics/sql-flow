@@ -89,7 +89,13 @@ const (
 // The cost is a genuine replay of a pre-2020 archive, which reports no lag
 // rather than a wrong one. Absent is not zero, and a missing reading is
 // better than 56 years on a fleet dashboard.
-var eventTimeFloorNanos = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
+var eventTimeFloorNanos = EventTimeFloor.UnixNano()
+
+// EventTimeFloor is the oldest event time this engine treats as real; see
+// eventTimeFloorNanos for why 2020. Exported because a window applies the
+// same rule to the buckets it holds: an event time the lag reading refuses
+// is not one a watermark should rest on either.
+var EventTimeFloor = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // EventTimeSource is a source that stamps Message.EventAtNanos. A source that
 // does not implement it reports no lag, rather than a lag of zero.
@@ -351,6 +357,14 @@ type Turbine struct {
 	// confirmsQuiet is whether idle ticks write the row; see
 	// WithQuietConfirmation.
 	confirmsQuiet bool
+	// placesEventTime is whether a message whose event time this engine
+	// cannot place is refused; see WithEventTimePlacement. Set for a
+	// pipeline that windows, because a window is what an unplaceable event
+	// time damages.
+	placesEventTime bool
+	// unplaceableLogged is whether the last batch refused one, so the
+	// condition is logged on its transitions rather than per message.
+	unplaceableLogged bool
 	// clock is where every instant a decision rests on comes from; nil means
 	// time.Now. See WithClock.
 	clock func() time.Time
@@ -479,6 +493,33 @@ const (
 // write on the interval, and the drain still writes once. On by default.
 func WithQuietConfirmation(on bool) TurbineOption {
 	return func(t *Turbine) { t.confirmsQuiet = on }
+}
+
+// WithEventTimePlacement refuses a message whose event time this engine
+// cannot place: before EventTimeFloor, or ahead of the engine's own clock.
+//
+// On for a pipeline that windows. A window rests on event time, and one
+// record stamped in the future otherwise drags the watermark past real time
+// and makes every correctly stamped row after it late, which under late_rows
+// drop deletes them: one device with a fast clock empties a fleet's stream
+// (#358). A pipeline with no window has nothing for such a record to damage,
+// so it keeps it.
+//
+// Refused here rather than in the window manager on purpose. The manager
+// decides on event time against the watermark, in one domain, and
+// window.close_lag_ignores_the_host_clock says its host's clock cannot move
+// a window; putting the comparison here keeps that true. The engine already
+// owns a clock -- it is what the quiet clock and the idle tick are measured
+// on -- and it is where the record and its event time are, which is where
+// Flink puts the timestamp assigner too.
+//
+// The exposure this leaves is a host whose own clock is wrong: a gateway
+// with no real-time clock boots near 1970 and would refuse every correctly
+// stamped record. That is real on exactly the fleets #358 is about, and the
+// answer for them is an explicit option rather than a heuristic here that
+// guesses when the clock became trustworthy.
+func WithEventTimePlacement(on bool) TurbineOption {
+	return func(t *Turbine) { t.placesEventTime = on }
 }
 
 // WithFlushTrigger replaces the flush ticker. A pipeline given one commits on
@@ -1044,6 +1085,28 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		var batchTook time.Duration
 
 		for _, raw := range msgBatch {
+			// A record whose event time this engine cannot place never
+			// reaches the handler, so it can never reach a window table and
+			// never move a watermark. One stamped in the future otherwise
+			// drags the watermark past real time and makes every correctly
+			// stamped record after it late (#358).
+			//
+			// It is consumed, not failed: marked and counted like a record
+			// an error policy dropped, so the position is safe to commit
+			// past and the pipeline carries on. Only a windowing pipeline
+			// refuses; see WithEventTimePlacement.
+			if t.placesEventTime && !t.canPlace(raw.EventAtNanos, nowNanos) {
+				t.noteUnplaceable(raw.EventAtNanos, now)
+				t.mark(raw)
+				totalConsumed++
+				t.stats.SetNumMessagesConsumed(totalConsumed)
+				if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
+					t.logger.Info("max messages consumed, stopping consumer loop")
+					hitMax = true
+					break
+				}
+				continue
+			}
 			if err := t.writeMessage(raw); err != nil {
 				t.recordError(ctx, err, phaseHandlerWrite, "error writing message")
 
@@ -1738,4 +1801,47 @@ func (t *Turbine) logThroughput() {
 // second record here counted every failed flush twice.
 func (t *Turbine) flush(ctx context.Context, batch arrow.Table) error {
 	return t.sink.Flush(ctx)
+}
+
+// canPlace reports whether an event time is one this engine can put somewhere
+// in event time: at or after EventTimeFloor, and not ahead of its own clock.
+//
+// A source that stamps nothing leaves the field zero, which is below the
+// floor. Such a pipeline has no event time to window on, so refusing its
+// records would refuse all of them; zero is therefore placeable, and the
+// window's own time column is what decides where those rows land.
+//
+// nowNanos is the batch's one wall-clock reading, the same one the lag
+// reading uses, rather than the injected clock: this is a judgement about
+// whether a producer's clock is believable, made against the host's, and a
+// simulator's frozen clock is not the host's. A simulated stream is one that
+// happened, and its event times sit in the real past.
+func (t *Turbine) canPlace(atNanos, nowNanos int64) bool {
+	return CanPlace(atNanos, nowNanos)
+}
+
+// CanPlace is the placement rule itself, exported so a harness can predict
+// what the engine will refuse with the engine's own code rather than a copy
+// of it. Zero -- a source that stamps nothing -- is placeable; see canPlace.
+func CanPlace(atNanos, nowNanos int64) bool {
+	if atNanos == 0 {
+		return true
+	}
+	return atNanos >= eventTimeFloorNanos && atNanos <= nowNanos
+}
+
+// noteUnplaceable counts a refused record and logs the condition once per
+// run, so one device with a wrong clock writes a line rather than a line per
+// message for as long as it keeps sending. The counter is what carries the
+// ongoing rate.
+func (t *Turbine) noteUnplaceable(atNanos int64, now time.Time) {
+	t.metrics.MessagesUnplaceable.Add(context.Background(), 1)
+	if t.unplaceableLogged {
+		return
+	}
+	t.unplaceableLogged = true
+	t.logger.Warn("refusing records whose event time this engine cannot place",
+		zap.Time("event_time", time.Unix(0, atNanos).UTC()),
+		zap.Time("engine_clock", now.UTC()),
+		zap.Time("floor", EventTimeFloor))
 }

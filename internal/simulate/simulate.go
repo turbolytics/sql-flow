@@ -378,7 +378,11 @@ func (r *run) sinkTurbine() {
 		// A windowed pipeline's handler writes the window table and its sink
 		// receives nothing; the progress row is what the manager reads.
 		h = r.window.handler
-		opts = append(opts, core.WithProgressStore(core.NewProgressStore(r.window.db.pipeline)))
+		opts = append(opts,
+			core.WithProgressStore(core.NewProgressStore(r.window.db.pipeline)),
+			// As run wires a windowing pipeline: a record whose event time
+			// the engine cannot place is refused before the handler.
+			core.WithEventTimePlacement(true))
 	}
 	r.tb = core.NewTurbine(r.src, h, r.sink, 1, time.Hour,
 		&sync.Mutex{}, core.PipelineErrorPolicies{}, opts...)
@@ -402,18 +406,37 @@ func (r *run) deliver(p int32, ids []int64) {
 		batch = append(batch, core.Message{
 			// id and event time, which is what a real payload carries: the
 			// handler's SQL reads the timestamp out of the record.
-			Value:     []byte(fmt.Sprintf("%d,%d", id, at.UnixMicro())),
-			Topic:     topic,
-			Partition: p,
-			Offset:    from + int64(i),
+			Value: []byte(fmt.Sprintf("%d,%d", id, at.UnixMicro())),
+			// And on the message itself, where the engine's placement rule
+			// reads it: the payload is what the handler buckets on, this is
+			// what the engine refuses on, and they are the same clock.
+			EventAtNanos: at.UnixNano(),
+			Topic:        topic,
+			Partition:    p,
+			Offset:       from + int64(i),
 		})
+	}
+	// What the loop will accept. A windowing run places event time, and a
+	// record the engine cannot place never reaches the handler or the table,
+	// so waiting for it would wait forever. The prediction uses the engine's
+	// own rule, against the same clock it reads, so it cannot disagree with
+	// what the engine does.
+	accepted := len(batch)
+	if r.window != nil {
+		nowNanos := time.Now().UnixNano()
+		accepted = 0
+		for _, m := range batch {
+			if core.CanPlace(m.EventAtNanos, nowNanos) {
+				accepted++
+			}
+		}
 	}
 	var want int
 	if r.window == nil {
 		total, _ := r.sink.counts()
-		want = total + len(batch)
+		want = total + accepted
 	} else {
-		want = int(r.windowRows()) + len(batch)
+		want = int(r.windowRows()) + accepted
 	}
 
 	select {

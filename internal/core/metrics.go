@@ -81,6 +81,12 @@ type Metrics struct {
 	// pipeline is being asked to process, uniformly across sources. What a
 	// metered link pays is wire bytes, which only some clients expose.
 	MessagePayloadBytes metric.Int64Counter
+	// MessagesUnplaceable counts records refused because this engine could
+	// not place their event time: before EventTimeFloor, or ahead of its
+	// own clock. Only a windowing pipeline refuses; see
+	// WithEventTimePlacement. This is a data-loss signal, and a device with
+	// a wrong clock is what it usually means.
+	MessagesUnplaceable metric.Int64Counter
 	// LagObserved is when consumer_lag was last recorded, as Unix seconds.
 	//
 	// Lag is recorded when a message is processed, so a consumer that stops
@@ -380,6 +386,14 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("By"),
 	); err != nil {
 		return nil, fmt.Errorf("message_payload_bytes: %w", err)
+	}
+
+	if m.MessagesUnplaceable, err = meter.Int64Counter(
+		"messages_unplaceable_total",
+		metric.WithDescription("Records refused because their event time is before 2020 or ahead of this engine's clock; a windowing pipeline only"),
+		metric.WithUnit("{message}"),
+	); err != nil {
+		return nil, fmt.Errorf("messages_unplaceable_total: %w", err)
 	}
 
 	if m.LagObserved, err = meter.Int64Gauge(
