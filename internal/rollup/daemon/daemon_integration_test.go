@@ -251,3 +251,46 @@ func TestIntegrationRollupRun_TheDaemonServesHealthzAndMetrics(t *testing.T) {
 		assert.That(t, strings.Contains(string(text), series))
 	}
 }
+
+// A write left open holds a bucket of posts_by_lang_5m's newest day, so
+// every chunk of that table is busy. posts_total_5m fills meanwhile, and
+// posts_by_lang_5m fills once the write ends.
+func TestIntegrationRollupRun_ABusyTableHoldsUpNoOther(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	ctx := context.Background()
+	dsn, conn := startPostgres(t)
+	history(t, conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
+
+	holder, err := pgx.Connect(ctx, dsn)
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = holder.Close(context.Background()) })
+	tx, err := holder.Begin(ctx)
+	assert.NoError(t, err)
+	_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+		fmt.Sprintf("posts_by_lang_5m:%d", time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC).Unix()))
+	assert.NoError(t, err)
+
+	addrc := make(chan net.Addr, 1)
+	d, _ := running(t, dsn, Options{Metrics: "prometheus", Addr: "127.0.0.1:0", OnListen: func(a net.Addr) { addrc <- a }})
+	addr := (<-addrc).String()
+	waitFor(t, "posts_total_5m to fill beside the busy table", func() bool {
+		var filled bool
+		err := conn.QueryRow(ctx, `SELECT NOT backfill ? 'posts_total_5m' AND backfill ? 'posts_by_lang_5m'
+FROM sqlflow_rollup_state WHERE rollup = 'posts'`).Scan(&filled)
+		return err == nil && filled
+	})
+
+	resp, err := http.Get("http://" + addr + "/metrics")
+	assert.NoError(t, err)
+	text, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	assert.NoError(t, err)
+	assert.That(t, strings.Contains(string(text), "rollup_backfill_busy_total"))
+
+	assert.NoError(t, tx.Rollback(ctx))
+	waitFor(t, "healthy", func() bool { return status(d) == "healthy" })
+	assertExact(t, conn)
+}

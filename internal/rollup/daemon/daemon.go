@@ -56,7 +56,12 @@ type Daemon struct {
 	health   *healthState
 	m        *instruments
 	registry *prom.Registry
+	// busy holds the tables whose last chunk found a bucket held, keyed by
+	// busyKey. Only the loop's goroutine reads or writes it.
+	busy map[string]bool
 }
+
+func busyKey(p rollup.Pending) string { return p.Rollup.Name + "/" + p.Table }
 
 // New builds a daemon. It connects to nothing: Run does.
 func New(conf *config.RollupsConf, dsn string, opts Options) (*Daemon, error) {
@@ -70,7 +75,7 @@ func New(conf *config.RollupsConf, dsn string, opts Options) (*Daemon, error) {
 	}
 	d := &Daemon{
 		conf: conf, dsn: dsn, opts: opts, log: opts.Logger, interval: opts.Interval,
-		health: newHealthState(time.Now()), m: m, registry: registry,
+		health: newHealthState(time.Now()), m: m, registry: registry, busy: map[string]bool{},
 	}
 	if d.log == nil {
 		d.log = zap.NewNop()
@@ -230,9 +235,11 @@ func (d *Daemon) keepWork(ctx context.Context, work *pgx.Conn) *pgx.Conn {
 	return conn
 }
 
-// fillOne fills one chunk of the first pending table. It reports whether
-// another chunk is due at once: false when nothing is pending, or when the
-// chunk failed and the next try waits an interval.
+// fillOne fills one chunk of the first pending table that takes one. Tables
+// whose last chunk was busy go last, so a write left open on one table's
+// bucket holds up that table and no other. It reports whether another chunk
+// is due at once: false when nothing is pending, when a chunk failed, or
+// when every pending table was busy, and the next try waits an interval.
 func (d *Daemon) fillOne(ctx context.Context, work *pgx.Conn) bool {
 	pending, err := rollup.PendingBackfills(ctx, work, d.conf)
 	if err != nil {
@@ -244,29 +251,55 @@ func (d *Daemon) fillOne(ctx context.Context, work *pgx.Conn) bool {
 	}
 	d.health.touch(time.Now())
 	d.health.setPending(len(pending))
-	if len(pending) == 0 {
-		return false
-	}
 
+	var ready, busy []rollup.Pending
+	for _, p := range pending {
+		if d.busy[busyKey(p)] {
+			busy = append(busy, p)
+		} else {
+			ready = append(ready, p)
+		}
+	}
+	for _, p := range append(ready, busy...) {
+		if ctx.Err() != nil {
+			return false
+		}
+		if more, done := d.fillChunk(ctx, work, p); done {
+			return more
+		}
+	}
+	return false
+}
+
+// fillChunk fills one chunk of p's table. done is false when a write held
+// one of the chunk's buckets, so the caller tries the next table; otherwise
+// more is fillOne's answer.
+func (d *Daemon) fillChunk(ctx context.Context, work *pgx.Conn, p rollup.Pending) (more, done bool) {
 	// The chunk finishes even after SIGTERM: stopping waits for it.
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chunkTimeout)
 	defer cancel()
-	p := pending[0]
 	attrs := metric.WithAttributes(attribute.String("rollup", p.Rollup.Name), attribute.String("table", p.Table))
 	start := time.Now()
 	step, err := rollup.BackfillStep(cctx, work, p)
-	if errors.Is(err, rollup.ErrChunkBusy) {
-		// Live writes held its buckets on every try. Nothing failed: the
-		// chunk tries again at once, and its tries already waited.
+	switch {
+	case errors.Is(err, rollup.ErrChunkBusy):
+		// Nothing failed: the table waits its turn behind the others.
+		d.busy[busyKey(p)] = true
 		d.health.touch(time.Now())
-		d.log.Info("a live write held the chunk's buckets; trying again", zap.String("table", p.Table))
-		return true
-	}
-	if err != nil {
+		d.m.backfillBusy.Add(cctx, 1, attrs)
+		d.log.Info("a write held one of the chunk's buckets on every try; filling the other tables first",
+			zap.String("rollup", p.Rollup.Name), zap.String("table", p.Table))
+		return false, false
+	case errors.Is(err, rollup.ErrProgressMoved):
+		// Another chunk or an install wrote the entry after the read.
+		d.health.touch(time.Now())
+		return true, true
+	case err != nil:
 		d.log.Warn("backfill chunk failed; retrying next interval", zap.String("table", p.Table), zap.Error(err))
 		d.m.errors.Add(cctx, 1, phase("backfill"))
-		return false
+		return false, true
 	}
+	delete(d.busy, busyKey(p))
 	d.health.touch(time.Now())
 	d.m.chunkDuration.Record(cctx, time.Since(start).Seconds(), attrs)
 	d.m.backfillBuckets.Add(cctx, step.Buckets, attrs)
@@ -274,7 +307,7 @@ func (d *Daemon) fillOne(ctx context.Context, work *pgx.Conn) bool {
 	d.log.Info("backfill chunk", zap.String("rollup", step.Rollup), zap.String("table", step.Table),
 		zap.Time("from", step.From), zap.Time("to", step.To), zap.Int64("buckets", step.Buckets),
 		zap.Bool("complete", step.Complete))
-	return true
+	return true, true
 }
 
 func (d *Daemon) logInstall(rep *rollup.InstallReport) {

@@ -19,6 +19,13 @@ import (
 // pipeline's writes.
 const maxChunkLocks = 1000
 
+// maxChunkRows bounds the rows one chunk re-merges from the table its target
+// is built from. A write to any of the chunk's buckets waits for the whole
+// chunk, and the chunk's time grows with its rows: a day of 1,000 languages
+// by the minute, 1.44 million rows, took 3.5 s on 2026-09-25, and the sink
+// gives a write 10 s. A variable, so a test can shorten it.
+var maxChunkRows int64 = 100_000
+
 // binOrigin is the instant the generated SQL bins from, so a chunk boundary
 // computed here and a bucket computed in Postgres agree.
 var binOrigin = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -157,7 +164,8 @@ type Step struct {
 }
 
 // BackfillStep fills one chunk of p's table: the newest source time not yet
-// filled, chunkSpan wide, so recent history is right first.
+// filled, chunkSpan wide or narrower to fit maxChunkRows, so recent history
+// is right first.
 //
 // The chunk reads which of the table's buckets its rows fall in, and takes
 // the lock the triggers take on each of them and on every coarser bucket its
@@ -172,13 +180,15 @@ type Step struct {
 // It only tries the locks. When a write holds one, the attempt rolls back,
 // waits busyWait, and tries again, busyTries times, before it returns
 // ErrChunkBusy. A chunk that never waits while holding a lock cannot be one
-// side of a deadlock, and a write waits on a chunk for the chunk's few
-// milliseconds at most.
+// side of a deadlock. A write waits on a chunk for the chunk's duration at
+// most, which maxChunkRows bounds.
 //
 // It takes the install lock shared, so it never runs beside an install that
 // is changing the table's objects, and bounds any other wait with
 // lock_timeout. The chunk records its progress in its own transaction, so a
 // crash repeats at most one chunk, and a repeat rewrites the same values.
+// When the table's entry no longer holds p.Done, the chunk rolls back and
+// returns ErrProgressMoved.
 func BackfillStep(ctx context.Context, conn *pgx.Conn, p Pending) (Step, error) {
 	e, ok := findEdge(p.Rollup, p.Table)
 	if !ok {
@@ -242,6 +252,9 @@ func backfillAttempt(ctx context.Context, conn *pgx.Conn, p Pending, e edge) (st
 	if p.Done != nil {
 		hi = *p.Done
 	}
+	if span, err = fitRows(ctx, tx, p.Rollup, e, hi, span); err != nil {
+		return step, false, backfillError(err, p.Table, "count the chunk's rows")
+	}
 	lo := hi.Add(-span)
 	step.From, step.To = lo, hi
 	step.Complete = !lo.After(floor)
@@ -280,6 +293,30 @@ func backfillAttempt(ctx context.Context, conn *pgx.Conn, p Pending, e edge) (st
 	return step, false, finishChunk(ctx, tx, p, step)
 }
 
+// fitRows halves span until the rows of the table e is built from, in
+// [hi-span, hi), fit maxChunkRows. It stops at the table's own width: one
+// bucket re-merges in the time a write's trigger takes to re-merge it.
+//
+// The query walks back from hi to the first row past the budget, so it
+// reads at most maxChunkRows rows however many the span holds. Every row
+// newer than that one fits.
+func fitRows(ctx context.Context, q querier, r config.Rollup, e edge, hi time.Time, span time.Duration) (time.Duration, error) {
+	t := quote(r.Source.TimeColumn)
+	var past time.Time
+	err := q.QueryRow(ctx, fmt.Sprintf("SELECT %s FROM %s WHERE %s >= $1 AND %s < $2 ORDER BY %s DESC OFFSET $3 LIMIT 1",
+		t, quote(e.From), t, t, t), hi.Add(-span), hi, maxChunkRows).Scan(&past)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return span, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	for !hi.Add(-span).After(past) && span/2 >= e.Grain.Width {
+		span /= 2
+	}
+	return span, nil
+}
+
 // touchedBuckets is every bucket of e's table that the rows of the table it
 // is built from, in [lo, hi), fall in, oldest first: the order the triggers
 // lock buckets in.
@@ -304,6 +341,11 @@ var (
 // ErrChunkBusy is a chunk that found one of its buckets locked by a write on
 // every try. It wrote nothing, and the next pass tries again.
 var ErrChunkBusy = errors.New("a write held one of the chunk's buckets on every try")
+
+// ErrProgressMoved is a chunk that found its table's progress changed after
+// the caller read it: another chunk, or an install, wrote the entry. It
+// wrote nothing, and the caller reads the entries again.
+var ErrProgressMoved = errors.New("the table's backfill progress changed after it was read")
 
 // bucketKey is the key the generated triggers lock a bucket with: the
 // table's name, a colon, and the bucket's epoch in seconds.
@@ -332,20 +374,25 @@ func chunkKeys(r config.Rollup, e edge, buckets []time.Time) []string {
 }
 
 // finishChunk records the chunk's progress in the state row and commits, so
-// the progress and the rows it describes land together. The guard leaves
-// alone an entry an install removed meanwhile.
+// the progress and the rows it describes land together. It records nothing
+// over an entry that changed since the caller read p.Done: an install that
+// re-created the table reset it, or another chunk moved it. Progress written
+// over a reset entry would skip the history the new table lacks. The UPDATE
+// re-reads the row under its lock, so no change slips in between.
 func finishChunk(ctx context.Context, tx pgx.Tx, p Pending, step Step) error {
-	var err error
+	set := "jsonb_set(backfill, ARRAY[$2::text], to_jsonb($4::timestamptz))"
+	args := []any{p.Rollup.Name, p.Table, p.Done, step.From}
 	if step.Complete {
-		_, err = tx.Exec(ctx, "UPDATE sqlflow_rollup_state SET backfill = backfill - $2::text WHERE rollup = $1",
-			p.Rollup.Name, p.Table)
-	} else {
-		_, err = tx.Exec(ctx, `UPDATE sqlflow_rollup_state
-SET backfill = jsonb_set(backfill, ARRAY[$2::text], to_jsonb($3::timestamptz))
-WHERE rollup = $1 AND backfill ? $2::text`, p.Rollup.Name, p.Table, step.From)
+		set, args = "backfill - $2::text", args[:3]
 	}
+	tag, err := tx.Exec(ctx, `UPDATE sqlflow_rollup_state SET backfill = `+set+`
+WHERE rollup = $1 AND backfill ? $2::text
+  AND (backfill ->> $2::text)::timestamptz IS NOT DISTINCT FROM $3::timestamptz`, args...)
 	if err != nil {
 		return backfillError(err, p.Table, "record progress")
+	}
+	if tag.RowsAffected() == 0 {
+		return errs.Wrap(errs.CodeRollupInternal, ErrProgressMoved, "rollup backfill %s", p.Table)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return backfillError(err, p.Table, "commit")

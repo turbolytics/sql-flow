@@ -46,6 +46,14 @@ func withBusy(t *testing.T, tries int, wait time.Duration) {
 	t.Cleanup(func() { busyTries, busyWait = tr, w })
 }
 
+// withRowBudget shortens a chunk's row budget for one test.
+func withRowBudget(t *testing.T, rows int64) {
+	t.Helper()
+	was := maxChunkRows
+	maxChunkRows = rows
+	t.Cleanup(func() { maxChunkRows = was })
+}
+
 // fillAll runs chunks until nothing is pending, and returns them in order.
 func fillAll(t *testing.T, conn *pgx.Conn, conf *config.RollupsConf) []Step {
 	t.Helper()
@@ -339,5 +347,66 @@ func TestIntegrationRollupRun_ChunkedBackfillLosesNoConcurrentWrite(t *testing.T
 	for err := range errc {
 		t.Errorf("a writer failed beside the backfill: %v", err)
 	}
+	assertGrainsEqualSource(t, srv.conn)
+}
+
+// A write to a chunk's bucket waits for the whole chunk, so a chunk holds
+// no more rows than the budget. A day of three languages by the minute is
+// 4,320 rows; three hours is 540, the widest halving under 1,000.
+func TestIntegrationRollupRun_ABackfillChunkFitsTheRowBudget(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
+	mustInstall(t, srv.conn, loadExample(t))
+	withRowBudget(t, 1000)
+
+	steps := fillAll(t, srv.conn, loadExample(t))
+	assert.That(t, steps[0].From.Equal(at("2026-09-12T21:00:00Z")))
+	assert.That(t, steps[0].To.Equal(at("2026-09-13T00:00:00Z")))
+	for _, s := range steps {
+		assert.That(t, count(t, srv.conn, "SELECT count(*) FROM posts_per_minute_by_lang WHERE bucket >= '"+
+			s.From.Format(time.RFC3339)+"' AND bucket < '"+s.To.Format(time.RFC3339)+"'") <= 1000)
+	}
+	// Eight chunks for each table built from the source.
+	assert.Equal(t, 16, len(steps))
+	assertGrainsEqualSource(t, srv.conn)
+}
+
+// A chunk records its progress only over the entry it started from. Here an
+// install re-created the table after the caller read the entry: the table
+// is empty and its entry starts over. A chunk that wrote its progress
+// anyway would move the entry past the day it emptied, and never fill it.
+func TestIntegrationRollupRun_AChunkWritesNoProgressOverAMovedEntry(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
+	mustInstall(t, srv.conn, loadExample(t))
+
+	pending, err := PendingBackfills(ctx, srv.conn, loadExample(t))
+	assert.NoError(t, err)
+	_, err = BackfillStep(ctx, srv.conn, pending[0])
+	assert.NoError(t, err)
+	read, err := PendingBackfills(ctx, srv.conn, loadExample(t))
+	assert.NoError(t, err)
+	assert.That(t, read[0].Done != nil && read[0].Done.Equal(at("2026-09-12T00:00:00Z")))
+
+	execSQL(t, srv.conn, "TRUNCATE posts_by_lang_5m")
+	execSQL(t, srv.conn, `UPDATE sqlflow_rollup_state
+SET backfill = jsonb_set(backfill, '{posts_by_lang_5m}', 'null') WHERE rollup = 'posts'`)
+
+	_, err = BackfillStep(ctx, srv.conn, read[0])
+	assert.That(t, errors.Is(err, ErrProgressMoved))
+	_, kept := stateOf(t, srv.conn, "posts").Backfill["posts_by_lang_5m"]
+	assert.True(t, kept)
+	assert.That(t, stateOf(t, srv.conn, "posts").Backfill["posts_by_lang_5m"] == nil)
+
+	fillAll(t, srv.conn, loadExample(t))
 	assertGrainsEqualSource(t, srv.conn)
 }

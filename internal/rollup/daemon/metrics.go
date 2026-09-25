@@ -17,6 +17,7 @@ import (
 // _total.
 type instruments struct {
 	backfillBuckets metric.Int64Counter
+	backfillBusy    metric.Int64Counter
 	chunkDuration   metric.Float64Histogram
 	errors          metric.Int64Counter
 	leaderAcquired  metric.Int64Counter
@@ -28,6 +29,10 @@ func newInstruments(mp metric.MeterProvider) (*instruments, error) {
 	var err error
 	if in.backfillBuckets, err = m.Int64Counter("rollup_backfill_buckets",
 		metric.WithDescription("Buckets written by backfill")); err != nil {
+		return nil, err
+	}
+	if in.backfillBusy, err = m.Int64Counter("rollup_backfill_busy",
+		metric.WithDescription("Chunks that gave up because a write held one of their buckets on every try")); err != nil {
 		return nil, err
 	}
 	if in.chunkDuration, err = m.Float64Histogram("rollup_backfill_chunk_duration",

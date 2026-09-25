@@ -308,33 +308,49 @@ daemon generates. A database with those objects and no state row is adopted:
 
 The leader fills each target in chunks:
 
-- A chunk covers one UTC day of source buckets. The first chunk is the day of
-  the source's newest bucket, and the last is the day of its oldest, so
-  recent history is right first.
+- A chunk covers at most one UTC day of source buckets. The first chunk is
+  in the day of the source's newest bucket, and the last is in the day of
+  its oldest, so recent history is right first.
 - A chunk takes at most 1,000 advisory locks. The planner counts the buckets
   a chunk touches at every grain of every dimension set, and halves the chunk
   until the count fits. The default lock table holds 6,400 locks for the
   whole server, and a chunk shares it with the pipeline's writes.
+- A chunk re-merges at most 100,000 rows of the table its target is built
+  from. A write to any of the chunk's buckets waits for the whole chunk, and
+  the chunk's time grows with its rows: a day of 1,000 languages by the
+  minute, 1.44 million rows, took 3.5 s, and blocked a write for 3.3 s. The
+  sink gives a write 10 s. The planner walks back from the chunk's newest
+  row to the first row past the budget, reading at most the budget, and
+  halves the chunk until that row falls outside it, down to one bucket of
+  the target. Measured on 2026-09-25 at 1,000 languages: chunks of 90
+  minutes, the longest 313 ms, and a write beside them waited at most
+  277 ms.
 - Each chunk is one READ COMMITTED transaction. It takes the install lock
   shared, so it never runs beside an install that is changing its table,
   and sets `lock_timeout` as install does. It reads which of the target's
   buckets its rows fall in, and re-merges exactly those from the table the
   target is built from, so a bucket that appears after the read stays with
   the write that made it, whose trigger holds its lock. It records its
-  progress in the state row.
+  progress in the state row, and only over the entry it read. When an
+  install or another chunk changed the entry, the chunk rolls back and the
+  daemon reads the entries again. Progress written over an entry an install
+  reset would skip the history a re-created table lacks.
 - Before it re-merges, a chunk takes every lock its buckets need: each
   target bucket's, and each coarser bucket's its upserts cascade to, with
   `pg_try_advisory_xact_lock`, in one round trip. When a write holds any of
   them, the chunk rolls back, which releases the rest, and tries again after
-  50 ms, 20 times, before it reports the chunk busy and the daemon tries
-  again. The coarser triggers the upsert fires then take locks the chunk
-  already holds, and return at once.
+  50 ms, 20 times, before it reports the chunk busy. The daemon then fills
+  the other pending tables and tries the busy one last, so a write left
+  open on one table's bucket holds up that table only. When every pending
+  table is busy, it waits an interval. The coarser triggers the upsert
+  fires then take locks the chunk already holds, and return at once.
 - A chunk never waits while it holds a lock. An upsert fires each rollup
   trigger twice, for its inserted and its updated rows, and the two passes
   lock buckets in different orders, so a chunk that waited holding locks in
   bucket order deadlocked a single live writer in 1 run of 3, measured on
   2026-09-25. A chunk that never waits cannot be one side of a deadlock, and
-  a write waits on a chunk for the chunk's few milliseconds at most.
+  a write waits on a chunk for the chunk's duration at most, which the row
+  budget bounds.
 - The last chunk is the one that reaches the source's oldest row, binned to
   the width of the rows the target is built from, so a day built from
   6-hour rows includes the 6-hour row that holds the source's first minute.
@@ -468,6 +484,7 @@ and `table`.
 | `rollup_verify_buckets` | counter | Buckets recomputed and compared |
 | `rollup_drift_buckets` | counter | Buckets that differed |
 | `rollup_backfill_buckets` | counter | Buckets written by backfill |
+| `rollup_backfill_busy` | counter | Chunks that gave up because a write held one of their buckets on every try |
 | `rollup_backfill_chunk_duration` | histogram, s | One chunk's transaction |
 | `rollup_verify_duration` | histogram, s | One verify pass |
 | `rollup_errors` | counter, and `phase`: install, backfill, verify, observe, lock | Errors by phase |
@@ -776,6 +793,9 @@ the control repository's launch freeze to lift.
 | Backfill skips the bucket locks | A chunk and a write each re-merge from a snapshot missing the other, and the later commit overwrites the earlier one | `ABackfillChunkNeedsItsBucketLock`, which fails without the chunk's own keys |
 | A chunk waits while it holds bucket locks | A writer's two trigger passes deadlock with it, and either side can lose | `ABackfillChunkNeverWaitsHoldingALock`, which fails with 55P03 against blocking locks |
 | A chunk outgrows the lock table | `out of shared memory`, and the backfill stops | The chunk planner's unit test at a 1s source grain |
+| A chunk's rows have no bound | A write waits seconds on the chunk, past the sink's 10 s at a few thousand dimension values, and the pipeline stops | `ABackfillChunkFitsTheRowBudget` |
+| A busy table stays first in line | A write left open on one table's bucket stops every other table's backfill | `ABusyTableHoldsUpNoOther` |
+| A chunk writes progress over an entry that moved | An install re-creates a table, and a chunk begun before it skips the history the new table lacks | `AChunkWritesNoProgressOverAMovedEntry` |
 | Adoption misreads an existing table | A trigger writes into a mismatched column, the pipeline's write fails, and the worker restart-loops | `AdoptionRefusesAMismatchedTable` |
 | Verify reads across two snapshots | Drift reported on correct rows, and `/healthz` stuck at `degraded` | `VerifyUnderConcurrentWritesReportsNoDrift` |
 | Verify compares doubles exactly | The same, for every `numeric: double` sum | A unit test that sums doubles in two orders |
