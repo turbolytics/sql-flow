@@ -221,8 +221,9 @@ CREATE TABLE IF NOT EXISTS sqlflow_rollup_state (
   -- Per table being filled: the start of the oldest source day done so far.
   -- A table leaves the object when its backfill completes.
   backfill        JSONB       NOT NULL DEFAULT '{}',
-  -- Tables a later declaration removed. Their triggers still run, and
-  -- verify still checks them.
+  -- Tables a later declaration removed, each with the set, grain and from
+  -- that built it. Their triggers still run, verify still checks them, and
+  -- a pending backfill stays pending.
   retained        JSONB       NOT NULL DEFAULT '[]'
 );
 ```
@@ -252,17 +253,32 @@ in one transaction, because Postgres DDL is transactional:
    generator code `ddl` uses.
 6. Record the declaration and the SQLFlow version. Mark the backfill targets.
 
-The transaction takes the source's trigger lock for its DDL only, which is
-milliseconds, and never for a backfill.
+Before any DDL, the transaction locks each source `IN SHARE ROW EXCLUSIVE
+MODE`, in name order. That is the order a writer takes: its statement locks
+the source, then its triggers lock the rollup tables. `CREATE UNIQUE INDEX
+IF NOT EXISTS` locks a rollup table even when the index exists, so an
+install that reached the tables first deadlocked beside a live writer in 34
+of 40 runs, measured in review on 2026-09-25.
+
+While install waits for a source, the pipeline's next writes queue behind
+it. `lock_timeout`, 2 seconds, bounds each wait, and install retries three
+times on a lock timeout or a deadlock before it fails. The timeout is set
+after the install lock, because it bounds an advisory lock's wait too. The
+lock is held for the DDL only, never for a backfill.
+
+The transaction runs in READ COMMITTED whatever the database's default. The
+install lock serializes installs only because each statement after it takes
+a new snapshot and reads the previous install's commit.
 
 | Difference | Action |
 |---|---|
 | A new rollup, grain or dimension set | Create its tables and triggers. Mark it for backfill. |
 | A new SQLFlow version | Replace every function and trigger. The tables do not change. |
-| A removed rollup, grain or dimension set | Keep its tables and triggers. Log a warning that names them. Move them to `retained`. |
-| A changed measure type, dimension list, grain `from`, or source | Stop with `user.config.rollup_change` and the YAML path. |
+| A removed rollup, grain or dimension set | Keep its tables and triggers. Log a warning that names them. Move them to `retained` with the set, grain and from that built them. A backfill still pending stays pending. |
+| A changed measure type, dimension list, grain `from`, or source table, time column or grain | Stop with `user.config.rollup_change` and the YAML path. |
+| An added or removed source dimension | Nothing. No generated table or trigger reads `source.dimensions`; only the file's rules and serve do. |
 | A measure added to or removed from an existing dimension set | Stop with `user.config.rollup_change`. A removed measure's column would go stale in every stored row. Declare a new dimension set instead. |
-| A declared table that is in `retained` | Move it back. Its triggers never stopped, so it needs no backfill. |
+| A declared table that is in `retained` | Move it back when its set and grain match the ones retained, and stop with `user.config.rollup_change` when they differ: its rows were merged the old way. Its triggers never stopped, so it needs no new backfill, and one still pending stays pending. |
 
 Backfill targets are the new tables built from the source, or from a table
 whose backfill is complete. Their upserts fire the triggers that fill every
@@ -718,6 +734,9 @@ the control repository's launch freeze to lift.
 
 | If | Then | Caught by |
 |---|---|---|
+| Install locks a rollup table before its source | Install deadlocks beside a live writer and fails the deploy | `InstallBesideAWriterMidTransaction` |
+| Install waits for a source without a bound | A transaction left open stalls the install and every pipeline write queued behind it | `InstallGivesUpOnALockRatherThanStallThePipeline` |
+| A retained table keeps only its name | Declaring it again in another shape mixes two kinds of row in one table, and a rollback and roll-forward drops its pending backfill | `ARetainedSetDeclaredAgainInAnotherShapeIsRefused`, `ARollbackAndRollForwardKeepAPendingBackfill` |
 | Backfill runs before the triggers exist | A write between the backfill's read and the trigger's creation never reaches the coarse grains | `ChunkedBackfillLosesNoConcurrentWrite` |
 | Backfill skips the bucket locks | A chunk and a write each re-merge from a snapshot missing the other, and the later commit overwrites the earlier one | `ChunkedBackfillLosesNoConcurrentWrite`, which must fail without the locks |
 | A chunk outgrows the lock table | `out of shared memory`, and the backfill stops | The chunk planner's unit test at a 1s source grain |
