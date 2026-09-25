@@ -68,24 +68,34 @@ func checkWindows(rendered []byte, rep *Report) {
 		// bucket cut from a payload field of the handler's choosing is closed
 		// on evidence about a different stream. The handler exposes the
 		// assigned time as event_time; a windowing pipeline's handler SQL
-		// must read it, and a structured handler's batch table must declare
-		// it, or there is nothing for the SQL to read.
+		// should read it, and a structured handler's batch table should
+		// declare it, or there is nothing for the SQL to read.
+		//
+		// A warning, not a failure, for now. Only the websocket source can be
+		// told where its event time is; Kafka assigns the record timestamp
+		// and MQTT assigns arrival, and a pipeline that windows a Kafka topic
+		// on a timestamp inside the payload -- every shipped example does --
+		// would be wrong to comply. Once every source takes an event_time
+		// block, complying makes the two clocks one by construction, and
+		// this becomes an error.
 		if hasWindow(conf) {
 			h := conf.Pipeline.Handler
+			warn := func(msg string) {
+				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, msg, position(handlerNode(&root))))
+			}
 			if !mentionsEventTime(h.SQL) {
-				fail("pipeline.handler: a windowing pipeline's handler sql must derive the "+
-					"window's time from the event_time column, the time the source assigned "+
-					"the record. A bucket cut from another field of the payload is on a "+
-					"different clock from the watermark, and the one closes the other on "+
-					"evidence about the wrong stream", position(handlerNode(&root)))
+				warn("pipeline.handler: a windowing pipeline's handler sql does not read the " +
+					"event_time column, the time the source assigned the record. A bucket cut " +
+					"from another field of the payload is on a different clock from the one the " +
+					"engine checks, and a record the engine refuses as unplaceable is judged on " +
+					"a time the window never sees. Cut the window's time from event_time where " +
+					"the source can be told where its time is")
 			}
 			if isStructuredHandler(h.Type) {
 				if ddl, ok := tableDDL(conf, h.Table); !ok || !declaresTimestamptz(ddl, "event_time") {
-					fail(fmt.Sprintf("pipeline.handler: table %q must declare event_time TIMESTAMPTZ. "+
-						"A structured handler's batch table is the user's, and the engine fills "+
-						"that column with the time the source assigned each record; without it "+
-						"there is nothing for a window to be cut on", h.Table),
-						position(handlerNode(&root)))
+					warn(fmt.Sprintf("pipeline.handler: a windowing pipeline's table %q does not declare "+
+						"event_time TIMESTAMPTZ, so the time the source assigned each record cannot "+
+						"reach the handler's SQL. Declare it and the engine fills it from the record", h.Table))
 				}
 			}
 		}

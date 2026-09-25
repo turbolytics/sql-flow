@@ -272,10 +272,11 @@ const plainConfig = `pipeline:
     type: noop
 `
 
-// A windowing pipeline's handler must derive the window's time from the
+// A windowing pipeline's handler should derive the window's time from the
 // event_time column -- the time the source assigned -- or the buckets and
-// the watermark are on different clocks. A pipeline with no window is free
-// to cut time from any field it likes.
+// the engine's placement check are on different clocks. A warning until
+// every source can be told where its time is. A pipeline with no window is
+// free to cut time from any field it likes.
 func TestValidateSchema_AWindowingHandlerMustReadEventTime(t *testing.T) {
 	coverage.Covers(t, "validate.schema")
 	cfg := strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1)
@@ -283,10 +284,13 @@ func TestValidateSchema_AWindowingHandlerMustReadEventTime(t *testing.T) {
 		"time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000))", 1)
 	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: cfg})
 	assert.NoError(t, err)
-	assert.That(t, !rep.OK)
+	// A warning, not a failure: the config still runs, and validate says
+	// why it might be on two clocks.
+	assert.That(t, rep.OK)
 	diags := windowDiagnostics(rep)
 	assert.Equal(t, 1, len(diags))
-	assert.That(t, strings.Contains(diags[0].Message, "must derive the window's time from the event_time column"))
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.That(t, strings.Contains(diags[0].Message, "does not read the event_time column"))
 	assert.That(t, diags[0].Position != nil)
 
 	rep, err = Validate(context.Background(), Request{Path: "p.yml", Config: plainConfig})
@@ -295,7 +299,7 @@ func TestValidateSchema_AWindowingHandlerMustReadEventTime(t *testing.T) {
 }
 
 // A structured handler's batch table is the user's, and the engine fills its
-// event_time column from the record; a windowing pipeline on one must
+// event_time column from the record; a windowing pipeline on one should
 // declare that column, as TIMESTAMPTZ, or there is nothing to cut on.
 func TestValidateSchema_AStructuredWindowingHandlerMustDeclareEventTime(t *testing.T) {
 	coverage.Covers(t, "validate.schema")
@@ -316,8 +320,10 @@ func TestValidateSchema_AStructuredWindowingHandlerMustDeclareEventTime(t *testi
 	rep, err = Validate(context.Background(), Request{Path: "s.yml",
 		Config: structured("CREATE TABLE posts (text TEXT, time_us BIGINT)")})
 	assert.NoError(t, err)
-	assert.That(t, !rep.OK)
+	assert.That(t, rep.OK)
 	diags := windowDiagnostics(rep)
 	assert.Equal(t, 1, len(diags))
-	assert.That(t, strings.Contains(diags[0].Message, `table "posts" must declare event_time TIMESTAMPTZ`))
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.That(t, strings.Contains(diags[0].Message, `table "posts" does not declare event_time TIMESTAMPTZ`))
+	assert.That(t, diags[0].Position != nil)
 }
