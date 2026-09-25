@@ -90,6 +90,9 @@ func measureDiffers(m config.RollupMeasure, w, g string) string {
 // its open bucket. Rows pair through GROUP BY rather than a full join:
 // Postgres refuses a full join on IS NOT DISTINCT FROM, and grouping treats
 // NULL dimension values as equal, as the unique index does.
+//
+// The statement's own columns carry a ~ or a colon, which no declared name
+// can: a dimension named side would otherwise make the statement ambiguous.
 func verifySQL(r config.Rollup, e edge) string {
 	t := quote(r.Source.TimeColumn)
 	keys := keyColumns(r, e.Set)
@@ -100,13 +103,13 @@ func verifySQL(r config.Rollup, e edge) string {
 	for i := range cols {
 		cols[i] += " AS " + quote(names[i])
 	}
-	pairs := []string{quoteList(keys), "bool_or(side = 'w') AS in_want", "bool_or(side = 'g') AS in_got"}
+	pairs := []string{quoteList(keys), `bool_or("~side" = 'w') AS "~in_want"`, `bool_or("~side" = 'g') AS "~in_got"`}
 	var differs, measureArms, storedArms, recomputedArms []string
 	for _, m := range measures {
 		w, g := quote("w:"+m), quote("g:"+m)
 		pairs = append(pairs,
-			fmt.Sprintf("(array_agg(%s) FILTER (WHERE side = 'w'))[1] AS %s", quote(m), w),
-			fmt.Sprintf("(array_agg(%s) FILTER (WHERE side = 'g'))[1] AS %s", quote(m), g))
+			fmt.Sprintf(`(array_agg(%s) FILTER (WHERE "~side" = 'w'))[1] AS %s`, quote(m), w),
+			fmt.Sprintf(`(array_agg(%s) FILTER (WHERE "~side" = 'g'))[1] AS %s`, quote(m), g))
 		d := measureDiffers(e.Set.Measures[m], w, g)
 		differs = append(differs, d)
 		measureArms = append(measureArms, fmt.Sprintf("WHEN %s THEN '%s'", d, m))
@@ -131,16 +134,16 @@ func verifySQL(r config.Rollup, e edge) string {
   SELECT %[5]s FROM %[6]s WHERE %[3]s >= $1 AND %[3]s < $2
 ), pairs AS (
   SELECT %[7]s
-  FROM (SELECT 'w' AS side, %[5]s FROM want UNION ALL SELECT 'g', %[5]s FROM got) AS u
+  FROM (SELECT 'w' AS "~side", %[5]s FROM want UNION ALL SELECT 'g', %[5]s FROM got) AS u
   GROUP BY %[8]s
 ), diff AS (
   SELECT %[3]s AS bucket_at, %[9]s AS key,
-         CASE WHEN NOT in_got THEN 'missing' WHEN NOT in_want THEN 'extra' ELSE 'differs' END AS kind,
+         CASE WHEN NOT "~in_got" THEN 'missing' WHEN NOT "~in_want" THEN 'extra' ELSE 'differs' END AS kind,
          CASE %[10]s END AS measure,
          CASE %[11]s END AS stored,
          CASE %[12]s END AS recomputed
   FROM pairs
-  WHERE NOT in_want OR NOT in_got OR %[13]s
+  WHERE NOT "~in_want" OR NOT "~in_got" OR %[13]s
 )
 SELECT (SELECT count(DISTINCT %[3]s) FROM pairs),
        (SELECT count(DISTINCT bucket_at) FROM diff),

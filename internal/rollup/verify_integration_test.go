@@ -130,6 +130,50 @@ SELECT g, r, 0.1 * extract(minute FROM g) FROM generate_series('2026-09-12T10:00
 	assert.Equal(t, "differs", v.Sample[0].Kind)
 }
 
+// Verify's own columns cannot take a name a rollups file may declare. A
+// trade's side is a likely dimension, and in_want and in_got are legal ones.
+// A clash made the statement ambiguous, so verify errored every pass and
+// never reached a verdict for the table.
+func TestIntegrationRollupRun_VerifyAcceptsDimensionsNamedLikeItsOwnColumns(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	execSQL(t, srv.conn, `CREATE TABLE trade_minutes (bucket TIMESTAMPTZ NOT NULL, side TEXT NOT NULL,
+  in_want TEXT NOT NULL, in_got TEXT NOT NULL, qty BIGINT NOT NULL)`)
+	execSQL(t, srv.conn, `CREATE UNIQUE INDEX ON trade_minutes (bucket, side, in_want, in_got)`)
+	dims := []string{"side", "in_want", "in_got"}
+	conf := &config.RollupsConf{Rollups: []config.Rollup{{
+		Name:   "trades",
+		Source: config.RollupSource{Table: "trade_minutes", TimeColumn: "bucket", Grain: "1m", Dimensions: dims},
+		Grains: map[string]config.RollupGrain{"5m": {From: "1m"}},
+		DimensionSets: []config.RollupDimensionSet{{
+			Name: "trades_by_side", Dimensions: dims,
+			Measures: map[string]config.RollupMeasure{"qty": {Type: "sum", Column: "qty"}},
+		}},
+	}}}
+	mustInstall(t, srv.conn, conf)
+	fillAll(t, srv.conn, conf)
+	execSQL(t, srv.conn, `INSERT INTO trade_minutes (bucket, side, in_want, in_got, qty)
+SELECT g, s, 'a', 'b', 1 FROM generate_series('2026-09-12T10:00:00Z'::timestamptz, '2026-09-12T10:59:00Z', interval '1 minute') AS g,
+       unnest(ARRAY['buy', 'sell']) AS s`)
+
+	tg := targetFor(t, conf.Rollups[0], "trades_by_side_5m")
+	lo, hi := at("2026-09-12T10:00:00Z"), at("2026-09-12T11:00:00Z")
+	v, err := VerifyRange(ctx, srv.conn, tg, lo, hi)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(12), v.Buckets)
+	assert.Equal(t, int64(0), v.DriftBuckets)
+
+	execSQL(t, srv.conn, `UPDATE trades_by_side_5m SET qty = qty + 1 WHERE side = 'buy' AND bucket = '2026-09-12T10:00:00Z'`)
+	v, err = VerifyRange(ctx, srv.conn, tg, lo, hi)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), v.DriftBuckets)
+	assert.Equal(t, "side=buy, in_want=a, in_got=b", v.Sample[0].Key)
+}
+
 // targetNamed finds a table among the targets.
 func targetNamed(t *testing.T, targets []Target, table string) Target {
 	t.Helper()
