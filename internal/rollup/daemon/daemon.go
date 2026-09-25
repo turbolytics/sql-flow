@@ -194,7 +194,6 @@ func (d *Daemon) keepLead(ctx context.Context, s *session) {
 			}
 			s.close()
 			d.health.setRole(roleStandby)
-			d.health.setDrift(nil, 0)
 			return
 		}
 		d.health.touch(time.Now())
@@ -225,7 +224,6 @@ func (d *Daemon) keepLead(ctx context.Context, s *session) {
 	if !ok {
 		d.health.setRole(roleStandby)
 		d.health.setPending(0)
-		d.health.setDrift(nil, 0)
 		return
 	}
 	s.leading = true
@@ -415,8 +413,9 @@ func (d *Daemon) observeTable(ctx context.Context, work *pgx.Conn, rollupName, t
 }
 
 // verify checks the newest two buckets of every table not still filling.
-// Drift sets degraded until a pass finds none: a restart cannot fix it.
-// Each drifted table logs its first rows, at most 10.
+// Drift is counted in rollup_drift_buckets, and each drifted table logs its
+// first rows, at most 10. It leaves /healthz alone: drift belongs to the
+// store, and a restart cannot fix it.
 func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
 	start := time.Now()
 	targets, err := rollup.VerifyTargets(ctx, work, d.conf)
@@ -427,8 +426,6 @@ func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
 		}
 		return
 	}
-	var drifted []string
-	var buckets int64
 	for _, tg := range targets {
 		if tg.Skip != "" {
 			continue
@@ -450,8 +447,6 @@ func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
 			continue
 		}
 		d.m.driftBuckets.Add(ctx, v.DriftBuckets, attrs)
-		drifted = append(drifted, v.Table)
-		buckets += v.DriftBuckets
 		for _, row := range v.Sample {
 			d.log.Warn("drift", zap.String("rollup", v.Rollup), zap.String("table", v.Table),
 				zap.String("built_from", v.BuiltFrom), zap.Time("bucket", row.Bucket), zap.String("key", row.Key),
@@ -463,6 +458,5 @@ func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
 		return
 	}
 	d.health.touch(time.Now())
-	d.health.setDrift(drifted, buckets)
 	d.m.verifyDuration.Record(ctx, time.Since(start).Seconds())
 }

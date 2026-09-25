@@ -3,8 +3,9 @@
 `sqlflow rollup run` is a daemon that manages the rollup tables a
 `rollups.yml` declares. It installs and upgrades their tables and triggers,
 backfills them in chunks, checks every table against the table it is built
-from, and reports freshness, completeness and drift through `/metrics`,
-`/healthz` and TurboStats. The triggers still do the merge: on Postgres they
+from, and reports freshness, completeness and drift through `/metrics` and
+TurboStats, and its own health through `/healthz`. The triggers still do the
+merge: on Postgres they
 are the cheapest way to keep a rollup current. `sqlflow rollup test` checks a
 declaration against fixtures and generated writes on a real Postgres in CI.
 
@@ -442,7 +443,7 @@ through a full outer join on the table's key.
   does.
 - **A table still filling is skipped**, with every table its chunks'
   upserts reach. It differs from its source by design until the fill
-  completes, and checking it would report `degraded` during every backfill.
+  completes, and checking it would report drift during every backfill.
 
 The loop checks the newest two buckets of every table. The newest is the
 later of the table's newest and the newest its from table makes, so a table
@@ -539,10 +540,15 @@ and `table`.
 The rules `sqlflow run` uses: 200 means do not restart, and 503 means
 restart. The first matching rule wins.
 
+`/healthz` reports the process: whether it can install, fill and check.
+Drift is not a rule. It belongs to the store, the daemon did not cause it,
+and a restart cannot fix it. The daemon reports it in
+`rollup_drift_buckets`, its log, and TurboStats' `drift_bucket_count`, and
+`sqlflow rollup verify` exits non-zero on it.
+
 | Status | Code | When |
 |---|---|---|
 | `failed` | 503 | Reconcile failed, or the database was unreachable for three observe intervals |
-| `degraded` | 200 | The last verify pass found drift |
 | `standby` | 200 | Another instance holds the leader lock |
 | `backfilling` | 200 | A backfill is running. The reason names the tables left and the source history left in the one filling. |
 | `starting` | 200 | The process is installing and taking the leader lock, or it leads and has not yet read which tables need filling. Before that read, no pending tables means unknown, not none. |
@@ -735,7 +741,7 @@ tests stay, because the trigger SQL does not change.
 | `BackfillResumesAfterACrash` | A daemon killed after chunk k resumes at chunk k |
 | `LeaderHandoff` | Only the leader backfills. After its lock connection drops, the standby leads within two observe intervals |
 | `TwoInstallsAtOnce` | Four concurrent installs succeed, and the objects exist once |
-| `DriftIsReported` | After `DISABLE TRIGGER` and a write, drift names the table and bucket, and `/healthz` reports `degraded` |
+| `DriftIsCountedAndHealthStaysHealthy` | After `DISABLE TRIGGER` and a write, `rollup_drift_buckets` counts the table, `/healthz` stays `healthy`, and the count stops growing once the bucket is re-merged |
 | `VerifyUnderConcurrentWritesReportsNoDrift` | A verify loop beside four writers for 20 seconds reports no drift |
 | `ReconcileKeepsRemovedTables` | Removing a grain keeps its table and triggers, and restoring it needs no backfill |
 | `ChangedMeasureTypeRefused` | The daemon stops with `user.config.rollup_change`, and no DDL runs |
@@ -844,10 +850,10 @@ the control repository's launch freeze to lift.
 | A busy table stays first in line | A write left open on one table's bucket stops every other table's backfill | `ABusyTableHoldsUpNoOther` |
 | A chunk writes progress over an entry that moved | An install re-creates a table, and a chunk begun before it skips the history the new table lacks | `AChunkWritesNoProgressOverAMovedEntry` |
 | Adoption misreads an existing table | A trigger writes into a mismatched column, the pipeline's write fails, and the worker restart-loops | `AdoptionRefusesAMismatchedTable` |
-| Verify reads across two snapshots | Drift reported on correct rows, and `/healthz` stuck at `degraded` | `VerifyUnderConcurrentWritesReportsNoDrift` |
+| Verify reads across two snapshots | Drift counted and logged on correct rows | `VerifyUnderConcurrentWritesReportsNoDrift` |
 | Verify compares doubles exactly | The same, for every `numeric: double` sum: compared exactly, 4 of 12 correct buckets read as drift on 2026-09-25, because the trigger and the recompute sum in different orders | `ANullDimensionAndADoubleSumVerifyClean`, `OnlyADoubleSumMatchesWithinATolerance` |
 | Verify pairs rows on `=` | A `NULL` dimension value reads as a missing row and an extra one | `ANullDimensionAndADoubleSumVerifyClean` |
-| Verify checks a table still filling | `/healthz` reports `degraded` during every backfill | `VerifySkipsTablesStillFilling` |
+| Verify checks a table still filling | Drift counted during every backfill | `VerifySkipsTablesStillFilling` |
 | A new leader reports before it reads its tables to fill | `/healthz` says `healthy` over empty tables, and a deploy check passes | `TheDaemonInstallsAndFillsHistory`, which fails once the verify pass widens that window |
 | Reconcile refuses a removal | A rollback fails every entrypoint that runs `install`, and the API goes down | `ReconcileKeepsRemovedTables` |
 | `store_id` differs between reporters | Control shows one table twice, each half as fresh | `OneStoreIDForTwoHostnames` |

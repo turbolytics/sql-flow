@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -295,11 +296,38 @@ FROM sqlflow_rollup_state WHERE rollup = 'posts'`).Scan(&filled)
 	assertExact(t, conn)
 }
 
-// Stopping the triggers from 5m to 15m and then writing drifts 15m. The
-// next verify pass reports degraded and names the table, the instruments
-// record it, and after the trigger returns and the minute is rewritten the
-// next pass is healthy again, with no restart.
-func TestIntegrationRollupRun_DriftIsReportedAndClears(t *testing.T) {
+// metricsText is the daemon's /metrics page.
+func metricsText(t *testing.T, addr string) string {
+	t.Helper()
+	resp, err := http.Get("http://" + addr + "/metrics")
+	assert.NoError(t, err)
+	text, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	assert.NoError(t, err)
+	return string(text)
+}
+
+// seriesSum sums the samples of one metric for one table.
+func seriesSum(text, name, table string) float64 {
+	var sum float64
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, name+"{") || !strings.Contains(line, `table="`+table+`"`) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if v, err := strconv.ParseFloat(fields[len(fields)-1], 64); err == nil {
+			sum += v
+		}
+	}
+	return sum
+}
+
+// Drift belongs to the store, not the process: the daemon did not cause it
+// and a restart cannot fix it, so /healthz stays healthy. Stopping the
+// triggers from 5m to 15m and then writing drifts 15m, and each verify pass
+// counts it under the table's name. After the trigger returns and the
+// minute is rewritten, the count stops growing.
+func TestIntegrationRollupRun_DriftIsCountedAndHealthStaysHealthy(t *testing.T) {
 	coverage.Covers(t, "cli.rollup_run")
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
@@ -314,23 +342,27 @@ func TestIntegrationRollupRun_DriftIsReportedAndClears(t *testing.T) {
 	exec(t, conn, `ALTER TABLE posts_by_lang_5m DISABLE TRIGGER sqlflow_rollup_posts_by_lang_15m_ins`)
 	exec(t, conn, `ALTER TABLE posts_by_lang_5m DISABLE TRIGGER sqlflow_rollup_posts_by_lang_15m_upd`)
 	exec(t, conn, `INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-12T23:58:00Z', 'pt', 9)`)
-	waitFor(t, "degraded naming posts_by_lang_15m", func() bool {
-		s, reason := d.Health()
-		return s == "degraded" && strings.Contains(reason, "posts_by_lang_15m")
+	waitFor(t, "drift counted for posts_by_lang_15m", func() bool {
+		return seriesSum(metricsText(t, addr), "rollup_drift_buckets_total", "posts_by_lang_15m") > 0
 	})
-
-	resp, err := http.Get("http://" + addr + "/metrics")
-	assert.NoError(t, err)
-	text, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	assert.NoError(t, err)
+	// A pass counts drift before it ends, so health is read after two whole
+	// passes more.
+	time.Sleep(2 * verifyEvery * 100 * time.Millisecond)
+	assert.Equal(t, "healthy", status(d))
+	text := metricsText(t, addr)
 	for _, series := range []string{"rollup_verify_buckets_total", "rollup_drift_buckets_total",
 		"rollup_verify_duration_seconds", "rollup_newest_bucket_timestamp_seconds"} {
-		assert.That(t, strings.Contains(string(text), series))
+		assert.That(t, strings.Contains(text, series))
 	}
 
 	exec(t, conn, `ALTER TABLE posts_by_lang_5m ENABLE TRIGGER sqlflow_rollup_posts_by_lang_15m_ins`)
 	exec(t, conn, `ALTER TABLE posts_by_lang_5m ENABLE TRIGGER sqlflow_rollup_posts_by_lang_15m_upd`)
 	exec(t, conn, `UPDATE posts_per_minute_by_lang SET posts = posts WHERE bucket = '2026-09-12T23:58:00Z'`)
-	waitFor(t, "healthy again", func() bool { return status(d) == "healthy" })
+	// Two verify passes apart, the count is unchanged once nothing drifts.
+	waitFor(t, "the drift count to stop growing", func() bool {
+		before := seriesSum(metricsText(t, addr), "rollup_drift_buckets_total", "posts_by_lang_15m")
+		time.Sleep(2 * verifyEvery * 100 * time.Millisecond)
+		return seriesSum(metricsText(t, addr), "rollup_drift_buckets_total", "posts_by_lang_15m") == before
+	})
+	assert.Equal(t, "healthy", status(d))
 }

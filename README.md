@@ -558,10 +558,11 @@ when a write holds one, the chunk steps back and tries again, so the
 pipeline keeps writing.
 
 `run` also checks each table's newest two buckets every minute against the
-table it is built from. Drift turns `/healthz` to `degraded`, which returns
-`200` because a restart cannot fix it, and logs the first rows that differ.
-A disabled trigger, a hand edit or a write that bypassed the triggers
-causes drift. Rewrite the bucket's source rows to re-merge it.
+table it is built from. It counts drift in `rollup_drift_buckets` and logs
+the first rows that differ. Drift leaves `/healthz` alone: it belongs to
+the data, and a restart cannot fix it, so alert on the metric's rate. A
+disabled trigger, a hand edit or a write that bypassed the triggers causes
+drift. Rewrite the bucket's source rows to re-merge it.
 
 `ddl` and `check` suit a team that applies SQL through its own migration
 runner. `install` and `run` do it for you. [`dev/config/rollups/bluesky.yml`](dev/config/rollups/bluesky.yml)
