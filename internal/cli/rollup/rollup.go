@@ -20,9 +20,10 @@ func NewCommand() *cobra.Command {
 		Long: "Generate, from a rollups file, the migration that creates rollup tables and the " +
 			"triggers that keep them current, and the serve datasets that read them. install " +
 			"applies the tables and triggers itself, and run keeps them installed and fills " +
-			"their history. check fails when a committed copy of a generated file has drifted.",
+			"their history. verify checks every table against the table it is built from. " +
+			"check fails when a committed copy of a generated file has drifted.",
 	}
-	cmd.AddCommand(newDDLCommand(), newServeCommand(), newCheckCommand(), newInstallCommand(), newRunCommand())
+	cmd.AddCommand(newDDLCommand(), newServeCommand(), newCheckCommand(), newInstallCommand(), newRunCommand(), newVerifyCommand())
 	return cmd
 }
 

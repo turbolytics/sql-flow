@@ -109,6 +109,9 @@ const (
 	// The rollup store refused or dropped the connection. Retryable: the
 	// database may come back.
 	CodeRollupUnreachable Code = "system.rollup.unreachable"
+	// verify found stored buckets that differ from the table they are built
+	// from. A restart cannot fix it: something wrote around the triggers.
+	CodeRollupDrift Code = "system.rollup.drift"
 
 	// The last resort. CodeOf returns it for an error carrying no code, so an
 	// unclassified failure still reports as ours rather than the user's.
@@ -169,6 +172,11 @@ var registry = map[Code]Definition{
 		CodeRollupInternal,
 		"A rollup command failed on a database error it could not classify. Nothing it began was committed.",
 		"Read the wrapped database error. Retry once the database is healthy; if it repeats, report it with the message.",
+	},
+	CodeRollupDrift: {
+		CodeRollupDrift,
+		"Stored rollup buckets differ from what the table they are built from makes.",
+		"Read the rows verify printed: the table, the bucket, and the first measure that differs. A disabled trigger, a hand edit, or a write that bypassed the triggers causes it. Fix the cause, then rewrite the bucket's source rows, for example UPDATE <source> SET <column> = <column> over the bucket's range, which re-merges every grain above it, and run verify again.",
 	},
 	CodeRollupUnreachable: {
 		CodeRollupUnreachable,
