@@ -3,6 +3,9 @@ package simulate
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -142,29 +145,52 @@ type windowHandler struct {
 	size  time.Duration
 
 	mu sync.Mutex
-	n  int64
+	// Rows buffered for this batch, by the bucket their event time falls in.
+	// A batch can straddle buckets, which is what makes a window a window:
+	// the handler groups by the data's own clock, not by when it ran.
+	buffered map[time.Time]int64
+	n        int64
 }
 
 func (h *windowHandler) Init(context.Context) error { return nil }
 
-func (h *windowHandler) Write([]byte) error {
+// Write reads the record's event time out of the payload, the way a real
+// windowed pipeline's SQL reads it out of the message, and buckets on it.
+func (h *windowHandler) Write(msg []byte) error {
+	at := h.clock()
+	if _, after, ok := strings.Cut(string(msg), ","); ok {
+		if micros, err := strconv.ParseInt(after, 10, 64); err == nil {
+			at = time.UnixMicro(micros).UTC()
+		}
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.buffered == nil {
+		h.buffered = map[time.Time]int64{}
+	}
+	h.buffered[at.UTC().Truncate(h.size)]++
 	h.n++
 	return nil
 }
 
 func (h *windowHandler) Invoke(context.Context) (arrow.Table, error) {
 	h.mu.Lock()
-	n := h.n
-	h.n = 0
+	buffered := h.buffered
+	h.buffered, h.n = nil, 0
 	h.mu.Unlock()
 
-	if n > 0 {
-		bucket := h.clock().UTC().Truncate(h.size)
+	// One row per bucket the batch touched, in bucket order so a script's
+	// inserts are deterministic.
+	buckets := make([]time.Time, 0, len(buffered))
+	for b := range buffered {
+		buckets = append(buckets, b)
+	}
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Before(buckets[j]) })
+	for _, b := range buckets {
 		execSQL(h.t, h.conn, fmt.Sprintf(
 			`INSERT INTO %s VALUES (TIMESTAMPTZ '%s', %d)`,
-			windowTable, bucket.Format("2006-01-02 15:04:05-07:00"), n))
+			windowTable, b.Format("2006-01-02 15:04:05-07:00"), buffered[b]))
 	}
 
 	// The pipeline sink receives nothing: the window's sink is what publishes.
@@ -261,11 +287,12 @@ func RunWindowed(t *testing.T, owned []int32, decl managers.Declaration, script 
 	db := openWindowDB(t)
 
 	r := &run{
-		t:     t,
-		coord: newCoordinator(),
-		sink:  newSink(),
-		now:   time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
-		owned: owned,
+		t:       t,
+		coord:   newCoordinator(),
+		sink:    newSink(),
+		now:     time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
+		owned:   owned,
+		eventAt: map[int64]time.Time{},
 	}
 	r.window = &windowRun{db: db, decl: decl, sink: newWindowSink()}
 	r.window.handler = &windowHandler{t: t, conn: db.pipeline, clock: r.clock, size: decl.Size}
@@ -284,24 +311,33 @@ func RunWindowed(t *testing.T, owned []int32, decl managers.Declaration, script 
 	r.stop()
 
 	rows, republished := r.window.sink.counts()
+	stillOpen := queryInt(t, db.reader, fmt.Sprintf(`SELECT coalesce(sum(n), 0)::BIGINT FROM %s`, windowTable))
+	// What the run cannot account for: produced, not published, not still
+	// held. Under late_rows drop that is exactly what the drop policy
+	// discarded, and it is measured from the run's own totals rather than
+	// taken from the manager's counter, so a row lost some other way shows
+	// up here too rather than being reported as zero.
+	lateDropped := int64(r.produced) - rows - stillOpen
+	if lateDropped < 0 {
+		lateDropped = 0
+	}
 	return WindowResult{
 		Produced:    r.produced,
 		Published:   rows,
-		StillOpen:   queryInt(t, db.reader, fmt.Sprintf(`SELECT coalesce(sum(n), 0)::BIGINT FROM %s`, windowTable)),
+		StillOpen:   stillOpen,
 		Republished: republished,
-		LateDropped: r.window.lateDropped,
+		LateDropped: lateDropped,
 	}
 }
 
 // windowRun is the window half of a run: the database, the manager, and what
 // the window's sink received.
 type windowRun struct {
-	db          *windowDB
-	decl        managers.Declaration
-	handler     *windowHandler
-	manager     *managers.Watermark
-	sink        *windowSink
-	lateDropped int64
+	db      *windowDB
+	decl    managers.Declaration
+	handler *windowHandler
+	manager *managers.Watermark
+	sink    *windowSink
 }
 
 func (Poll) apply(r *run) {
