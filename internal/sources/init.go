@@ -30,6 +30,14 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		if err != nil {
 			return nil, err
 		}
+		eventTime, err := c.Kafka.ResolvedEventTime()
+		if err != nil {
+			return nil, err
+		}
+		basis := "kafka timestamp"
+		if eventTime != nil {
+			basis = eventTime.Basis()
+		}
 
 		l.Info(
 			"initializing kafka source",
@@ -39,6 +47,7 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			zap.Int("fetch.max_bytes", fetch.MaxBytes),
 			zap.Int("fetch.max_partition_bytes", fetch.MaxPartitionBytes),
 			zap.Int("fetch.prefetch", fetch.Prefetch),
+			zap.String("event_time", basis),
 		)
 		brokers := []string{"localhost:9092"}
 		if len(c.Kafka.Brokers) > 0 {
@@ -91,6 +100,7 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			tkafka.WithSeeker(seeker),
 			tkafka.WithPartitionEvents(partitions),
 			tkafka.WithChannelBuffer(fetch.Prefetch),
+			tkafka.WithEventTime(eventTime),
 		)
 		return k, err
 	},
@@ -124,10 +134,19 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		if err != nil {
 			return nil, err
 		}
+		eventTime, err := c.Webhook.ResolvedEventTime()
+		if err != nil {
+			return nil, err
+		}
+		basis := core.EventBasisArrival
+		if eventTime != nil {
+			basis = eventTime.Basis()
+		}
 		l.Info("initializing webhook source",
 			zap.String("addr", addr),
 			zap.Int64("max_body_bytes", maxBody),
 			zap.Int("max_connections", maxConns),
+			zap.String("event_time", basis),
 		)
 		opts := []webhook.Option{
 			webhook.WithLogger(l),
@@ -135,6 +154,7 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			webhook.WithAddr(addr),
 			webhook.WithMaxBodyBytes(maxBody),
 			webhook.WithMaxConnections(maxConns),
+			webhook.WithEventTime(eventTime),
 		}
 		// Only a configured signature type turns validation on, so a webhook
 		// block that carries an hmac stanza but no signature_type accepts
@@ -171,6 +191,7 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			Topics:         r.Topics,
 			SessionExpiry:  r.SessionExpiry,
 			ReceiveMaximum: r.ReceiveMaximum,
+			EventTime:      r.EventTime,
 		}, tmqtt.WithLogger(l))
 	},
 }

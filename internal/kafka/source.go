@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/eventtime"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -15,6 +16,9 @@ import (
 )
 
 type Source struct {
+	// eventTime reads each record's own time from its payload; nil takes the
+	// record's Kafka timestamp.
+	eventTime     *eventtime.Extractor
 	client        *kgo.Client
 	readTimeout   time.Duration
 	channelBuffer int
@@ -34,6 +38,13 @@ type Source struct {
 }
 
 type Option func(*Source)
+
+// WithEventTime reads each record's event time from its payload instead of
+// taking the record's Kafka timestamp. A record with no usable value at the
+// path is stamped core.EventTimeMissing, which a windowing pipeline refuses.
+func WithEventTime(ex *eventtime.Extractor) Option {
+	return func(s *Source) { s.eventTime = ex }
+}
 
 func WithReadTimeout(timeout time.Duration) Option {
 	return func(s *Source) {
@@ -273,7 +284,7 @@ func (k *Source) Stream() <-chan []core.Message {
 			batch := make([]core.Message, 0, fetches.NumRecords())
 			fetches.EachPartition(func(p kgo.FetchTopicPartition) {
 				for _, r := range p.Records {
-					batch = append(batch, messageFrom(r, p.HighWatermark))
+					batch = append(batch, messageFrom(r, p.HighWatermark, k.eventTime))
 				}
 				// Which clock stamped these records. message.timestamp.type
 				// is topic-level config, so the last record of a fetch
@@ -315,13 +326,25 @@ func (k *Source) Stream() <-chan []core.Message {
 // messageFrom is the record-to-message conversion, lifted out of the fetch
 // loop so a test can reach it without a broker.
 //
-// EventAtNanos is the record's own timestamp: a pipeline behind by an hour
-// is handling records stamped an hour ago. Which clock set it depends on the
-// topic, which is what EventTimeBasis reports.
-func messageFrom(r *kgo.Record, highWatermark int64) core.Message {
+// EventAtNanos is the record's own timestamp unless the source was told
+// where the event time is in the payload: a pipeline behind by an hour is
+// handling records stamped an hour ago. Which clock set it depends on the
+// topic, or on the configured path, which is what EventTimeBasis reports.
+func messageFrom(r *kgo.Record, highWatermark int64, ev *eventtime.Extractor) core.Message {
+	at := r.Timestamp.UnixNano()
+	if ev != nil {
+		var err error
+		if at, err = ev.Extract(r.Value); err != nil {
+			// The operator said where the time is, and this record has
+			// none there. Not the Kafka timestamp as a fallback: that is a
+			// different clock, and mixing the two per record is the trap
+			// the block exists to close.
+			at = core.EventTimeMissing
+		}
+	}
 	return core.Message{
 		Value:         r.Value,
-		EventAtNanos:  r.Timestamp.UnixNano(),
+		EventAtNanos:  at,
 		Topic:         r.Topic,
 		Partition:     r.Partition,
 		Offset:        r.Offset,
@@ -351,6 +374,9 @@ func (k *Source) observeTimestampType(ts int8) {
 // only pre-0.10.0 topics reports it too, and reports no lag at all: those
 // records carry no usable time, so no reading is ever taken from them.
 func (s *Source) EventTimeBasis() string {
+	if s.eventTime != nil {
+		return s.eventTime.Basis()
+	}
 	if s.timestampType.Load() == 1 {
 		return core.EventBasisKafkaLogAppendTime
 	}

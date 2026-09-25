@@ -4,6 +4,22 @@
 
 ### Added
 
+- Every source can now be told where its event time is. `event_time`, the
+  block the websocket source gained, is accepted on the Kafka, webhook and
+  MQTT sources too: a dotted `path` into the payload and a `format`. Absent,
+  each source assigns what it did before -- Kafka the record's own
+  timestamp, webhook and MQTT arrival -- so an existing config runs
+  unchanged. Set, the record's time is the payload's: the lag reading is
+  measured against it, `event_lag_basis` names the path, a record with no
+  usable value at the path is stamped as missing rather than given the
+  other clock's time, and on a windowing pipeline such a record is refused.
+  This is what lets a Kafka topic whose records carry a sensor's own `ts`
+  window on that `ts` and be guarded against it: before, the engine's
+  placement rule checked the Kafka timestamp while the window cut buckets
+  from the payload, and a wrong `ts` walked past the rule that exists to
+  refuse it. `sqlflow validate`'s warning about a windowing pipeline that
+  does not read `event_time` can now be followed on every source.
+
 - The websocket source can read each frame's own event time from its
   payload: `websocket.event_time` names a dotted `path` and a `format`
   (`unix_s`, `unix_ms`, `unix_us`, `unix_ns` or `rfc3339`). Without it the

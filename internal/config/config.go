@@ -276,6 +276,15 @@ type KafkaSource struct {
 	// block to accept the defaults, which bound a backlog replay to a few
 	// fetches rather than the backlog.
 	Fetch *KafkaFetch `yaml:"fetch,omitempty"`
+	// EventTime names the field of each record's payload that carries the
+	// event's own time. Absent, the event time is the record's Kafka
+	// timestamp: the producer's clock, or the broker's where the topic sets
+	// message.timestamp.type. That is when the record was published, which
+	// is not always when the event happened -- a sensor reading's own ts is
+	// in the payload. Set it, and the record's time is the payload's. On a
+	// windowing pipeline a record without a usable value at the path is
+	// refused.
+	EventTime *EventTimeField `yaml:"event_time,omitempty"`
 }
 
 // Defaults for KafkaFetch.
@@ -369,7 +378,7 @@ type WebsocketSource struct {
 // EventTimeField names where a payload carries its event time and how the
 // value is encoded.
 type EventTimeField struct {
-	// Path into the JSON frame, dotted for nesting: "time_us", or
+	// Path into the JSON payload, dotted for nesting: "time_us", or
 	// "commit.record.createdAt".
 	Path string `yaml:"path"`
 	// Format is the value's encoding. The unix_* forms take an integer,
@@ -392,15 +401,44 @@ func (w *WebsocketSource) Resolved() (WebsocketResolved, error) {
 	if w.URI == "" {
 		return WebsocketResolved{}, errs.New(errs.CodeSourceInvalid, "websocket source: uri is required")
 	}
-	r := WebsocketResolved{URI: w.URI}
-	if w.EventTime != nil {
-		ex, err := eventtime.New(w.EventTime.Path, eventtime.Format(w.EventTime.Format))
-		if err != nil {
-			return WebsocketResolved{}, errs.Wrap(errs.CodeSourceInvalid, err, "websocket source")
-		}
-		r.EventTime = ex
+	ev, err := w.EventTime.resolved("websocket source")
+	if err != nil {
+		return WebsocketResolved{}, err
 	}
-	return r, nil
+	return WebsocketResolved{URI: w.URI, EventTime: ev}, nil
+}
+
+// resolved builds the extractor an event_time block describes, or nil for an
+// absent block. A bad path or format is a source error at start, named for
+// the source that carries it, rather than a surprise on the first record.
+func (f *EventTimeField) resolved(source string) (*eventtime.Extractor, error) {
+	if f == nil {
+		return nil, nil
+	}
+	ex, err := eventtime.New(f.Path, eventtime.Format(f.Format))
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeSourceInvalid, err, "%s", source)
+	}
+	return ex, nil
+}
+
+// ResolvedEventTime is the Kafka block's event_time, checked. Nil means the
+// record's Kafka timestamp, as before. A nil receiver is the absent block,
+// which has no event_time either.
+func (k *KafkaSource) ResolvedEventTime() (*eventtime.Extractor, error) {
+	if k == nil {
+		return nil, nil
+	}
+	return k.EventTime.resolved("kafka source")
+}
+
+// ResolvedEventTime is the webhook block's event_time, checked. Nil means
+// arrival, as before.
+func (w *WebhookSource) ResolvedEventTime() (*eventtime.Extractor, error) {
+	if w == nil {
+		return nil, nil
+	}
+	return w.EventTime.resolved("webhook source")
 }
 
 // WebhookHMAC configures signature validation of incoming webhook bodies.
@@ -438,6 +476,12 @@ type WebhookSource struct {
 	// Open connections the listener holds. Past it a new connection waits
 	// in the backlog until one closes.
 	MaxConnections int `yaml:"max_connections,omitempty" jsonschema:"minimum=1"`
+	// EventTime names the field of each body that carries the event's own
+	// time. Absent, the event time is arrival: the moment the body reached
+	// this process, which says nothing about when the event happened. Set
+	// it, and the record's time is the body's. On a windowing pipeline a
+	// body without a usable value at the path is refused.
+	EventTime *EventTimeField `yaml:"event_time,omitempty"`
 }
 
 // ResolvedMaxConnections is the connection bound in effect, defaulted. A nil
@@ -503,6 +547,12 @@ type MqttSource struct {
 	// Unacknowledged publishes the broker may send. Must be at least
 	// pipeline.batch_size. Defaults to 65535.
 	ReceiveMaximum int `yaml:"receive_maximum,omitempty" jsonschema:"minimum=0,maximum=65535"`
+	// EventTime names the field of each publish's payload that carries the
+	// event's own time. Absent, the event time is arrival: an MQTT publish
+	// carries no time of its own. Set it, and the record's time is the
+	// payload's. On a windowing pipeline a publish without a usable value
+	// at the path is refused.
+	EventTime *EventTimeField `yaml:"event_time,omitempty"`
 }
 
 // MqttResolved is an mqtt block with its defaults filled and its values
@@ -513,6 +563,7 @@ type MqttResolved struct {
 	Topics         []string
 	SessionExpiry  uint32
 	ReceiveMaximum uint16
+	EventTime      *eventtime.Extractor
 }
 
 // Resolved checks the block and fills its defaults. A nil receiver is the
@@ -554,7 +605,12 @@ func (m *MqttSource) Resolved() (MqttResolved, error) {
 	if recvMax == 0 {
 		recvMax = DefaultMqttReceiveMaximum
 	}
+	ev, err := m.EventTime.resolved("mqtt source")
+	if err != nil {
+		return MqttResolved{}, err
+	}
 	return MqttResolved{
+		EventTime:      ev,
 		Broker:         u,
 		ClientID:       m.ClientID,
 		Topics:         m.Topics,
