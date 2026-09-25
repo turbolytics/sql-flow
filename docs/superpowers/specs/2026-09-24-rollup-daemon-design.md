@@ -137,6 +137,7 @@ Exit codes are `errs` codes. New ones:
 | `user.config.rollup_test_failed` | A test case or an invariant failed |
 | `system.rollup.drift` | `verify` found stored buckets that differ from the table they are built from |
 | `system.rollup.unreachable` | The database refused or dropped the connection |
+| `system.rollup.internal` | A database error a rollup command could not classify. The registry gives every domain a catch-all. |
 
 ## Configuration
 
@@ -181,8 +182,10 @@ Left out on purpose:
 - **Intervals and sizes.** v1 observes every 15 seconds, verifies every 60
   seconds, and backfills one source day per chunk. Each becomes a setting
   when a user measures a need for it.
-- **A schema key.** Rollup tables go where the source is, through the
-  connection's `search_path`, as today.
+- **A schema key.** Rollup tables and the state table go in the
+  connection's `current_schema()`, the first schema on its `search_path`
+  that exists. The triggers name tables unqualified, so they resolve them
+  through the writer's `search_path`, as today.
 
 ## The daemon
 
