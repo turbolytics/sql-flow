@@ -36,6 +36,16 @@ type Step interface{ apply(*run) }
 type Produce struct {
 	Partition int32
 	Rows      int
+	// At is the rows' event time: the instant the data says it happened,
+	// which is not the instant it arrives. Zero means now, so a script that
+	// does not care reads as it did before.
+	//
+	// This is the whole point of the step. A window decides on event time,
+	// and a simulator whose event time is its own clock cannot produce a row
+	// that arrives out of order, a row for a bucket that already closed, or
+	// a device whose clock is wrong -- which is every question a watermark
+	// can get wrong.
+	At time.Time
 }
 
 // IdleTick fires the flush trigger: a commit with nothing buffered.
@@ -290,17 +300,21 @@ type run struct {
 	produced int
 	nextID   int64
 	owned    []int32
+	// eventAt is every produced row's event time, by id, so a replay after a
+	// restart re-delivers it with the time it was produced with.
+	eventAt map[int64]time.Time
 }
 
 // Run replays a script and reports what the group delivered.
 func Run(t *testing.T, owned []int32, script []Step) Result {
 	t.Helper()
 	r := &run{
-		t:     t,
-		coord: newCoordinator(),
-		sink:  newSink(),
-		now:   time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
-		owned: owned,
+		t:       t,
+		coord:   newCoordinator(),
+		sink:    newSink(),
+		now:     time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
+		owned:   owned,
+		eventAt: map[int64]time.Time{},
 	}
 	r.start()
 	for _, s := range script {
@@ -382,8 +396,13 @@ func (r *run) deliver(p int32, ids []int64) {
 	from, _ := r.coord.uncommitted(p)
 	batch := make([]core.Message, 0, len(ids))
 	for i, id := range ids {
+		r.mu.Lock()
+		at := r.eventAt[id]
+		r.mu.Unlock()
 		batch = append(batch, core.Message{
-			Value:     []byte(fmt.Sprintf("%d", id)),
+			// id and event time, which is what a real payload carries: the
+			// handler's SQL reads the timestamp out of the record.
+			Value:     []byte(fmt.Sprintf("%d,%d", id, at.UnixMicro())),
 			Topic:     topic,
 			Partition: p,
 			Offset:    from + int64(i),
@@ -445,11 +464,19 @@ func (p Produce) apply(r *run) {
 	if !r.src.owns(p.Partition) {
 		return // another worker owns it; nothing arrives here
 	}
+	at := p.At
+	if at.IsZero() {
+		at = r.clock()
+	}
 	ids := make([]int64, 0, p.Rows)
 	r.mu.Lock()
 	for i := 0; i < p.Rows; i++ {
 		r.nextID++
 		ids = append(ids, r.nextID)
+		// Kept by id rather than in the log, so a replay after a restart
+		// delivers each row with the event time it was produced with. A
+		// record's event time does not change because it was read twice.
+		r.eventAt[r.nextID] = at
 	}
 	r.produced += p.Rows
 	r.mu.Unlock()
