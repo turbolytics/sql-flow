@@ -12,6 +12,7 @@ import (
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/freshness"
 	"github.com/turbolytics/sql-flow/internal/rollup"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -21,6 +22,10 @@ import (
 // defaultInterval is how often the daemon checks its leadership and its
 // pending tables when it has nothing to fill.
 const defaultInterval = 15 * time.Second
+
+// verifyEvery is how many intervals apart verify passes run: 60 seconds at
+// the default interval. An observe pass runs every interval.
+const verifyEvery = 4
 
 // defaultAddr is where `sqlflow run` serves /metrics and /healthz, so a
 // scrape config carries over.
@@ -125,10 +130,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.health.touch(time.Now())
 	d.logInstall(report)
+	d.logStore(ctx, work)
 
 	lead := &session{}
 	defer lead.close()
-	var checked time.Time
+	var checked, observed, verified time.Time
 	for {
 		if time.Since(checked) >= d.interval {
 			d.keepLead(ctx, lead)
@@ -138,6 +144,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		if lead.leading {
 			work = d.keepWork(ctx, work)
 			if work != nil {
+				if time.Since(observed) >= d.interval {
+					d.observe(ctx, work)
+					observed = time.Now()
+				}
+				if time.Since(verified) >= verifyEvery*d.interval {
+					d.verify(ctx, work)
+					verified = time.Now()
+				}
 				more = d.fillOne(ctx, work)
 			}
 		}
@@ -180,6 +194,7 @@ func (d *Daemon) keepLead(ctx context.Context, s *session) {
 			}
 			s.close()
 			d.health.setRole(roleStandby)
+			d.health.setDrift(nil, 0)
 			return
 		}
 		d.health.touch(time.Now())
@@ -210,6 +225,7 @@ func (d *Daemon) keepLead(ctx context.Context, s *session) {
 	if !ok {
 		d.health.setRole(roleStandby)
 		d.health.setPending(0)
+		d.health.setDrift(nil, 0)
 		return
 	}
 	s.leading = true
@@ -354,4 +370,99 @@ func (d *Daemon) serveHTTP(ctx context.Context) error {
 	}()
 	d.log.Info("serving http", zap.String("addr", ln.Addr().String()), zap.Strings("routes", []string{"/metrics", "/healthz"}))
 	return nil
+}
+
+// logStore logs the store's id once, so a log line names the database the
+// daemon manages without its host or credentials.
+func (d *Daemon) logStore(ctx context.Context, work *pgx.Conn) {
+	s, err := freshness.StoreOf(ctx, work)
+	if err != nil {
+		d.log.Warn("naming the store", zap.Error(err))
+		return
+	}
+	d.log.Info("store", zap.String("store_id", s.ID), zap.String("store_id_kind", s.Kind))
+}
+
+// observe records the newest bucket of every declared table and of each
+// source. A table it cannot read counts an error and the pass moves on.
+func (d *Daemon) observe(ctx context.Context, work *pgx.Conn) {
+	for _, r := range d.conf.Rollups {
+		if w, err := config.ParseServeDuration(r.Source.Grain); err == nil {
+			d.observeTable(ctx, work, r.Name, r.Source.Table, r.Source.TimeColumn, w)
+		}
+		for _, set := range r.DimensionSets {
+			for _, g := range r.Ladder() {
+				d.observeTable(ctx, work, r.Name, rollup.Table(set, g.Name), r.Source.TimeColumn, g.Width)
+			}
+		}
+	}
+}
+
+func (d *Daemon) observeTable(ctx context.Context, work *pgx.Conn, rollupName, table, timeColumn string, grain time.Duration) {
+	o, err := freshness.Observe(ctx, work, table, timeColumn, grain)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.log.Warn("observing a table", zap.String("table", table), zap.Error(err))
+			d.m.errors.Add(ctx, 1, phase("observe"))
+		}
+		return
+	}
+	d.health.touch(time.Now())
+	if o.NewestBucketAt != nil {
+		d.m.newestBucket.Record(ctx, float64(o.NewestBucketAt.Unix()),
+			metric.WithAttributes(attribute.String("rollup", rollupName), attribute.String("table", table)))
+	}
+}
+
+// verify checks the newest two buckets of every table not still filling.
+// Drift sets degraded until a pass finds none: a restart cannot fix it.
+// Each drifted table logs its first rows, at most 10.
+func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
+	start := time.Now()
+	targets, err := rollup.VerifyTargets(ctx, work, d.conf)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.log.Warn("listing tables to verify", zap.Error(err))
+			d.m.errors.Add(ctx, 1, phase("verify"))
+		}
+		return
+	}
+	var drifted []string
+	var buckets int64
+	for _, tg := range targets {
+		if tg.Skip != "" {
+			continue
+		}
+		v, ok, err := rollup.VerifyNewest(ctx, work, tg)
+		if err != nil {
+			if ctx.Err() == nil {
+				d.log.Warn("verifying a table", zap.String("table", tg.Table), zap.Error(err))
+				d.m.errors.Add(ctx, 1, phase("verify"))
+			}
+			continue
+		}
+		if !ok {
+			continue
+		}
+		attrs := metric.WithAttributes(attribute.String("rollup", v.Rollup), attribute.String("table", v.Table))
+		d.m.verifyBuckets.Add(ctx, v.Buckets, attrs)
+		if v.DriftBuckets == 0 {
+			continue
+		}
+		d.m.driftBuckets.Add(ctx, v.DriftBuckets, attrs)
+		drifted = append(drifted, v.Table)
+		buckets += v.DriftBuckets
+		for _, row := range v.Sample {
+			d.log.Warn("drift", zap.String("rollup", v.Rollup), zap.String("table", v.Table),
+				zap.String("built_from", v.BuiltFrom), zap.Time("bucket", row.Bucket), zap.String("key", row.Key),
+				zap.String("kind", row.Kind), zap.String("measure", row.Measure),
+				zap.String("stored", row.Stored), zap.String("recomputed", row.Recomputed))
+		}
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	d.health.touch(time.Now())
+	d.health.setDrift(drifted, buckets)
+	d.m.verifyDuration.Record(ctx, time.Since(start).Seconds())
 }
