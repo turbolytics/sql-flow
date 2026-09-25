@@ -198,6 +198,11 @@ func TestSimulate_AFastPartitionClosesASlowOnesBuckets(t *testing.T) {
 //	               ^ the 7 are collected and dropped. One bad row cost the
 //	                 pipeline every record that followed it.
 //
+// This is #358, reproduced end to end rather than against hand-written rows:
+// one device with a fast clock makes a whole fleet's records disappear. The
+// issue notes the fleets most exposed are the ones least able to prevent it,
+// the gateways with no battery-backed clock that boot to a fixed epoch.
+//
 // Asserts the defect: the watermark design refuses a timestamp outside the
 // engine's bounds, so it advances nothing.
 func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {

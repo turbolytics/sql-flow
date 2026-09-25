@@ -153,11 +153,13 @@ per-partition watermark, combined by minimum, would decide:
   W  = min(...)   = 11:59   ->  12:00 stays open until p1 moves on
 ```
 
-**A poison timestamp closes every bucket.** One row claiming the year 2099
-advances the stream past every open bucket and lands the watermark 73 years
-ahead. Every record that follows is late on arrival. One device with a wrong
-clock, or one malformed field, silently drops the stream. The fix is to refuse
-an event time outside the engine's bounds so it advances nothing.
+**A poison timestamp closes every bucket** — [#358]. One row claiming the year
+2099 advances the stream past every open bucket and lands the watermark 73
+years ahead. Every record that follows is late on arrival. One device with a
+wrong clock, or one malformed field, silently drops the stream. The fleets most
+exposed are the ones least able to prevent it: gateways with no battery-backed
+clock, which boot to a fixed epoch and drift until NTP syncs. The fix is to
+refuse an event time outside the engine's bounds so it advances nothing.
 
 **A replayed row doubles the bucket.** At-least-once means a restart re-reads
 whatever the offsets did not cover. The engine has no record identity, so a
@@ -189,3 +191,4 @@ deliberately rather than relying on it.
 5. Assert what is stable. Run `-count=5` and `-race` before believing it.
 
 [#183]: https://github.com/turbolytics/sql-flow/issues/183
+[#358]: https://github.com/turbolytics/sql-flow/issues/358
