@@ -31,6 +31,18 @@ func (c *RollupsConf) Check() []Violation {
 		out = append(out, Violation{Code: errs.CodeConfigRollup, Path: path, Message: fmt.Sprintf(format, args...)})
 	}
 
+	// The store and the reporter come first, as they do in the file, so the
+	// first violation an operator reads is the first one they would reach.
+	if c.Store != nil {
+		switch {
+		case c.Store.Type != "postgres":
+			add([]string{"store", "type"}, "store.type %q is not a store this version runs; use postgres", c.Store.Type)
+		case c.Store.Postgres == nil:
+			add([]string{"store", "postgres"}, "store.type is postgres, so store.postgres, which holds the dsn, is required")
+		}
+	}
+	out = append(out, c.TurboStats.Check([]string{"turbostats"})...)
+
 	if len(c.Rollups) == 0 {
 		add([]string{"rollups"}, "rollups declares no rollup, so there is nothing to generate")
 	}

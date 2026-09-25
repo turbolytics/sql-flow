@@ -4,17 +4,54 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"gopkg.in/yaml.v3"
 )
 
 // RollupsConf is a whole rollups file. `sqlflow rollup` generates, from each
 // rollup, a migration that creates its tables and the triggers that keep them
-// current, and the serve datasets that read them.
+// current, and the serve datasets that read them. `sqlflow rollup install`
+// applies the tables and triggers itself.
 type RollupsConf struct {
+	// Where the rollup tables live. `sqlflow rollup run`, `install` and
+	// `verify` connect to it. ddl, serve, check and test never read it, so a
+	// test run cannot reach this database.
+	Store *RollupStore `yaml:"store,omitempty"`
+	// Where this instance reports itself: the block `sqlflow run` and
+	// `sqlflow serve` take.
+	TurboStats *TurboStats `yaml:"turbostats,omitempty"`
 	// The rollups this file declares.
 	Rollups []Rollup `yaml:"rollups"`
+}
+
+// RollupStore names the database that holds the rollup tables.
+type RollupStore struct {
+	// The kind of database. postgres is the only one this version runs.
+	Type string `yaml:"type" jsonschema:"enum=postgres"`
+	// The Postgres the tables live in. Required when type is postgres.
+	Postgres *RollupPostgres `yaml:"postgres,omitempty"`
+}
+
+// RollupPostgres is a Postgres store.
+type RollupPostgres struct {
+	// A libpq connection string or URL. It carries a password, so render it
+	// from an environment variable. There is no default: a daemon without a
+	// database fails at startup rather than writing somewhere else.
+	DSN string `yaml:"dsn"`
+}
+
+// PostgresDSN is the store's connection string, or the error that stops a
+// command that connects. validate accepts an empty dsn, because an unset
+// template variable renders as an empty string there.
+func (c *RollupsConf) PostgresDSN() (string, error) {
+	if c.Store == nil || c.Store.Postgres == nil || strings.TrimSpace(c.Store.Postgres.DSN) == "" {
+		return "", errs.New(errs.CodeConfigInvalid,
+			"store.postgres.dsn is empty; run, install and verify connect to the database that holds the rollup tables")
+	}
+	return c.Store.Postgres.DSN, nil
 }
 
 // Rollup is one source table and the coarser tables kept from it.

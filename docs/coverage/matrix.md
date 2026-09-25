@@ -64,12 +64,13 @@ added, and this page changes only when a status does.
 | `cli.serve` | Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits. | ✅ | ✅ | ✅ |
 | `cli.turbostats_keygen` | Generates a TurboStats keypair on the instance, writes the private half to a file only, and prints the public half to register. | ✅ | — | — |
 | `cli.rollup` | Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted. | ✅ | ✅ | — |
+| `cli.rollup_run` | Installs, backfills, checks and reports on the rollup tables a rollups file declares. | ❌ **missing** | — | — |
 | `template.render` | The Deploy to Render template's schema keeps the minute table and every rollup exact when several pipeline processes write to one database. | ⚠️ skipped | ✅ | — |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ |
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**46 features declared. 45 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**47 features declared. 45 have at least one passing test attributed at every level they require, so 1 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -85,6 +86,14 @@ never flushes satisfies every safety invariant on this page.
 `keeps_batch` holds if you never flush, and `commit.after_flush`
 holds if you never commit. Only a liveness claim says the pipeline
 does anything at all.
+
+## Gaps
+
+These fail `make coverage-matrix`. There is no baseline: a gap
+is closed by a test, or by the registry honestly no longer
+requiring that level.
+
+- `cli.rollup_run` requires **unit** coverage and is *missing*.
 
 
 # Invariant matrix
