@@ -12,9 +12,47 @@ import (
 // time relative to the run rather than guessing at it.
 var base = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 
+// Reading the diagrams in this file
+//
+// Every scenario runs under windowDecl(): one-minute buckets, one minute of
+// grace, a ten-second idle close, and late rows dropped.
+//
+// Two clocks, and keeping them apart is the point of the whole file:
+//
+//	engine clock   advances one second per step, plus whatever Elapse adds.
+//	               Nothing here decides a window on it.
+//	event time     what a row says about itself, chosen by the script with
+//	               Produce{At}. This is what a bucket is cut on.
+//
+// The columns are what the manager could see if it polled at that moment:
+//
+//	step           what the script does
+//	event time     the row's own clock
+//	bucket         where that event time falls: event time truncated to a minute
+//	window table   what the handler has written, and what a poll would read
+//	watermark      what the manager has decided; a bucket closes when its end
+//	               is at or before it
+//
+// Two rules explain every outcome below. The watermark after a grace close is
+// `newest bucket - grace`; after an idle close it is `newest bucket + size`.
+// And the manager collects late rows only on a poll that moves the watermark,
+// which is why the scenarios that assert a loss end by forcing a close.
+
 // Rows out of order inside the grace all land in their own buckets, and the
 // stream moving on closes them. This is the case grace_seconds exists for: a
 // producer whose records arrive shuffled by less than the tolerance.
+//
+//	step         event time   bucket   window table          watermark
+//	-----------------------------------------------------------------------
+//	Produce 3    12:01:30     12:01    12:01: 3              -
+//	Produce 2    12:01:05     12:01    12:01: 5              -
+//	               ^ older than the row before it, same bucket, not late:
+//	                 nothing has closed, so there is no watermark to be behind
+//	Produce 4    12:05:00     12:05    12:01: 5, 12:05: 4    -
+//	Poll         -            -        12:05: 4              12:04
+//	               ^ first close, by grace: newest 12:05 - 1m grace = 12:04.
+//	                 12:01 ends at 12:02, at or before 12:04, so it publishes
+//	                 all 5 rows. 12:05 ends at 12:06 and stays open.
 func TestSimulate_OutOfOrderRowsInsideTheGraceAreNotLate(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -36,6 +74,23 @@ func TestSimulate_OutOfOrderRowsInsideTheGraceAreNotLate(t *testing.T) {
 // A row for a bucket the watermark has passed is late, and late_rows drop
 // discards it. That is the declared contract, so this is what correct looks
 // like rather than a defect.
+//
+//	step         event time   bucket   window table          watermark
+//	-----------------------------------------------------------------------
+//	Produce 5    12:00:30     12:00    12:00: 5              -
+//	Produce 4    12:05:00     12:05    12:00: 5, 12:05: 4    -
+//	Poll         -            -        12:05: 4              12:04
+//	               ^ grace close: 12:00 publishes its 5 rows
+//	Produce 6    12:00:30     12:00    12:00: 6, 12:05: 4    12:04
+//	               ^ back into a bucket that ended at 12:01, which is already
+//	                 at or before the watermark. These 6 are late on arrival.
+//	Elapse 30s   -            -        (same)                12:04
+//	IdleTick     -            -        (same)                12:04
+//	               ^ the engine confirms the stream quiet for 10s
+//	Poll         -            -        empty                 12:06
+//	               ^ idle close: newest 12:05 + 1m size = 12:06, so 12:05
+//	                 publishes its 4 rows. The watermark moved, so this is
+//	                 also when the 6 late rows are collected and dropped.
 func TestSimulate_ARowForAClosedBucketIsDropped(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -67,6 +122,26 @@ func TestSimulate_ARowForAClosedBucketIsDropped(t *testing.T) {
 // partition that races ahead closes the buckets a slower one is still
 // filling. A per-partition watermark combined by minimum is what stops this:
 // the lagging partition holds the window open until it catches up.
+//
+//	step          part  event time   bucket   window table        watermark
+//	--------------------------------------------------------------------------
+//	Produce 3     p0    12:00:30     12:00    12:00: 3            -
+//	Produce 3     p1    12:00:30     12:00    12:00: 6            -
+//	                ^ both partitions are filling the same bucket
+//	Produce 4     p0    12:05:00     12:05    12:00: 6, 12:05: 4  -
+//	                ^ p0 alone races five minutes ahead in event time
+//	Poll          -     -            -        12:05: 4            12:04
+//	                ^ grace close on p0's newest bucket: 12:00 publishes 6.
+//	                  p1 never said it was done with 12:00; nothing asked it.
+//	Produce 5     p1    12:00:45     12:00    12:00: 5, 12:05: 4  12:04
+//	                ^ p1's own share of a bucket closed underneath it: late
+//	Poll, Elapse, IdleTick, Poll                empty             12:06
+//	                ^ idle close publishes 12:05, and collects p1's 5 rows
+//	                  as late. They are gone.
+//
+//	With a per-partition watermark:  W = min(p0, p1)
+//	  p0 = 12:05 - 1m = 12:04        p1 = 12:00 - 1m = 11:59
+//	  W  = 11:59, so 12:00 (ending 12:01) stays open until p1 moves on.
 //
 // Asserts the defect, because the engine has it. It inverts when the
 // watermark lands.
@@ -105,9 +180,26 @@ func TestSimulate_AFastPartitionClosesASlowOnesBuckets(t *testing.T) {
 // One row whose event time is years ahead advances the stream past every open
 // bucket, closes them all, and makes everything after it late.
 //
-// A device whose clock is wrong, or one malformed field, and the pipeline
-// silently drops the stream. Asserts the defect: the watermark design refuses
-// a timestamp outside the engine's bounds, so it advances nothing.
+//	step         event time     bucket        window table         watermark
+//	----------------------------------------------------------------------------
+//	Produce 5    12:00:30       12:00         12:00: 5             -
+//	Produce 1    2099-01-01     2099-01-01    12:00: 5, 2099: 1    -
+//	               ^ one device with a wrong clock, or one bad field
+//	Poll         -              -             2099: 1              2098-12-31
+//	                                                               23:59
+//	               ^ grace close on the newest bucket it can see, which is
+//	                 now in 2099. Every real bucket ends before that, so
+//	                 12:00 publishes and the watermark is 73 years ahead
+//	                 of the stream.
+//	Produce 7    12:01:30       12:01         12:01: 7, 2099: 1    2098-12-31
+//	               ^ the stream carries on where it actually is, and every
+//	                 row of it is now behind the watermark: late on arrival
+//	Poll, Elapse, IdleTick, Poll               empty               2099-01-01
+//	               ^ the 7 are collected and dropped. One bad row cost the
+//	                 pipeline every record that followed it.
+//
+// Asserts the defect: the watermark design refuses a timestamp outside the
+// engine's bounds, so it advances nothing.
 func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -136,14 +228,27 @@ func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {
 	assert.Equal(t, int64(7), r.LateDropped)
 }
 
-// Replay: every event delivered twice produces the same published totals as
-// delivering it once.
+// Replay: the same rows delivered twice.
 //
 // At-least-once is what the engine promises, so a restart replays whatever
-// the committed offsets did not cover. What makes that safe is that a bucket
-// is published as a whole value on a deterministic key, so the destination
-// holds the same number either way. This is the property a billing pipeline
-// needs and the one that makes read-time deduplication unnecessary.
+// the committed offsets did not cover. What would make that safe is a bucket
+// published as a whole value on a deterministic key, so the destination holds
+// the same number however many times the rows arrive.
+//
+//	once                                        twice
+//	------------------------------------------  ------------------------------
+//	Produce 5  12:00:30  ->  12:00: 5           Produce 5  ->  12:00: 5
+//	                                            Produce 5  ->  12:00: 10
+//	                                                           ^ the same rows
+//	                                                             again, same
+//	                                                             event times
+//	Produce 4  12:05:00  ->  12:05: 4           Produce 4  ->  12:05: 4
+//	                                            Produce 4  ->  12:05: 8
+//	Poll       publishes 12:00, 5 rows          Poll       ->  publishes 10
+//
+// The engine has no record identity, so a replayed row is simply a new row
+// and the bucket's value doubles. Dedupe on an observation id is what closes
+// this, and it is not in the engine today: this asserts the doubling.
 func TestSimulate_ReplayingEveryRowPublishesTheSameTotals(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	once := RunWindowed(t, []int32{0}, windowDecl(), []Step{

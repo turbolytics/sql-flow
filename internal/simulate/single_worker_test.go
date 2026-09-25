@@ -10,6 +10,22 @@ import (
 
 // A restart, time passing and an idle tick in one run: every row the source
 // delivered reaches the sink, once.
+//
+// These scenarios have no window: the sink receives every row the handler
+// produced, so what is being pinned is the loop's own delivery.
+//
+//	step         delivered   committed   sink   why
+//	--------------------------------------------------------------------
+//	Produce 10   10          -           -      buffered by the handler
+//	IdleTick     10          10          10     the flush commits them
+//	Elapse 1m    -           10          10     nothing arrives
+//	Produce 10   20          10          10
+//	Restart      -           10          10     the loop dies and comes back;
+//	                                            it resumes from the committed
+//	                                            offset, so the second ten are
+//	                                            replayed rather than lost
+//	Produce 20   40          -           -
+//	IdleTick     40          40          40     every row once, none twice
 func TestSimulate_ASingleWorkerPublishesEveryRow(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 	r := Run(t, []int32{0}, []Step{
@@ -31,6 +47,20 @@ func TestSimulate_ASingleWorkerPublishesEveryRow(t *testing.T) {
 
 // A restart replays whatever the committed offsets did not cover, and the
 // sink holds each row once because the loop commits only what it flushed.
+//
+//	step         p0   p1   what a restart means here
+//	--------------------------------------------------------------------
+//	Produce 5    5    -
+//	Produce 5    5    5
+//	Restart      -    -    both partitions resume from the group's committed
+//	                       offsets; anything the sink did not take is re-read
+//	Produce 5    10   5
+//	Restart      -    -    again, mid-stream
+//	Produce 5    10   10
+//
+//	Twenty rows produced across two partitions and two restarts, and the
+//	assertion is that none of them is missing. Duplicates are permitted by
+//	at-least-once; losses are not.
 func TestSimulate_ARestartLosesNothing(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 	r := Run(t, []int32{0, 1}, []Step{
@@ -48,6 +78,19 @@ func TestSimulate_ARestartLosesNothing(t *testing.T) {
 
 // A revoked partition delivers nothing to this worker, and the rows it still
 // holds are unaffected.
+//
+//	step         owns     produced here   why
+//	--------------------------------------------------------------------
+//	Produce p0   p0, p1   5               this worker owns p0
+//	Revoke p1    p0       5               p1 goes to another worker
+//	Produce p1   p0       5               nothing arrives: not ours to read
+//	Produce p0   p0       10
+//	Assign p1    p0, p1   10              p1 comes back
+//	Produce p1   p0, p1   15              and delivers again
+//	IdleTick     p0, p1   15              all 15 flushed, none lost
+//
+//	The middle Produce is the point: a partition this worker does not own
+//	produces nothing for it, and that is not a loss.
 func TestSimulate_ARevokedPartitionStopsArriving(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 	r := Run(t, []int32{0, 1}, []Step{
@@ -67,6 +110,18 @@ func TestSimulate_ARevokedPartitionStopsArriving(t *testing.T) {
 
 // A worker holding no partitions says so through Deliverer, which is what
 // stops a window closing on a silence the source could not have filled.
+//
+//	step         owns     produced   Delivering() says
+//	--------------------------------------------------------------------
+//	Produce 5    p0       5          yes, since it was assigned
+//	Revoke p0    none     5          no: it holds nothing at all
+//	IdleTick     none     5          the loop commits, and holds its quiet
+//	                                 clock rather than letting the silence
+//	                                 accrue against a source that could not
+//	                                 have broken it
+//
+//	Without a window there is nothing to close, so this pins the reporting
+//	rather than the decision. window_test.go has the decision.
 func TestSimulate_AWorkerHoldingNothingReportsItCannotDeliver(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 	r := Run(t, []int32{0}, []Step{
