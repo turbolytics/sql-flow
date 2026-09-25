@@ -18,7 +18,7 @@ func TestSourceKafka_CarriesTheRecordTimestamp(t *testing.T) {
 	msg := messageFrom(&kgo.Record{
 		Value: []byte(`{"a":1}`), Timestamp: stamped,
 		Topic: "t", Partition: 3, Offset: 42, LeaderEpoch: 7,
-	}, 100)
+	}, 100, nil)
 
 	assert.Equal(t, stamped.UnixNano(), msg.EventAtNanos)
 	// The rest of the conversion, so lifting it out of the fetch loop

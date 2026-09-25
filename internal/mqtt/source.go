@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"context"
+	"github.com/turbolytics/sql-flow/internal/eventtime"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,10 @@ type Config struct {
 	Topics         []string
 	SessionExpiry  uint32
 	ReceiveMaximum uint16
+	// EventTime reads each publish's own time from its payload; nil stamps
+	// arrival. A publish with no usable value at the path is stamped
+	// core.EventTimeMissing, which a windowing pipeline refuses.
+	EventTime *eventtime.Extractor
 }
 
 // Source reads MQTT 5 publishes at QoS 1 on a persistent session and
@@ -52,7 +57,10 @@ type Config struct {
 // SQLFlow has not acknowledged and redelivers it after a crash or a
 // reconnect: at-least-once, like the Kafka source.
 type Source struct {
-	cfg            Config
+	cfg Config
+	// missingLogged is whether a publish without a usable event time has
+	// been logged this run; onPublish runs on paho's router goroutine.
+	missingLogged  atomic.Bool
 	channelBuffer  int
 	connectTimeout time.Duration
 
@@ -307,10 +315,8 @@ func (s *Source) onConnectionDown() bool {
 func (s *Source) onPublish(pr paho.PublishReceived) (bool, error) {
 	seq := s.ledger.receive(pr.Packet, pr.Client)
 	msg := core.Message{
-		Value: pr.Packet.Payload,
-		// No event time in an MQTT publish, so arrival is the event. The
-		// reading's own ts is in the payload for SQL to use.
-		EventAtNanos: time.Now().UnixNano(),
+		Value:        pr.Packet.Payload,
+		EventAtNanos: s.stamp(pr.Packet.Payload),
 		Topic:        filterFor(s.cfg.Topics, pr.Packet.Topic),
 		Partition:    0,
 		Offset:       seq,
@@ -354,7 +360,33 @@ func (s *Source) CommitMarks(marks *core.Marks) error {
 // numbers, and the broker's session already holds the position.
 func (s *Source) SeekTo(*core.Marks) error { return nil }
 
-func (s *Source) EventTimeBasis() string { return core.EventBasisArrival }
+// stamp is the publish's event time. Without an extractor it is arrival: an
+// MQTT publish carries no time of its own, and the reading's own ts is in
+// the payload for SQL to use. With one, it is what the payload says, or
+// EventTimeMissing where it says nothing usable.
+func (s *Source) stamp(payload []byte) int64 {
+	if s.cfg.EventTime == nil {
+		return time.Now().UnixNano()
+	}
+	at, err := s.cfg.EventTime.Extract(payload)
+	if err != nil {
+		if !s.missingLogged.Swap(true) {
+			s.logger.Warn("publish has no usable event time; a windowing pipeline refuses such publishes",
+				zap.String("basis", s.cfg.EventTime.Basis()), zap.Error(err))
+		}
+		return core.EventTimeMissing
+	}
+	return at
+}
+
+// EventTimeBasis is the configured path when the publish carries its own
+// time, and otherwise arrival.
+func (s *Source) EventTimeBasis() string {
+	if s.cfg.EventTime != nil {
+		return s.cfg.EventTime.Basis()
+	}
+	return core.EventBasisArrival
+}
 
 // Delivering implements core.Deliverer: connected, and since when.
 func (s *Source) Delivering() (time.Duration, bool) {

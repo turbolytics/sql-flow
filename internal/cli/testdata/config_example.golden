@@ -35,6 +35,21 @@ pipeline:
         max_partition_bytes: <integer>
         # Fetches held ahead of the pipeline.
         prefetch: <integer>
+      # EventTime names the field of each record's payload that carries the
+      # event's own time. Absent, the event time is the record's Kafka
+      # timestamp: the producer's clock, or the broker's where the topic sets
+      # message.timestamp.type. That is when the record was published, which
+      # is not always when the event happened -- a sensor reading's own ts is
+      # in the payload. Set it, and the record's time is the payload's. On a
+      # windowing pipeline a record without a usable value at the path is
+      # refused.
+      event_time:
+        # Path into the JSON payload, dotted for nesting: "time_us", or
+        # "commit.record.createdAt".
+        path: <string>
+        # Format is the value's encoding. The unix_* forms take an integer,
+        # or a string holding one; rfc3339 takes a string.
+        format: unix_s | unix_ms | unix_us | unix_ns | rfc3339
     websocket:
       uri: <string>
       # EventTime names the field of each frame that carries the event's own
@@ -44,7 +59,7 @@ pipeline:
       # behind. Set it, and the record's time is the record's. On a windowing
       # pipeline a frame without a usable value at the path is refused.
       event_time:
-        # Path into the JSON frame, dotted for nesting: "time_us", or
+        # Path into the JSON payload, dotted for nesting: "time_us", or
         # "commit.record.createdAt".
         path: <string>
         # Format is the value's encoding. The unix_* forms take an integer,
@@ -66,6 +81,18 @@ pipeline:
       # Open connections the listener holds. Past it a new connection waits
       # in the backlog until one closes.
       max_connections: <integer>
+      # EventTime names the field of each body that carries the event's own
+      # time. Absent, the event time is arrival: the moment the body reached
+      # this process, which says nothing about when the event happened. Set
+      # it, and the record's time is the body's. On a windowing pipeline a
+      # body without a usable value at the path is refused.
+      event_time:
+        # Path into the JSON payload, dotted for nesting: "time_us", or
+        # "commit.record.createdAt".
+        path: <string>
+        # Format is the value's encoding. The unix_* forms take an integer,
+        # or a string holding one; rfc3339 takes a string.
+        format: unix_s | unix_ms | unix_us | unix_ns | rfc3339
     mqtt:
       # The broker URL, tcp:// or mqtt://. TLS is not supported yet.
       broker: <string>
@@ -81,6 +108,18 @@ pipeline:
       # Unacknowledged publishes the broker may send. Must be at least
       # pipeline.batch_size. Defaults to 65535.
       receive_maximum: <integer>
+      # EventTime names the field of each publish's payload that carries the
+      # event's own time. Absent, the event time is arrival: an MQTT publish
+      # carries no time of its own. Set it, and the record's time is the
+      # payload's. On a windowing pipeline a publish without a usable value
+      # at the path is refused.
+      event_time:
+        # Path into the JSON payload, dotted for nesting: "time_us", or
+        # "commit.record.createdAt".
+        path: <string>
+        # Format is the value's encoding. The unix_* forms take an integer,
+        # or a string holding one; rfc3339 takes a string.
+        format: unix_s | unix_ms | unix_us | unix_ns | rfc3339
     error:
       policy: <string>
   handler:

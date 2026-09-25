@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/eventtime"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/metric"
@@ -59,6 +61,10 @@ type HMAC struct {
 }
 
 type Source struct {
+	// eventTime reads each body's own time; nil stamps arrival. Bodies are
+	// handled concurrently, so the once-per-run log is an atomic.
+	eventTime         *eventtime.Extractor
+	missingLogged     atomic.Bool
 	addr              string
 	hmac              *HMAC
 	maxBodyBytes      int64
@@ -82,6 +88,13 @@ type Source struct {
 }
 
 type Option func(*Source)
+
+// WithEventTime reads each body's event time from its payload instead of
+// stamping arrival. A body with no usable value at the path is stamped
+// core.EventTimeMissing, which a windowing pipeline refuses.
+func WithEventTime(ex *eventtime.Extractor) Option {
+	return func(s *Source) { s.eventTime = ex }
+}
 
 func WithLogger(logger *zap.Logger) Option {
 	return func(s *Source) {
@@ -349,10 +362,7 @@ func (s *Source) receiveEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	// A webhook carries no event time of its own, so arrival is the event.
-	// The lag that follows is queueing inside this process, and the basis
-	// says so.
-	case s.streamChan <- []core.Message{{Value: body, EventAtNanos: time.Now().UnixNano()}}:
+	case s.streamChan <- []core.Message{{Value: body, EventAtNanos: s.stamp(body)}}:
 		writeJSON(w, http.StatusOK, `{"status":"received"}`)
 	case <-s.done:
 		writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
@@ -378,6 +388,31 @@ func writeJSON(w http.ResponseWriter, status int, body string) {
 	_, _ = w.Write([]byte(body))
 }
 
-// EventTimeBasis is arrival: this protocol carries no event time, so the
+// stamp is the body's event time. Without an extractor it is arrival: a
+// webhook carries no event time of its own, and the lag that follows is
+// queueing inside this process, which the basis says. With one, it is what
+// the body says, or EventTimeMissing where it says nothing usable.
+func (s *Source) stamp(body []byte) int64 {
+	if s.eventTime == nil {
+		return time.Now().UnixNano()
+	}
+	at, err := s.eventTime.Extract(body)
+	if err != nil {
+		if !s.missingLogged.Swap(true) {
+			s.logger.Warn("body has no usable event time; a windowing pipeline refuses such bodies",
+				zap.String("basis", s.eventTime.Basis()), zap.Error(err))
+		}
+		return core.EventTimeMissing
+	}
+	return at
+}
+
+// EventTimeBasis is the configured path when the body carries its own
+// time, and otherwise arrival: this protocol carries no event time, so the
 // moment the message reached this process is the best there is.
-func (s *Source) EventTimeBasis() string { return core.EventBasisArrival }
+func (s *Source) EventTimeBasis() string {
+	if s.eventTime != nil {
+		return s.eventTime.Basis()
+	}
+	return core.EventBasisArrival
+}
