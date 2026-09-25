@@ -38,6 +38,16 @@
   producer whose clock is wrong is refused by the engine's placement rule,
   the same one whatever the protocol.
 
+  Backwards compatible: the block is optional, absent means arrival exactly
+  as before, and an existing config validates and runs unchanged. What
+  changes for a websocket that sets it is that the engine's refusal of a
+  record it cannot place -- the fix for one future-stamped record emptying
+  a windowed stream -- starts to apply to the frame's own time. Without the
+  block that rule checks arrival, which is never in the future, so a
+  websocket pipeline windowing on a payload timestamp was not protected by
+  it. One incidental change: a websocket block with no `uri` now fails at
+  start with `user.source.invalid`, where it failed with an uncoded error.
+
 - The TurboStats bundle says how far behind the stream a pipeline runs, in
   time rather than in messages: `event_lag_seconds`, `event_lag_max_seconds`,
   `event_lag_observed_at` and `event_lag_basis` in the `pipeline` section.
