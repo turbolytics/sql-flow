@@ -5,6 +5,7 @@ package rollup
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -157,4 +158,40 @@ func lockSQL(table string, width time.Duration, timeColumn string) string {
 		"    PERFORM pg_advisory_xact_lock(hashtextextended('" + table + ":' || extract(epoch FROM touched.b)::bigint, 0))\n" +
 		"    FROM (SELECT DISTINCT " + bin(width, quote(timeColumn)) + " AS b FROM changed ORDER BY 1) AS touched;\n" +
 		"  END IF;\n"
+}
+
+// yamlPath extends a path into the rollups file, the form validate
+// resolves to a line.
+func yamlPath(path []string, keys ...string) []string {
+	return slices.Concat(path, keys)
+}
+
+// edge is one rollup table and the table it is built from.
+type edge struct {
+	// SetIndex is the dimension set's position in the file, for a message's
+	// YAML path.
+	SetIndex int
+	Set      config.RollupDimensionSet
+	Grain    config.RollupLevel
+	Table    string
+	// From is the source table for a grain built from the source grain, and
+	// the finer rollup table otherwise.
+	From string
+}
+
+// edges lists every table of r, set by set, each set's grains narrowest
+// first: the order the triggers cascade in.
+func edges(r config.Rollup) []edge {
+	var out []edge
+	ladder := r.Ladder()
+	for i, set := range r.DimensionSets {
+		for _, g := range ladder {
+			from := r.Source.Table
+			if g.From != r.Source.Grain {
+				from = Table(set, g.From)
+			}
+			out = append(out, edge{SetIndex: i, Set: set, Grain: g, Table: Table(set, g.Name), From: from})
+		}
+	}
+	return out
 }

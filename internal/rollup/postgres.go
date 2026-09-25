@@ -33,10 +33,51 @@ func PostgresDDL(conf *config.RollupsConf) (string, error) {
 	return b.String(), nil
 }
 
+// PostgresObjects writes one rollup's tables, unique indexes, functions and
+// triggers: what `sqlflow rollup install` applies. It holds no lock on the
+// source and fills nothing, because install fills in chunks from `run`
+// instead of in the migration's one transaction.
+func PostgresObjects(r config.Rollup) (string, error) {
+	if err := checkNames(r); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	writeObjects(&b, r)
+	return b.String(), nil
+}
+
 func writePostgresRollup(b *strings.Builder, r config.Rollup) error {
-	ladder := r.Ladder()
+	if err := checkNames(r); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(b, "\n-- Rollup %s, kept from %s.\n", r.Name, r.Source.Table)
+	b.WriteString("-- Blocks the source's writers until commit, so no write lands between the\n" +
+		"-- triggers existing and the backfill reading.\n")
+	fmt.Fprintf(b, "LOCK TABLE %s IN SHARE ROW EXCLUSIVE MODE;\n", quote(r.Source.Table))
+
+	writeObjects(b, r)
+
+	b.WriteString("\n-- Backfill the grains built from the source. Their inserts fire the triggers,\n" +
+		"-- which fill every coarser grain once.\n")
+	b.WriteString("SET LOCAL sqlflow.rollup_backfill = on;\n")
 	for _, set := range r.DimensionSets {
-		for _, g := range ladder {
+		for _, g := range r.Ladder() {
+			if g.From == r.Source.Grain {
+				writeUpsert(b, r, set, g, r.Source.Table, "")
+			}
+		}
+	}
+	b.WriteString("SET LOCAL sqlflow.rollup_backfill = off;\n")
+	return nil
+}
+
+// checkNames refuses a generated name Postgres would truncate. Two long
+// names could truncate to one, and the second object would replace the
+// first.
+func checkNames(r config.Rollup) error {
+	for _, set := range r.DimensionSets {
+		for _, g := range r.Ladder() {
 			name := "sqlflow_rollup_" + Table(set, g.Name) + "_ins"
 			if len(name) > maxIdentifier {
 				return errs.New(errs.CodeConfigRollup,
@@ -45,12 +86,13 @@ func writePostgresRollup(b *strings.Builder, r config.Rollup) error {
 			}
 		}
 	}
+	return nil
+}
 
-	fmt.Fprintf(b, "\n-- Rollup %s, kept from %s.\n", r.Name, r.Source.Table)
-	b.WriteString("-- Blocks the source's writers until commit, so no write lands between the\n" +
-		"-- triggers existing and the backfill reading.\n")
-	fmt.Fprintf(b, "LOCK TABLE %s IN SHARE ROW EXCLUSIVE MODE;\n", quote(r.Source.Table))
-
+// writeObjects writes every table first, then every function and trigger, so
+// no trigger names a table that does not exist yet.
+func writeObjects(b *strings.Builder, r config.Rollup) {
+	ladder := r.Ladder()
 	for _, set := range r.DimensionSets {
 		for _, g := range ladder {
 			writeTable(b, r, set, g)
@@ -61,33 +103,28 @@ func writePostgresRollup(b *strings.Builder, r config.Rollup) error {
 			writeTrigger(b, r, set, g)
 		}
 	}
-
-	b.WriteString("\n-- Backfill the grains built from the source. Their inserts fire the triggers,\n" +
-		"-- which fill every coarser grain once.\n")
-	b.WriteString("SET LOCAL sqlflow.rollup_backfill = on;\n")
-	for _, set := range r.DimensionSets {
-		for _, g := range ladder {
-			if g.From == r.Source.Grain {
-				writeUpsert(b, r, set, g, r.Source.Table, "")
-			}
-		}
-	}
-	b.WriteString("SET LOCAL sqlflow.rollup_backfill = off;\n")
-	return nil
 }
 
-// writeTable creates a table from the query that fills it, so every column
-// takes its type from the source without the generator connecting.
-func writeTable(b *strings.Builder, r config.Rollup, set config.RollupDimensionSet, g config.RollupLevel) {
-	table := Table(set, g.Name)
+// tableQuery is the query that fills a table of set at grain g from the
+// source. CREATE TABLE ... AS takes every column's type from it, so the
+// generator never connects to learn them, and install builds the expected
+// shape of an existing table the same way.
+func tableQuery(r config.Rollup, set config.RollupDimensionSet, g config.RollupLevel) string {
 	sourceGrain := config.RollupLevel{Name: g.Name, Width: g.Width, From: r.Source.Grain}
 	cols := selectList(r, set, sourceGrain)
 	names := append(keyColumns(r, set), set.MeasureNames()...)
 	for i := range cols {
 		cols[i] += " AS " + quote(names[i])
 	}
-	fmt.Fprintf(b, "\nCREATE TABLE IF NOT EXISTS %s AS\nSELECT %s\nFROM %s AS f\nGROUP BY %s\nWITH NO DATA;\n",
-		quote(table), strings.Join(cols, ",\n       "), quote(r.Source.Table), groupBy(len(set.Dimensions)+1))
+	return fmt.Sprintf("SELECT %s\nFROM %s AS f\nGROUP BY %s",
+		strings.Join(cols, ",\n       "), quote(r.Source.Table), groupBy(len(set.Dimensions)+1))
+}
+
+// writeTable creates a table from the query that fills it, so every column
+// takes its type from the source without the generator connecting.
+func writeTable(b *strings.Builder, r config.Rollup, set config.RollupDimensionSet, g config.RollupLevel) {
+	table := Table(set, g.Name)
+	fmt.Fprintf(b, "\nCREATE TABLE IF NOT EXISTS %s AS\n%s\nWITH NO DATA;\n", quote(table), tableQuery(r, set, g))
 	fmt.Fprintf(b, "CREATE UNIQUE INDEX IF NOT EXISTS %s\n  ON %s (%s) NULLS NOT DISTINCT;\n",
 		quote(table+"_key"), quote(table), quoteList(keyColumns(r, set)))
 }
