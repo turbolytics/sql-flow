@@ -2576,6 +2576,13 @@ The whole-branch review of #380 found one Critical and four Important defects, t
 - **Retained tables (Tasks 3–5).** `State.Retained` and `Plan.Retain` are `[]RetainedTable{Table, Set, Grain, From, Shape}`. `PlanChange` takes `[]RetainedTable` and refuses a retained table declared again in another shape. `nextState` keeps a retained table's pending backfill.
 - **Coverage (Task 1).** Adding a feature also needs its row in `docs/coverage/status/features.yml`, not only `make coverage-page`.
 
+A second review (Fable) found no Critical defects and two Important ones, fixed on #380:
+
+- **Dependency lock order.** `lockOrder` locks a source that another declared rollup builds after that rollup's source, with name order as the tie break. `InstallReport.Attempts` records the retries a lock wait or a deadlock cost.
+- **Dropped retained tables.** `install` removes the record and pending backfill of a retained table that no longer exists, and reports it in `RollupInstall.Dropped`.
+
+It measured install at 19 to 34 ms, with the source locked for about 3 ms and no data row read, on a 1.3-million-row source.
+
 Carried to Plan 2:
 
 - Backfill fills declared tables only, and skips the pending entries of retained ones.

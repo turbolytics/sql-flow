@@ -254,11 +254,18 @@ in one transaction, because Postgres DDL is transactional:
 6. Record the declaration and the SQLFlow version. Mark the backfill targets.
 
 Before any DDL, the transaction locks each source `IN SHARE ROW EXCLUSIVE
-MODE`, in name order. That is the order a writer takes: its statement locks
-the source, then its triggers lock the rollup tables. `CREATE UNIQUE INDEX
-IF NOT EXISTS` locks a rollup table even when the index exists, so an
-install that reached the tables first deadlocked beside a live writer in 34
-of 40 runs, measured in review on 2026-09-25.
+MODE`, in the order a writer reaches them. A writer's statement locks the
+source, then its triggers lock the rollup tables. `CREATE UNIQUE INDEX IF
+NOT EXISTS` locks a rollup table even when the index exists, so an install
+that reached the tables first deadlocked beside a live writer in 34 of 40
+runs, measured in review on 2026-09-25.
+
+A source that another declared rollup builds, such as a rollup that reads
+another's hourly table, is written only by that rollup's triggers, so it is
+locked after that rollup's source. Name order breaks ties. Install cannot
+see a foreign trigger chain, such as the Render template's writers table
+feeding `metrics_1m`, so two declared sources that such a chain writes keep
+name order, and an install beside that writer may cost a retry.
 
 While install waits for a source, the pipeline's next writes queue behind
 it. `lock_timeout`, 2 seconds, bounds each wait, and install retries three
@@ -278,6 +285,7 @@ a new snapshot and reads the previous install's commit.
 | A changed measure type, dimension list, grain `from`, or source table, time column or grain | Stop with `user.config.rollup_change` and the YAML path. |
 | An added or removed source dimension | Nothing. No generated table or trigger reads `source.dimensions`; only the file's rules and serve do. |
 | A measure added to or removed from an existing dimension set | Stop with `user.config.rollup_change`. A removed measure's column would go stale in every stored row. Declare a new dimension set instead. |
+| A retained table that no longer exists | Remove its record and its pending backfill, and report it. Declared again, it is a new table and fills. |
 | A declared table that is in `retained` | Move it back when its set and grain match the ones retained, and stop with `user.config.rollup_change` when they differ: its rows were merged the old way. Its triggers never stopped, so it needs no new backfill, and one still pending stays pending. |
 
 Backfill targets are the new tables built from the source, or from a table
@@ -735,6 +743,8 @@ the control repository's launch freeze to lift.
 | If | Then | Caught by |
 |---|---|---|
 | Install locks a rollup table before its source | Install deadlocks beside a live writer and fails the deploy | `InstallBesideAWriterMidTransaction` |
+| Install locks sources by name when one rollup reads another's table | A deadlock per install beside a live writer, which the retry hides | `InstallBesideAWriterWhenOneRollupReadsAnother`, which asserts one attempt |
+| A retained table's record outlives the table | Declaring the set again in a new shape is refused over rows that no longer exist | `ARetainedTableDroppedByHandCanBeDeclaredAgain` |
 | Install waits for a source without a bound | A transaction left open stalls the install and every pipeline write queued behind it | `InstallGivesUpOnALockRatherThanStallThePipeline` |
 | A retained table keeps only its name | Declaring it again in another shape mixes two kinds of row in one table, and a rollback and roll-forward drops its pending backfill | `ARetainedSetDeclaredAgainInAnotherShapeIsRefused`, `ARollbackAndRollForwardKeepAPendingBackfill` |
 | Backfill runs before the triggers exist | A write between the backfill's read and the trigger's creation never reaches the coarse grains | `ChunkedBackfillLosesNoConcurrentWrite` |
