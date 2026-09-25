@@ -97,6 +97,16 @@
 
 ### Fixed
 
+- The `turbostats/wire` package's comment on `event_lag_basis` named
+  `kafka_timestamp`, a value no engine sends. It now names what the engine
+  does send -- `kafka_create_time`, `kafka_log_append_time`, `arrival`, or a
+  configured payload path -- and the vocabulary stays open. And the comment
+  on `late_rows_dropped` and `late_rows_reemitted` now says the unit: rows of
+  the window table after the handler's aggregation, not source events, which
+  agree only at `batch_size` 1. Forty late events grouped into one row read
+  as one late row, and an operator comparing that with an input count was
+  comparing different units (#386).
+
 - One record stamped in the future no longer empties a windowed stream
   (#358). A windowing pipeline now refuses a record whose event time it
   cannot place -- before 2020, or ahead of the engine's own clock -- before
