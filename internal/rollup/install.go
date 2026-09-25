@@ -31,6 +31,10 @@ type InstallReport struct {
 	// Undeclared names rollups the state table holds and the file no longer
 	// declares. Their tables and triggers stay.
 	Undeclared []string
+	// Attempts is how many transactions the install took. More than one
+	// means a lock wait timed out or Postgres broke a deadlock, and install
+	// tried again.
+	Attempts int
 }
 
 // RollupInstall is one declared rollup's part of an install.
@@ -60,8 +64,12 @@ func Install(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, vers
 	}
 	for attempt := 1; ; attempt++ {
 		report, err := installOnce(ctx, conn, conf, version)
-		if err == nil || attempt == installAttempts || !retryable(err) {
-			return report, err
+		if err == nil {
+			report.Attempts = attempt
+			return report, nil
+		}
+		if attempt == installAttempts || !retryable(err) {
+			return nil, err
 		}
 		// Let the writers queued behind this attempt run before the next.
 		select {
@@ -187,12 +195,12 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 	// rollup tables. CREATE UNIQUE INDEX IF NOT EXISTS locks a rollup table
 	// even when the index exists, so an install that reached the tables
 	// first deadlocked beside a live writer, and lost. Taking every source
-	// first, in name order, puts install in the writers' order.
-	sources := map[string]bool{}
+	// first, in the writers' order, avoids that.
+	var rollups []config.Rollup
 	for _, p := range todo {
-		sources[p.r.Source.Table] = true
+		rollups = append(rollups, p.r)
 	}
-	for _, src := range sortedKeys(sources) {
+	for _, src := range lockOrder(rollups) {
 		if _, err := tx.Exec(ctx, "LOCK TABLE "+quote(src)+" IN SHARE ROW EXCLUSIVE MODE"); err != nil {
 			return nil, installError(err, "lock source "+src)
 		}
@@ -233,6 +241,40 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 		}
 	}
 	return report, nil
+}
+
+// lockOrder returns the declared sources in the order a writer reaches
+// them. A source that another declared rollup builds, such as one rollup
+// reading another's hourly table, is written only by the triggers of that
+// rollup's source, so it comes after that source. Name order breaks ties.
+// A foreign trigger chain that writes two declared sources, such as the
+// Render template's writers table, is invisible here, so those two keep name
+// order.
+func lockOrder(rollups []config.Rollup) []string {
+	builtFrom := map[string]string{}
+	for _, r := range rollups {
+		for _, e := range edges(r) {
+			builtFrom[e.Table] = r.Source.Table
+		}
+	}
+	// depth is how many declared rollups a write passes through before it
+	// reaches src. seen stops a cycle, which no writer could complete anyway.
+	depth := func(src string) int {
+		d, seen := 0, map[string]bool{}
+		for from, ok := builtFrom[src]; ok && !seen[src]; from, ok = builtFrom[src] {
+			seen[src] = true
+			src = from
+			d++
+		}
+		return d
+	}
+	sources := map[string]bool{}
+	for _, r := range rollups {
+		sources[r.Source.Table] = true
+	}
+	out := sortedKeys(sources)
+	slices.SortStableFunc(out, func(a, b string) int { return depth(a) - depth(b) })
+	return out
 }
 
 // nextState is the row an install writes: the declaration as applied now,

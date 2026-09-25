@@ -545,3 +545,61 @@ func TestIntegrationRollupRun_ARollbackAndRollForwardKeepAPendingBackfill(t *tes
 		assert.True(t, pending)
 	}
 }
+
+// withLangDays adds a rollup whose source is the example's hourly table, so a
+// writer reaches that source only through the example source's triggers.
+func withLangDays(t *testing.T) *config.RollupsConf {
+	t.Helper()
+	conf := loadExample(t)
+	conf.Rollups = append(conf.Rollups, config.Rollup{
+		Name:   "lang_days",
+		Source: config.RollupSource{Table: "posts_by_lang_1h", TimeColumn: "bucket", Grain: "1h", Dimensions: []string{"lang"}},
+		Grains: map[string]config.RollupGrain{"1d": {From: "1h"}},
+		DimensionSets: []config.RollupDimensionSet{{
+			Name: "lang_days", Dimensions: []string{"lang"},
+			Measures: map[string]config.RollupMeasure{"posts": {Type: "sum", Column: "posts"}},
+		}},
+	})
+	return conf
+}
+
+// A writer takes the example source, then its triggers take posts_by_lang_1h.
+// install must lock them in that order, though posts_by_lang_1h sorts first
+// by name, or the two deadlock and one of them loses.
+func TestIntegrationRollupRun_InstallBesideAWriterWhenOneRollupReadsAnother(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	mustInstall(t, srv.conn, loadExample(t))
+	mustInstall(t, srv.conn, withLangDays(t))
+
+	w := connectIn(t, srv.dsn, "UTC")
+	execSQL(t, w, "BEGIN")
+	execSQL(t, w, "LOCK TABLE posts_per_minute_by_lang IN ROW EXCLUSIVE MODE")
+
+	inst := connectIn(t, srv.dsn, "UTC")
+	conf := withLangDays(t)
+	type result struct {
+		rep *InstallReport
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		rep, err := Install(ctx, inst, conf, "test")
+		done <- result{rep, err}
+	}()
+	waitForLockWait(t, srv.conn, inst.PgConn().PID())
+
+	_, werr := w.Exec(ctx, "INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-15T10:01:00Z', 'en', 5)")
+	assert.NoError(t, werr)
+	execSQL(t, w, "COMMIT")
+	res := <-done
+	assert.NoError(t, res.err)
+	// One attempt: install queued behind the writer instead of deadlocking
+	// with it and retrying.
+	assert.Equal(t, 1, res.rep.Attempts)
+	assertGrainsEqualSource(t, srv.conn)
+}
