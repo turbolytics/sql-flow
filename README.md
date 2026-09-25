@@ -524,19 +524,39 @@ writing its finest grain; the database keeps every coarser grain as each write
 commits, and `serve` reads pre-aggregated rows.
 
 ```
-sqlflow rollup ddl   -c rollups.yml [--backend postgres]
-sqlflow rollup serve -c rollups.yml [--dataset NAME]
-sqlflow rollup check -c rollups.yml --migration FILE --serve FILE
+sqlflow rollup install -c rollups.yml
+sqlflow rollup run     -c rollups.yml [--metrics prometheus]
+sqlflow rollup ddl     -c rollups.yml [--backend postgres]
+sqlflow rollup serve   -c rollups.yml [--dataset NAME]
+sqlflow rollup check   -c rollups.yml --serve FILE [--migration FILE]
 ```
 
 | Command | Does |
 |---|---|
-| `ddl` | Prints a migration: one table per dimension set and grain, the functions and triggers that keep them current, and a backfill. Connects to nothing. |
+| `install` | Creates the tables, functions and triggers the file declares, in one transaction, and records what it applied in `sqlflow_rollup_state`. Refuses a change that would corrupt stored rows. Fills nothing. |
+| `run` | Installs, then leads the file's rollups and fills every table `install` marks, one chunk at a time, beside a live pipeline. Several may run: one leads, the rest stand by. `--metrics prometheus` serves `/metrics` and `/healthz` on `:8000`. |
+| `ddl` | Prints a migration: the same tables, functions and triggers, and a backfill in one transaction. For a team that applies SQL itself. Connects to nothing. |
 | `serve` | Prints the `serve` datasets, to paste into a serve file's `datasets`. |
-| `check` | Exits `10` when the migration or the serve file differs from what the declaration generates, or when a dataset could answer more rows than its `max_rows`. |
+| `check` | Exits `10` when the serve file, or the migration when given, differs from what the declaration generates, or when a dataset could answer more rows than its `max_rows`. |
 
-`sqlflow rollup` writes and checks the files; applying the migration is your
-migration runner's job. [`dev/config/rollups/bluesky.yml`](dev/config/rollups/bluesky.yml)
+`install` and `run` connect to `store.postgres.dsn`:
+
+```yaml
+store:
+  type: postgres
+  postgres:
+    dsn: "{{ SQLFLOW_POSTGRES_URI }}"
+```
+
+Run `install` in a deploy's entrypoints, before `sqlflow serve` prepares its
+statements, and `run` as its own process. `install` locks each source for
+its DDL only, a few milliseconds. `run` fills history newest day first. A
+chunk takes the triggers' own bucket locks without ever waiting on them:
+when a write holds one, the chunk steps back and tries again, so the
+pipeline keeps writing.
+
+`ddl` and `check` suit a team that applies SQL through its own migration
+runner. `install` and `run` do it for you. [`dev/config/rollups/bluesky.yml`](dev/config/rollups/bluesky.yml)
 is a complete declaration, and `sqlflow validate` checks a rollups file
 against its schema and rules.
 
@@ -567,9 +587,9 @@ What to know before you deploy it:
 - **Postgres 15 or later**, and a writer in `READ COMMITTED`, the default. The
   trigger refuses any other isolation level, because its lock only works when
   each statement reads a new snapshot.
-- **The migration blocks the source's writers** until it commits, so no write
-  lands between the triggers existing and the backfill reading. The backfill
-  reads the whole source table.
+- **`ddl`'s migration blocks the source's writers** until it commits, and its
+  backfill reads the whole source table. `install` and `run` do not: the
+  backfill runs in chunks under per-bucket locks.
 - **A trigger error fails the writer's transaction.** A pipeline writing the
   source stops with it.
 - **Deletes do not propagate.** Rollups outlive a retention job on the source.

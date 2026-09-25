@@ -2282,3 +2282,13 @@ Paste the title and body into the chat and wait for the maintainer's go. Then:
 
 Run: `git push -u origin feat/rollup-run:feat/rollup-run && gh pr create --repo turbolytics/sql-flow --base main --head feat/rollup-run --title "rollup: sqlflow rollup run, backfill and the leader lock" --body-file "$TMPDIR/pr.md"`
 Expected: a PR URL. Then `gh pr view feat/rollup-run --repo turbolytics/sql-flow --json state,baseRefName --jq '.state, .baseRefName'` prints `OPEN` and `main`.
+
+---
+
+## After execution
+
+The code differs from the text above in these places. Plan 2b builds on the code.
+
+- **A chunk never waits holding a lock (Task 2).** The plan's chunk took blocking bucket locks in bucket order, and it deadlocked a single live writer in 1 run of 3. An upsert fires each rollup trigger twice, for its inserted and its updated rows, and the two passes lock buckets in different orders. `BackfillStep` now tries every key its buckets need, at every grain of the cascade (`chunkKeys`), with `pg_try_advisory_xact_lock`. When a write holds one, it rolls back and retries `busyTries` (20) times, `busyWait` (50 ms) apart, then returns `ErrChunkBusy`, which the daemon treats as "try again". `lockBuckets` moved into the tests, built on `bucketKey`. `ABackfillChunkWaitsForItsBucketLock` became `ABackfillChunkNeedsItsBucketLock`, and `ABackfillChunkNeverWaitsHoldingALock` is new: it fails with 55P03 against blocking locks.
+- **One writer beside the backfill (Task 2).** Two writers time out on each other with no backfill running (4 of 60 flushes at a 1-second `lock_timeout`), for the same two-pass reason. That predates this plan, so `ChunkedBackfillLosesNoConcurrentWrite` runs one writer, as the pipeline's sink is per process.
+- **The unreachable-database test (Task 4)** runs `ALTER DATABASE ... ALLOW_CONNECTIONS` from a connection to `postgres`, because Postgres refuses it for the session's own database.
