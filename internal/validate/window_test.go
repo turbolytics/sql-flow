@@ -32,7 +32,7 @@ pipeline:
       topics: ["t"]
   handler:
     type: handlers.InferredMemBatch
-    sql: SELECT 1
+    sql: SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, city, count(*) FROM batch GROUP BY ALL
   sink:
     type: noop
 `
@@ -153,7 +153,7 @@ pipeline:
       topics: ["t"]
   handler:
     type: handlers.InferredMemBatch
-    sql: SELECT 1
+    sql: SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, city, count(*) FROM batch GROUP BY ALL
   sink:
     type: noop
 `})
@@ -209,7 +209,7 @@ pipeline:
       topics: ["t"]
   handler:
     type: handlers.InferredMemBatch
-    sql: SELECT 1
+    sql: SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, city, count(*) FROM batch GROUP BY ALL
   sink:
     type: noop
 `})
@@ -252,4 +252,72 @@ func TestValidateSchema_IdleCloseShorterThanTheFlushIntervalWarns(t *testing.T) 
 
 	// No idle close: nothing to trail.
 	assert.Equal(t, 0, len(windowDiagnostics(validateWindowed(t, "bucket TIMESTAMPTZ", ""))))
+}
+
+// A pipeline with no window, for the rule that only a windowing pipeline is
+// asked to read event_time.
+const plainConfig = `pipeline:
+  batch_size: 1
+  source:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: ["t"]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000)) AS bucket FROM batch
+  sink:
+    type: noop
+`
+
+// A windowing pipeline's handler must derive the window's time from the
+// event_time column -- the time the source assigned -- or the buckets and
+// the watermark are on different clocks. A pipeline with no window is free
+// to cut time from any field it likes.
+func TestValidateSchema_AWindowingHandlerMustReadEventTime(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	cfg := strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1)
+	cfg = strings.Replace(cfg, "time_bucket(INTERVAL '1 minute', event_time)",
+		"time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000))", 1)
+	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: cfg})
+	assert.NoError(t, err)
+	assert.That(t, !rep.OK)
+	diags := windowDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.That(t, strings.Contains(diags[0].Message, "must derive the window's time from the event_time column"))
+	assert.That(t, diags[0].Position != nil)
+
+	rep, err = Validate(context.Background(), Request{Path: "p.yml", Config: plainConfig})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
+}
+
+// A structured handler's batch table is the user's, and the engine fills its
+// event_time column from the record; a windowing pipeline on one must
+// declare that column, as TIMESTAMPTZ, or there is nothing to cut on.
+func TestValidateSchema_AStructuredWindowingHandlerMustDeclareEventTime(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	structured := func(postsDDL string) string {
+		cfg := strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1)
+		cfg = strings.Replace(cfg, "tables:\n  sql:\n",
+			"tables:\n  sql:\n    - name: posts\n      sql: |\n        "+postsDDL+"\n", 1)
+		cfg = strings.Replace(cfg, "type: handlers.InferredMemBatch\n",
+			"type: handlers.StructuredBatch\n    table: posts\n", 1)
+		return cfg
+	}
+
+	rep, err := Validate(context.Background(), Request{Path: "s.yml",
+		Config: structured("CREATE TABLE posts (text TEXT, event_time TIMESTAMPTZ)")})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
+
+	rep, err = Validate(context.Background(), Request{Path: "s.yml",
+		Config: structured("CREATE TABLE posts (text TEXT, time_us BIGINT)")})
+	assert.NoError(t, err)
+	assert.That(t, !rep.OK)
+	diags := windowDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.That(t, strings.Contains(diags[0].Message, `table "posts" must declare event_time TIMESTAMPTZ`))
 }

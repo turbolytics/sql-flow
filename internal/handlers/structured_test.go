@@ -5,10 +5,13 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 	"os"
 	"testing"
+	"time"
 )
 
 func newTestADBCConn(t *testing.T) (adbc.Connection, func()) {
@@ -316,4 +319,56 @@ func TestHandlerStructured_StringInATextColumnStillDecodes(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1), res.NumRows())
 	res.Release()
+}
+
+// A table that declares event_time TIMESTAMPTZ gets the record's assigned
+// time in it, filled from the message rather than from the payload, so a
+// window can be cut on the instant the source vouched for. A record the
+// source assigned no time to is null there. The column is the user's to
+// declare: a table without it is unchanged, and one that declares it as
+// something other than a timestamp is refused at start.
+func TestHandlerStructured_FillsADeclaredEventTimeFromTheRecord(t *testing.T) {
+	coverage.Covers(t, "handler.structured")
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	createTable(t, conn, `CREATE TABLE posts (text TEXT, time_us BIGINT, event_time TIMESTAMPTZ);`)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "text", Type: arrow.BinaryTypes.String},
+		{Name: "time_us", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "event_time", Type: EventTimeType, Nullable: true},
+	}, nil)
+
+	h, err := NewStructuredBatchHandler(conn,
+		"SELECT text, time_us, event_time FROM posts ORDER BY text", "posts", schema)
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	at := time.Date(2026, 9, 25, 12, 34, 56, 789000000, time.UTC)
+	// The payload's own time_us is a different number on purpose: the
+	// column is filled from what the source assigned, not from the field.
+	assert.NoError(t, h.WriteMessage(core.Message{
+		Value: []byte(`{"text": "a", "time_us": 1}`), EventAtNanos: at.UnixNano(),
+	}))
+	assert.NoError(t, h.WriteMessage(core.Message{
+		Value: []byte(`{"text": "b", "time_us": 2}`), EventAtNanos: core.EventTimeMissing,
+	}))
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	defer res.Release()
+
+	assert.Equal(t, int64(2), res.NumRows())
+	assert.Equal(t, int64(1), res.Column(1).Data().Chunk(0).(*array.Int64).Value(0))
+	col := res.Column(2).Data().Chunk(0).(*array.Timestamp)
+	assert.Equal(t, arrow.Timestamp(at.UnixMicro()), col.Value(0))
+	assert.That(t, col.IsNull(1))
+
+	// Declared as the wrong type: refused when the handler is built.
+	createTable(t, conn, `CREATE TABLE wrong (text TEXT, event_time BIGINT);`)
+	_, err = NewStructuredBatchHandler(conn, "SELECT * FROM wrong", "wrong", arrow.NewSchema([]arrow.Field{
+		{Name: "text", Type: arrow.BinaryTypes.String},
+		{Name: "event_time", Type: arrow.PrimitiveTypes.Int64},
+	}, nil))
+	assert.Error(t, err)
 }

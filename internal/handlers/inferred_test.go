@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -624,4 +625,44 @@ func TestHandlerInferredMem_BatchAfterEmptyBatch(t *testing.T) {
 	res = invokeRows(t, h, []string{`{"city": "NYC"}`})
 	defer res.Release()
 	assert.Equal(t, int64(1), res.NumRows())
+}
+
+// A record the source assigned a time to exposes it as event_time, a
+// TIMESTAMPTZ, so handler SQL windows on the instant the source vouched for
+// rather than on some field of its own choosing. A record with no assigned
+// time -- a source that assigns nothing, or one that found nothing usable on
+// this record -- is null in that column, and a batch with none at all adds
+// no column, so a plain pipeline is unchanged.
+func TestHandlerInferredMem_ExposesTheAssignedEventTime(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn,
+		"SELECT city, event_time FROM batch ORDER BY city")
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+
+	at := time.Date(2026, 9, 25, 12, 34, 56, 789000000, time.UTC)
+	// A websocket frame with its configured field read: no Kafka
+	// provenance, an event time.
+	assert.NoError(t, h.WriteMessage(core.Message{
+		Value: []byte(`{"city": "NYC"}`), EventAtNanos: at.UnixNano(),
+	}))
+	// The same source, a frame with nothing usable at the path.
+	assert.NoError(t, h.WriteMessage(core.Message{
+		Value: []byte(`{"city": "SF"}`), EventAtNanos: core.EventTimeMissing,
+	}))
+
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	defer res.Release()
+
+	assert.Equal(t, int64(2), res.NumRows())
+	assert.Equal(t, "event_time", res.Schema().Field(1).Name)
+	col := res.Column(1).Data().Chunk(0).(*array.Timestamp)
+	assert.Equal(t, arrow.Timestamp(at.UnixMicro()), col.Value(0))
+	assert.That(t, col.IsNull(1))
+	// And the kafka_* columns did not appear: nothing supplied provenance.
+	assert.Equal(t, 2, res.Schema().NumFields())
 }

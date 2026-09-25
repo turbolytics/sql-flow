@@ -9,6 +9,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/buger/jsonparser"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"go.uber.org/zap"
 	"strconv"
 	"strings"
@@ -18,6 +19,15 @@ import (
 
 type StructuredBatchHandler struct {
 	rawBatch [][]byte
+	// metadata is what the source said about each buffered record, kept
+	// positionally against rawBatch; see WriteMessage. Only read where the
+	// table declares a column the source fills.
+	metadata []core.Message
+	// eventTimeField is the index of the table's event_time column, or -1.
+	// The schema is the table's, so a user who wants the assigned time
+	// declares the column; the handler fills it from the record rather than
+	// from the payload.
+	eventTimeField int
 
 	// rowsRead is the row count of the last Invoke, for handler_rows_read.
 	rowsRead int64
@@ -80,6 +90,25 @@ func checkpointRefused(err error) bool {
 
 func (h *StructuredBatchHandler) Write(r []byte) error {
 	h.rawBatch = append(h.rawBatch, r)
+	return nil
+}
+
+// WriteMessage buffers a record with what the source said about it, so a
+// table that declares event_time TIMESTAMPTZ gets the assigned time in it.
+// A window's time_column must be derived from that column: the watermark
+// rests on the assigned time, and a bucket cut from some other field in the
+// payload is on a different clock.
+func (h *StructuredBatchHandler) WriteMessage(msg core.Message) error {
+	if err := h.Write(msg.Value); err != nil {
+		return err
+	}
+	if h.eventTimeField < 0 {
+		return nil // nothing in this table is filled from the record
+	}
+	for len(h.metadata) < len(h.rawBatch)-1 {
+		h.metadata = append(h.metadata, core.Message{})
+	}
+	h.metadata = append(h.metadata, msg)
 	return nil
 }
 
@@ -230,6 +259,8 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 
 	raw := h.rawBatch
 	h.rawBatch = h.rawBatch[:0]
+	meta := h.metadata
+	h.metadata = h.metadata[:0]
 
 	// An empty batch is a no-op, not an error. See the note on
 	// InferredMemBatchHandler.Invoke.
@@ -246,10 +277,21 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 		builders[i].Reserve(len(raw))
 	}
 
-	// Schema-aware JSON extraction: only extract fields matching the schema
+	// Schema-aware JSON extraction: only extract fields matching the schema.
+	// The event_time column is the one exception: it is the source's word
+	// about the record, not a field of the payload, so it is filled from the
+	// message, and left null for a record the source assigned no time to.
 	fields := h.schema.Fields()
-	for _, msg := range raw {
+	for row, msg := range raw {
 		for i, f := range fields {
+			if i == h.eventTimeField {
+				var at int64
+				if row < len(meta) {
+					at = meta[row].EventAtNanos
+				}
+				appendEventTime(builders[i], at)
+				continue
+			}
 			if err := appendJSONValue(builders[i], f.Type, msg, f.Name); err != nil {
 				for _, b := range builders {
 					b.Release()
@@ -354,6 +396,22 @@ func NewStructuredBatchHandler(
 
 	pool := memory.NewGoAllocator()
 
+	// A table that declares event_time is filled from the record. It has to
+	// be a timestamp, or the ingest would write a number where the window
+	// expects an instant; refused here, at start, rather than at the first
+	// batch.
+	eventTimeField := -1
+	for i, f := range schema.Fields() {
+		if f.Name != EventTimeColumn {
+			continue
+		}
+		if _, ok := f.Type.(*arrow.TimestampType); !ok {
+			return nil, fmt.Errorf("table %s declares %s as %s; it must be TIMESTAMPTZ, because it is the record's assigned event time",
+				tableName, EventTimeColumn, f.Type)
+		}
+		eventTimeField = i
+	}
+
 	// Pre-create truncate statement
 	truncStmt, err := conn.NewStatement()
 	if err != nil {
@@ -406,17 +464,18 @@ func NewStructuredBatchHandler(
 	}
 
 	s := &StructuredBatchHandler{
-		alloc:      pool,
-		conn:       conn,
-		truncStmt:  truncStmt,
-		ckptStmt:   ckptStmt,
-		ingestStmt: ingestStmt,
-		queryStmt:  queryStmt,
-		schema:     schema,
-		sql:        sql,
-		tableName:  tableName,
-		fieldNames: fieldNames,
-		logger:     zap.NewNop(),
+		eventTimeField: eventTimeField,
+		alloc:          pool,
+		conn:           conn,
+		truncStmt:      truncStmt,
+		ckptStmt:       ckptStmt,
+		ingestStmt:     ingestStmt,
+		queryStmt:      queryStmt,
+		schema:         schema,
+		sql:            sql,
+		tableName:      tableName,
+		fieldNames:     fieldNames,
+		logger:         zap.NewNop(),
 	}
 
 	for _, opt := range opts {
