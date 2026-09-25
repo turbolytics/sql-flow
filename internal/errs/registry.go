@@ -106,6 +106,9 @@ const (
 	// The rollup daemon and install. A domain of its own, so a supervisor
 	// can tell the rollup process's failures from a pipeline's.
 	CodeRollupInternal Code = "system.rollup.internal"
+	// The rollup store refused or dropped the connection. Retryable: the
+	// database may come back.
+	CodeRollupUnreachable Code = "system.rollup.unreachable"
 
 	// The last resort. CodeOf returns it for an error carrying no code, so an
 	// unclassified failure still reports as ours rather than the user's.
@@ -166,6 +169,11 @@ var registry = map[Code]Definition{
 		CodeRollupInternal,
 		"A rollup command failed on a database error it could not classify. Nothing it began was committed.",
 		"Read the wrapped database error. Retry once the database is healthy; if it repeats, report it with the message.",
+	},
+	CodeRollupUnreachable: {
+		CodeRollupUnreachable,
+		"A rollup command could not connect to the database in store.postgres.dsn.",
+		"Check that the database is up and reachable from this host, and that the dsn's host, port, user and password are right. The message names the host and the database, never the password.",
 	},
 	CodeConfigRollupChange: {
 		CodeConfigRollupChange,

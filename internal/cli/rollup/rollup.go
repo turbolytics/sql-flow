@@ -21,7 +21,7 @@ func NewCommand() *cobra.Command {
 			"triggers that keep them current, and the serve datasets that read them. " +
 			"check fails when a committed copy of either has drifted from the file.",
 	}
-	cmd.AddCommand(newDDLCommand(), newServeCommand(), newCheckCommand())
+	cmd.AddCommand(newDDLCommand(), newServeCommand(), newCheckCommand(), newInstallCommand())
 	return cmd
 }
 

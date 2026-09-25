@@ -3,6 +3,7 @@ system.internal.unexpected
 system.lifecycle.drain_incomplete
 system.lifecycle.internal
 system.rollup.internal
+system.rollup.unreachable
 system.sink.internal
 system.sink.unreachable
 system.sink.write_failed
