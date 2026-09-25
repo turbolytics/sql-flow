@@ -194,3 +194,17 @@ func TestCliRollupRun_ChangesThatCorruptStoredRowsAreRefused(t *testing.T) {
 		})
 	}
 }
+
+// No generated table or trigger reads source.dimensions, so adding one to
+// group a new set by changes no stored row.
+func TestCliRollupRun_AnAddedSourceDimensionIsNoChange(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+
+	r := exampleRollup(t)
+	prev := appliedOf(r)
+	r.Source.Dimensions = append(r.Source.Dimensions, "country")
+
+	plan, v := PlanChange(r, pathInFile, prev, nil, map[string]bool{})
+	assert.Equal(t, 0, len(v))
+	assert.DeepEqual(t, Plan{}, plan)
+}

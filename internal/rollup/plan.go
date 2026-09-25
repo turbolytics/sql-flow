@@ -132,9 +132,12 @@ func changes(r config.Rollup, path []string, prev Applied) []config.Violation {
 	return out
 }
 
+// sameSource compares what the generated tables and triggers read from the
+// source: the table, its time column and its grain. source.dimensions is
+// left out. Only the file's rules and serve read it, so adding one, to group
+// a new set by, changes no stored row.
 func sameSource(a, b AppliedSource) bool {
-	return a.Table == b.Table && a.TimeColumn == b.TimeColumn && a.Grain == b.Grain &&
-		slices.Equal(a.Dimensions, b.Dimensions)
+	return a.Table == b.Table && a.TimeColumn == b.TimeColumn && a.Grain == b.Grain
 }
 
 // describe writes a measure the way a message names it: sum(posts) as integer.
