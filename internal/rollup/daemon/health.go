@@ -6,7 +6,6 @@ package daemon
 import (
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -39,11 +38,6 @@ type snapshot struct {
 	// history left in it.
 	Filling   string
 	Remaining time.Duration
-	// DriftTables are the tables the last verify pass found drifted, and
-	// DriftBuckets how many of their buckets differ. A standby verifies
-	// nothing, so it holds none.
-	DriftTables  []string
-	DriftBuckets int64
 }
 
 // healthState is what the loop writes and /healthz reads.
@@ -87,12 +81,6 @@ func (h *healthState) setFilling(table string, remaining time.Duration) {
 	h.s.Filling, h.s.Remaining = table, remaining
 }
 
-func (h *healthState) setDrift(tables []string, buckets int64) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.s.DriftTables, h.s.DriftBuckets = tables, buckets
-}
-
 func (h *healthState) get() snapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -101,14 +89,12 @@ func (h *healthState) get() snapshot {
 
 // healthStatus is the table behind /healthz, the rules `sqlflow run` uses:
 // 200 means do not restart, and 503 means restart. The first matching rule
-// wins. degraded is 200: a restart cannot fix drift.
+// wins. Drift is not a rule: it belongs to the store, the daemon did not
+// cause it, and a restart cannot fix it. The daemon reports it in
+// rollup_drift_buckets and its log.
 func healthStatus(s snapshot, now time.Time, interval time.Duration) (status, reason string, code int) {
 	if age := now.Sub(s.LastContact); age > unreachableIntervals*interval {
 		return "failed", fmt.Sprintf("no database round trip for %.0fs", age.Seconds()), http.StatusServiceUnavailable
-	}
-	if len(s.DriftTables) > 0 {
-		return "degraded", fmt.Sprintf("%d buckets differ from the tables they are built from, in %s",
-			s.DriftBuckets, strings.Join(s.DriftTables, ", ")), http.StatusOK
 	}
 	if s.Role == roleStandby {
 		return "standby", "another instance holds the leader lock", http.StatusOK

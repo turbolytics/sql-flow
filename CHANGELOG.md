@@ -58,8 +58,9 @@
     prometheus` serves `/metrics` and `/healthz` on `:8000`.
 - `sqlflow rollup verify` checks every rollup table against the table it is
   built from and exits `system.rollup.drift` when a bucket differs. `sqlflow
-  rollup run` checks each table's newest two buckets every minute and reports
-  drift as `degraded` on `/healthz`. New metrics: `rollup_verify_buckets`,
+  rollup run` checks each table's newest two buckets every minute, counts
+  drift in `rollup_drift_buckets` and logs it, and leaves `/healthz` to the
+  process's own health. New metrics: `rollup_verify_buckets`,
   `rollup_drift_buckets`, `rollup_verify_duration` and
   `rollup_newest_bucket_timestamp`.
 - The TurboStats bundle says how far behind the stream a pipeline runs, in
