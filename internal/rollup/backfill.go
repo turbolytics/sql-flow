@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/errs"
 )
@@ -268,6 +269,9 @@ func backfillAttempt(ctx context.Context, conn *pgx.Conn, p Pending, e edge) (st
 	}
 	step.Buckets = int64(len(buckets))
 	if len(buckets) > 0 {
+		if busy, err := takeRollupLock(ctx, tx, p.Rollup.Name); err != nil || busy {
+			return step, busy, backfillErrorOrNil(err, p.Table, "take the rollup's lock")
+		}
 		// Try, never wait. An upsert fires each rollup trigger twice, for
 		// its inserted and its updated rows, and the two passes lock buckets
 		// in different orders, so a chunk that waited while holding locks
@@ -330,12 +334,15 @@ func touchedBuckets(ctx context.Context, q querier, r config.Rollup, e edge, lo,
 	return pgx.CollectRows(rows, pgx.RowTo[time.Time])
 }
 
-// busyTries is how many times a chunk tries to take its buckets' locks
-// before it gives up until the daemon's next pass, and busyWait how long it
-// waits between tries. Variables, so a test can shorten them.
+// busyTries is how many times a chunk tries to take its locks before it
+// gives up until the daemon's next pass, and busyWait how long it waits
+// between tries. rollupLockWait bounds each try's wait for the rollup's
+// lock, so a chunk gives up within about 21 s, inside the three intervals
+// /healthz allows. Variables, so a test can shorten them.
 var (
-	busyTries = 20
-	busyWait  = 50 * time.Millisecond
+	busyTries      = 20
+	busyWait       = 50 * time.Millisecond
+	rollupLockWait = time.Second
 )
 
 // ErrChunkBusy is a chunk that found one of its buckets locked by a write on
@@ -347,10 +354,48 @@ var ErrChunkBusy = errors.New("a write held one of the chunk's buckets on every 
 // wrote nothing, and the caller reads the entries again.
 var ErrProgressMoved = errors.New("the table's backfill progress changed after it was read")
 
+// rollupKey is the key every trigger of rollup name locks before its
+// buckets, so writers to one rollup take turns.
+func rollupKey(name string) string {
+	return "sqlflow_rollup:" + name
+}
+
 // bucketKey is the key the generated triggers lock a bucket with: the
 // table's name, a colon, and the bucket's epoch in seconds.
 func bucketKey(table string, bucket time.Time) string {
 	return fmt.Sprintf("%s:%d", table, bucket.Unix())
+}
+
+// takeRollupLock waits in line for the lock every trigger of the rollup
+// takes first. The chunk's upserts fire those triggers, so it must hold the
+// lock before its buckets', or it would wait for the lock while holding
+// them. A writer holds the lock for one statement, and Postgres serves a
+// waiter before writers that ask later, so writing back to back cannot
+// starve the chunk as a try would. Waiting is safe here: the chunk holds
+// only the install lock, shared, which no writer waits for. busy is true
+// when the lock stayed held for rollupLockWait, as behind a write left
+// open.
+func takeRollupLock(ctx context.Context, tx pgx.Tx, rollup string) (busy bool, err error) {
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", rollupLockWait.Milliseconds())); err != nil {
+		return false, err
+	}
+	_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", rollupKey(rollup))
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", installLockTimeout.Milliseconds()))
+	return false, err
+}
+
+// backfillErrorOrNil is backfillError, or nil for no error.
+func backfillErrorOrNil(err error, table, step string) error {
+	if err == nil {
+		return nil
+	}
+	return backfillError(err, table, step)
 }
 
 // chunkKeys is every lock key a chunk over buckets of e's table needs: each

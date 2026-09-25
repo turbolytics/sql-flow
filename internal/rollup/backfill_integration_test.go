@@ -38,12 +38,13 @@ func lockBuckets(ctx context.Context, tx pgx.Tx, table string, buckets []time.Ti
 	return nil
 }
 
-// withBusy shortens a chunk's retries for one test.
+// withBusy shortens a chunk's retries, and its wait for the rollup's lock,
+// for one test.
 func withBusy(t *testing.T, tries int, wait time.Duration) {
 	t.Helper()
-	tr, w := busyTries, busyWait
-	busyTries, busyWait = tries, wait
-	t.Cleanup(func() { busyTries, busyWait = tr, w })
+	tr, w, r := busyTries, busyWait, rollupLockWait
+	busyTries, busyWait, rollupLockWait = tries, wait, wait
+	t.Cleanup(func() { busyTries, busyWait, rollupLockWait = tr, w, r })
 }
 
 // withRowBudget shortens a chunk's row budget for one test.
@@ -301,14 +302,9 @@ func TestIntegrationRollupRun_ABackfillChunkNeverWaitsHoldingALock(t *testing.T)
 	assertGrainsEqualSource(t, srv.conn)
 }
 
-// A writer upserts into the days being filled, through the pipeline's own
-// sink, while the backfill runs. It never waits past its lock timeout, and
-// every grain equals its source after both finish.
-//
-// One writer, as the pipeline's sink is per process. Two writers contend
-// with each other with no backfill running: an upsert fires each rollup
-// trigger twice, for its inserted and its updated rows, and the two passes
-// take bucket locks in different orders.
+// Four writers upsert into the days being filled, through the pipeline's
+// own sink, while the backfill runs. None waits past its lock timeout, and
+// every grain equals its source after all finish.
 func TestIntegrationRollupRun_ChunkedBackfillLosesNoConcurrentWrite(t *testing.T) {
 	coverage.Covers(t, "cli.rollup_run")
 	if testing.Short() {
@@ -319,23 +315,15 @@ func TestIntegrationRollupRun_ChunkedBackfillLosesNoConcurrentWrite(t *testing.T
 	mustInstall(t, srv.conn, loadExample(t))
 
 	start := at("2026-09-10T00:00:00Z")
-	langs := []string{"en", "ja", "de", "pt"}
 	var wg sync.WaitGroup
-	errc := make(chan error, 64)
-	for w := 0; w < 1; w++ {
+	errc := make(chan error, 160)
+	for w := 0; w < 4; w++ {
 		wg.Add(1)
 		go func(seed int64) {
 			defer wg.Done()
 			rng := rand.New(rand.NewSource(seed))
-			for i := 0; i < 60; i++ {
-				rows := make([]minute, 20)
-				for j := range rows {
-					rows[j] = minute{
-						start.Add(time.Duration(rng.Intn(3*24*60)) * time.Minute),
-						langs[rng.Intn(len(langs))], int32(1 + rng.Intn(50)),
-					}
-				}
-				if err := flushMinutes(srv.dsn+"&lock_timeout=1000", rows); err != nil {
+			for i := 0; i < 40; i++ {
+				if err := flushMinutes(srv.dsn+"&lock_timeout=1000", randomMinutes(rng, start)); err != nil {
 					errc <- err
 				}
 			}
@@ -407,6 +395,37 @@ SET backfill = jsonb_set(backfill, '{posts_by_lang_5m}', 'null') WHERE rollup = 
 	assert.True(t, kept)
 	assert.That(t, stateOf(t, srv.conn, "posts").Backfill["posts_by_lang_5m"] == nil)
 
+	fillAll(t, srv.conn, loadExample(t))
+	assertGrainsEqualSource(t, srv.conn)
+}
+
+// Every trigger takes its rollup's lock before its buckets'. A chunk's
+// upserts fire those triggers, so the chunk tries the rollup's lock with
+// the rest. A chunk without it would wait for it while holding its bucket
+// locks, behind a writer that may want one of them.
+func TestIntegrationRollupRun_ABackfillChunkNeedsTheRollupsLock(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
+	mustInstall(t, srv.conn, loadExample(t))
+	withBusy(t, 3, 20*time.Millisecond)
+
+	holder := connectIn(t, srv.dsn, "UTC")
+	tx, err := holder.Begin(ctx)
+	assert.NoError(t, err)
+	_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", rollupKey("posts"))
+	assert.NoError(t, err)
+
+	pending, err := PendingBackfills(ctx, srv.conn, loadExample(t))
+	assert.NoError(t, err)
+	_, err = BackfillStep(ctx, srv.conn, pending[0])
+	assert.That(t, errors.Is(err, ErrChunkBusy))
+
+	assert.NoError(t, tx.Rollback(ctx))
 	fillAll(t, srv.conn, loadExample(t))
 	assertGrainsEqualSource(t, srv.conn)
 }

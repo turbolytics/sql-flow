@@ -565,6 +565,14 @@ finer table, a statement-level trigger locks the coarse buckets it touched and
 recomputes them, in the writer's transaction. A minute written twice replaces
 its count at every grain instead of adding to it.
 
+Writers to one rollup take turns: each trigger takes the rollup's lock
+first, so two writers never deadlock. Write the source once per transaction,
+as the Postgres sink does. A write left open in a transaction holds up every
+other write to its rollup until it ends. Each flush re-merges its buckets for every
+dimension value, so its cost grows with the values in a bucket, not the
+rows it wrote. Several processes writing one source pay that cost once
+each, and they take turns doing it.
+
 Measures are `sum`, `min`, `max`, `last` and `count_buckets`, which counts the
 source buckets present, such as minutes observed. `avg`, `gauge` and
 `histogram` are reserved.
