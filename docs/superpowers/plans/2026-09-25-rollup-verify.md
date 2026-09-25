@@ -1956,4 +1956,9 @@ Expected: a PR URL. Then `gh pr view feat/rollup-verify --repo turbolytics/sql-f
 
 ## After execution
 
-Filled in once the plan has run: where the code differs from the text above, and why.
+The code differs from the text above in these places:
+
+- **Tests first (Tasks 1 and 2).** Every integration test was written and run before the code it tests, not after as the steps order. The break-it checks still ran.
+- **Double sums (Task 1).** The plan's spec note said a test cannot choose two summation orders. It does not need to: compared exactly, `ANullDimensionAndADoubleSumVerifyClean` read 4 of 12 correct buckets as drift before any value changed, because the trigger and the recompute already sum in different orders. The spec's row cites that.
+- **A new leader reads `starting` (Task 4).** `/healthz` said `healthy` between taking the leader lock and the first read of the tables to fill, with every table empty. The observe and verify passes run in that gap, which widened it from microseconds to about 100 ms, and Plan 2a's `TheDaemonInstallsAndFillsHistory` failed on it. `snapshot.PendingRead` is false from taking the lock until that read, and the spec's `/healthz` table gains the `starting` row it lacked.
+- **The PR (Task 6 Step 5)** waits for the final review and the maintainer's go.

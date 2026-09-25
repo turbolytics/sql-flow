@@ -526,6 +526,7 @@ commits, and `serve` reads pre-aggregated rows.
 ```
 sqlflow rollup install -c rollups.yml
 sqlflow rollup run     -c rollups.yml [--metrics prometheus]
+sqlflow rollup verify  -c rollups.yml [--since T]
 sqlflow rollup ddl     -c rollups.yml [--backend postgres]
 sqlflow rollup serve   -c rollups.yml [--dataset NAME]
 sqlflow rollup check   -c rollups.yml --serve FILE [--migration FILE]
@@ -535,11 +536,12 @@ sqlflow rollup check   -c rollups.yml --serve FILE [--migration FILE]
 |---|---|
 | `install` | Creates the tables, functions and triggers the file declares, in one transaction, and records what it applied in `sqlflow_rollup_state`. Refuses a change that would corrupt stored rows. Fills nothing. |
 | `run` | Installs, then leads the file's rollups and fills every table `install` marks, one chunk at a time, beside a live pipeline. Several may run: one leads, the rest stand by. `--metrics prometheus` serves `/metrics` and `/healthz` on `:8000`. |
+| `verify` | Recomputes every table from the table it is built from and exits `system.rollup.drift` when a bucket differs, printing the first rows that do. It only reads. `--since` takes an RFC 3339 time or a duration such as `36h`. |
 | `ddl` | Prints a migration: the same tables, functions and triggers, and a backfill in one transaction. For a team that applies SQL itself. Connects to nothing. |
 | `serve` | Prints the `serve` datasets, to paste into a serve file's `datasets`. |
 | `check` | Exits `10` when the serve file, or the migration when given, differs from what the declaration generates, or when a dataset could answer more rows than its `max_rows`. |
 
-`install` and `run` connect to `store.postgres.dsn`:
+`install`, `run` and `verify` connect to `store.postgres.dsn`:
 
 ```yaml
 store:
@@ -554,6 +556,12 @@ its DDL only, a few milliseconds. `run` fills history newest day first. A
 chunk takes the triggers' own bucket locks without ever waiting on them:
 when a write holds one, the chunk steps back and tries again, so the
 pipeline keeps writing.
+
+`run` also checks each table's newest two buckets every minute against the
+table it is built from. Drift turns `/healthz` to `degraded`, which returns
+`200` because a restart cannot fix it, and logs the first rows that differ.
+A disabled trigger, a hand edit or a write that bypassed the triggers
+causes drift. Rewrite the bucket's source rows to re-merge it.
 
 `ddl` and `check` suit a team that applies SQL through its own migration
 runner. `install` and `run` do it for you. [`dev/config/rollups/bluesky.yml`](dev/config/rollups/bluesky.yml)
