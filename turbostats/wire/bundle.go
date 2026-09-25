@@ -205,11 +205,17 @@ type Pipeline struct {
 	// from its brokers keeps its last reading, so a receiver judges the
 	// reading by its age.
 	//
-	// EventLagBasis is where the event time came from: kafka_timestamp is
-	// broker to processing, arrival is queueing inside the process. It
-	// travels with the number because the two measure different spans, and
-	// it is an open vocabulary: a reader that meets a name it does not know
-	// keeps the reading and declines to compare it, rather than treating
+	// EventLagBasis is where the event time came from. The engine sends
+	// kafka_create_time (the producer's clock, Kafka's default) or
+	// kafka_log_append_time (the broker's, where the topic sets
+	// message.timestamp.type), both producer or broker to processing;
+	// arrival, the moment the record reached this process, which is
+	// queueing inside the process and nothing before it; or, for a source
+	// told where its event time is, the configured path into the payload,
+	// as written. It travels with the number because these measure
+	// different spans, and it is an open vocabulary: a reader that meets a
+	// name it does not know keeps the reading and declines to compare it,
+	// rather than treating
 	// the bundle as invalid. All four are absent for a source with no
 	// event time.
 	EventLagSeconds    *float64   `json:"event_lag_seconds,omitempty"`
@@ -280,6 +286,15 @@ type Pipeline struct {
 	// other does not, and a sum of the two is true of neither. Both are
 	// absent if a window reports a policy this contract has no field for,
 	// because a count that leaves some rows out is worse than none.
+	//
+	// The unit is rows of the window table, not source events. The handler's
+	// SQL runs before the window sees anything, so a batch of forty late
+	// events grouped into one row is one late row here. The two agree only
+	// at batch_size 1; above it the ratio is the handler's aggregation, which
+	// is a tuning knob and not a loss. An operator comparing this with an
+	// input count is comparing different units. A count in events would
+	// need the window to know which column carries each row's event count,
+	// which nothing declares today.
 	LateRowsDropped   *int64 `json:"late_rows_dropped,omitempty"`
 	LateRowsReemitted *int64 `json:"late_rows_reemitted,omitempty"`
 	WindowClosedCount *int64 `json:"window_closed_count,omitempty"`
