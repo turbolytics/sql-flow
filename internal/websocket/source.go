@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/turbolytics/sql-flow/internal/core"
+	"github.com/turbolytics/sql-flow/internal/eventtime"
 	"sync"
 	"time"
 
@@ -40,6 +41,13 @@ type Source struct {
 	conn *ws.Conn
 	// connectedAt is when conn was dialled, with its monotonic reading.
 	connectedAt time.Time
+
+	// eventTime reads each frame's own time; nil stamps arrival.
+	eventTime *eventtime.Extractor
+	// missingLogged is whether a frame without a usable event time has been
+	// logged this run, so a producer that never sends one writes a line and
+	// not a line per frame.
+	missingLogged bool
 
 	logger *zap.Logger
 }
@@ -80,6 +88,15 @@ func WithReconnectDelay(d time.Duration) Option {
 func WithMaxReconnectDelay(d time.Duration) Option {
 	return func(s *Source) {
 		s.maxReconnectDelay = d
+	}
+}
+
+// WithEventTime reads each frame's event time from its payload instead of
+// stamping arrival. A frame with no usable value at the path is stamped
+// core.EventTimeMissing, which a windowing pipeline refuses.
+func WithEventTime(ex *eventtime.Extractor) Option {
+	return func(s *Source) {
+		s.eventTime = ex
 	}
 }
 
@@ -138,13 +155,7 @@ func (s *Source) Stream() <-chan []core.Message {
 			}
 
 			select {
-			// No event time in the frame, so arrival is the event. The
-			// basis says the lag is queueing inside this process, and
-			// nothing before it: a server that replays history from a
-			// cursor on reconnect hands over old events that this stamps as
-			// arriving now, so the reading is near zero exactly when the
-			// pipeline is furthest behind.
-			case s.streamChan <- []core.Message{{Value: data, EventAtNanos: time.Now().UnixNano()}}:
+			case s.streamChan <- []core.Message{{Value: data, EventAtNanos: s.stamp(data)}}:
 			case <-s.done:
 				return
 			}
@@ -263,6 +274,36 @@ func (s *Source) closeConn(graceful bool) {
 	c.CloseNow()
 }
 
-// EventTimeBasis is arrival: this protocol carries no event time, so the
+// stamp is the frame's event time. Without an extractor it is arrival: this
+// protocol carries no event time, so the moment the frame reached this
+// process stands in, and the basis says the lag is queueing inside this
+// process and nothing before it -- a server that replays history from a
+// cursor on reconnect hands over old events that arrive now, so the reading
+// is near zero exactly when the pipeline is furthest behind. With one, it
+// is what the producer said, or EventTimeMissing where it said nothing
+// usable.
+func (s *Source) stamp(data []byte) int64 {
+	if s.eventTime == nil {
+		return time.Now().UnixNano()
+	}
+	at, err := s.eventTime.Extract(data)
+	if err != nil {
+		if !s.missingLogged {
+			s.missingLogged = true
+			s.logger.Warn("frame has no usable event time; a windowing pipeline refuses such frames",
+				zap.String("basis", s.eventTime.Basis()), zap.Error(err))
+		}
+		return core.EventTimeMissing
+	}
+	return at
+}
+
+// EventTimeBasis is the configured path when the frame carries its own time,
+// and otherwise arrival: this protocol carries no event time, so the
 // moment the message reached this process is the best there is.
-func (s *Source) EventTimeBasis() string { return core.EventBasisArrival }
+func (s *Source) EventTimeBasis() string {
+	if s.eventTime != nil {
+		return s.eventTime.Basis()
+	}
+	return core.EventBasisArrival
+}

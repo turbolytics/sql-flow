@@ -139,6 +139,32 @@
               "properties": {
                 "uri": {
                   "type": "string"
+                },
+                "event_time": {
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "Path into the JSON frame, dotted for nesting: \"time_us\", or\n\"commit.record.createdAt\"."
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "unix_s",
+                        "unix_ms",
+                        "unix_us",
+                        "unix_ns",
+                        "rfc3339"
+                      ],
+                      "description": "Format is the value's encoding. The unix_* forms take an integer,\nor a string holding one; rfc3339 takes a string."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "path",
+                    "format"
+                  ],
+                  "description": "EventTime names the field of each frame that carries the event's own\ntime. Absent, the event time is arrival: the moment the frame reached\nthis process, which says nothing about when the event happened and\nreads as caught up exactly when a server replaying history is furthest\nbehind. Set it, and the record's time is the record's. On a windowing\npipeline a frame without a usable value at the path is refused."
                 }
               },
               "additionalProperties": false,

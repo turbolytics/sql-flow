@@ -37,6 +37,19 @@ pipeline:
         prefetch: <integer>
     websocket:
       uri: <string>
+      # EventTime names the field of each frame that carries the event's own
+      # time. Absent, the event time is arrival: the moment the frame reached
+      # this process, which says nothing about when the event happened and
+      # reads as caught up exactly when a server replaying history is furthest
+      # behind. Set it, and the record's time is the record's. On a windowing
+      # pipeline a frame without a usable value at the path is refused.
+      event_time:
+        # Path into the JSON frame, dotted for nesting: "time_us", or
+        # "commit.record.createdAt".
+        path: <string>
+        # Format is the value's encoding. The unix_* forms take an integer,
+        # or a string holding one; rfc3339 takes a string.
+        format: unix_s | unix_ms | unix_us | unix_ns | rfc3339
     webhook:
       # The address the listener binds, as host:port. Defaults to
       # 0.0.0.0:8001. A platform that assigns the port sets it from the

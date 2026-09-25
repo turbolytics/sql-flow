@@ -91,5 +91,7 @@ func TestCoreConsumeLoop_PlacementRule(t *testing.T) {
 	assert.That(t, CanPlace(now, now))
 	assert.That(t, !CanPlace(floor-1, now))
 	assert.That(t, !CanPlace(now+1, now))
+	// A source that assigns event time and found none on this record.
+	assert.That(t, !CanPlace(EventTimeMissing, now))
 	assert.That(t, !CanPlace(time.Date(1970, 1, 1, 0, 0, 1, 0, time.UTC).UnixNano(), now))
 }

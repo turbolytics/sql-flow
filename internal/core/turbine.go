@@ -97,6 +97,14 @@ var eventTimeFloorNanos = EventTimeFloor.UnixNano()
 // is not one a watermark should rest on either.
 var EventTimeFloor = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// EventTimeMissing is the EventAtNanos of a record from a source that assigns
+// event time but found none usable on this record: the configured field is
+// absent, the wrong type, or unparseable. It is distinct from zero, which is
+// a source that assigns nothing at all and whose records are placeable, and
+// it sits below the floor, so a windowing pipeline refuses it. Kafka encodes
+// "no timestamp" the same way.
+const EventTimeMissing int64 = -1
+
 // EventTimeSource is a source that stamps Message.EventAtNanos. A source that
 // does not implement it reports no lag, rather than a lag of zero.
 type EventTimeSource interface {
@@ -1809,7 +1817,10 @@ func (t *Turbine) flush(ctx context.Context, batch arrow.Table) error {
 // A source that stamps nothing leaves the field zero, which is below the
 // floor. Such a pipeline has no event time to window on, so refusing its
 // records would refuse all of them; zero is therefore placeable, and the
-// window's own time column is what decides where those rows land.
+// window's own time column is what decides where those rows land. A source
+// that does assign but found nothing usable on this record stamps
+// EventTimeMissing instead, which is not placeable: the operator said where
+// the time is, and this record has none there.
 //
 // nowNanos is the batch's one wall-clock reading, the same one the lag
 // reading uses, rather than the injected clock: this is a judgement about

@@ -5,6 +5,7 @@ import (
 	"net/url"
 
 	"github.com/turbolytics/sql-flow/internal/errs"
+	"github.com/turbolytics/sql-flow/internal/eventtime"
 )
 
 type ErrorPolicy string
@@ -356,6 +357,50 @@ func (f *KafkaFetch) Resolved() (KafkaFetch, error) {
 
 type WebsocketSource struct {
 	URI string `yaml:"uri"`
+	// EventTime names the field of each frame that carries the event's own
+	// time. Absent, the event time is arrival: the moment the frame reached
+	// this process, which says nothing about when the event happened and
+	// reads as caught up exactly when a server replaying history is furthest
+	// behind. Set it, and the record's time is the record's. On a windowing
+	// pipeline a frame without a usable value at the path is refused.
+	EventTime *EventTimeField `yaml:"event_time,omitempty"`
+}
+
+// EventTimeField names where a payload carries its event time and how the
+// value is encoded.
+type EventTimeField struct {
+	// Path into the JSON frame, dotted for nesting: "time_us", or
+	// "commit.record.createdAt".
+	Path string `yaml:"path"`
+	// Format is the value's encoding. The unix_* forms take an integer,
+	// or a string holding one; rfc3339 takes a string.
+	Format string `yaml:"format" jsonschema:"enum=unix_s,enum=unix_ms,enum=unix_us,enum=unix_ns,enum=rfc3339"`
+}
+
+// WebsocketResolved is a websocket block with its values checked.
+type WebsocketResolved struct {
+	URI       string
+	EventTime *eventtime.Extractor
+}
+
+// Resolved checks the block. A nil receiver is the absent block, which a
+// websocket source cannot run without.
+func (w *WebsocketSource) Resolved() (WebsocketResolved, error) {
+	if w == nil {
+		return WebsocketResolved{}, errs.New(errs.CodeSourceInvalid, "websocket source: missing websocket configuration")
+	}
+	if w.URI == "" {
+		return WebsocketResolved{}, errs.New(errs.CodeSourceInvalid, "websocket source: uri is required")
+	}
+	r := WebsocketResolved{URI: w.URI}
+	if w.EventTime != nil {
+		ex, err := eventtime.New(w.EventTime.Path, eventtime.Format(w.EventTime.Format))
+		if err != nil {
+			return WebsocketResolved{}, errs.Wrap(errs.CodeSourceInvalid, err, "websocket source")
+		}
+		r.EventTime = ex
+	}
+	return r, nil
 }
 
 // WebhookHMAC configures signature validation of incoming webhook bodies.
