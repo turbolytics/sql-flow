@@ -20,11 +20,7 @@ func newInstallCommand() *cobra.Command {
 			"transaction, and record what was applied in sqlflow_rollup_state. A change that would " +
 			"corrupt stored rows changes nothing and exits non-zero. install fills no table: " +
 			"`sqlflow rollup run` backfills the tables it marks.",
-		// Hidden until `sqlflow rollup run` exists to backfill what install
-		// creates. A table created over existing history stays partial until
-		// then.
-		Hidden: true,
-		Args:   cobra.NoArgs,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			conf, err := config.LoadRollups(configPath)
 			if err != nil {
