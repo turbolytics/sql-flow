@@ -217,7 +217,7 @@ func TestCliRollupRun_AnAddedSourceDimensionIsNoChange(t *testing.T) {
 	assert.DeepEqual(t, Plan{}, plan)
 }
 
-func withPeak(r config.Rollup, measure config.RollupMeasure) config.Rollup {
+func withPeakSet(r config.Rollup, measure config.RollupMeasure) config.Rollup {
 	r.DimensionSets = append(slices.Clone(r.DimensionSets), config.RollupDimensionSet{
 		Name: "posts_peak", Dimensions: []string{"lang"},
 		Measures: map[string]config.RollupMeasure{"peak": measure},
@@ -230,13 +230,13 @@ func withPeak(r config.Rollup, measure config.RollupMeasure) config.Rollup {
 func TestCliRollupRun_ARetainedSetDeclaredAgainInAnotherShapeIsRefused(t *testing.T) {
 	coverage.Covers(t, "cli.rollup_run")
 
-	max := withPeak(exampleRollup(t), config.RollupMeasure{Type: "max", Column: "posts"})
+	max := withPeakSet(exampleRollup(t), config.RollupMeasure{Type: "max", Column: "posts"})
 	without := exampleRollup(t)
 	plan, v := PlanChange(without, pathInFile, appliedOf(max), nil, map[string]bool{})
 	assert.Equal(t, 0, len(v))
 	assert.Equal(t, 5, len(plan.Retain))
 
-	min := withPeak(exampleRollup(t), config.RollupMeasure{Type: "min", Column: "posts"})
+	min := withPeakSet(exampleRollup(t), config.RollupMeasure{Type: "min", Column: "posts"})
 	plan, v = PlanChange(min, pathInFile, appliedOf(without), plan.Retain, map[string]bool{})
 	assert.Equal(t, 1, len(v))
 	assert.Equal(t, errs.CodeConfigRollupChange, v[0].Code)

@@ -603,3 +603,36 @@ func TestIntegrationRollupRun_InstallBesideAWriterWhenOneRollupReadsAnother(t *t
 	assert.Equal(t, 1, res.rep.Attempts)
 	assertGrainsEqualSource(t, srv.conn)
 }
+
+// An operator who follows install's own advice drops a retained table by
+// hand. Its record must go with it, or declaring the set again in a new
+// shape is refused over rows that no longer exist.
+func TestIntegrationRollupRun_ARetainedTableDroppedByHandCanBeDeclaredAgain(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	withPeak := func(measure config.RollupMeasure) *config.RollupsConf {
+		conf := loadExample(t)
+		conf.Rollups[0] = withPeakSet(conf.Rollups[0], measure)
+		return conf
+	}
+	mustInstall(t, srv.conn, withPeak(config.RollupMeasure{Type: "max", Column: "posts"}))
+	mustInstall(t, srv.conn, loadExample(t))
+	for _, g := range []string{"5m", "15m", "1h", "6h", "1d"} {
+		execSQL(t, srv.conn, `DROP FUNCTION IF EXISTS "sqlflow_rollup_posts_peak_`+g+`"() CASCADE`)
+		execSQL(t, srv.conn, `DROP TABLE IF EXISTS "posts_peak_`+g+`"`)
+	}
+
+	rep := mustInstall(t, srv.conn, withPeak(config.RollupMeasure{Type: "min", Column: "posts"}))
+	got := rep.Rollups[0]
+	assert.Equal(t, 5, len(got.Created))
+	assert.DeepEqual(t, []string{"posts_peak_5m"}, got.Plan.Backfill)
+	assert.Equal(t, 0, len(got.Plan.Restore))
+	assert.Equal(t, 5, len(got.Dropped))
+	s := stateOf(t, srv.conn, "posts")
+	assert.Equal(t, 0, len(s.Retained))
+	writeMinutes(t, srv.dsn, minute{at("2026-09-15T10:01:00Z"), "en", 5})
+	assert.Equal(t, int64(5), count(t, srv.conn, "SELECT peak FROM posts_peak_1d"))
+}

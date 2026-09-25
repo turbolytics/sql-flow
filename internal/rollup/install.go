@@ -46,6 +46,9 @@ type RollupInstall struct {
 	// Created lists the tables this install created, in the order edges
 	// walks them.
 	Created []string
+	// Dropped lists retained tables that no longer exist, whose records this
+	// install removed.
+	Dropped []string
 	Plan    Plan
 }
 
@@ -119,6 +122,7 @@ type planned struct {
 	r       config.Rollup
 	prev    *State
 	missing map[string]bool
+	dropped []string
 	plan    Plan
 }
 
@@ -160,6 +164,27 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 		if err != nil {
 			return nil, installError(err, "read state")
 		}
+		// A retained table dropped by hand takes its record with it. Its
+		// rows are gone, so declaring it again makes a new table, and a
+		// stale record would refuse the new shape over rows that no longer
+		// exist.
+		var dropped []string
+		if prev != nil {
+			var kept []RetainedTable
+			for _, t := range prev.Retained {
+				cols, err := columns(ctx, tx, quote(*schema)+"."+quote(t.Table))
+				if err != nil {
+					return nil, installError(err, "read "+t.Table)
+				}
+				if len(cols) == 0 {
+					dropped = append(dropped, t.Table)
+					delete(prev.Backfill, t.Table)
+					continue
+				}
+				kept = append(kept, t)
+			}
+			prev.Retained = kept
+		}
 		missing := map[string]bool{}
 		for _, e := range edges(r) {
 			relation := quote(*schema) + "." + quote(e.Table)
@@ -185,7 +210,7 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 		}
 		plan, v := PlanChange(r, path, prevApplied, retained, missing)
 		violations = append(violations, v...)
-		todo = append(todo, planned{r: r, prev: prev, missing: missing, plan: plan})
+		todo = append(todo, planned{r: r, prev: prev, missing: missing, dropped: dropped, plan: plan})
 	}
 	if len(violations) > 0 {
 		return nil, violationError(violations)
@@ -220,7 +245,7 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 		if err := writeState(ctx, tx, nextState(p, version)); err != nil {
 			return nil, installError(err, "write state")
 		}
-		ri := RollupInstall{Name: p.r.Name, Plan: p.plan}
+		ri := RollupInstall{Name: p.r.Name, Dropped: p.dropped, Plan: p.plan}
 		es := edges(p.r)
 		for _, e := range es {
 			if p.missing[e.Table] {

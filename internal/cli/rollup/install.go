@@ -72,6 +72,9 @@ func printInstall(w io.Writer, rep *gen.InstallReport) {
 		for _, t := range r.Created {
 			fmt.Fprintf(w, "rollup %s: created %s\n", r.Name, t)
 		}
+		for _, t := range r.Dropped {
+			fmt.Fprintf(w, "rollup %s: retained table %s no longer exists; its record is removed\n", r.Name, t)
+		}
 		for _, t := range r.Plan.Retain {
 			fmt.Fprintf(w, "rollup %s: %s is no longer declared; its table and triggers stay\n", r.Name, t.Table)
 		}
