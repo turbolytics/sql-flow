@@ -340,7 +340,8 @@ func TestHandlerStructured_FillsADeclaredEventTimeFromTheRecord(t *testing.T) {
 	}, nil)
 
 	h, err := NewStructuredBatchHandler(conn,
-		"SELECT text, time_us, event_time FROM posts ORDER BY text", "posts", schema)
+		"SELECT text, time_us, event_time FROM posts ORDER BY text", "posts", schema,
+		StructuredBatchWithEventTime(true))
 	assert.NoError(t, err)
 	assert.NoError(t, h.Init(context.Background()))
 
@@ -364,11 +365,28 @@ func TestHandlerStructured_FillsADeclaredEventTimeFromTheRecord(t *testing.T) {
 	assert.Equal(t, arrow.Timestamp(at.UnixMicro()), col.Value(0))
 	assert.That(t, col.IsNull(1))
 
-	// Declared as the wrong type: refused when the handler is built.
+	// Declared as the wrong type: refused when the handler is built, on a
+	// windowing pipeline.
 	createTable(t, conn, `CREATE TABLE wrong (text TEXT, event_time BIGINT);`)
-	_, err = NewStructuredBatchHandler(conn, "SELECT * FROM wrong", "wrong", arrow.NewSchema([]arrow.Field{
+	wrongSchema := arrow.NewSchema([]arrow.Field{
 		{Name: "text", Type: arrow.BinaryTypes.String},
 		{Name: "event_time", Type: arrow.PrimitiveTypes.Int64},
-	}, nil))
+	}, nil)
+	_, err = NewStructuredBatchHandler(conn, "SELECT * FROM wrong", "wrong", wrongSchema,
+		StructuredBatchWithEventTime(true))
 	assert.Error(t, err)
+
+	// And not refused, nor filled from the record, where the pipeline does
+	// not window: a user's own column called event_time is the payload's, as
+	// it was before the engine knew the name.
+	own, err := NewStructuredBatchHandler(conn, "SELECT event_time FROM wrong", "wrong", wrongSchema)
+	assert.NoError(t, err)
+	assert.NoError(t, own.Init(context.Background()))
+	assert.NoError(t, own.WriteMessage(core.Message{
+		Value: []byte(`{"text": "c", "event_time": 42}`), EventAtNanos: at.UnixNano(),
+	}))
+	res2, err := own.Invoke(context.Background())
+	assert.NoError(t, err)
+	defer res2.Release()
+	assert.Equal(t, int64(42), res2.Column(0).Data().Chunk(0).(*array.Int64).Value(0))
 }

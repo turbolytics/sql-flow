@@ -551,6 +551,9 @@ func NewCommand() *cobra.Command {
 				conn,
 				conf.Pipeline.Handler,
 				logger,
+				// A window is what needs the assigned event time; a pipeline
+				// that does not window sees no new column.
+				handlers.WithEventTime(conf.HasWindow()),
 			)
 			if err != nil {
 				return err

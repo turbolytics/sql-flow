@@ -639,7 +639,8 @@ func TestHandlerInferredMem_ExposesTheAssignedEventTime(t *testing.T) {
 	defer cleanup()
 
 	h, err := NewInferredMemBatchHandler(conn,
-		"SELECT city, event_time FROM batch ORDER BY city")
+		"SELECT city, event_time FROM batch ORDER BY city",
+		InferredMemBatchWithEventTime(true))
 	assert.NoError(t, err)
 	assert.NoError(t, h.Init(context.Background()))
 
@@ -665,4 +666,26 @@ func TestHandlerInferredMem_ExposesTheAssignedEventTime(t *testing.T) {
 	assert.That(t, col.IsNull(1))
 	// And the kafka_* columns did not appear: nothing supplied provenance.
 	assert.Equal(t, 2, res.Schema().NumFields())
+}
+
+// Off -- the default, and every pipeline that does not window -- the batch's
+// shape is what it was before the column existed, however the record was
+// stamped. A handler SQL that selects * cannot gain a column it did not ask
+// for.
+func TestHandlerInferredMem_NoEventTimeColumnUnlessAsked(t *testing.T) {
+	coverage.Covers(t, "handler.inferred_mem")
+	conn, cleanup := newTestADBCConn(t)
+	defer cleanup()
+
+	h, err := NewInferredMemBatchHandler(conn, "SELECT * FROM batch")
+	assert.NoError(t, err)
+	assert.NoError(t, h.Init(context.Background()))
+	assert.NoError(t, h.WriteMessage(core.Message{
+		Value: []byte(`{"city": "NYC"}`), EventAtNanos: time.Now().UnixNano(),
+	}))
+	res, err := h.Invoke(context.Background())
+	assert.NoError(t, err)
+	defer res.Release()
+	assert.Equal(t, 1, res.Schema().NumFields())
+	assert.Equal(t, "city", res.Schema().Field(0).Name)
 }

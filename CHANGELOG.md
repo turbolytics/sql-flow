@@ -7,10 +7,13 @@
 - Handlers expose the time the source assigned each record as an
   `event_time` column, a TIMESTAMPTZ: the Kafka record timestamp, a
   websocket frame's configured field, or arrival for a source with nothing
-  better. The inferred handler adds the column to the batch when any record
-  carries a time; the structured handler fills it wherever the batch table
-  declares `event_time TIMESTAMPTZ`, from the record rather than from the
-  payload. A record the source assigned no time to is null there.
+  better. On a windowing pipeline only. The inferred handler adds the column
+  to the batch when any record carries a time; the structured handler fills
+  it wherever the batch table declares `event_time TIMESTAMPTZ`, from the
+  record rather than from the payload. A record the source assigned no time
+  to is null there. A pipeline with no window is unchanged: its batch gains
+  no column, so a handler SQL that selects `*` keeps its shape, and a
+  structured table's own column of that name stays the payload's.
 
   A window's time must be cut from it. The watermark rests on the assigned
   time, and a bucket cut from some other field of the payload is on a
