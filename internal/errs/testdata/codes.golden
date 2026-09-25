@@ -15,6 +15,7 @@ user.config.invalid
 user.config.not_found
 user.config.parse_failed
 user.config.rollup
+user.config.rollup_change
 user.config.rollup_drift
 user.config.serve_dataset
 user.config.serve_reserved

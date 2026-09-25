@@ -45,6 +45,12 @@ const (
 	// the declaration changed without regenerating them.
 	CodeConfigRollupDrift Code = "user.config.rollup_drift"
 
+	// A rollups file changed in a way that would corrupt the rows its tables
+	// already hold: a measure, a dimension set's dimensions, a grain's from,
+	// or the source. Also a table that exists with other columns than the
+	// file declares, because another declaration built it.
+	CodeConfigRollupChange Code = "user.config.rollup_change"
+
 	// Data: the messages themselves, as opposed to the pipeline definition.
 	// A malformed record is the producer's problem, never ours.
 	CodeDataMalformed Code = "user.data.malformed"
@@ -151,6 +157,11 @@ var registry = map[Code]Definition{
 		CodeConfigRollupDrift,
 		"A migration or serve dataset generated from a rollups file differs from what the file generates now.",
 		"Regenerate it with `sqlflow rollup ddl` or `sqlflow rollup serve` instead of editing it by hand.",
+	},
+	CodeConfigRollupChange: {
+		CodeConfigRollupChange,
+		"A rollups file changed in a way that would corrupt the rows its tables already hold, or a table exists with other columns than the file declares.",
+		"Declare a new dimension set or rollup for the new shape, and drop the old tables by hand once nothing reads them. The message names the change.",
 	},
 	CodeDataMalformed: {
 		CodeDataMalformed,

@@ -1,0 +1,44 @@
+{
+  "source": {
+    "table": "posts_per_minute_by_lang",
+    "time_column": "bucket",
+    "grain": "1m",
+    "dimensions": [
+      "lang"
+    ]
+  },
+  "grains": {
+    "15m": "5m",
+    "1d": "6h",
+    "1h": "15m",
+    "5m": "1m",
+    "6h": "1h"
+  },
+  "dimension_sets": {
+    "posts_by_lang": {
+      "dimensions": [
+        "lang"
+      ],
+      "measures": {
+        "posts": {
+          "type": "sum",
+          "column": "posts",
+          "numeric": "integer"
+        }
+      }
+    },
+    "posts_total": {
+      "dimensions": [],
+      "measures": {
+        "minutes": {
+          "type": "count_buckets"
+        },
+        "posts": {
+          "type": "sum",
+          "column": "posts",
+          "numeric": "integer"
+        }
+      }
+    }
+  }
+}
