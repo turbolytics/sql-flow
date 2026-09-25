@@ -214,6 +214,27 @@ invariants:
     requires: []
     enforced: true
 
+  # No invariant owned the window's output, which is how a local reproduction
+  # of #183 published 12% fewer records than were produced while all 52 of
+  # these passed. Two live defects break it. A rebalance: two workers each
+  # hold part of a bucket, both publish, and an upserting sink keeps the last
+  # writer (#183). And a burst on a pipeline with no state path: the handler's
+  # rows autocommit before the commit that accounts for them, so a poll
+  # between the two closes the bucket on the silence the burst just ended and
+  # drops the rest of it as late (#374).
+  - id: pipeline.window.counts_every_row
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      A bucket's published value counts exactly the rows produced for it,
+      once. Rows the engine dropped under late_rows drop are excluded and
+      counted in window_late_rows_total; late_rows reemit publishes a
+      different contract and is out of scope.
+    verified_by: harness
+    requires: []
+    tracked_by: "#183 and #374"
+
   - id: source.commit.only_processed
     family: checkpoint
     class: safety
