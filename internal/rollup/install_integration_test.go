@@ -484,3 +484,34 @@ func TestIntegrationRollupRun_InstallRetriesALockHeldBriefly(t *testing.T) {
 	assert.NoError(t, <-committed)
 	assertGrainsEqualSource(t, srv.conn)
 }
+
+// The install lock serializes installs only when each statement takes a new
+// snapshot, so install must not inherit a database's stricter default.
+func TestIntegrationRollupRun_FourInstallsUnderARepeatableReadDefault(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	execSQL(t, srv.conn, "ALTER DATABASE rollup SET default_transaction_isolation = 'repeatable read'")
+	type session struct {
+		conn *pgx.Conn
+		conf *config.RollupsConf
+	}
+	sessions := make([]session, 4)
+	for i := range sessions {
+		sessions[i] = session{connectIn(t, srv.dsn, "UTC"), loadExample(t)}
+	}
+
+	errc := make(chan error, len(sessions))
+	for _, s := range sessions {
+		go func(s session) {
+			_, err := Install(context.Background(), s.conn, s.conf, "test")
+			errc <- err
+		}(s)
+	}
+	for range sessions {
+		assert.NoError(t, <-errc)
+	}
+	assert.Equal(t, int64(1), count(t, srv.conn, "SELECT count(*) FROM sqlflow_rollup_state"))
+}

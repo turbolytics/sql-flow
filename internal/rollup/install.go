@@ -85,7 +85,10 @@ func retryable(err error) bool {
 }
 
 func installOnce(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, version string) (*InstallReport, error) {
-	tx, err := conn.Begin(ctx)
+	// READ COMMITTED whatever the database's default: the install lock
+	// serializes installs only because each statement after it takes a new
+	// snapshot and reads the previous install's commit.
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, installError(err, "begin")
 	}
