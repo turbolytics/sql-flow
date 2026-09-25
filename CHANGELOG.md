@@ -4,6 +4,27 @@
 
 ### Added
 
+- Handlers expose the time the source assigned each record as an
+  `event_time` column, a TIMESTAMPTZ: the Kafka record timestamp, a
+  websocket frame's configured field, or arrival for a source with nothing
+  better. The inferred handler adds the column to the batch when any record
+  carries a time; the structured handler fills it wherever the batch table
+  declares `event_time TIMESTAMPTZ`, from the record rather than from the
+  payload. A record the source assigned no time to is null there.
+
+  A window's time must be cut from it. The watermark rests on the assigned
+  time, and a bucket cut from some other field of the payload is on a
+  different clock, so the one closes the other on evidence about the wrong
+  stream. `sqlflow validate` now refuses a windowing pipeline whose handler
+  SQL does not read `event_time`, and a structured one whose batch table
+  does not declare it. A pipeline with no window is not asked to.
+
+  For the Bluesky demo that is `time_bucket(INTERVAL '1 minute', event_time)`
+  in place of `to_timestamp(time_us / 1000000)`, `event_time TIMESTAMPTZ`
+  added to the `posts` table, and `event_time: {path: time_us, format:
+  unix_us}` on the websocket source so the column carries the frame's own
+  time rather than its arrival.
+
 - The websocket source can read each frame's own event time from its
   payload: `websocket.event_time` names a dotted `path` and a `format`
   (`unix_s`, `unix_ms`, `unix_us`, `unix_ns` or `rfc3339`). Without it the
