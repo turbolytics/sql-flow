@@ -171,3 +171,149 @@ func VerifyRange(ctx context.Context, conn *pgx.Conn, tg Target, lo, hi time.Tim
 func verifyError(err error, table string) error {
 	return errs.Wrap(errs.CodeRollupInternal, err, "rollup verify %s", table)
 }
+
+// VerifyTargets lists every table of conf's rollups, declared then
+// retained. A table still filling, and every table its upserts reach,
+// differs from its from table until the fill completes, so it is skipped.
+// A database made by `rollup ddl`'s migration has no state table, and so
+// nothing retained and nothing filling.
+func VerifyTargets(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf) ([]Target, error) {
+	states := map[string]State{}
+	var exists bool
+	if err := conn.QueryRow(ctx, "SELECT to_regclass('sqlflow_rollup_state') IS NOT NULL").Scan(&exists); err != nil {
+		return nil, verifyError(err, "sqlflow_rollup_state")
+	}
+	if exists {
+		all, err := readAllStates(ctx, conn)
+		if err != nil {
+			return nil, verifyError(err, "sqlflow_rollup_state")
+		}
+		for _, s := range all {
+			states[s.Rollup] = s
+		}
+	}
+
+	var out []Target
+	for _, r := range conf.Rollups {
+		s := states[r.Name]
+		filling := map[string]bool{}
+		for table := range s.Backfill {
+			filling[table] = true
+			if e, ok := findEdge(r, table); ok {
+				for _, g := range cascadeLevels(r, e) {
+					filling[Table(e.Set, g.Name)] = true
+				}
+			}
+		}
+		for _, e := range edges(r) {
+			tg := newTarget(r, e)
+			if filling[e.Table] {
+				tg.Skip = "backfill pending"
+			}
+			out = append(out, tg)
+		}
+		for _, rt := range s.Retained {
+			e, err := retainedEdge(r, rt)
+			if err != nil {
+				return nil, err
+			}
+			tg := newTarget(r, e)
+			tg.Retained = true
+			if filling[rt.Table] {
+				tg.Skip = "backfill pending"
+			}
+			out = append(out, tg)
+		}
+	}
+	return out, nil
+}
+
+// retainedEdge rebuilds the edge a retained table was built on, from the
+// shape install recorded when a declaration removed it.
+func retainedEdge(r config.Rollup, rt RetainedTable) (edge, error) {
+	w, err := config.ParseServeDuration(rt.Grain)
+	if err != nil {
+		return edge{}, errs.Wrap(errs.CodeRollupInternal, err, "rollup verify %s: retained grain %q", rt.Table, rt.Grain)
+	}
+	set := config.RollupDimensionSet{Name: rt.Set, Dimensions: rt.Shape.Dimensions, Measures: map[string]config.RollupMeasure{}}
+	for name, m := range rt.Shape.Measures {
+		set.Measures[name] = config.RollupMeasure{Type: m.Type, Column: m.Column, Numeric: m.Numeric}
+	}
+	from := r.Source.Table
+	if rt.From != r.Source.Grain {
+		from = Table(set, rt.From)
+	}
+	return edge{Set: set, Grain: config.RollupLevel{Name: rt.Grain, Width: w, From: rt.From}, Table: rt.Table, From: from}, nil
+}
+
+// verifySpan is how much of a table VerifySince checks in one statement:
+// about a day, in whole buckets.
+func verifySpan(width time.Duration) time.Duration {
+	n := (24*time.Hour + width - 1) / width
+	return n * width
+}
+
+// bounds reads the oldest and newest bucket of tg's table and of the
+// buckets its from table makes, on the table's grain. Both are nil when
+// both tables are empty.
+func bounds(ctx context.Context, conn *pgx.Conn, tg Target) (oldest, newest *time.Time, err error) {
+	t := quote(tg.Rollup.Source.TimeColumn)
+	w := tg.e.Grain.Width
+	err = conn.QueryRow(ctx, fmt.Sprintf(`SELECT least((SELECT min(%[1]s) FROM %[2]s), (SELECT %[3]s FROM %[5]s AS f)),
+       greatest((SELECT max(%[1]s) FROM %[2]s), (SELECT %[4]s FROM %[5]s AS f))`,
+		t, quote(tg.Table), bin(w, "min(f."+t+")"), bin(w, "max(f."+t+")"), quote(tg.BuiltFrom))).Scan(&oldest, &newest)
+	if err != nil {
+		return nil, nil, verifyError(err, tg.Table)
+	}
+	return oldest, newest, nil
+}
+
+// VerifyNewest checks tg's newest two buckets: the open one and the one
+// that closed before it. The newest is the later of the table's newest and
+// the newest its from table makes, so a table that trails is checked where
+// it trails. ok is false when both tables are empty.
+func VerifyNewest(ctx context.Context, conn *pgx.Conn, tg Target) (Verified, bool, error) {
+	_, newest, err := bounds(ctx, conn, tg)
+	if err != nil || newest == nil {
+		return Verified{Rollup: tg.Rollup.Name, Table: tg.Table, BuiltFrom: tg.BuiltFrom}, false, err
+	}
+	w := tg.e.Grain.Width
+	v, err := VerifyRange(ctx, conn, tg, newest.Add(-w), newest.Add(w))
+	return v, err == nil, err
+}
+
+// VerifySince checks every bucket of tg's table from since, or from its
+// oldest when since is nil, one span per statement. The sample keeps the
+// first maxDriftSample drifted rows across spans.
+func VerifySince(ctx context.Context, conn *pgx.Conn, tg Target, since *time.Time) (Verified, error) {
+	all := Verified{Rollup: tg.Rollup.Name, Table: tg.Table, BuiltFrom: tg.BuiltFrom}
+	oldest, newest, err := bounds(ctx, conn, tg)
+	if err != nil || newest == nil {
+		return all, err
+	}
+	w := tg.e.Grain.Width
+	lo, hi := floorTo(*oldest, w), newest.Add(w)
+	if since != nil && floorTo(*since, w).After(lo) {
+		lo = floorTo(*since, w)
+	}
+	all.From, all.To = lo, hi
+	span := verifySpan(w)
+	for from := lo; from.Before(hi); from = from.Add(span) {
+		to := from.Add(span)
+		if to.After(hi) {
+			to = hi
+		}
+		v, err := VerifyRange(ctx, conn, tg, from, to)
+		if err != nil {
+			return all, err
+		}
+		all.Buckets += v.Buckets
+		all.DriftBuckets += v.DriftBuckets
+		for _, row := range v.Sample {
+			if len(all.Sample) < maxDriftSample {
+				all.Sample = append(all.Sample, row)
+			}
+		}
+	}
+	return all, nil
+}

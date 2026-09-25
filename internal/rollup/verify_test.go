@@ -3,6 +3,7 @@ package rollup
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
@@ -45,4 +46,14 @@ func TestCliRollupRun_OnlyADoubleSumMatchesWithinATolerance(t *testing.T) {
 	assert.That(t, strings.Contains(sql, `"w:b" IS DISTINCT FROM "g:b"`))
 	assert.That(t, strings.Contains(sql, `"w:c" IS DISTINCT FROM "g:c"`))
 	assert.False(t, strings.Contains(sql, `"w:a" IS DISTINCT FROM`))
+}
+
+// A span holds whole buckets, about a day of them, so a width that does not
+// divide a day still never splits a bucket between two statements.
+func TestCliRollupRun_AVerifySpanHoldsWholeBuckets(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+
+	assert.Equal(t, 24*time.Hour, verifySpan(5*time.Minute))
+	assert.Equal(t, 25*time.Hour, verifySpan(5*time.Hour))
+	assert.Equal(t, 7*24*time.Hour, verifySpan(7*24*time.Hour))
 }

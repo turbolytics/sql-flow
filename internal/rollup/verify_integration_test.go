@@ -2,6 +2,9 @@ package rollup
 
 import (
 	"context"
+	"math/rand"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,4 +128,204 @@ SELECT g, r, 0.1 * extract(minute FROM g) FROM generate_series('2026-09-12T10:00
 	assert.Equal(t, int64(12), v.DriftBuckets)
 	assert.Equal(t, "region=null", v.Sample[0].Key)
 	assert.Equal(t, "differs", v.Sample[0].Kind)
+}
+
+// targetNamed finds a table among the targets.
+func targetNamed(t *testing.T, targets []Target, table string) Target {
+	t.Helper()
+	for _, tg := range targets {
+		if tg.Table == table {
+			return tg
+		}
+	}
+	t.Fatalf("no target %s", table)
+	return Target{}
+}
+
+// A table still filling differs from its source by design, and so does
+// every grain its chunks' upserts reach. A grain added later skips only
+// itself: the tables it is built from are full.
+func TestIntegrationRollupRun_VerifySkipsTablesStillFilling(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	history(t, srv.conn, "2026-09-11T00:00:00Z", "2026-09-12T23:59:00Z")
+	mustInstall(t, srv.conn, loadExample(t))
+
+	targets, err := VerifyTargets(ctx, srv.conn, loadExample(t))
+	assert.NoError(t, err)
+	assert.Equal(t, 10, len(targets))
+	for _, tg := range targets {
+		assert.Equal(t, "backfill pending", tg.Skip)
+	}
+
+	fillAll(t, srv.conn, loadExample(t))
+	withWeek := loadExample(t)
+	withWeek.Rollups[0].Grains["7d"] = config.RollupGrain{From: "1d"}
+	mustInstall(t, srv.conn, withWeek)
+	targets, err = VerifyTargets(ctx, srv.conn, withWeek)
+	assert.NoError(t, err)
+	for _, tg := range targets {
+		if strings.HasSuffix(tg.Table, "_7d") {
+			assert.Equal(t, "backfill pending", tg.Skip)
+			continue
+		}
+		assert.Equal(t, "", tg.Skip)
+		v, err := VerifySince(ctx, srv.conn, tg, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(0), v.DriftBuckets)
+	}
+}
+
+// A removed grain keeps its table and its trigger, so verify still checks
+// it, against the shape install recorded.
+func TestIntegrationRollupRun_ARetainedTableIsStillVerified(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
+	withWeek := loadExample(t)
+	withWeek.Rollups[0].Grains["7d"] = config.RollupGrain{From: "1d"}
+	mustInstall(t, srv.conn, withWeek)
+	fillAll(t, srv.conn, withWeek)
+	mustInstall(t, srv.conn, loadExample(t))
+
+	targets, err := VerifyTargets(ctx, srv.conn, loadExample(t))
+	assert.NoError(t, err)
+	week := targetNamed(t, targets, "posts_by_lang_7d")
+	assert.True(t, week.Retained)
+	assert.Equal(t, "posts_by_lang_1d", week.BuiltFrom)
+	v, err := VerifySince(ctx, srv.conn, week, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), v.DriftBuckets)
+
+	execSQL(t, srv.conn, `UPDATE posts_by_lang_7d SET posts = posts + 1 WHERE lang = 'en'`)
+	v, err = VerifySince(ctx, srv.conn, week, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), v.DriftBuckets)
+}
+
+// `rollup ddl`'s migration creates the tables and fills them itself, and
+// creates no state table. Verify checks every table there.
+func TestIntegrationRollupRun_VerifyNeedsNoStateTable(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
+	applyDDL(t, srv.conn, exampleDDL(t))
+
+	targets, err := VerifyTargets(ctx, srv.conn, loadExample(t))
+	assert.NoError(t, err)
+	assert.Equal(t, 10, len(targets))
+	for _, tg := range targets {
+		assert.Equal(t, "", tg.Skip)
+		v, err := VerifySince(ctx, srv.conn, tg, nil)
+		assert.NoError(t, err)
+		assert.That(t, v.Buckets > 0)
+		assert.Equal(t, int64(0), v.DriftBuckets)
+	}
+}
+
+// A table whose trigger stopped trails the table it is built from. Its
+// newest stored bucket is older than the newest its from table makes, and
+// the check covers the newer one, where the rows are missing.
+func TestIntegrationRollupRun_VerifyNewestChecksWhereATableTrails(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:44:00Z")
+	mustInstall(t, srv.conn, loadExample(t))
+	fillAll(t, srv.conn, loadExample(t))
+
+	r := loadExample(t).Rollups[0]
+	v, ok, err := VerifyNewest(ctx, srv.conn, targetFor(t, r, "posts_by_lang_1h"))
+	assert.NoError(t, err)
+	assert.True(t, ok)
+	assert.That(t, v.From.Equal(at("2026-09-12T22:00:00Z")) && v.To.Equal(at("2026-09-13T00:00:00Z")))
+	assert.Equal(t, int64(2), v.Buckets)
+
+	execSQL(t, srv.conn, `ALTER TABLE posts_by_lang_5m DISABLE TRIGGER sqlflow_rollup_posts_by_lang_15m_ins`)
+	execSQL(t, srv.conn, `INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-12T23:50:00Z', 'en', 3)`)
+	v, ok, err = VerifyNewest(ctx, srv.conn, targetFor(t, r, "posts_by_lang_15m"))
+	assert.NoError(t, err)
+	assert.True(t, ok)
+	assert.That(t, v.To.Equal(at("2026-09-13T00:00:00Z")))
+	assert.Equal(t, int64(1), v.DriftBuckets)
+	assert.Equal(t, "missing", v.Sample[0].Kind)
+}
+
+// One statement reads one snapshot, and a writer writes the source and
+// every grain in one transaction, so verify beside live writers never sees
+// half a write. The spec asks for 60 seconds; 20 keep CI short and still
+// run hundreds of checks against hundreds of flushes.
+func TestIntegrationRollupRun_VerifyUnderConcurrentWritesReportsNoDrift(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	ctx := context.Background()
+	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
+	mustInstall(t, srv.conn, loadExample(t))
+	fillAll(t, srv.conn, loadExample(t))
+	targets, err := VerifyTargets(ctx, srv.conn, loadExample(t))
+	assert.NoError(t, err)
+
+	start := at("2026-09-10T00:00:00Z")
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var flushes, failed int64
+	var mu sync.Mutex
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(seed))
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				err := flushMinutes(srv.dsn, randomMinutes(rng, start))
+				mu.Lock()
+				flushes++
+				if err != nil {
+					failed++
+				}
+				mu.Unlock()
+			}
+		}(int64(w + 1))
+	}
+
+	checks := 0
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
+		for _, tg := range targets {
+			v, err := VerifySince(ctx, srv.conn, tg, nil)
+			assert.NoError(t, err)
+			if v.DriftBuckets != 0 {
+				close(stop)
+				wg.Wait()
+				t.Fatalf("%s drifted beside live writers: %+v", tg.Table, v.Sample)
+			}
+			checks++
+		}
+	}
+	close(stop)
+	wg.Wait()
+	t.Logf("%d checks beside %d flushes", checks, flushes)
+	assert.Equal(t, int64(0), failed)
+	assert.That(t, checks > 100 && flushes > 100)
 }
