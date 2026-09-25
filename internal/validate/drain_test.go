@@ -25,7 +25,7 @@ const drainConfig = `pipeline:
       topics: ["t"]
   handler:
     type: handlers.InferredMemBatch
-    sql: SELECT 1
+    sql: SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, city, count(*) FROM batch GROUP BY ALL
   sink:
     type: %s
     clickhouse:
@@ -148,7 +148,7 @@ pipeline:
       topics: ["t"]
   handler:
     type: handlers.InferredMemBatch
-    sql: SELECT 1
+    sql: SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, city, count(*) FROM batch GROUP BY ALL
   on_error:
     policy: DLQ
     dlq:

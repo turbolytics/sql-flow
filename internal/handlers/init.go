@@ -28,8 +28,26 @@ var configTypes = map[string]string{
 // A map rather than a switch so Kinds can list it. A registry test holds that
 // list equal to the registry, and a handler the engine can build but
 // nothing declares has no invariant cells at all.
-var builders = map[string]func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error){
-	"structured": func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
+// Option is a setting every handler kind understands; see WithEventTime.
+type Option func(*settings)
+
+type settings struct {
+	eventTime bool
+}
+
+// WithEventTime has the handler expose the time the source assigned each
+// record as an event_time column: added to the inferred handler's batch,
+// filled into a structured handler's table where the table declares it. On
+// for a windowing pipeline, because a window is what needs it, and off
+// otherwise, so a pipeline that does not window sees no new column and a
+// structured table's own event_time column, if it has one, is left to the
+// payload as before.
+func WithEventTime(on bool) Option {
+	return func(s *settings) { s.eventTime = on }
+}
+
+var builders = map[string]func(conn adbc.Connection, c config.Handler, l *zap.Logger, s settings) (core.Handler, error){
+	"structured": func(conn adbc.Connection, c config.Handler, l *zap.Logger, s settings) (core.Handler, error) {
 		// Derive the Arrow schema from the DuckDB table definition
 		stmt, err := conn.NewStatement()
 		if err != nil {
@@ -53,6 +71,7 @@ var builders = map[string]func(conn adbc.Connection, c config.Handler, l *zap.Lo
 			c.Table,
 			reader.Schema(),
 			StructuredBatchWithLogger(l),
+			StructuredBatchWithEventTime(s.eventTime),
 		)
 		if err != nil {
 			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create StructuredBatchHandler")
@@ -60,11 +79,12 @@ var builders = map[string]func(conn adbc.Connection, c config.Handler, l *zap.Lo
 		return h, nil
 	},
 
-	"inferred_mem": func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
+	"inferred_mem": func(conn adbc.Connection, c config.Handler, l *zap.Logger, s settings) (core.Handler, error) {
 		h, err := NewInferredMemBatchHandler(
 			conn,
 			c.SQL,
 			InferredMemBatchWithLogger(l),
+			InferredMemBatchWithEventTime(s.eventTime),
 		)
 		if err != nil {
 			return nil, errs.Wrap(errs.CodeSQLInvalid, err, "failed to create InferredMemBatchHandler")
@@ -72,7 +92,7 @@ var builders = map[string]func(conn adbc.Connection, c config.Handler, l *zap.Lo
 		return h, nil
 	},
 
-	"inferred_disk": func(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
+	"inferred_disk": func(conn adbc.Connection, c config.Handler, l *zap.Logger, _ settings) (core.Handler, error) {
 		cacheDir := c.SQLResultsCacheDir
 		if cacheDir == "" {
 			cacheDir = config.SQLResultsCacheDir()
@@ -124,10 +144,14 @@ func ConfigTypes() []string {
 // handler cannot be built under one name and reported under another.
 func Kind(configType string) string { return configTypes[configType] }
 
-func New(conn adbc.Connection, c config.Handler, l *zap.Logger) (core.Handler, error) {
+func New(conn adbc.Connection, c config.Handler, l *zap.Logger, opts ...Option) (core.Handler, error) {
 	kind, ok := configTypes[c.Type]
 	if !ok {
 		return nil, errs.New(errs.CodeSQLInvalid, "handler: %q not supported", c.Type)
 	}
-	return builders[kind](conn, c, l)
+	var s settings
+	for _, o := range opts {
+		o(&s)
+	}
+	return builders[kind](conn, c, l, s)
 }

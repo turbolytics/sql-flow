@@ -9,6 +9,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/buger/jsonparser"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"go.uber.org/zap"
 	"strconv"
 	"strings"
@@ -18,6 +19,16 @@ import (
 
 type StructuredBatchHandler struct {
 	rawBatch [][]byte
+	// metadata is what the source said about each buffered record, kept
+	// positionally against rawBatch; see WriteMessage. Only read where the
+	// table declares a column the source fills.
+	metadata []core.Message
+	// eventTimeField is the index of the table's event_time column, or -1
+	// where there is none or exposesEventTime is off. The schema is the
+	// table's, so a user who wants the assigned time declares the column;
+	// the handler fills it from the record rather than from the payload.
+	eventTimeField   int
+	exposesEventTime bool
 
 	// rowsRead is the row count of the last Invoke, for handler_rows_read.
 	rowsRead int64
@@ -80,6 +91,25 @@ func checkpointRefused(err error) bool {
 
 func (h *StructuredBatchHandler) Write(r []byte) error {
 	h.rawBatch = append(h.rawBatch, r)
+	return nil
+}
+
+// WriteMessage buffers a record with what the source said about it, so a
+// table that declares event_time TIMESTAMPTZ gets the assigned time in it.
+// A window's time_column must be derived from that column: the watermark
+// rests on the assigned time, and a bucket cut from some other field in the
+// payload is on a different clock.
+func (h *StructuredBatchHandler) WriteMessage(msg core.Message) error {
+	if err := h.Write(msg.Value); err != nil {
+		return err
+	}
+	if h.eventTimeField < 0 {
+		return nil // nothing in this table is filled from the record
+	}
+	for len(h.metadata) < len(h.rawBatch)-1 {
+		h.metadata = append(h.metadata, core.Message{})
+	}
+	h.metadata = append(h.metadata, msg)
 	return nil
 }
 
@@ -230,6 +260,8 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 
 	raw := h.rawBatch
 	h.rawBatch = h.rawBatch[:0]
+	meta := h.metadata
+	h.metadata = h.metadata[:0]
 
 	// An empty batch is a no-op, not an error. See the note on
 	// InferredMemBatchHandler.Invoke.
@@ -246,10 +278,21 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 		builders[i].Reserve(len(raw))
 	}
 
-	// Schema-aware JSON extraction: only extract fields matching the schema
+	// Schema-aware JSON extraction: only extract fields matching the schema.
+	// The event_time column is the one exception: it is the source's word
+	// about the record, not a field of the payload, so it is filled from the
+	// message, and left null for a record the source assigned no time to.
 	fields := h.schema.Fields()
-	for _, msg := range raw {
+	for row, msg := range raw {
 		for i, f := range fields {
+			if i == h.eventTimeField {
+				var at int64
+				if row < len(meta) {
+					at = meta[row].EventAtNanos
+				}
+				appendEventTime(builders[i], at)
+				continue
+			}
 			if err := appendJSONValue(builders[i], f.Type, msg, f.Name); err != nil {
 				for _, b := range builders {
 					b.Release()
@@ -338,6 +381,13 @@ func (h *StructuredBatchHandler) Invoke(ctx context.Context) (arrow.Table, error
 
 type StructuredBatchHandlerOption func(*StructuredBatchHandler)
 
+// StructuredBatchWithEventTime fills a declared event_time column from the
+// record; see handlers.WithEventTime. Off, a column of that name is the
+// payload's, as it was before.
+func StructuredBatchWithEventTime(on bool) StructuredBatchHandlerOption {
+	return func(h *StructuredBatchHandler) { h.exposesEventTime = on }
+}
+
 func StructuredBatchWithLogger(l *zap.Logger) StructuredBatchHandlerOption {
 	return func(h *StructuredBatchHandler) {
 		h.logger = l
@@ -353,6 +403,17 @@ func NewStructuredBatchHandler(
 ) (*StructuredBatchHandler, error) {
 
 	pool := memory.NewGoAllocator()
+
+	// Where the table declares event_time, and whether as a timestamp. The
+	// decision to use it waits for the options below: a pipeline that does
+	// not window leaves the column to the payload, whatever its type.
+	declaredEventTime, declaredAsTimestamp := -1, false
+	for i, f := range schema.Fields() {
+		if f.Name == EventTimeColumn {
+			declaredEventTime = i
+			_, declaredAsTimestamp = f.Type.(*arrow.TimestampType)
+		}
+	}
 
 	// Pre-create truncate statement
 	truncStmt, err := conn.NewStatement()
@@ -406,21 +467,34 @@ func NewStructuredBatchHandler(
 	}
 
 	s := &StructuredBatchHandler{
-		alloc:      pool,
-		conn:       conn,
-		truncStmt:  truncStmt,
-		ckptStmt:   ckptStmt,
-		ingestStmt: ingestStmt,
-		queryStmt:  queryStmt,
-		schema:     schema,
-		sql:        sql,
-		tableName:  tableName,
-		fieldNames: fieldNames,
-		logger:     zap.NewNop(),
+		eventTimeField: -1,
+		alloc:          pool,
+		conn:           conn,
+		truncStmt:      truncStmt,
+		ckptStmt:       ckptStmt,
+		ingestStmt:     ingestStmt,
+		queryStmt:      queryStmt,
+		schema:         schema,
+		sql:            sql,
+		tableName:      tableName,
+		fieldNames:     fieldNames,
+		logger:         zap.NewNop(),
 	}
 
 	for _, opt := range opts {
 		opt(s)
+	}
+
+	// A windowing pipeline fills a declared event_time from the record. It
+	// has to be a timestamp, or the ingest would write a number where the
+	// window expects an instant; refused here, at start, rather than at the
+	// first batch.
+	if s.exposesEventTime && declaredEventTime >= 0 {
+		if !declaredAsTimestamp {
+			return nil, fmt.Errorf("table %s declares %s as %s; it must be TIMESTAMPTZ, because it is the record's assigned event time",
+				tableName, EventTimeColumn, schema.Field(declaredEventTime).Type)
+		}
+		s.eventTimeField = declaredEventTime
 	}
 
 	return s, nil

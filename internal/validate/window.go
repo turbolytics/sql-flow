@@ -63,6 +63,42 @@ func checkWindows(rendered []byte, rep *Report) {
 	}
 
 	if conf.Tables != nil {
+		// A window is cut on event time, and the watermark rests on the event
+		// time the source assigned. Both have to be the same clock, or a
+		// bucket cut from a payload field of the handler's choosing is closed
+		// on evidence about a different stream. The handler exposes the
+		// assigned time as event_time; a windowing pipeline's handler SQL
+		// should read it, and a structured handler's batch table should
+		// declare it, or there is nothing for the SQL to read.
+		//
+		// A warning, not a failure, for now. Only the websocket source can be
+		// told where its event time is; Kafka assigns the record timestamp
+		// and MQTT assigns arrival, and a pipeline that windows a Kafka topic
+		// on a timestamp inside the payload -- every shipped example does --
+		// would be wrong to comply. Once every source takes an event_time
+		// block, complying makes the two clocks one by construction, and
+		// this becomes an error.
+		if hasWindow(conf) {
+			h := conf.Pipeline.Handler
+			warn := func(msg string) {
+				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, msg, position(handlerNode(&root))))
+			}
+			if !mentionsEventTime(h.SQL) {
+				warn("pipeline.handler: a windowing pipeline's handler sql does not read the " +
+					"event_time column, the time the source assigned the record. A bucket cut " +
+					"from another field of the payload is on a different clock from the one the " +
+					"engine checks, and a record the engine refuses as unplaceable is judged on " +
+					"a time the window never sees. Cut the window's time from event_time where " +
+					"the source can be told where its time is")
+			}
+			if isStructuredHandler(h.Type) {
+				if ddl, ok := tableDDL(conf, h.Table); !ok || !declaresTimestamptz(ddl, "event_time") {
+					warn(fmt.Sprintf("pipeline.handler: a windowing pipeline's table %q does not declare "+
+						"event_time TIMESTAMPTZ, so the time the source assigned each record cannot "+
+						"reach the handler's SQL. Declare it and the engine fills it from the record", h.Table))
+				}
+			}
+		}
 		for i, table := range conf.Tables.SQL {
 			if table.Window == nil {
 				continue
@@ -154,6 +190,54 @@ func appendsOnly(s config.Sink) bool {
 }
 
 func mentionsClosed(sql string) bool { return closedRef.MatchString(sql) }
+
+var eventTimeRef = regexp.MustCompile(`(?i)\bevent_time\b`)
+
+func mentionsEventTime(sql string) bool { return eventTimeRef.MatchString(sql) }
+
+func hasWindow(conf config.Conf) bool {
+	if conf.Tables == nil {
+		return false
+	}
+	for _, t := range conf.Tables.SQL {
+		if t.Window != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// isStructuredHandler accepts both spellings the handler registry maps.
+func isStructuredHandler(typ string) bool {
+	return typ == "handlers.StructuredBatch" || typ == "structured"
+}
+
+// tableDDL is the CREATE the config declares for a named table.
+func tableDDL(conf config.Conf, name string) (string, bool) {
+	if conf.Tables == nil {
+		return "", false
+	}
+	for _, t := range conf.Tables.SQL {
+		if t.Name == name {
+			return t.SQL, true
+		}
+	}
+	return "", false
+}
+
+// handlerNode is the mapping node of pipeline.handler, for a diagnostic's
+// position; nil, and so no position, if the document has no such node.
+func handlerNode(root *yaml.Node) *yaml.Node {
+	doc := root
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		doc = doc.Content[0]
+	}
+	pipeline := mappingValue(doc, "pipeline")
+	if pipeline == nil {
+		return nil
+	}
+	return mappingValue(pipeline, "handler")
+}
 
 // tableNodes returns the mapping node of each entry under tables.sql.
 func tableNodes(root *yaml.Node) []*yaml.Node {
