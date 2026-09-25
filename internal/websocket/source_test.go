@@ -3,6 +3,7 @@ package websocket
 import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/eventtime"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -240,4 +241,26 @@ func TestSourceWebsocket_StampsArrival(t *testing.T) {
 		t.Fatal("timed out waiting for the message")
 	}
 	assert.Equal(t, core.EventBasisArrival, s.EventTimeBasis())
+}
+
+// The basis names the clock a lag reading is measured on. Without a
+// configured event time it is arrival; with one, the path as configured.
+// NewSource does not dial, so this runs without a server.
+func TestSourceWebsocket_BasisNamesTheConfiguredPath(t *testing.T) {
+	coverage.Covers(t, "source.websocket")
+	plain, err := NewSource("ws://example.invalid")
+	assert.NoError(t, err)
+	assert.Equal(t, core.EventBasisArrival, plain.EventTimeBasis())
+
+	ex, err := eventtime.New("time_us", eventtime.UnixMicroseconds)
+	assert.NoError(t, err)
+	stamped, err := NewSource("ws://example.invalid", WithEventTime(ex))
+	assert.NoError(t, err)
+	assert.Equal(t, "time_us", stamped.EventTimeBasis())
+
+	// And what a frame is stamped with: the producer's time where it says
+	// one, and the missing sentinel where it does not -- never arrival.
+	at := stamped.stamp([]byte(`{"time_us": 1790253296789000}`))
+	assert.Equal(t, int64(1790253296789000)*int64(time.Microsecond), at)
+	assert.Equal(t, core.EventTimeMissing, stamped.stamp([]byte(`{"kind": "commit"}`)))
 }

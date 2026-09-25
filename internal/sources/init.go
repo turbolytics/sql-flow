@@ -96,12 +96,19 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 	},
 
 	"websocket": func(c config.Source, l *zap.Logger, _ metric.MeterProvider) (core.Source, error) {
-		if c.Websocket == nil {
-			return nil, errs.New(errs.CodeSourceInvalid, "websocket source: missing websocket configuration")
+		r, err := c.Websocket.Resolved()
+		if err != nil {
+			return nil, err
 		}
-		l.Info("initializing websocket source", zap.String("uri", c.Websocket.URI))
+		opts := []websocket.Option{websocket.WithLogger(l)}
+		basis := core.EventBasisArrival
+		if r.EventTime != nil {
+			opts = append(opts, websocket.WithEventTime(r.EventTime))
+			basis = r.EventTime.Basis()
+		}
+		l.Info("initializing websocket source", zap.String("uri", r.URI), zap.String("event_time", basis))
 
-		return websocket.NewSource(c.Websocket.URI, websocket.WithLogger(l))
+		return websocket.NewSource(r.URI, opts...)
 	},
 
 	"webhook": func(c config.Source, l *zap.Logger, mp metric.MeterProvider) (core.Source, error) {

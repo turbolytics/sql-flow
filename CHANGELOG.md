@@ -4,6 +4,19 @@
 
 ### Added
 
+- The websocket source can read each frame's own event time from its
+  payload: `websocket.event_time` names a dotted `path` and a `format`
+  (`unix_s`, `unix_ms`, `unix_us`, `unix_ns` or `rfc3339`). Without it the
+  event time is arrival, as before, which says nothing about when an event
+  happened and reads as caught up exactly when a server replaying history is
+  furthest behind. With it the record's time is the record's: the lag
+  reading is measured against it, `event_lag_basis` names the path, and on
+  a windowing pipeline a frame with no usable value at the path is refused
+  rather than stamped as arriving now. For the Bluesky Jetstream that is
+  `path: time_us`, `format: unix_us`. The value is not judged here: a
+  producer whose clock is wrong is refused by the engine's placement rule,
+  the same one whatever the protocol.
+
 - The TurboStats bundle says how far behind the stream a pipeline runs, in
   time rather than in messages: `event_lag_seconds`, `event_lag_max_seconds`,
   `event_lag_observed_at` and `event_lag_basis` in the `pipeline` section.
