@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"net"
@@ -11,11 +12,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/freshness"
 	"github.com/turbolytics/sql-flow/internal/rollup"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/zap"
 )
 
@@ -36,6 +42,10 @@ const defaultAddr = ":8000"
 // chunk the database never answers.
 const chunkTimeout = 5 * time.Minute
 
+// reportGrace bounds the final TurboStats bundle on shutdown. The
+// reporter's own post timeout is 10 s as well.
+const reportGrace = 10 * time.Second
+
 // Options configures a Daemon.
 type Options struct {
 	Version string
@@ -49,6 +59,13 @@ type Options struct {
 	Interval time.Duration
 	// OnListen receives the bound address. Tests bind port 0.
 	OnListen func(net.Addr)
+	// TurboStats is the file's turbostats block. When it reports, the
+	// daemon posts its bundle to report_to on the block's interval.
+	TurboStats *config.TurboStats
+	// ConfigHash is the hash of the rendered rollups file, and Commit the
+	// build's, both for the bundle's instance.
+	ConfigHash string
+	Commit     string
 }
 
 // Daemon is one `sqlflow rollup run` process.
@@ -64,13 +81,20 @@ type Daemon struct {
 	// busy holds the tables whose last chunk found a bucket held, keyed by
 	// busyKey. Only the loop's goroutine reads or writes it.
 	busy map[string]bool
+	// What TurboStats reads: the instruments through reader, the passes'
+	// results through report, and when the process last worked.
+	reader *sdkmetric.ManualReader
+	report *report
+	clock  *activity.Clock
+	static turbostats.Static
+	key    ed25519.PrivateKey
 }
 
 func busyKey(p rollup.Pending) string { return p.Rollup.Name + "/" + p.Table }
 
 // New builds a daemon. It connects to nothing: Run does.
 func New(conf *config.RollupsConf, dsn string, opts Options) (*Daemon, error) {
-	mp, registry, err := newProvider(opts.Metrics)
+	mp, reader, registry, err := newProvider(opts.Metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -78,9 +102,26 @@ func New(conf *config.RollupsConf, dsn string, opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	clock := activity.Start()
 	d := &Daemon{
 		conf: conf, dsn: dsn, opts: opts, log: opts.Logger, interval: opts.Interval,
 		health: newHealthState(time.Now()), m: m, registry: registry, busy: map[string]bool{},
+		reader: reader, report: newReport(conf), clock: clock,
+		static: turbostats.Static{Version: opts.Version, Commit: opts.Commit, ConfigHash: opts.ConfigHash,
+			StartedAt: clock.StartedAt(), Clock: clock},
+	}
+	if ts := opts.TurboStats; ts != nil {
+		d.static.Labels = ts.LabelSet()
+	}
+	// A bad key fails here, before anything connects, as serve's does.
+	if ts := opts.TurboStats; ts.Enabled() {
+		key, err := wire.ParseCredential(ts.Key)
+		if err != nil {
+			return nil, errs.New(errs.CodeConfigInvalid, "turbostats.key is not a credential")
+		}
+		d.key = key
+		d.static.ID = ts.ID
+		d.static.IntervalSeconds = int(ts.Interval().Seconds())
 	}
 	if d.log == nil {
 		d.log = zap.NewNop()
@@ -106,15 +147,34 @@ func (d *Daemon) Health() (status, reason string) {
 // only when the first connection fails or install refuses the file: a
 // supervisor's restart loop makes either visible, and neither heals by
 // waiting.
-func (d *Daemon) Run(ctx context.Context) error {
+func (d *Daemon) Run(ctx context.Context) (err error) {
 	if d.registry != nil {
 		if err := d.serveHTTP(ctx); err != nil {
 			return err
 		}
 	}
+	// Reporting starts before the first connection, so a daemon that
+	// cannot reach its database still appears, and says why.
+	if ts := d.opts.TurboStats; ts.Enabled() {
+		reporter, rerr := turbostats.NewReporter(turbostats.ReporterConfig{
+			ReportTo: ts.ReportTo, Key: d.key, Interval: ts.Interval(),
+			Collect: d.CollectBundle, Log: d.log.Named("turbostats"),
+		})
+		if rerr != nil {
+			return rerr
+		}
+		stop := turbostats.StartReporter(ctx, reporter)
+		// The last bundle says how the process ended. A crash never reaches
+		// it, which is how a receiver tells the two apart.
+		defer func() {
+			final, cancel := context.WithTimeout(context.WithoutCancel(ctx), reportGrace)
+			defer cancel()
+			stop(final, turbostats.Exit{Reason: turbostats.ExitReason(err, ctx.Err()), Code: errs.ExitCode(err)})
+		}()
+	}
 	work, err := rollup.Connect(ctx, d.dsn)
 	if err != nil {
-		d.m.errors.Add(ctx, 1, phase("install"))
+		d.fail(ctx, "install", err)
 		return err
 	}
 	defer func() {
@@ -123,13 +183,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 	d.health.touch(time.Now())
-	report, err := rollup.Install(ctx, work, d.conf, d.opts.Version)
+	installed, err := rollup.Install(ctx, work, d.conf, d.opts.Version)
 	if err != nil {
-		d.m.errors.Add(ctx, 1, phase("install"))
+		d.fail(ctx, "install", err)
 		return err
 	}
 	d.health.touch(time.Now())
-	d.logInstall(report)
+	d.logInstall(installed)
 	d.logStore(ctx, work)
 
 	lead := &session{}
@@ -190,7 +250,7 @@ func (d *Daemon) keepLead(ctx context.Context, s *session) {
 		if err := s.conn.Ping(ctx); err != nil {
 			if ctx.Err() == nil {
 				d.log.Warn("lost the leader session; standing down", zap.Error(err))
-				d.m.errors.Add(ctx, 1, phase("lock"))
+				d.fail(ctx, "lock", err)
 			}
 			s.close()
 			d.health.setRole(roleStandby)
@@ -202,7 +262,7 @@ func (d *Daemon) keepLead(ctx context.Context, s *session) {
 		if err != nil {
 			if ctx.Err() == nil {
 				d.log.Warn("cannot reach the database for the leader lock", zap.Error(err))
-				d.m.errors.Add(ctx, 1, phase("lock"))
+				d.fail(ctx, "lock", err)
 			}
 			return
 		}
@@ -216,7 +276,7 @@ func (d *Daemon) keepLead(ctx context.Context, s *session) {
 	if err != nil {
 		if ctx.Err() == nil {
 			d.log.Warn("competing for the leader lock", zap.Error(err))
-			d.m.errors.Add(ctx, 1, phase("lock"))
+			d.fail(ctx, "lock", err)
 		}
 		s.close()
 		return
@@ -241,7 +301,7 @@ func (d *Daemon) keepWork(ctx context.Context, work *pgx.Conn) *pgx.Conn {
 	if err != nil {
 		if ctx.Err() == nil {
 			d.log.Warn("cannot reach the database to fill tables", zap.Error(err))
-			d.m.errors.Add(ctx, 1, phase("backfill"))
+			d.fail(ctx, "backfill", err)
 		}
 		return nil
 	}
@@ -259,12 +319,17 @@ func (d *Daemon) fillOne(ctx context.Context, work *pgx.Conn) bool {
 	if err != nil {
 		if ctx.Err() == nil {
 			d.log.Warn("reading pending tables", zap.Error(err))
-			d.m.errors.Add(ctx, 1, phase("backfill"))
+			d.fail(ctx, "backfill", err)
 		}
 		return false
 	}
 	d.health.touch(time.Now())
 	d.health.setPending(len(pending))
+	byRollup := map[string][]string{}
+	for _, p := range pending {
+		byRollup[p.Rollup.Name] = append(byRollup[p.Rollup.Name], p.Table)
+	}
+	d.report.setPending(byRollup)
 
 	var ready, busy []rollup.Pending
 	for _, p := range pending {
@@ -310,7 +375,7 @@ func (d *Daemon) fillChunk(ctx context.Context, work *pgx.Conn, p rollup.Pending
 		return true, true
 	case err != nil:
 		d.log.Warn("backfill chunk failed; retrying next interval", zap.String("table", p.Table), zap.Error(err))
-		d.m.errors.Add(cctx, 1, phase("backfill"))
+		d.fail(cctx, "backfill", err)
 		return false, true
 	}
 	delete(d.busy, busyKey(p))
@@ -318,6 +383,10 @@ func (d *Daemon) fillChunk(ctx context.Context, work *pgx.Conn, p rollup.Pending
 	d.m.chunkDuration.Record(cctx, time.Since(start).Seconds(), attrs)
 	d.m.backfillBuckets.Add(cctx, step.Buckets, attrs)
 	d.health.setFilling(step.Table, step.Remaining)
+	if !step.Complete {
+		d.report.setHistoryLeft(step.Rollup, step.Table, step.Remaining)
+	}
+	d.clock.Mark()
 	d.log.Info("backfill chunk", zap.String("rollup", step.Rollup), zap.String("table", step.Table),
 		zap.Time("from", step.From), zap.Time("to", step.To), zap.Int64("buckets", step.Buckets),
 		zap.Bool("complete", step.Complete))
@@ -379,37 +448,107 @@ func (d *Daemon) logStore(ctx context.Context, work *pgx.Conn) {
 		return
 	}
 	d.log.Info("store", zap.String("store_id", s.ID), zap.String("store_id_kind", s.Kind))
+	d.report.setStore(s)
 }
 
 // observe records the newest bucket of every declared table and of each
-// source. A table it cannot read counts an error and the pass moves on.
+// source, and each rollup's completeness and trigger cost. A table it
+// cannot read counts an error and the pass moves on.
 func (d *Daemon) observe(ctx context.Context, work *pgx.Conn) {
+	var tables []turbostats.FreshTable
+	var at time.Time
+	keep := func(ft turbostats.FreshTable, observed time.Time, ok bool) {
+		if !ok {
+			return
+		}
+		tables = append(tables, ft)
+		if observed.After(at) {
+			at = observed
+		}
+	}
 	for _, r := range d.conf.Rollups {
 		if w, err := config.ParseServeDuration(r.Source.Grain); err == nil {
-			d.observeTable(ctx, work, r.Name, r.Source.Table, r.Source.TimeColumn, w)
+			keep(d.observeTable(ctx, work, r.Name, r.Source.Table, r.Source.TimeColumn, w))
 		}
 		for _, set := range r.DimensionSets {
 			for _, g := range r.Ladder() {
-				d.observeTable(ctx, work, r.Name, rollup.Table(set, g.Name), r.Source.TimeColumn, g.Width)
+				keep(d.observeTable(ctx, work, r.Name, rollup.Table(set, g.Name), r.Source.TimeColumn, g.Width))
 			}
 		}
+		d.measure(ctx, work, r)
+	}
+	if len(tables) > 0 {
+		d.report.setObserved(at, tables)
 	}
 }
 
-func (d *Daemon) observeTable(ctx context.Context, work *pgx.Conn, rollupName, table, timeColumn string, grain time.Duration) {
+func (d *Daemon) observeTable(ctx context.Context, work *pgx.Conn, rollupName, table, timeColumn string,
+	grain time.Duration) (turbostats.FreshTable, time.Time, bool) {
 	o, err := freshness.Observe(ctx, work, table, timeColumn, grain)
 	if err != nil {
 		if ctx.Err() == nil {
 			d.log.Warn("observing a table", zap.String("table", table), zap.Error(err))
-			d.m.errors.Add(ctx, 1, phase("observe"))
+			d.fail(ctx, "observe", err)
 		}
-		return
+		return turbostats.FreshTable{}, time.Time{}, false
 	}
 	d.health.touch(time.Now())
+	ft := turbostats.FreshTable{Table: o.Table, GrainSeconds: int64(grain / time.Second)}
 	if o.NewestBucketAt != nil {
 		d.m.newestBucket.Record(ctx, float64(o.NewestBucketAt.Unix()),
 			metric.WithAttributes(attribute.String("rollup", rollupName), attribute.String("table", table)))
+		newest := o.NewestBucketAt.UTC()
+		ft.NewestBucketAt = &newest
 	}
+	return ft, o.ObservedAt, true
+}
+
+// measure reads r's least complete closed bucket and its triggers' cost
+// for the bundle. Either is absent when the store cannot say.
+func (d *Daemon) measure(ctx context.Context, work *pgx.Conn, r config.Rollup) {
+	c, ok, err := rollup.LeastComplete(ctx, work, r)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.log.Warn("reading completeness", zap.String("rollup", r.Name), zap.Error(err))
+			d.fail(ctx, "observe", err)
+		}
+		return
+	}
+	var complete *turbostats.RollupCompleteness
+	if ok {
+		complete = &turbostats.RollupCompleteness{Table: c.Table, BucketAt: c.BucketAt.UTC(),
+			SourceBuckets: c.SourceBuckets, ExpectedBuckets: c.ExpectedBuckets}
+	}
+	calls, seconds, ok, err := rollup.TriggerCost(ctx, work, r)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.log.Warn("reading trigger cost", zap.String("rollup", r.Name), zap.Error(err))
+			d.fail(ctx, "observe", err)
+		}
+		return
+	}
+	var triggers *turbostats.RollupTriggers
+	if ok {
+		triggers = &turbostats.RollupTriggers{Calls: calls, TotalSeconds: seconds}
+	}
+	d.report.setMeasured(r.Name, complete, triggers)
+}
+
+// fail counts an error by phase and keeps its code for the bundle.
+func (d *Daemon) fail(ctx context.Context, ph string, err error) {
+	d.m.errors.Add(ctx, 1, phase(ph))
+	d.report.failed(err, time.Now())
+}
+
+// CollectBundle is this process's TurboStats bundle.
+func (d *Daemon) CollectBundle(ctx context.Context) (turbostats.Bundle, error) {
+	return turbostats.Collect(ctx, turbostats.Source{
+		Static: d.static,
+		Reader: d.reader,
+		Rollup: &turbostats.RollupSource{Section: func() (*turbostats.Rollup, *turbostats.Freshness) {
+			return d.report.section(d.health.get().Role, d.conf.Rollups)
+		}},
+	})
 }
 
 // verify checks the newest two buckets of every table not still filling.
@@ -422,7 +561,7 @@ func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
 	if err != nil {
 		if ctx.Err() == nil {
 			d.log.Warn("listing tables to verify", zap.Error(err))
-			d.m.errors.Add(ctx, 1, phase("verify"))
+			d.fail(ctx, "verify", err)
 		}
 		return
 	}
@@ -434,7 +573,7 @@ func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
 		if err != nil {
 			if ctx.Err() == nil {
 				d.log.Warn("verifying a table", zap.String("table", tg.Table), zap.Error(err))
-				d.m.errors.Add(ctx, 1, phase("verify"))
+				d.fail(ctx, "verify", err)
 			}
 			continue
 		}
@@ -443,6 +582,7 @@ func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
 		}
 		attrs := metric.WithAttributes(attribute.String("rollup", v.Rollup), attribute.String("table", v.Table))
 		d.m.verifyBuckets.Add(ctx, v.Buckets, attrs)
+		d.report.addVerified(v.Rollup, v.Buckets, v.DriftBuckets)
 		if v.DriftBuckets == 0 {
 			continue
 		}
@@ -458,5 +598,6 @@ func (d *Daemon) verify(ctx context.Context, work *pgx.Conn) {
 		return
 	}
 	d.health.touch(time.Now())
+	d.clock.Mark()
 	d.m.verifyDuration.Record(ctx, time.Since(start).Seconds())
 }

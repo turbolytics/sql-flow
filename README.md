@@ -564,6 +564,20 @@ the data, and a restart cannot fix it, so alert on the metric's rate. A
 disabled trigger, a hand edit or a write that bypassed the triggers causes
 drift. Rewrite the bucket's source rows to re-merge it.
 
+With a `turbostats` block that sets `report_to`, `run` reports itself to
+TurboStats as `sqlflow run` and `sqlflow serve` do. The leader sends each
+table's newest bucket under one store id, and per rollup its verify and
+drift totals, backfill progress, least complete closed bucket and trigger
+cost. A file that reports declares at most 10 tables; split a larger
+deployment across files, one `run` each.
+
+```yaml
+turbostats:
+  id: "{{ SQLFLOW_TURBOSTATS_ID }}"
+  report_to: "{{ SQLFLOW_TURBOSTATS_REPORT_TO }}"
+  key: "{{ SQLFLOW_TURBOSTATS_KEY }}"
+```
+
 `ddl` and `check` suit a team that applies SQL through its own migration
 runner. `install` and `run` do it for you. [`dev/config/rollups/bluesky.yml`](dev/config/rollups/bluesky.yml)
 is a complete declaration, and `sqlflow validate` checks a rollups file

@@ -648,6 +648,128 @@ def wait_for_posts(receiver, count, timeout):
     raise AssertionError(f"only {len(posts)} of {count} posts arrived in {timeout}s")
 
 
+ROLLUPS = """
+store:
+  type: postgres
+  postgres:
+    dsn: postgres://postgres:rollup@db:5432/postgres?sslmode=disable
+turbostats:
+  id: rollups-release
+  report_to: http://127.0.0.1:8080/v1/turbostats
+  key: sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+  interval_seconds: 1
+rollups:
+  - name: posts
+    source:
+      table: posts_per_minute
+      time_column: bucket
+      grain: 1m
+      dimensions: []
+    grains:
+      5m: {from: 1m}
+      1h: {from: 5m}
+    dimension_sets:
+      - name: posts_total
+        dimensions: []
+        measures:
+          posts: {type: sum, column: posts}
+          minutes: {type: count_buckets}
+"""
+
+
+@pytest.mark.covers("cli.rollup_run", "observability.turbostats.reporter")
+def test_cli_rollup_run_reports_its_rollups_and_freshness(image):
+    """`sqlflow rollup run` in the shipped image fills a Postgres, verifies it,
+    and reports both TurboStats sections.
+
+    The daemon shares the receiver's network namespace, so it reports to the
+    loopback that report_to requires for plaintext, and reaches the database
+    by its alias on the same network.
+    """
+    network = Network().create()
+    db = DockerContainer("postgres:18") \
+        .with_env("POSTGRES_PASSWORD", "rollup") \
+        .with_network(network) \
+        .with_network_aliases("db")
+    db.start()
+    receiver = DockerContainer("python:3.12-alpine") \
+        .with_network(network) \
+        .with_command(["python", "-u", "-c", RECEIVER])
+    receiver.start()
+    try:
+        deadline = time.time() + 60
+        while db.exec(["pg_isready", "-U", "postgres"]).exit_code != 0:
+            assert time.time() < deadline, "postgres never became ready"
+            time.sleep(0.5)
+        for sql in [
+            "CREATE TABLE posts_per_minute (bucket TIMESTAMPTZ PRIMARY KEY, posts INTEGER NOT NULL)",
+            "INSERT INTO posts_per_minute SELECT g, 1 FROM generate_series("
+            "'2026-09-12T00:00:00Z'::timestamptz, '2026-09-12T23:59:00Z', interval '1 minute') AS g",
+        ]:
+            result = db.exec(["psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql])
+            assert result.exit_code == 0, result.output
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rollups.yml")
+            with open(path, "w") as f:
+                f.write(ROLLUPS)
+            os.chmod(tmp, 0o755)
+            os.chmod(path, 0o644)
+            daemon = DockerContainer(image) \
+                .with_volume_mapping(tmp, "/conf") \
+                .with_kwargs(network_mode=(
+                    f"container:{receiver.get_wrapped_container().id}")) \
+                .with_command("rollup run -c /conf/rollups.yml")
+            daemon.start()
+            try:
+                bundle = wait_for_bundle(receiver, lambda b: (
+                    b.get("rollup", {}).get("role") == "leader"
+                    and "freshness" in b
+                    and b["rollup"].get("rollups")
+                    and b["rollup"]["rollups"][0]["verify_bucket_count"] > 0), timeout=90)
+            finally:
+                daemon.stop()
+    finally:
+        receiver.stop()
+        db.stop()
+        network.remove()
+
+    assert bundle["instance"]["id"] == "rollups-release"
+    assert "pipeline" not in bundle and "serve" not in bundle
+    fresh = bundle["freshness"]
+    assert fresh["store_id"].startswith("pg:") and fresh["store_id_kind"] == "system"
+    tables = {t["table"]: t for t in fresh["tables"]}
+    assert set(tables) == {"public.posts_per_minute", "public.posts_total_5m", "public.posts_total_1h"}
+    assert tables["public.posts_total_1h"]["grain_seconds"] == 3600
+    assert tables["public.posts_total_1h"]["newest_bucket_at"] == "2026-09-12T23:00:00Z"
+    posts = bundle["rollup"]["rollups"][0]
+    assert posts["name"] == "posts" and posts["strategy"] == "trigger"
+    assert posts["drift_bucket_count"] == 0
+    assert posts["completeness"]["expected_buckets"] in (5, 60)
+    # The shape guard's promise, in the artifact: nothing below a table or a
+    # rollup entry repeats.
+    for entry in fresh["tables"] + bundle["rollup"]["rollups"]:
+        for value in entry.values():
+            if isinstance(value, dict):
+                assert all(not isinstance(v, (list, dict)) for v in value.values())
+            else:
+                assert not isinstance(value, list)
+
+
+def wait_for_bundle(receiver, match, timeout):
+    """Read the receiver's posts until a bundle matches."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out, _ = receiver.get_logs()
+        for line in out.decode().splitlines():
+            if line.startswith("{"):
+                body = json.loads(line)["body"]
+                if match(body):
+                    return body
+        time.sleep(0.5)
+    raise AssertionError(f"no matching bundle arrived in {timeout}s")
+
+
 @pytest.mark.covers("source.websocket", "handler.structured")
 @pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):

@@ -70,7 +70,7 @@ added, and this page changes only when a status does.
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
 | `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
 
-**47 features declared. 46 have at least one passing test attributed at every level they require, so 0 gap(s).**
+**47 features declared. 46 have at least one passing test attributed at every level they require, so 1 gap(s).**
 
 That sentence counts attribution, not proof. A feature is green here when
 a test named for it ran and passed; it says nothing about whether the
@@ -86,6 +86,14 @@ never flushes satisfies every safety invariant on this page.
 `keeps_batch` holds if you never flush, and `commit.after_flush`
 holds if you never commit. Only a liveness claim says the pipeline
 does anything at all.
+
+## Gaps
+
+These fail `make coverage-matrix`. There is no baseline: a gap
+is closed by a test, or by the registry honestly no longer
+requiring that level.
+
+- `cli.rollup_run` requires **release** coverage and is *not_required*.
 
 
 # Invariant matrix

@@ -76,22 +76,26 @@ func phase(name string) metric.AddOption {
 	return metric.WithAttributes(attribute.String("phase", name))
 }
 
-// newProvider builds the meter provider and, for the prometheus exporter,
-// the registry /metrics serves. With no exporter the instruments record into
-// a provider nothing reads, so the loop never checks for nil.
-func newProvider(exporter string) (metric.MeterProvider, *prom.Registry, error) {
+// newProvider builds the meter provider, the manual reader the TurboStats
+// bundle reads, and, for the prometheus exporter, the registry /metrics
+// serves. The manual reader is always attached, as serve and run attach
+// theirs, so a daemon that reports without serving /metrics has a reader.
+func newProvider(exporter string) (metric.MeterProvider, *sdkmetric.ManualReader, *prom.Registry, error) {
+	reader := sdkmetric.NewManualReader()
+	opts := []sdkmetric.Option{sdkmetric.WithReader(reader)}
 	switch strings.ToLower(strings.TrimSpace(exporter)) {
 	case "":
-		return sdkmetric.NewMeterProvider(), nil, nil
+		return sdkmetric.NewMeterProvider(opts...), reader, nil, nil
 	case "prometheus":
 		registry := prom.NewRegistry()
 		exp, err := prometheus.New(prometheus.WithRegisterer(registry))
 		if err != nil {
-			return nil, nil, fmt.Errorf("prometheus exporter: %w", err)
+			return nil, nil, nil, fmt.Errorf("prometheus exporter: %w", err)
 		}
-		return sdkmetric.NewMeterProvider(sdkmetric.WithReader(exp)), registry, nil
+		opts = append(opts, sdkmetric.WithReader(exp))
+		return sdkmetric.NewMeterProvider(opts...), reader, registry, nil
 	default:
-		return nil, nil, errs.New(errs.CodeConfigInvalid,
+		return nil, nil, nil, errs.New(errs.CodeConfigInvalid,
 			"--metrics %q is not an exporter this version serves; use prometheus", exporter)
 	}
 }

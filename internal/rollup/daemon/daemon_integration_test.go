@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"github.com/zeebo/assert"
 )
 
@@ -365,4 +367,91 @@ func TestIntegrationRollupRun_DriftIsCountedAndHealthStaysHealthy(t *testing.T) 
 		return seriesSum(metricsText(t, addr), "rollup_drift_buckets_total", "posts_by_lang_15m") == before
 	})
 	assert.Equal(t, "healthy", status(d))
+}
+
+// receiver is a control plane on the loopback, where report_to allows
+// plaintext. It keeps every bundle it is sent.
+func receiver(t *testing.T) (string, func() []wire.Bundle) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []wire.Bundle
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b wire.Bundle
+		if err := json.NewDecoder(r.Body).Decode(&b); err == nil {
+			mu.Lock()
+			got = append(got, b)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", wire.MediaType)
+		_, _ = w.Write([]byte(`{"v":1,"commands":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/v1/turbostats", func() []wire.Bundle {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]wire.Bundle(nil), got...)
+	}
+}
+
+// The leader reports every table's newest bucket under one store id, and
+// each rollup's totals. A second instance, standing by, reports its role and
+// nothing else.
+func TestIntegrationRollupRun_TheLeaderReportsItsRollupsAndFreshness(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	dsn, conn := startPostgres(t)
+	history(t, conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
+	url, bundles := receiver(t)
+	ts := &config.TurboStats{ID: "rollups-01", ReportTo: url,
+		Key: "sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", IntervalSeconds: 1}
+	leader, _ := running(t, dsn, Options{TurboStats: ts, ConfigHash: "sha256:test"})
+	waitFor(t, "healthy", func() bool { return status(leader) == "healthy" })
+
+	var last wire.Bundle
+	waitFor(t, "a leader's bundle with both sections", func() bool {
+		for _, b := range bundles() {
+			if b.Rollup != nil && b.Rollup.Role == "leader" && b.Freshness != nil &&
+				len(b.Rollup.Rollups) == 1 && b.Rollup.Rollups[0].VerifyBucketCount > 0 &&
+				b.Rollup.Rollups[0].Backfill == nil {
+				last = b
+				return true
+			}
+		}
+		return false
+	})
+	assert.Equal(t, "rollups-01", last.Instance.ID)
+	assert.That(t, strings.HasPrefix(last.Freshness.StoreID, "pg:"))
+	assert.Equal(t, "system", last.Freshness.StoreIDKind)
+	assert.Equal(t, 11, len(last.Freshness.Tables))
+	byName := map[string]wire.FreshTable{}
+	for _, ft := range last.Freshness.Tables {
+		byName[ft.Table] = ft
+	}
+	assert.Equal(t, int64(60), byName["public.posts_per_minute_by_lang"].GrainSeconds)
+	hour := byName["public.posts_by_lang_1h"]
+	assert.Equal(t, int64(3600), hour.GrainSeconds)
+	assert.That(t, hour.NewestBucketAt != nil && hour.NewestBucketAt.Equal(time.Date(2026, 9, 12, 23, 0, 0, 0, time.UTC)))
+	posts := last.Rollup.Rollups[0]
+	assert.Equal(t, "posts", posts.Name)
+	assert.Equal(t, "trigger", posts.Strategy)
+	assert.Equal(t, int64(0), posts.DriftBucketCount)
+	assert.That(t, posts.Completeness != nil && posts.Completeness.ExpectedBuckets > 0)
+	assert.That(t, posts.Triggers == nil)
+
+	standbyURL, standbyBundles := receiver(t)
+	standbyTS := *ts
+	standbyTS.ReportTo = standbyURL
+	standby, _ := running(t, dsn, Options{TurboStats: &standbyTS, ConfigHash: "sha256:test"})
+	waitFor(t, "standby", func() bool { return status(standby) == "standby" })
+	waitFor(t, "a standby's bundle", func() bool {
+		for _, b := range standbyBundles() {
+			if b.Rollup != nil && b.Rollup.Role == "standby" {
+				assert.That(t, b.Freshness == nil && len(b.Rollup.Rollups) == 0)
+				return true
+			}
+		}
+		return false
+	})
 }

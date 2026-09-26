@@ -36,6 +36,14 @@ type (
 	ServeDurations    = wire.ServeDurations
 	ServeCache        = wire.ServeCache
 	Exit              = wire.Exit
+	// The rollup daemon's sections.
+	Freshness          = wire.Freshness
+	FreshTable         = wire.FreshTable
+	Rollup             = wire.Rollup
+	RollupEntry        = wire.RollupEntry
+	RollupBackfill     = wire.RollupBackfill
+	RollupCompleteness = wire.RollupCompleteness
+	RollupTriggers     = wire.RollupTriggers
 )
 
 const (
@@ -72,6 +80,16 @@ type Source struct {
 	Pipeline *PipelineSource
 	// Serve is set by `sqlflow serve`.
 	Serve *ServeSource
+	// Rollup is set by `sqlflow rollup run`.
+	Rollup *RollupSource
+}
+
+// RollupSource is what the rollup daemon reports. The daemon builds both
+// sections from its last passes, because they read a database the
+// instruments do not. Freshness is nil when the process measured nothing:
+// a standby, or a leader before its first observe pass.
+type RollupSource struct {
+	Section func() (*Rollup, *Freshness)
 }
 
 // PipelineSource is what the pipeline section reads beyond the instruments.

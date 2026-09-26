@@ -59,6 +59,11 @@ type Bundle struct {
 	Pipeline *Pipeline `json:"pipeline,omitempty"`
 	// Serve is present when the process answers dataset requests.
 	Serve *Serve `json:"serve,omitempty"`
+	// Freshness is present when the process measures a store's tables: the
+	// rollup daemon's leader.
+	Freshness *Freshness `json:"freshness,omitempty"`
+	// Rollup is present when the process runs rollups.
+	Rollup *Rollup `json:"rollup,omitempty"`
 
 	// Commands is a reserved name. v1 never populates it; a later spec
 	// defines command status.
@@ -349,6 +354,94 @@ type ServeCache struct {
 	EvictionCount int64 `json:"eviction_count"`
 	Bytes         int64 `json:"bytes"`
 	Entries       int   `json:"entries"`
+}
+
+// Freshness is how recent the data in one store's tables is, as this
+// process read it. A receiver keys a table by StoreID and Table, so a table
+// two processes report is one table, and the newer ObservedAt wins.
+type Freshness struct {
+	// StoreID names the database without its host or credentials: "pg:"
+	// and 16 hex characters of a hash of the server's system identifier and
+	// the database's name, the same for every reporter.
+	StoreID string `json:"store_id"`
+	// StoreIDKind is "system", or "address" when the server refused its
+	// system identifier and the id came from the address it answered on,
+	// which another reporter may see differently.
+	StoreIDKind string `json:"store_id_kind"`
+	// ObservedAt is the database's clock when the tables were read.
+	ObservedAt time.Time `json:"observed_at"`
+	// Tables is one entry per table. The reporter's config bounds it: a
+	// rollups file that reports declares at most ten tables, and each rollup
+	// adds its source.
+	Tables []FreshTable `json:"tables"`
+}
+
+// FreshTable is one table's newest bucket. A receiver computes its age as
+// ObservedAt minus the bucket's end, its start plus GrainSeconds. A table
+// still filling its open bucket reads negative, which is current.
+type FreshTable struct {
+	// Table is qualified by its schema.
+	Table        string `json:"table"`
+	GrainSeconds int64  `json:"grain_seconds"`
+	// NewestBucketAt is the start of the newest bucket, absent for an empty
+	// table.
+	NewestBucketAt *time.Time `json:"newest_bucket_at,omitempty"`
+}
+
+// Rollup is what a rollup daemon reports about the rollups it manages.
+type Rollup struct {
+	// Role is "leader", "standby" or "starting". Only the leader reports
+	// the rollups: a standby checks nothing.
+	Role string `json:"role"`
+	// Rollups is one entry per rollup the file declares. Every rollup
+	// declares a table, so the cap on tables bounds it.
+	Rollups []RollupEntry `json:"rollups,omitempty"`
+	// The code and time of the last error the daemon counted. The message
+	// stays in the process: it can carry a DSN.
+	LastErrorCode *string    `json:"last_error_code,omitempty"`
+	LastErrorAt   *time.Time `json:"last_error_at,omitempty"`
+}
+
+// RollupEntry is one rollup's totals since the process started.
+type RollupEntry struct {
+	Name string `json:"name"`
+	// Strategy is how the store keeps the rollup current: "trigger" in v1.
+	Strategy string `json:"strategy"`
+	// Backfill is absent once every table of the rollup is filled.
+	Backfill          *RollupBackfill `json:"backfill,omitempty"`
+	VerifyBucketCount int64           `json:"verify_bucket_count"`
+	DriftBucketCount  int64           `json:"drift_bucket_count"`
+	// Completeness is absent for a rollup with no count_buckets measure,
+	// and before any of its tables has a closed bucket.
+	Completeness *RollupCompleteness `json:"completeness,omitempty"`
+	// Triggers is absent unless the server tracks function calls, which
+	// takes track_functions set to pl or all.
+	Triggers *RollupTriggers `json:"triggers,omitempty"`
+}
+
+// RollupBackfill is how much of a rollup is still filling.
+type RollupBackfill struct {
+	TablesLeft int `json:"tables_left"`
+	// HistoryLeftSeconds is the source history still to fill in the table
+	// furthest behind, absent before that table's first chunk.
+	HistoryLeftSeconds *int64 `json:"history_left_seconds,omitempty"`
+}
+
+// RollupCompleteness is the least complete of the newest closed buckets of
+// a rollup's count_buckets tables: the source buckets it holds, against the
+// number its width holds. "57 of 60" is an hour missing three minutes.
+type RollupCompleteness struct {
+	Table           string    `json:"table"`
+	BucketAt        time.Time `json:"bucket_at"`
+	SourceBuckets   int64     `json:"source_buckets"`
+	ExpectedBuckets int64     `json:"expected_buckets"`
+}
+
+// RollupTriggers sums the calls and time of a rollup's trigger functions,
+// from the server's function statistics.
+type RollupTriggers struct {
+	Calls        int64   `json:"calls"`
+	TotalSeconds float64 `json:"total_seconds"`
 }
 
 // Exit is how a clean shutdown ended.
