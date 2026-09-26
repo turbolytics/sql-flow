@@ -42,6 +42,11 @@ func (c *RollupsConf) Check() []Violation {
 		}
 	}
 	out = append(out, c.TurboStats.Check([]string{"turbostats"})...)
+	if c.TurboStats.Enabled() && c.TableCount() > MaxReportedRollupTables {
+		add([]string{"turbostats"}, "a rollups file that reports TurboStats declares at most %d tables, "+
+			"and this one declares %d; split the rollups across files, each with its own `sqlflow rollup run`",
+			MaxReportedRollupTables, c.TableCount())
+	}
 
 	if len(c.Rollups) == 0 {
 		add([]string{"rollups"}, "rollups declares no rollup, so there is nothing to generate")
@@ -102,6 +107,12 @@ func checkRollup(r Rollup, path []string, datasets map[string]bool, add rollupAd
 	grainNames := slices.Sorted(maps.Keys(r.Grains))
 	if len(grainNames) == 0 {
 		add(at(path, "grains"), "rollup %s declares no grain", r.Name)
+	}
+	// A rollup with no dimension set generates no table. It would still
+	// report its source and its own entry, so without this rule the
+	// reporting cap would not bound a bundle.
+	if len(r.DimensionSets) == 0 {
+		add(at(path, "dimension_sets"), "rollup %s declares no dimension set, so it generates no table", r.Name)
 	}
 	for _, g := range grainNames {
 		w, err := ParseServeDuration(g)

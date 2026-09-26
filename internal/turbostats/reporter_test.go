@@ -214,6 +214,38 @@ func TestReporter_AHungReceiverDoesNotDelayTheCaller(t *testing.T) {
 	}
 }
 
+// Posts run on the reporter's own goroutine, so a hung receiver holds
+// neither the caller that starts the reporter nor, past its deadline, the
+// caller that stops it. stop cancels the post in flight, and the final post
+// ends at the deadline the caller gives it. The client here has the real 10 s
+// timeout: only the contexts can end these posts sooner.
+func TestReporter_AHungReceiverHoldsNeitherStartNorStop(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.reporter")
+	rc := newReceiver()
+	rc.hang = make(chan struct{})
+	srv := httptest.NewServer(rc)
+	defer func() { close(rc.hang); srv.Close() }()
+
+	r, err := NewReporter(ReporterConfig{
+		ReportTo: srv.URL, Key: testKey(t), Interval: time.Hour,
+		Collect: func(context.Context) (Bundle, error) { return Bundle{V: Version}, nil },
+		Log:     zap.NewNop(),
+	})
+	assert.NoError(t, err)
+
+	began := time.Now()
+	stop := StartReporter(context.Background(), r)
+	assert.That(t, time.Since(began) < 100*time.Millisecond)
+	// The first post has reached the receiver, which will never answer.
+	waitFor(t, func() bool { return rc.count() >= 1 })
+
+	final, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	began = time.Now()
+	stop(final, Exit{Reason: "SIGTERM"})
+	assert.That(t, time.Since(began) < 2*time.Second)
+}
+
 // The last bundle is how a control plane tells a clean stop from a crash. A
 // process that died cannot send one, which is the whole signal.
 func TestReporter_TheFinalBundleCarriesTheExit(t *testing.T) {

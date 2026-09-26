@@ -84,6 +84,9 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 		b.Serve = sv
 		b.LastActivityAt = later(b.LastActivityAt, sv.LastRequestAt)
 	}
+	if src.Rollup != nil {
+		b.Rollup, b.Freshness = src.Rollup.Section()
+	}
 	return b, nil
 }
 

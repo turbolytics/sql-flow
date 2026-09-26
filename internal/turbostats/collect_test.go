@@ -807,3 +807,28 @@ func TestCollect_NoBasisNoLagFields(t *testing.T) {
 	assert.That(t, b.Pipeline.EventLagBasis == nil)
 	assert.That(t, b.Pipeline.EventLagObservedAt == nil)
 }
+
+// A rollup source fills both sections, and a process without one sends
+// neither.
+func TestCollect_ARollupSourceFillsBothSections(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader := sdkmetric.NewManualReader()
+	_ = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	at := time.Now().UTC()
+	src := Source{Static: Static{Version: "v", StartedAt: at}, Reader: reader,
+		Rollup: &RollupSource{Section: func() (*Rollup, *Freshness) {
+			return &Rollup{Role: "leader", Rollups: []RollupEntry{{Name: "posts", Strategy: "trigger"}}},
+				&Freshness{StoreID: "pg:0123456789abcdef", StoreIDKind: "system", ObservedAt: at,
+					Tables: []FreshTable{{Table: "public.posts_1h", GrainSeconds: 3600}}}
+		}}}
+	b, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.Equal(t, "leader", b.Rollup.Role)
+	assert.Equal(t, 1, len(b.Freshness.Tables))
+	assert.That(t, b.Pipeline == nil && b.Serve == nil)
+
+	src.Rollup = nil
+	b, err = Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.That(t, b.Rollup == nil && b.Freshness == nil)
+}

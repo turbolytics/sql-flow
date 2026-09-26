@@ -392,6 +392,14 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 				if at == ".Bundle.Instance.Labels" {
 					continue
 				}
+				// A rollup daemon's tables and rollups come from its rollups
+				// file, and config.MaxReportedRollupTables caps the tables of
+				// a file that reports. Every rollup declares a table, so the
+				// cap bounds both lists. TestCollect_AFullRollupBundleStaysUnderTheCeiling
+				// prices the widest legal file.
+				if at == ".Bundle.Freshness.Tables" || at == ".Bundle.Rollup.Rollups" {
+					continue
+				}
 				// A duration's buckets are a fixed-length array whose length
 				// the contract sets: len(wire.DurationBounds)+1, the same
 				// for every process forever. It is the one shape a receiver
@@ -502,4 +510,48 @@ func widestDuration() *wire.Duration {
 		Count: 1 << 62, SumSeconds: 1e9, MinSeconds: 1e-9, MaxSeconds: 1e9,
 		Buckets: buckets,
 	}
+}
+
+// The widest rollup bundle the config allows stays under 14 KiB: the most
+// tables a reporting file may declare, each with the longest name Postgres
+// allows under the longest schema, a source per rollup, a rollup per table,
+// and every optional field at its widest. It measured 12375 bytes on
+// 2026-09-26; the receiver's limit is 16 KiB, so 14 leaves the alarm 2 KiB.
+func TestCollect_AFullRollupBundleStaysUnderTheCeiling(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	big := int64(1) << 62
+	at := time.Now().UTC()
+	name := strings.Repeat("n", 63)
+	table := strings.Repeat("s", 63) + "." + strings.Repeat("t", 63)
+	code := "system.rollup.unreachable"
+	n := config.MaxReportedRollupTables
+	fresh := make([]wire.FreshTable, 0, 2*n)
+	entries := make([]wire.RollupEntry, 0, n)
+	for i := 0; i < n; i++ {
+		fresh = append(fresh,
+			wire.FreshTable{Table: table, GrainSeconds: big, NewestBucketAt: &at},
+			wire.FreshTable{Table: table, GrainSeconds: big, NewestBucketAt: &at})
+		entries = append(entries, wire.RollupEntry{
+			Name: name, Strategy: "trigger",
+			Backfill:          &wire.RollupBackfill{TablesLeft: n, HistoryLeftSeconds: &big},
+			VerifyBucketCount: big, DriftBucketCount: big,
+			Completeness: &wire.RollupCompleteness{Table: table, BucketAt: at, SourceBuckets: big, ExpectedBuckets: big},
+			Triggers:     &wire.RollupTriggers{Calls: big, TotalSeconds: 1e18},
+		})
+	}
+	b := wire.Bundle{
+		V: wire.Version, SentAt: at, IntervalSeconds: 86400, LastActivityAt: &at,
+		Instance: wire.Instance{
+			ID: strings.Repeat("i", 64), Version: "v2026.09.21.12", Commit: strings.Repeat("c", 40),
+			Arch: "linux/arm64", ConfigHash: "sha256:" + strings.Repeat("f", 64), Labels: widestLabels(t),
+		},
+		Process:   wire.Process{StartedAt: at, RSSBytes: big, Goroutines: 1 << 30},
+		Freshness: &wire.Freshness{StoreID: "pg:" + strings.Repeat("f", 16), StoreIDKind: "address", ObservedAt: at, Tables: fresh},
+		Rollup:    &wire.Rollup{Role: "starting", Rollups: entries, LastErrorCode: &code, LastErrorAt: &at},
+		Exit:      &wire.Exit{Reason: "system.internal.unexpected", Code: 255},
+	}
+	raw, err := json.Marshal(b)
+	assert.NoError(t, err)
+	t.Logf("the widest rollup bundle is %d bytes", len(raw))
+	assert.That(t, len(raw) < 14<<10)
 }

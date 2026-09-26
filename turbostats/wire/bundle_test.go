@@ -201,3 +201,25 @@ func TestPipeline_AZeroLagIsPresentAndNoBasisIsAbsent(t *testing.T) {
 		t.Errorf("a pipeline with no event time carries a lag: %s", without)
 	}
 }
+
+// The rollup sections are absent from a process that runs no rollups.
+func TestBundle_RollupSectionsAreAbsentUntilSet(t *testing.T) {
+	raw := mustMarshal(t, Bundle{V: Version, Pipeline: &Pipeline{}})
+	for _, key := range []string{`"freshness"`, `"rollup"`} {
+		if strings.Contains(raw, key) {
+			t.Fatalf("bundle carries %s: %s", key, raw)
+		}
+	}
+}
+
+// A standby reports its role and nothing else, and an empty table reports
+// no newest bucket rather than a zero time.
+func TestBundle_AStandbyAndAnEmptyTableSayOnlyWhatIsKnown(t *testing.T) {
+	if got := mustMarshal(t, Rollup{Role: "standby"}); got != `{"role":"standby"}` {
+		t.Fatalf("a standby's rollup section is %s", got)
+	}
+	got := mustMarshal(t, FreshTable{Table: "public.posts_1h", GrainSeconds: 3600})
+	if got != `{"table":"public.posts_1h","grain_seconds":3600}` {
+		t.Fatalf("an empty table is %s", got)
+	}
+}

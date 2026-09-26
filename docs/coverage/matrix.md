@@ -64,7 +64,7 @@ added, and this page changes only when a status does.
 | `cli.serve` | Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits. | ✅ | ✅ | ✅ |
 | `cli.turbostats_keygen` | Generates a TurboStats keypair on the instance, writes the private half to a file only, and prints the public half to register. | ✅ | — | — |
 | `cli.rollup` | Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted. | ✅ | ✅ | — |
-| `cli.rollup_run` | Installs, backfills, checks and reports on the rollup tables a rollups file declares. | ✅ | ✅ | — |
+| `cli.rollup_run` | Installs, backfills, checks and reports on the rollup tables a rollups file declares. | ✅ | ✅ | ✅ |
 | `template.render` | The Deploy to Render template's schema keeps the minute table and every rollup exact when several pipeline processes write to one database. | ⚠️ skipped | ✅ | — |
 | `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ |
 | `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |

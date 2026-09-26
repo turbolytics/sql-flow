@@ -69,16 +69,20 @@ func TestCliRollupRun_TheHealthStateCountsFromItsStart(t *testing.T) {
 func TestCliRollupRun_TheMetricsFlagTakesPrometheusOrNothing(t *testing.T) {
 	coverage.Covers(t, "cli.rollup_run")
 
-	mp, registry, err := newProvider("")
+	// The manual reader TurboStats reads is there with or without an
+	// exporter.
+	mp, reader, registry, err := newProvider("")
 	assert.NoError(t, err)
 	assert.NotNil(t, mp)
+	assert.NotNil(t, reader)
 	assert.That(t, registry == nil)
 
-	_, registry, err = newProvider("Prometheus")
+	_, reader, registry, err = newProvider("Prometheus")
 	assert.NoError(t, err)
+	assert.NotNil(t, reader)
 	assert.NotNil(t, registry)
 
-	_, _, err = newProvider("statsd")
+	_, _, _, err = newProvider("statsd")
 	assert.Error(t, err)
 	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
 

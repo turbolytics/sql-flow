@@ -222,7 +222,7 @@ features:
   # release level joins with the image test for `sqlflow rollup run`.
   - id: cli.rollup_run
     description: Installs, backfills, checks and reports on the rollup tables a rollups file declares.
-    requires: [unit, integration]
+    requires: [unit, integration, release]
 
   # The template is YAML, SQL and shell, so what it promises under concurrency
   # is tested from Go against its migrations, in internal/rendertemplate.

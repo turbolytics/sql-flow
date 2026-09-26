@@ -4,6 +4,14 @@
 
 ### Added
 
+- `sqlflow rollup run` reports itself to TurboStats when its rollups file
+  has a `turbostats` block that sets `report_to`. The bundle gains two
+  optional v1 sections: `freshness`, each table's newest bucket under one
+  store id, and `rollup`, each rollup's verify and drift totals, backfill
+  progress, least complete closed bucket and trigger cost. A standby
+  reports its role only. A rollups file that reports declares at most 10
+  tables.
+
 - Every source can now be told where its event time is. `event_time`, the
   block the websocket source gained, is accepted on the Kafka, webhook and
   MQTT sources too: a dotted `path` into the payload and a `format`. Absent,
