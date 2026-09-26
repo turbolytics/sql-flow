@@ -10,6 +10,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/logging"
 	"github.com/turbolytics/sql-flow/internal/rollup/daemon"
+	"github.com/turbolytics/sql-flow/internal/turbostats"
 )
 
 func newRunCommand() *cobra.Command {
@@ -28,7 +29,13 @@ func newRunCommand() *cobra.Command {
 			if levelErr != nil {
 				return levelErr
 			}
-			conf, err := config.LoadRollups(configPath)
+			// Rendered once and parsed, so the bundle's config hash is of
+			// the text the daemon runs.
+			rendered, err := config.RenderTemplate(configPath, nil)
+			if err != nil {
+				return err
+			}
+			conf, err := config.ParseRollups(rendered)
 			if err != nil {
 				return err
 			}
@@ -40,7 +47,8 @@ func newRunCommand() *cobra.Command {
 				return err
 			}
 			d, err := daemon.New(conf, dsn, daemon.Options{
-				Version: buildinfo.Version, Logger: logger.Named("sqlflow.rollup"), Metrics: metrics,
+				Version: buildinfo.Version, Commit: buildinfo.Commit, Logger: logger.Named("sqlflow.rollup"),
+				Metrics: metrics, TurboStats: conf.TurboStats, ConfigHash: turbostats.HashConfig(rendered),
 			})
 			if err != nil {
 				return err
