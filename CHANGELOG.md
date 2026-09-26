@@ -39,12 +39,24 @@
     does not close a bucket the backlog still has rows for. A partition
     another member now holds leaves the minimum, so a scale-out closes by the
     remaining partitions instead of freezing this process's windows forever.
-  - **A quiet pipeline writes less.** An idle tick writes only when a
-    watermark moved, which on a stream that stopped is once. Before, every
-    tick rewrote `sqlflow_progress` on every windowed pipeline -- a statement,
-    a WAL append and an fsync per flush interval -- because that row was what
-    confirmed the quiet. `sqlflow_progress` remains as liveness for `/stats`,
-    `/healthz` and SQL; no window decision rests on it.
+  - **A quiet pipeline writes less, and a busy one writes no more.** An idle
+    tick writes only when a watermark moved, which on a stream that stopped is
+    once; before, every tick rewrote `sqlflow_progress` on every windowed
+    pipeline -- a statement, a WAL append and an fsync per flush interval --
+    because that row was what confirmed the quiet. `sqlflow_progress` remains
+    as liveness for `/stats`, `/healthz` and SQL; no window decision rests on
+    it. The watermark's own write is paced at one second and forced by the
+    drain, for the same reason the progress write is: one `UPDATE` measures
+    about 130µs through ADBC, a busy pipeline advances event time on every
+    batch, and a manager reads the row once per `poll_interval_seconds`. A
+    paced write leaves the watermark older than the rows it describes, which
+    delays a close and can never bring one forward.
+  - **Windowing costs nothing measurable per record.** The engine accumulates
+    what each batch's records say about their partitions as it already walks
+    them, and hands that to the watermark tracker once per batch. Called per
+    record it took the consume loop from about 40ns a message to 85; per batch
+    it is 42, inside the noise, with no allocations
+    (`BenchmarkConsumeLoopWindowedWritePath`).
   - **The window's decision table is three rows on one fact**, down from five
     on two, and the manager has no clock at all.
 

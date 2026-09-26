@@ -441,6 +441,11 @@ func (r *run) sinkTurbine() {
 		opts = append(opts,
 			core.WithProgressStore(core.NewProgressStore(r.window.db.pipeline)),
 			core.WithWindows(w, core.NewWatermarkStore(r.window.db.pipeline)),
+			// Every commit that moves a watermark writes it. Production paces
+			// the write at a second, which a script's steps happen to clear
+			// today; pinning it here keeps a scenario with finer steps from
+			// silently asserting nothing.
+			core.WithWatermarkWriteInterval(0),
 			// As run wires a windowing pipeline: a record whose event time
 			// the engine cannot place is refused before the handler.
 			core.WithEventTimePlacement(true))

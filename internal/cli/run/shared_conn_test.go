@@ -154,7 +154,9 @@ func TestPipelineSharedConnection_EveryPartyHoldsTheLock(t *testing.T) {
 		{msg(`not json`, second(2)), msg(`{"a": 2}`, second(2))},
 		{msg(`{"a": 2}`, second(2)), msg(`{"a": 3}`, second(3))},
 	}}
-	watermarks, windowOpts := windowOptions(conf, conn)
+	// Every batch asserts, because this drives three of them inside one
+	// interval and the window's output is what it checks.
+	watermarks, windowOpts := windowOptionsEveryCommit(conf, conn)
 	tb := core.NewTurbine(src, handler, sink, 2, time.Hour, lock, policies,
 		append([]core.TurbineOption{core.WithProgressStore(progress)}, windowOpts...)...)
 	assert.That(t, watermarks != nil)

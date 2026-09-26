@@ -99,7 +99,7 @@ func TestStateDurability_TheWatermarkRidesTheStateTransaction(t *testing.T) {
 	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
 		&sync.Mutex{}, PipelineErrorPolicies{},
 		WithStateStore(st.offs, st.tx), WithProgressStore(NewProgressStore(st.conn)),
-		WithWindows(w, saver), WithClock(clk.now))
+		WithWindows(w, saver), WithWatermarkWriteInterval(0), WithClock(clk.now))
 
 	// The batch: a row in the window table, inside the open transaction,
 	// and the record it came from observed.
@@ -159,7 +159,7 @@ func TestStateDurability_AnIdleTickAssertsOnlyWhenAPartitionWentIdle(t *testing.
 	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
 		&sync.Mutex{}, PipelineErrorPolicies{},
 		WithProgressStore(rec), WithProgressWriteInterval(0),
-		WithWindows(w, store), WithClock(clk.now))
+		WithWindows(w, store), WithWatermarkWriteInterval(0), WithClock(clk.now))
 
 	// A batch: the progress row and the watermark, both written.
 	w.Observe("", 0, wmT0.Add(5*time.Minute).UnixNano())
@@ -234,7 +234,7 @@ func TestStateDurability_ASourceThatCannotDeliverHoldsItsWindows(t *testing.T) {
 	w := NewWatermarks([]WindowSpec{{Name: "win", Size: time.Minute, Grace: time.Minute, IdleClose: 10 * time.Second}}, clk.now)
 	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithWindows(w, store), WithClock(clk.now))
+		WithWindows(w, store), WithWatermarkWriteInterval(0), WithClock(clk.now))
 
 	w.Observe("", 0, wmT0.Add(5*time.Minute).UnixNano())
 	assert.NoError(t, tb.commitState(ctx, progressOnInterval))
@@ -282,7 +282,7 @@ func TestCoreConsumeLoop_AnUnplaceableRecordMovesNoWatermark(t *testing.T) {
 	w := NewWatermarks([]WindowSpec{{Name: "win", Size: time.Minute, Grace: time.Minute}}, nil)
 	tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, 1000, 20*time.Millisecond,
 		&sync.Mutex{}, PipelineErrorPolicies{},
-		WithEventTimePlacement(true), WithWindows(w, store))
+		WithEventTimePlacement(true), WithWindows(w, store), WithWatermarkWriteInterval(0))
 	done := make(chan struct{})
 	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
 
@@ -298,4 +298,88 @@ func TestCoreConsumeLoop_AnUnplaceableRecordMovesNoWatermark(t *testing.T) {
 	assert.Equal(t, placed.Add(-time.Minute).UTC(), stored)
 	close(src.release)
 	<-done
+}
+
+// The write is paced, and a skip is safe. Two commits inside one interval
+// write once, so a pipeline committing two hundred times a second pays one
+// statement a second rather than two hundred; the watermark is then older
+// than the rows it describes, which delays a close and can never bring one
+// forward. The drain forces the write whatever the pace, so a clean stop
+// asserts where the stream actually got to.
+func TestStateDurability_TheWatermarkWriteIsPaced(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	ctx := context.Background()
+	db, err := duckdb.OpenPath(ctx, "")
+	assert.NoError(t, err)
+	defer db.Close()
+	conn, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	defer conn.Close()
+	store := NewWatermarkStore(conn)
+	assert.NoError(t, store.Init(ctx))
+	counting := &countingSaver{inner: store}
+
+	clk := &wmClock{at: wmT0}
+	w := NewWatermarks([]WindowSpec{{Name: "win", Size: time.Minute, Grace: time.Minute}}, clk.now)
+	tb := NewTurbine(newIdleSource(), &fakeHandler{}, &fakeSink{}, 1000, time.Hour,
+		&sync.Mutex{}, PipelineErrorPolicies{},
+		WithWindows(w, counting), WithWatermarkWriteInterval(time.Second), WithClock(clk.now))
+
+	// The first commit is always due.
+	w.Observe("", 0, wmT0.Add(5*time.Minute).UnixNano())
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval))
+	assert.Equal(t, 1, counting.count())
+	at, _, _ := store.Load(ctx, "win")
+	assert.Equal(t, wmT0.Add(4*time.Minute), at)
+
+	// Two more inside the interval: the stream moves on and the row does not.
+	clk.tick(100 * time.Millisecond)
+	w.Observe("", 0, wmT0.Add(6*time.Minute).UnixNano())
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval))
+	clk.tick(100 * time.Millisecond)
+	w.Observe("", 0, wmT0.Add(7*time.Minute).UnixNano())
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval))
+	assert.Equal(t, 1, counting.count())
+	at, _, _ = store.Load(ctx, "win")
+	assert.Equal(t, wmT0.Add(4*time.Minute), at)
+	// And the tracker has not recorded what it did not write, so the next
+	// write carries wherever the stream has got to rather than the value it
+	// skipped.
+	asserted, _ := w.Asserted("win")
+	assert.Equal(t, wmT0.Add(4*time.Minute), asserted)
+
+	// Past the interval: one write, carrying the newest.
+	clk.tick(time.Second)
+	assert.NoError(t, tb.commitState(ctx, progressOnInterval))
+	assert.Equal(t, 2, counting.count())
+	at, _, _ = store.Load(ctx, "win")
+	assert.Equal(t, wmT0.Add(6*time.Minute), at)
+
+	// The drain forces it, inside the interval.
+	clk.tick(10 * time.Millisecond)
+	w.Observe("", 0, wmT0.Add(9*time.Minute).UnixNano())
+	assert.NoError(t, tb.SyncState(ctx))
+	assert.Equal(t, 3, counting.count())
+	at, _, _ = store.Load(ctx, "win")
+	assert.Equal(t, wmT0.Add(8*time.Minute), at)
+}
+
+// countingSaver counts the writes it passes on.
+type countingSaver struct {
+	inner WatermarkSaver
+	mu    sync.Mutex
+	n     int
+}
+
+func (c *countingSaver) Save(ctx context.Context, name string, at time.Time) error {
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+	return c.inner.Save(ctx, name, at)
+}
+
+func (c *countingSaver) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
 }

@@ -67,6 +67,17 @@ func windowOptions(conf *config.Conf, conn adbc.Connection) (*core.Watermarks, [
 	return w, []core.TurbineOption{core.WithWindows(w, core.NewWatermarkStore(conn))}
 }
 
+// windowOptionsEveryCommit is windowOptions with the watermark's write pace
+// removed, for a test that drives several batches inside one interval and
+// checks what each one asserted rather than how often the engine writes.
+func windowOptionsEveryCommit(conf *config.Conf, conn adbc.Connection) (*core.Watermarks, []core.TurbineOption) {
+	w, opts := windowOptions(conf, conn)
+	if w == nil {
+		return nil, nil
+	}
+	return w, append(opts, core.WithWatermarkWriteInterval(0))
+}
+
 // restoreWindows seeds the tracker with what a restart left behind: the
 // newest bucket each window's table holds, so a quiet stream's last buckets
 // still close by idleness when this process has seen none of their rows,

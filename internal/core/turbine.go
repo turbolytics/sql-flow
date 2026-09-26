@@ -346,11 +346,21 @@ type Turbine struct {
 	// progressEvery is how often it may be. Guarded by lock.
 	progressWrittenAt time.Time
 	progressEvery     time.Duration
-	// windows asserts each window's watermark on every commit, written
-	// through watermarkSaver; nil for a pipeline with no window. See
-	// WithWindows and watermarks.go.
+	// windows asserts each window's watermark, written through
+	// watermarkSaver; nil for a pipeline with no window. See WithWindows and
+	// watermarks.go.
 	windows        *Watermarks
 	watermarkSaver WatermarkSaver
+	// watermarkWrittenAt is when a watermark was last written, and
+	// watermarkEvery is how often one may be. Guarded by lock; see
+	// assertWatermarks for why the write is paced at all.
+	watermarkWrittenAt time.Time
+	watermarkEvery     time.Duration
+	// observed is what this batch's records said about their partitions,
+	// accumulated by the message loop and handed to windows once per batch;
+	// see notePlaced. Reused across batches, and the consume loop is its only
+	// party, so it takes no lock.
+	observed []Observation
 	// partitionsRelayed is whether the source reports its partitions to
 	// windows itself. Otherwise the loop asks the source whether it can
 	// deliver before each commit, and notDelivering is the last answer, for
@@ -504,6 +514,14 @@ func WithWindows(w *Watermarks, s WatermarkSaver) TurbineOption {
 	}
 }
 
+// WithWatermarkWriteInterval bounds how often a window's watermark is
+// written. Zero writes on every commit that moves one, which is what a test
+// wants when it is checking what gets asserted rather than how often.
+// Production leaves it at watermarkWriteInterval; see assertWatermarks.
+func WithWatermarkWriteInterval(d time.Duration) TurbineOption {
+	return func(t *Turbine) { t.watermarkEvery = d }
+}
+
 // WithEventTimePlacement refuses a message whose event time this engine
 // cannot place: before EventTimeFloor, or ahead of the engine's own clock.
 //
@@ -579,6 +597,16 @@ func (t *Turbine) Commits() int64 { return t.commitCount() }
 // its two clocks against an idle bound measured in tens of seconds.
 const progressWriteInterval = time.Second
 
+// watermarkWriteInterval bounds how often a window's watermark is written.
+// One UPDATE measures about 130 microseconds through ADBC
+// (BenchmarkCommitStateWindowed), and on a busy pipeline event time advances
+// on every batch, so writing per commit is a statement per batch -- the same
+// cost the progress write was paced to avoid, for a value with the same
+// reader. A window manager reads this once per poll_interval_seconds, ten
+// seconds by default, so writing it more often than the pace below buys
+// nothing at all.
+const watermarkWriteInterval = time.Second
+
 // watchSource tells the tracker what the source holds. A source that
 // reports its partitions is subscribed once, here; the tracker then hears
 // every assignment, revocation and loss from the source's own goroutine. A
@@ -633,16 +661,37 @@ func (t *Turbine) noteDelivering() {
 // direction: a reader can see rows without the watermark that accounts for
 // them, and holds, but never a watermark without its rows.
 //
-// The tracker records the values only once the caller reports the commit,
-// through commitWatermarks; a batch that rolls back asserts them again on
-// its replay.
-func (t *Turbine) assertWatermarks(ctx context.Context) (map[string]time.Time, error) {
+// The write is paced, at watermarkWriteInterval, and forced by the drain.
+// Skipping one leaves the watermark older than the rows it describes, which
+// is the safe direction in exactly the same way: a close that is late leaves
+// rows in the table for the next poll, and only an early one splits a bucket
+// and publishes it twice. Nothing is lost by the skip, because the value is
+// recomputed from the tracker each time rather than accumulated, so the next
+// write carries wherever the stream has got to by then. What it buys is one
+// statement a second instead of one a batch.
+//
+// The tracker records the values only once the caller reports the commit, so
+// a batch that rolls back -- and a write the pace skipped -- asserts again
+// later.
+func (t *Turbine) assertWatermarks(ctx context.Context, write progressWrite) (map[string]time.Time, error) {
 	if t.windows == nil {
 		return nil, nil
 	}
 	moved := t.windows.Next()
 	if len(moved) == 0 {
 		return moved, nil
+	}
+	// Both stamps carry monotonic readings, so a wall clock stepping back
+	// cannot make this negative; the guard is for a stamp without one, which
+	// a test can inject, and which would otherwise stop the write for as long
+	// as the step was.
+	now := t.now()
+	t.lock.Lock()
+	elapsed := now.Sub(t.watermarkWrittenAt)
+	due := elapsed >= t.watermarkEvery || elapsed < 0
+	t.lock.Unlock()
+	if !due && write != progressForced {
+		return nil, nil
 	}
 	// Held through the writes: they run on the pipeline's connection, which
 	// the debug API also runs statements on, and DuckDB closes a pending
@@ -652,6 +701,9 @@ func (t *Turbine) assertWatermarks(ctx context.Context) (map[string]time.Time, e
 	// this returns, so nothing here nests.
 	t.lock.Lock()
 	defer t.lock.Unlock()
+	// Advanced on every attempt, success or not, so a store that keeps
+	// failing is retried once an interval rather than on every commit.
+	t.watermarkWrittenAt = now
 	for name, at := range moved {
 		if err := t.watermarkSaver.Save(ctx, name, at); err != nil {
 			return nil, err
@@ -774,18 +826,19 @@ func NewTurbine(
 	opts ...TurbineOption,
 ) *Turbine {
 	t := &Turbine{
-		source:        source,
-		marks:         NewMarks(),
-		committed:     NewMarks(),
-		sink:          sink,
-		handler:       handler,
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		progressEvery: progressWriteInterval,
-		lock:          lock,
-		running:       true,
-		stats:         &Stats{},
-		errorPolicy:   policy,
+		source:         source,
+		marks:          NewMarks(),
+		committed:      NewMarks(),
+		sink:           sink,
+		handler:        handler,
+		batchSize:      batchSize,
+		flushInterval:  flushInterval,
+		progressEvery:  progressWriteInterval,
+		watermarkEvery: watermarkWriteInterval,
+		lock:           lock,
+		running:        true,
+		stats:          &Stats{},
+		errorPolicy:    policy,
 
 		logger: zap.NewNop(),
 	}
@@ -1129,8 +1182,15 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// Placed, so it counts toward the watermark, whether or not the
 			// handler takes it: a record an error policy drops still says
 			// where the stream has got to, as Flink's assigner does.
+			//
+			// Accumulated here and handed to the tracker once, when the batch
+			// is processed. Calling the tracker per record takes its mutex per
+			// record, which measured at 52ns against a loop whose own budget
+			// is around 40 -- the same shape as the phase timing this loop
+			// already refuses. A partition is one entry, and a fetch spans
+			// few, so the scan below is a comparison or two.
 			if t.windows != nil {
-				t.windows.Observe(raw.Topic, raw.Partition, raw.EventAtNanos)
+				t.notePlaced(raw.Topic, raw.Partition, raw.EventAtNanos)
 			}
 			if err := t.writeMessage(raw); err != nil {
 				t.recordError(ctx, err, phaseHandlerWrite, "error writing message")
@@ -1531,7 +1591,7 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 // unwritten, and a poll that ran in between read the older watermark.
 func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 	t.noteDelivering()
-	moved, watermarkErr := t.assertWatermarks(ctx)
+	moved, watermarkErr := t.assertWatermarks(ctx, write)
 	progressErr := t.recordProgress(ctx, write)
 
 	if t.offsets == nil || t.stateTx == nil {
@@ -1650,6 +1710,12 @@ func (t *Turbine) SyncState(ctx context.Context) error {
 
 func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error {
 	b0 := time.Now()
+
+	// What this batch's records said about their partitions, handed over
+	// before the commit that asserts a watermark from it. Here rather than
+	// in the message loop above, so a batch the loop abandoned -- max-msgs
+	// reached, a fatal error -- reports only the records it actually reached.
+	t.flushObservations()
 
 	t.lock.Lock()
 	batch, err := t.handler.Invoke(ctx)
@@ -1845,6 +1911,33 @@ func (t *Turbine) logThroughput() {
 // second record here counted every failed flush twice.
 func (t *Turbine) flush(ctx context.Context, batch arrow.Table) error {
 	return t.sink.Flush(ctx)
+}
+
+// notePlaced accumulates one placed record against its partition, for
+// flushObservations to hand to the watermark tracker. Runs on the consume
+// loop only, so it takes no lock.
+func (t *Turbine) notePlaced(topic string, partition int32, atNanos int64) {
+	for i := range t.observed {
+		if t.observed[i].Partition == partition && t.observed[i].Topic == topic {
+			if atNanos > t.observed[i].NewestNanos {
+				t.observed[i].NewestNanos = atNanos
+			}
+			return
+		}
+	}
+	t.observed = append(t.observed, Observation{
+		Topic: topic, Partition: partition, NewestNanos: atNanos,
+	})
+}
+
+// flushObservations hands the batch's observations to the tracker and keeps
+// the slice for the next batch, so a steady pipeline allocates nothing here.
+func (t *Turbine) flushObservations() {
+	if t.windows == nil || len(t.observed) == 0 {
+		return
+	}
+	t.windows.ObserveBatch(t.observed)
+	t.observed = t.observed[:0]
 }
 
 // canPlace reports whether an event time is one this engine can put somewhere

@@ -276,34 +276,60 @@ func (w *Watermarks) hold(k partitionKey, now time.Time) {
 	w.parts[k] = &partitionState{heldSince: now}
 }
 
-// Observe records a placed record. Its event time moves the partition's
-// newest; its arrival, whatever it carries, is activity, so a partition
-// delivering records is never idle. Only the engine's placement rule decides
-// what reaches here: a record it refused advances nothing, which is what
-// keeps one wrong clock from closing every window (#358). A zero is a
-// source that stamps nothing: activity, but no event time to move, so such
-// a pipeline closes by idleness alone.
+// Observation is the newest event time one partition delivered over some
+// span of records, and that it delivered at all. The consume loop
+// accumulates these as it walks a batch and hands them over once, because
+// the alternative is taking this tracker's mutex on the per-message path:
+// measured at 52ns a record, against a loop whose own budget is around 40,
+// which is the regression this codebase refuses on that path
+// (BenchmarkConsumeLoopWindowedWritePath).
+type Observation struct {
+	Topic     string
+	Partition int32
+	// NewestNanos is the newest event time among the records, or zero when
+	// none of them carried one.
+	NewestNanos int64
+}
+
+// Observe records one placed record. ObserveBatch is what the engine calls;
+// this is the single-record form, for a caller with one record to report.
+func (w *Watermarks) Observe(topic string, partition int32, atNanos int64) {
+	w.ObserveBatch([]Observation{{Topic: topic, Partition: partition, NewestNanos: atNanos}})
+}
+
+// ObserveBatch records what each partition delivered. An event time moves
+// that partition's newest; the delivery itself is activity, whatever it
+// carried, so a partition delivering records is never idle. Only the
+// engine's placement rule decides what reaches here: a record it refused
+// advances nothing, which is what keeps one wrong clock from closing every
+// window (#358). A partition whose records carried no event time at all is
+// active with nothing to move, so such a pipeline closes by idleness alone.
 //
 // A record from a partition not yet held is taken as held from now. A fetch
 // buffered before a revocation can deliver one; taking it is the late
 // direction, since it can only add a term to the minimum.
-func (w *Watermarks) Observe(topic string, partition int32, atNanos int64) {
+func (w *Watermarks) ObserveBatch(obs []Observation) {
+	if len(obs) == 0 {
+		return
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	now := w.now()
-	k := partitionKey{topic, partition}
-	s, ok := w.parts[k]
-	if !ok {
-		s = &partitionState{heldSince: now}
-		w.parts[k] = s
+	for _, o := range obs {
+		k := partitionKey{o.Topic, o.Partition}
+		s, ok := w.parts[k]
+		if !ok {
+			s = &partitionState{heldSince: now}
+			w.parts[k] = s
+		}
+		if o.NewestNanos > s.seen {
+			s.seen = o.NewestNanos
+		}
+		if o.NewestNanos > w.maxSeen {
+			w.maxSeen = o.NewestNanos
+		}
+		s.lastRow = now
 	}
-	if atNanos > s.seen {
-		s.seen = atNanos
-	}
-	if atNanos > w.maxSeen {
-		w.maxSeen = atNanos
-	}
-	s.lastRow = now
 }
 
 // Next computes every window's watermark and returns the ones that would
