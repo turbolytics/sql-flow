@@ -497,12 +497,17 @@ func (r *run) deliver(p int32, ids []int64) {
 			}
 		}
 	}
-	var want int
+	var want, commitsBefore int
 	if r.window == nil {
 		total, _ := r.sink.counts()
 		want = total + accepted
 	} else {
-		want = int(r.windowRows()) + accepted
+		published, _ := r.window.sink.counts()
+		// Both terms, because a close between this read and the next moves
+		// rows from the table to the sink. Counting only the table would let
+		// this wait be satisfied by rows the handler had already written.
+		want = int(r.windowRows()+published) + accepted
+		commitsBefore = int(r.tb.Commits())
 	}
 
 	select {
@@ -515,13 +520,32 @@ func (r *run) deliver(p int32, ids []int64) {
 			func() bool { total, _ := r.sink.counts(); return total >= want })
 		return
 	}
-	// The window table plus what the manager has already published: a close
-	// between the write and this read moves rows from one to the other.
+	// Two things, and the second is the one that matters.
+	//
+	// The invariant every step depends on is that the script never advances
+	// the simulated clock while the loop still has work in flight. The loop
+	// reads that clock to stamp what it did -- when a partition last
+	// delivered, when a commit happened -- so a step that returns early lets
+	// the next step move the clock underneath a batch the loop has not
+	// finished, and the loop then stamps it with an instant from the future.
+	// A partition whose last row is stamped after an Elapse looks freshly
+	// active, and the idle close that the scenario is about never fires.
+	//
+	// Rows reaching the table is not the end of a batch: the commit after it
+	// is, and that commit is what asserts the watermark. Waiting on the rows
+	// alone made every windowed scenario depend on the loop outrunning the
+	// script, which it does on an idle machine and does not on a loaded one --
+	// two scenarios passed here and failed in CI for exactly that reason.
+	//
+	// The loop's batch size is one, so the batch is one commit per accepted
+	// record.
 	r.await(fmt.Sprintf("the handler to write %d rows of partition %d (table + published >= %d)",
 		len(batch), p, want), func() bool {
 		published, _ := r.window.sink.counts()
 		return int(r.windowRows()+published) >= want
 	})
+	r.await(fmt.Sprintf("the loop to commit %d batches of partition %d", accepted, p),
+		func() bool { return int(r.tb.Commits()) >= commitsBefore+accepted })
 }
 
 // await blocks until cond holds, and says what it was waiting for when it
