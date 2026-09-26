@@ -9,6 +9,42 @@ import (
 	"github.com/zeebo/assert"
 )
 
+// A rollups file that reports TurboStats sends one freshness entry per
+// table, so the file caps its tables. The demo's ten fit; an eleventh and a
+// twelfth are refused with the count. A file that reports nothing is not
+// capped.
+func TestCliRollupRun_AReportingFileDeclaresAtMostTenTables(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+
+	reporting := &TurboStats{ID: "rollups-01", ReportTo: "http://127.0.0.1:8080/v1/turbostats",
+		Key: "sfc_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+	capped := func(c *RollupsConf) []Violation {
+		var out []Violation
+		for _, v := range c.Check() {
+			if strings.Contains(v.Message, "at most") {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+
+	conf, err := LoadRollups("../../dev/config/rollups/bluesky.yml")
+	assert.NoError(t, err)
+	assert.Equal(t, 10, conf.TableCount())
+	conf.TurboStats = reporting
+	assert.Equal(t, 0, len(capped(conf)))
+
+	conf.Rollups[0].Grains["7d"] = RollupGrain{From: "1d"}
+	assert.Equal(t, 12, conf.TableCount())
+	got := capped(conf)
+	assert.Equal(t, 1, len(got))
+	assert.DeepEqual(t, []string{"turbostats"}, got[0].Path)
+	assert.That(t, strings.Contains(got[0].Message, "declares 12"))
+
+	conf.TurboStats = nil
+	assert.Equal(t, 0, len(capped(conf)))
+}
+
 func TestCliRollup_CheckAcceptsTheDemoDeclaration(t *testing.T) {
 	coverage.Covers(t, "cli.rollup")
 	assert.Equal(t, 0, len(parseRollups(t, validRollups).Check()))

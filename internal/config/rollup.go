@@ -54,6 +54,23 @@ func (c *RollupsConf) PostgresDSN() (string, error) {
 	return c.Store.Postgres.DSN, nil
 }
 
+// MaxReportedRollupTables bounds the tables a rollups file declares when it
+// reports TurboStats. Each table is one entry in the bundle's freshness
+// section, and a bundle's width must be set by the file and bounded: a
+// receiver refuses one over 16 KiB. Ten tables and their sources fit with
+// room, and a larger deployment splits across files.
+const MaxReportedRollupTables = 10
+
+// TableCount is how many rollup tables the file declares: each dimension
+// set at each declared grain.
+func (c *RollupsConf) TableCount() int {
+	n := 0
+	for _, r := range c.Rollups {
+		n += len(r.DimensionSets) * len(r.Ladder())
+	}
+	return n
+}
+
 // Rollup is one source table and the coarser tables kept from it.
 type Rollup struct {
 	// Names the rollup in messages. Lowercase letters, digits and

@@ -42,6 +42,11 @@ func (c *RollupsConf) Check() []Violation {
 		}
 	}
 	out = append(out, c.TurboStats.Check([]string{"turbostats"})...)
+	if c.TurboStats.Enabled() && c.TableCount() > MaxReportedRollupTables {
+		add([]string{"turbostats"}, "a rollups file that reports TurboStats declares at most %d tables, "+
+			"and this one declares %d; split the rollups across files, each with its own `sqlflow rollup run`",
+			MaxReportedRollupTables, c.TableCount())
+	}
 
 	if len(c.Rollups) == 0 {
 		add([]string{"rollups"}, "rollups declares no rollup, so there is nothing to generate")
