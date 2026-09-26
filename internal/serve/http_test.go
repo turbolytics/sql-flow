@@ -676,7 +676,14 @@ func TestCliServe_QueuedMsSeparatesWaitFromWork(t *testing.T) {
 
 	idle := ts.get(t, "/v1/datasets/status")
 	assert.Equal(t, http.StatusOK, idle.status)
-	assert.Equal(t, float64(0), idle.body["queued_ms"])
+	// Negligible, not exactly zero. queued_ms is a measured duration
+	// truncated to milliseconds, and acquiring a session nobody holds still
+	// takes a moment on a loaded machine: this asserted 0 and read 1 on a
+	// busy CI runner, which is the machine's speed failing rather than the
+	// field. The bound is far below the 250 the held case asserts, so a wait
+	// that matters and a wait that does not cannot be confused.
+	idleQueued := idle.body["queued_ms"].(float64)
+	assert.That(t, idleQueued < 100)
 
 	// Hold the only session, then time a request that has to wait for it.
 	held, err := ts.srv.exec.Acquire(context.Background())
@@ -690,6 +697,9 @@ func TestCliServe_QueuedMsSeparatesWaitFromWork(t *testing.T) {
 	queued := <-done
 	assert.Equal(t, http.StatusOK, queued.status)
 	assert.That(t, queued.body["queued_ms"].(float64) >= 250)
+	// And the two readings are plainly different measurements rather than one
+	// constant, which is the claim the field exists to make.
+	assert.That(t, queued.body["queued_ms"].(float64) > idleQueued+200)
 	// The query itself is unchanged by the wait, which is the whole point.
 	assert.That(t, queued.body["elapsed_ms"].(float64) < 250)
 }
