@@ -45,6 +45,25 @@ func TestCliRollupRun_AReportingFileDeclaresAtMostTenTables(t *testing.T) {
 	assert.Equal(t, 0, len(capped(conf)))
 }
 
+// Every rollup declares a dimension set. One with none generates no table,
+// yet a reporting file would still send its source and its rollup entry, so
+// the ten-table cap would not bound the bundle.
+func TestCliRollupRun_ARollupDeclaresADimensionSet(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_run")
+
+	conf, err := LoadRollups("../../dev/config/rollups/bluesky.yml")
+	assert.NoError(t, err)
+	conf.Rollups[0].DimensionSets = nil
+	var got []Violation
+	for _, v := range conf.Check() {
+		if strings.Contains(v.Message, "declares no dimension set") {
+			got = append(got, v)
+		}
+	}
+	assert.Equal(t, 1, len(got))
+	assert.DeepEqual(t, []string{"rollups", "0", "dimension_sets"}, got[0].Path)
+}
+
 func TestCliRollup_CheckAcceptsTheDemoDeclaration(t *testing.T) {
 	coverage.Covers(t, "cli.rollup")
 	assert.Equal(t, 0, len(parseRollups(t, validRollups).Check()))

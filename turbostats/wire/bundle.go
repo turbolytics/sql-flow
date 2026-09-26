@@ -411,8 +411,8 @@ type RollupEntry struct {
 	Backfill          *RollupBackfill `json:"backfill,omitempty"`
 	VerifyBucketCount int64           `json:"verify_bucket_count"`
 	DriftBucketCount  int64           `json:"drift_bucket_count"`
-	// Completeness is absent for a rollup with no count_buckets measure,
-	// and before any of its tables has a closed bucket.
+	// Completeness is absent for a rollup with no count_buckets measure in a
+	// set without dimensions, and before any such table has a closed bucket.
 	Completeness *RollupCompleteness `json:"completeness,omitempty"`
 	// Triggers is absent unless the server tracks function calls, which
 	// takes track_functions set to pl or all.
@@ -428,9 +428,13 @@ type RollupBackfill struct {
 }
 
 // RollupCompleteness is the least complete of the newest closed buckets of
-// a rollup's count_buckets tables: the source buckets it holds, against the
-// number its width holds. "57 of 60" is an hour missing three minutes.
+// a rollup's count_buckets tables without dimensions: the source buckets it
+// holds, against the number its width holds. "57 of 60" is an hour missing
+// three minutes. A set with dimensions counts each key's buckets, and a
+// quiet key is not a gap in the source, so it is not read.
 type RollupCompleteness struct {
+	// Table is qualified by its schema, as in Freshness, so a receiver joins
+	// the two.
 	Table           string    `json:"table"`
 	BucketAt        time.Time `json:"bucket_at"`
 	SourceBuckets   int64     `json:"source_buckets"`

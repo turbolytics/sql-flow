@@ -108,6 +108,12 @@ func checkRollup(r Rollup, path []string, datasets map[string]bool, add rollupAd
 	if len(grainNames) == 0 {
 		add(at(path, "grains"), "rollup %s declares no grain", r.Name)
 	}
+	// A rollup with no dimension set generates no table. It would still
+	// report its source and its own entry, so without this rule the
+	// reporting cap would not bound a bundle.
+	if len(r.DimensionSets) == 0 {
+		add(at(path, "dimension_sets"), "rollup %s declares no dimension set, so it generates no table", r.Name)
+	}
 	for _, g := range grainNames {
 		w, err := ParseServeDuration(g)
 		switch {

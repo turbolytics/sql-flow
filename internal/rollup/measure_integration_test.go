@@ -5,14 +5,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
 
 // posts_total counts minutes. With three minutes of 22:00 missing, its
 // newest closed hour holds 57 of 60, the least complete of its newest
-// closed buckets. posts_by_lang counts nothing, so a rollup of it alone
-// reports no completeness.
+// closed buckets. The table is qualified by its schema, as freshness names
+// it, so a receiver joins the two.
+//
+// posts_by_lang counts minutes too, per language, and German is quiet from
+// 23:51 to 23:54. That is one language's sparsity, not a gap in the source:
+// the other languages cover those minutes. A set with dimensions counts each
+// key's buckets, so it never stands for the source's completeness, and a
+// rollup of it alone reports none.
 func TestIntegrationRollupRun_TheLeastCompleteClosedBucketIsReported(t *testing.T) {
 	coverage.Covers(t, "cli.rollup_run")
 	if testing.Short() {
@@ -22,18 +29,24 @@ func TestIntegrationRollupRun_TheLeastCompleteClosedBucketIsReported(t *testing.
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
 	execSQL(t, srv.conn, `DELETE FROM posts_per_minute_by_lang WHERE bucket >= '2026-09-12T22:10:00Z' AND bucket < '2026-09-12T22:13:00Z'`)
-	mustInstall(t, srv.conn, loadExample(t))
-	fillAll(t, srv.conn, loadExample(t))
+	execSQL(t, srv.conn, `DELETE FROM posts_per_minute_by_lang WHERE lang = 'de' AND bucket >= '2026-09-12T23:51:00Z' AND bucket < '2026-09-12T23:55:00Z'`)
+	conf := loadExample(t)
+	conf.Rollups[0].DimensionSets[0].Measures["minutes"] = config.RollupMeasure{Type: "count_buckets"}
+	// The demo's dataset folds languages into "other", which count_buckets
+	// cannot be summed across; this test serves nothing.
+	conf.Rollups[0].Serve = nil
+	mustInstall(t, srv.conn, conf)
+	fillAll(t, srv.conn, conf)
 
-	c, ok, err := LeastComplete(ctx, srv.conn, loadExample(t).Rollups[0])
+	c, ok, err := LeastComplete(ctx, srv.conn, conf.Rollups[0])
 	assert.NoError(t, err)
 	assert.True(t, ok)
-	assert.Equal(t, "posts_total_1h", c.Table)
+	assert.Equal(t, "public.posts_total_1h", c.Table)
 	assert.That(t, c.BucketAt.Equal(at("2026-09-12T22:00:00Z")))
 	assert.Equal(t, int64(57), c.SourceBuckets)
 	assert.Equal(t, int64(60), c.ExpectedBuckets)
 
-	byLang := loadExample(t).Rollups[0]
+	byLang := conf.Rollups[0]
 	byLang.DimensionSets = byLang.DimensionSets[:1]
 	_, ok, err = LeastComplete(ctx, srv.conn, byLang)
 	assert.NoError(t, err)

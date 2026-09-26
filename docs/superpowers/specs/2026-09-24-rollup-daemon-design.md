@@ -619,20 +619,26 @@ A `rollup` section, whose presence says the process runs rollups:
   is the source history left in the table furthest behind, absent before
   its first chunk.
 - `completeness` is the least complete of the newest closed buckets of the
-  rollup's `count_buckets` tables, and absent for a rollup with none.
+  rollup's `count_buckets` tables without dimensions, its table qualified by
+  its schema as `freshness` names it, and absent for a rollup with none. A
+  set with dimensions counts each key's buckets, and a quiet key is not a
+  gap in the source.
 - `triggers` sums the rollup's trigger functions, and is absent unless the
   server tracks function calls: `track_functions` set to `pl` or `all`.
 - The counts are totals since the process started.
 - A standby reports `role` and nothing else. `role` is `starting` before
-  the process knows.
+  the process knows. A new leader lists no rollups until it has read its
+  tables to fill: a rollup with no `backfill` reads as filled, and before
+  that read the leader does not know.
 - The last error is a code and a time. The message stays in the log,
   because it can carry a DSN.
 
 **The cap.** Both lists grow with the rollups file, and a receiver refuses
 a bundle over 16 KiB. A file whose `turbostats` block reports declares at
 most 10 tables, and `validate` refuses an eleventh with the count and a
-note to split the file. Sources do not count, and a file has at most as
-many rollups as tables, so the widest legal bundle holds 20 freshness
+note to split the file. Sources do not count. Every rollup declares a
+dimension set, which `validate` requires, so a file has at most as many
+rollups as tables, and the widest legal bundle holds 20 freshness
 entries and 10 rollup entries: 12,375 bytes with every name at Postgres's
 limit, measured on 2026-09-26. The rollup daemon does not run on
 constrained links. If a bundle ever has to shrink, the answer is a more

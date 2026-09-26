@@ -19,10 +19,14 @@ type Completeness struct {
 }
 
 // LeastComplete reads the newest closed bucket of every table of r whose
-// set counts source buckets, and returns the least complete. A bucket is
-// closed once the table holds a newer one, so the open bucket, still
-// filling, never reads as a gap. In a set with dimensions the bucket's
-// fewest counted buckets stand for it. ok is false for a rollup with no
+// set counts source buckets and has no dimensions, and returns the least
+// complete, its table qualified by its schema as freshness names it. A
+// bucket is closed once the table holds a newer one, so the open bucket,
+// still filling, never reads as a gap.
+//
+// A set with dimensions counts each key's buckets, and a quiet key is not a
+// gap in the source, so such a set never stands for the source's
+// completeness. ok is false for a rollup with no dimensionless
 // count_buckets measure, and before any such table has closed a bucket.
 func LeastComplete(ctx context.Context, conn *pgx.Conn, r config.Rollup) (Completeness, bool, error) {
 	source, err := config.ParseServeDuration(r.Source.Grain)
@@ -33,6 +37,9 @@ func LeastComplete(ctx context.Context, conn *pgx.Conn, r config.Rollup) (Comple
 	var worst Completeness
 	found := false
 	for _, e := range edges(r) {
+		if len(e.Set.Dimensions) > 0 {
+			continue
+		}
 		measure := ""
 		for _, name := range e.Set.MeasureNames() {
 			if e.Set.Measures[name].Type == "count_buckets" {
@@ -45,17 +52,24 @@ func LeastComplete(ctx context.Context, conn *pgx.Conn, r config.Rollup) (Comple
 		}
 		var bucket *time.Time
 		var present *int64
+		var schema *string
 		err := conn.QueryRow(ctx, fmt.Sprintf(`WITH closed AS (
   SELECT max(%[1]s) AS b FROM %[2]s WHERE %[1]s < (SELECT max(%[1]s) FROM %[2]s))
-SELECT closed.b, (SELECT min(%[3]s) FROM %[2]s WHERE %[1]s = closed.b) FROM closed`,
-			t, quote(e.Table), quote(measure))).Scan(&bucket, &present)
+SELECT closed.b, (SELECT %[3]s FROM %[2]s WHERE %[1]s = closed.b),
+       (SELECT relnamespace::regnamespace::text FROM pg_class WHERE oid = to_regclass($1))
+FROM closed`,
+			t, quote(e.Table), quote(measure)), quote(e.Table)).Scan(&bucket, &present, &schema)
 		if err != nil {
 			return Completeness{}, false, fmt.Errorf("rollup completeness %s: %w", e.Table, err)
 		}
 		if bucket == nil || present == nil {
 			continue
 		}
-		c := Completeness{Table: e.Table, BucketAt: *bucket, SourceBuckets: *present,
+		table := e.Table
+		if schema != nil {
+			table = *schema + "." + e.Table
+		}
+		c := Completeness{Table: table, BucketAt: *bucket, SourceBuckets: *present,
 			ExpectedBuckets: int64(e.Grain.Width / source)}
 		// Compare the fractions by cross-multiplying, so no float rounds two
 		// equal ratios apart.

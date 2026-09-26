@@ -108,8 +108,10 @@ func (r *report) failed(err error, at time.Time) {
 
 // section is the bundle's rollup and freshness sections. A process that
 // does not lead reports its role and its last error, and nothing it
-// measured while it led.
-func (r *report) section(role string, rollups []config.Rollup) (*turbostats.Rollup, *turbostats.Freshness) {
+// measured while it led. A leader that has not read its tables to fill
+// lists no rollups: a rollup with no backfill reads as filled, and before
+// that read the leader does not know. /healthz waits for the same read.
+func (r *report) section(role string, pendingRead bool, rollups []config.Rollup) (*turbostats.Rollup, *turbostats.Freshness) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := &turbostats.Rollup{Role: role}
@@ -119,6 +121,9 @@ func (r *report) section(role string, rollups []config.Rollup) (*turbostats.Roll
 	}
 	if role != roleLeader {
 		return out, nil
+	}
+	if !pendingRead {
+		rollups = nil
 	}
 	for _, ro := range rollups {
 		t := r.byRollup[ro.Name]

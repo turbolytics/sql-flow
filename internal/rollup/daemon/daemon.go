@@ -546,7 +546,8 @@ func (d *Daemon) CollectBundle(ctx context.Context) (turbostats.Bundle, error) {
 		Static: d.static,
 		Reader: d.reader,
 		Rollup: &turbostats.RollupSource{Section: func() (*turbostats.Rollup, *turbostats.Freshness) {
-			return d.report.section(d.health.get().Role, d.conf.Rollups)
+			h := d.health.get()
+			return d.report.section(h.Role, h.PendingRead, d.conf.Rollups)
 		}},
 	})
 }
