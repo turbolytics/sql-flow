@@ -171,6 +171,8 @@ Rules, reported by `sqlflow validate` and every `rollup` command:
 
 1. `store.type` is `postgres`.
 2. `turbostats` follows the rules `run` and `serve` apply to it.
+3. A file whose `turbostats` block sets `report_to` declares at most 10
+   tables. See "TurboStats".
 
 An unset template variable renders as an empty string, so `validate` accepts
 an empty `dsn`. `run`, `install` and `verify` refuse one at startup.
@@ -557,27 +559,34 @@ and a restart cannot fix it. The daemon reports it in
 ### TurboStats
 
 Two additions to the bundle. Both are optional, so the document stays at
-version 1.
+version 1. The daemon sends them through the reporter `sqlflow run` and
+`sqlflow serve` use, when the file's `turbostats` block sets `report_to`.
 
-A top-level `freshness` list, which any process can report:
+A top-level `freshness` section, which any process can report:
 
 ```json
-"freshness": [
-  {
-    "store": "postgres",
-    "store_id": "pg:3f9a0c1d2e4b5a6f",
-    "store_id_kind": "system",
-    "table": "public.posts_by_lang_1h",
-    "time_column": "bucket",
-    "grain_seconds": 3600,
-    "newest_bucket_at": "2026-09-24T19:00:00Z",
-    "observed_at": "2026-09-24T19:41:37Z"
-  }
-]
+"freshness": {
+  "store_id": "pg:3f9a0c1d2e4b5a6f",
+  "store_id_kind": "system",
+  "observed_at": "2026-09-24T19:41:37Z",
+  "tables": [
+    {"table": "public.posts_by_lang_1h", "grain_seconds": 3600,
+     "newest_bucket_at": "2026-09-24T19:00:00Z"}
+  ]
+}
 ```
 
-- Control joins entries on `store_id` and `table`, and the newest
+- The store and the time of the read are written once, and each table
+  carries only its schema-qualified name, its grain and its newest bucket.
+  An earlier draft repeated the store and the time in every entry, about
+  590 bytes a table at worst with per-table completeness and trigger
+  lists.
+- Control joins tables on `store_id` and `table`, and the newest
   `observed_at` wins.
+- No duration is sent. Control computes a table's age as `observed_at`
+  minus the end of its newest bucket, the start plus `grain_seconds`, and
+  can change that rule without a new contract. A table still filling its
+  open bucket reads negative, which is current.
 - `observed_at` tells a stale reporter apart from stale data, as
   `event_lag_observed_at` does for a pipeline's event lag.
 - `newest_bucket_at` is absent for an empty table.
@@ -593,16 +602,12 @@ A `rollup` section, whose presence says the process runs rollups:
     {
       "name": "posts",
       "strategy": "trigger",
-      "backfill": {"days_done": 4, "days_total": 10},
+      "backfill": {"tables_left": 2, "history_left_seconds": 518400},
       "verify_bucket_count": 5400,
       "drift_bucket_count": 0,
-      "completeness": [
-        {"table": "posts_total_1h", "bucket_at": "2026-09-24T18:00:00Z",
-         "source_buckets": 57, "expected_buckets": 60}
-      ],
-      "triggers": [
-        {"function": "sqlflow_rollup_posts_by_lang_5m", "calls": 1440, "total_seconds": 3.2}
-      ]
+      "completeness": {"table": "posts_total_1h", "bucket_at": "2026-09-24T18:00:00Z",
+                       "source_buckets": 57, "expected_buckets": 60},
+      "triggers": {"calls": 1440, "total_seconds": 3.2}
     }
   ],
   "last_error_code": "system.rollup.unreachable",
@@ -610,15 +615,33 @@ A `rollup` section, whose presence says the process runs rollups:
 }
 ```
 
-- `backfill` is absent once every table is filled.
-- `completeness` is absent for a rollup with no `count_buckets` measure.
-- `triggers` is absent unless `track_functions` is on.
-- The counts are the instruments' totals since the process started.
-- A standby reports `role` and nothing else.
+- `backfill` is absent once every table is filled. `history_left_seconds`
+  is the source history left in the table furthest behind, absent before
+  its first chunk.
+- `completeness` is the least complete of the newest closed buckets of the
+  rollup's `count_buckets` tables, and absent for a rollup with none.
+- `triggers` sums the rollup's trigger functions, and is absent unless the
+  server tracks function calls: `track_functions` set to `pl` or `all`.
+- The counts are totals since the process started.
+- A standby reports `role` and nothing else. `role` is `starting` before
+  the process knows.
+- The last error is a code and a time. The message stays in the log,
+  because it can carry a DSN.
 
-The shape is guarded twice: the Go type walk in `turbostats/wire`, and
-`pytest tests/release`. Control's view of both additions belongs to the
-control repository.
+**The cap.** Both lists grow with the rollups file, and a receiver refuses
+a bundle over 16 KiB. A file whose `turbostats` block reports declares at
+most 10 tables, and `validate` refuses an eleventh with the count and a
+note to split the file. Sources do not count, and a file has at most as
+many rollups as tables, so the widest legal bundle holds 20 freshness
+entries and 10 rollup entries: 12,375 bytes with every name at Postgres's
+limit, measured on 2026-09-26. The rollup daemon does not run on
+constrained links. If a bundle ever has to shrink, the answer is a more
+compact wire encoding with compression, not fewer fields.
+
+The shape is guarded twice: the Go type walk in `internal/turbostats`,
+which exempts the two lists by name for the cap, and `pytest
+tests/release`. Control's view of both additions belongs to the control
+repository.
 
 ### Logs
 
@@ -748,9 +771,9 @@ tests stay, because the trigger SQL does not change.
 | `OneStoreIDForTwoHostnames` | Two DSNs that reach one server by different names report one `store_id` |
 | `RollupTestCommand` | The demo's file and the Render template's pass; a bad fixture fails with a diff; `--seed` reproduces a run |
 
-Release, `make test-release`: the image runs `sqlflow rollup run` against a
-Postgres, and its bundle carries the `freshness` list and the `rollup`
-section.
+Release, `make test-release`: `test_cli_rollup_run_reports_its_rollups_and_freshness`
+runs the image's `sqlflow rollup run` against a Postgres 18 container, and its
+bundle carries the `freshness` and `rollup` sections.
 
 Coverage:
 
@@ -854,6 +877,8 @@ the control repository's launch freeze to lift.
 | Verify compares doubles exactly | The same, for every `numeric: double` sum: compared exactly, 4 of 12 correct buckets read as drift on 2026-09-25, because the trigger and the recompute sum in different orders | `ANullDimensionAndADoubleSumVerifyClean`, `OnlyADoubleSumMatchesWithinATolerance` |
 | Verify pairs rows on `=` | A `NULL` dimension value reads as a missing row and an extra one | `ANullDimensionAndADoubleSumVerifyClean` |
 | Verify checks a table still filling | Drift counted during every backfill | `VerifySkipsTablesStillFilling` |
+| A bundle list grows with the rollups file without a cap | A large file sends a bundle the receiver refuses, and its instance goes silent | `AReportingFileDeclaresAtMostTenTables`, `TestCollect_AFullRollupBundleStaysUnderTheCeiling` |
+| A standby reports what it measured while it led | Control shows another instance's stale numbers as current | `TheLeaderReportsItsRollupsAndFreshness` |
 | A new leader reports before it reads its tables to fill | `/healthz` says `healthy` over empty tables, and a deploy check passes | `TheDaemonInstallsAndFillsHistory`, which fails once the verify pass widens that window |
 | Reconcile refuses a removal | A rollback fails every entrypoint that runs `install`, and the API goes down | `ReconcileKeepsRemovedTables` |
 | `store_id` differs between reporters | Control shows one table twice, each half as fresh | `OneStoreIDForTwoHostnames` |

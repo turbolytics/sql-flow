@@ -1141,4 +1141,8 @@ def wait_for_bundle(receiver, match, timeout):
 
 ## After execution
 
-Filled in once the plan has run.
+The code differs from the text above in these places:
+
+- **The size alarm (Task 2)** is 14 KiB, not 12: the widest legal rollup bundle measured 12,375 bytes. The maintainer confirmed the rollup daemon does not run on IoT links, and that a bundle that must shrink gets a compact wire encoding with compression, not fewer fields.
+- **The trigger-cost test (Task 4)** waits for counted calls, not for a row: Postgres showed the functions' rows with 0 calls until the writer's session flushed about 10 s later.
+- **Tests first (every task).** Each test was written and run before its code.
