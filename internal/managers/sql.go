@@ -12,7 +12,9 @@ import (
 // declaration, so the collect and the delete cannot disagree, and no clock
 // but the watermark appears in any of them. now() is absent on purpose: it
 // is frozen at the start of an open transaction, which is the bug #158
-// fixed and the reason the user's predicates were hard to get right.
+// fixed and the reason the user's predicates were hard to get right. The
+// watermark itself is read through core.LoadWatermark. The
+// watermark itself is read through core.LoadWatermark.
 
 // closedView is the relation emit_sql reads: the rows of every bucket that
 // has just closed. It is spliced into emit_sql as a common table expression
@@ -46,24 +48,6 @@ func (d Declaration) oldestSQL() string {
 
 func (d Declaration) newestSQL() string {
 	return fmt.Sprintf("SELECT epoch_us(max(%s)) FROM %s", quoteIdent(d.TimeColumn), quoteIdent(d.Table))
-}
-
-// confirmedQuietSQL reads how long the engine has confirmed the stream quiet,
-// in microseconds: the gap between the progress row's two clocks.
-//
-// One UPDATE sets both, so the row is the engine's statement that, as of
-// last_commit, the newest arrival was last_arrival. The gap is therefore the
-// quiet the engine has vouched for, and it only grows while the engine keeps
-// committing with nothing arriving: an idle tick moves last_commit alone.
-//
-// Deliberately not measured against the wall clock. now() - last_arrival
-// grows on its own whenever the row stops being written, because the write
-// is failing or the pipeline is wedged with messages still waiting, and that
-// reads a live stream as a quiet one.
-//
-// NULL before the first write, when the row says nothing either way.
-func confirmedQuietSQL() string {
-	return "SELECT epoch_us(last_commit) - epoch_us(last_arrival) FROM sqlflow_progress"
 }
 
 // countClosedSQL counts the rows a close at the instant would collect.

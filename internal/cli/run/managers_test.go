@@ -119,9 +119,19 @@ func TestLifecycleDrain_ASignalStopIsNotAManagerFailure(t *testing.T) {
 }
 
 // newTestWindow builds a one-minute window over agg on a connection of its
-// own, the way buildManagedTables does.
+// own, the way buildManagedTables does, with the engine's watermark asserted
+// past every bucket the caller seeded: what a poll does is the subject here,
+// so it is given something to do.
 func newTestWindow(t *testing.T, db *duckdb.DB, sink core.Sink, opts ...managers.Option) *managers.Watermark {
 	t.Helper()
+	ctx := context.Background()
+	pipeline, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	t.Cleanup(func() { pipeline.Close() })
+	store := core.NewWatermarkStore(pipeline)
+	assert.NoError(t, store.Init(ctx))
+	assert.NoError(t, store.Save(ctx, "agg", time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)))
+
 	conn, err := db.Connect(context.Background())
 	assert.NoError(t, err)
 	t.Cleanup(func() { conn.Close() })

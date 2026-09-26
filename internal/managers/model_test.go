@@ -1,6 +1,7 @@
 package managers
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -8,253 +9,296 @@ import (
 	"github.com/zeebo/assert"
 )
 
-// modelAlphabet is every event that has produced a defect in this package and
-// that the engine is meant to survive: a batch, an idle tick, a restart, a
-// source going and coming back, and the wall clock stepping either way.
-//
-// Insert is not here, deliberately. It produced #374, which the engine has
-// today and which the watermark design removes rather than patches; enumerating
-// it would turn every sequence red against a defect we have chosen not to fix
-// in this shape. It has its own test below, asserting the defect, and the
-// ledger carries it.
-func modelAlphabet() []Event {
-	return []Event{
-		{Kind: Arrive, Rows: 2},
-		{Kind: IdleTick},
-		{Kind: Restart},
-		{Kind: SourceLost},
-		{Kind: SourceBack},
-		{Kind: ClockStep, By: 2 * time.Minute},
-		{Kind: ClockStep, By: -2 * time.Minute},
+// modelAlphabet is every event that has produced a defect in this package
+// and that the engine is meant to survive: rows from each of two partitions,
+// rows that move the stream on, silence past the idle bound, a partition
+// lost and assigned again, one revoked for good, and a restart.
+func modelAlphabet(idleClose time.Duration) []Event {
+	elapse := 3 * time.Second
+	if idleClose > 0 {
+		elapse = idleClose + time.Second
 	}
+	return []Event{
+		{Kind: Produce, Partition: 0, Rows: 2},
+		{Kind: Produce, Partition: 0, Rows: 2, Ahead: true},
+		{Kind: Produce, Partition: 1, Rows: 2},
+		{Kind: Elapse, By: elapse},
+		{Kind: Lose, Partition: 0},
+		{Kind: Assign, Partition: 0},
+		{Kind: Revoke, Partition: 1},
+		{Kind: Restart},
+	}
+}
+
+// shape is one of the four configurations the spec works backwards from.
+type shape struct {
+	name  string
+	grace time.Duration
+	idle  time.Duration
+}
+
+var shapes = []shape{
+	{"A: grace 0, no idle bound", 0, 0},
+	{"B: grace, no idle bound", time.Minute, 0},
+	{"C: grace 0, idle bound", 0, 2 * time.Second},
+	{"D: grace and idle bound, the IoT default", time.Minute, 2 * time.Second},
 }
 
 // The idle bound is two seconds because an event takes one: a bound longer
 // than a sequence can run is a bound no sequence ever reaches, and the first
 // cut of this file declared ten. Every mutant of the idle rules survived,
 // because the enumeration never once asked them anything.
-func modelDecl() Declaration {
+func (s shape) decl() Declaration {
 	return Declaration{
 		Table:      "m",
 		TimeColumn: "bucket",
 		Size:       time.Minute,
-		Grace:      time.Minute,
-		IdleClose:  2 * time.Second,
+		Grace:      s.grace,
+		IdleClose:  s.idle,
 		Late:       LateDrop,
 	}
 }
 
-// Every sequence of events up to four long publishes each row exactly once,
-// counting the rows the drop policy discarded and the rows a run ends still
-// holding. checkTables proves every state selects one rule; this proves a run
-// of events ends with the right total.
+// Every sequence of events up to four long, under each configuration shape,
+// ends with each row published exactly once or dropped as late, and never
+// drops a row that was in order for a partition still in the minimum. Once
+// the run quiesces, nothing that can close stays open.
 func TestManagerWindow_EverySequenceCountsEveryRowOnce(t *testing.T) {
 	coverage.Covers(t, "manager.window")
-	alphabet := modelAlphabet()
-	fired := map[string]int{}
+	for _, s := range shapes {
+		t.Run(s.name, func(t *testing.T) {
+			alphabet := modelAlphabet(s.idle)
+			fired := map[string]int{}
+			idleCloses := 0
 
-	var seq []Event
-	var walk func(depth int)
-	runs := 0
-	walk = func(depth int) {
-		if depth > 0 {
-			runs++
-			checkSequence(t, seq, fired)
-		}
-		if depth == 4 {
-			return
-		}
-		for _, e := range alphabet {
-			seq = append(seq, e)
-			walk(depth + 1)
-			seq = seq[:len(seq)-1]
-		}
-	}
-	walk(0)
-	// 7 + 49 + 343 + 2401
-	assert.Equal(t, 2800, runs)
+			var seq []Event
+			var walk func(depth int)
+			runs := 0
+			walk = func(depth int) {
+				if depth > 0 {
+					runs++
+					idleCloses += checkSequence(t, s, seq, fired)
+				}
+				if depth == 4 {
+					return
+				}
+				for _, e := range alphabet {
+					seq = append(seq, e)
+					walk(depth + 1)
+					seq = seq[:len(seq)-1]
+				}
+			}
+			walk(0)
+			// 8 + 64 + 512 + 4096
+			assert.Equal(t, 4680, runs)
 
-	// An enumeration that never reaches a rule proves nothing about it, and
-	// says so in no way a reader would notice: the suite is green either way.
-	// These four are the rules a sequence of these events must be able to
-	// reach, and a declaration or an alphabet that stops reaching one of them
-	// fails here rather than quietly going blind.
-	for _, rule := range []string{"hold.empty", "hold.open", "close.grace", "close.idle"} {
-		if fired[rule] == 0 {
-			t.Fatalf("no sequence reached %s, so nothing here tests it: %v", rule, fired)
-		}
+			// An enumeration that never reaches a rule proves nothing about
+			// it, and says so in no way a reader would notice: the suite is
+			// green either way. Every rule must be reached by the run's own
+			// decisions, not the quiescing tail's.
+			for _, rule := range []string{"hold.unasserted", "hold.behind", "follow"} {
+				if fired[rule] == 0 {
+					t.Fatalf("no sequence reached %s, so nothing here tests it: %v", rule, fired)
+				}
+			}
+			// And the all-idle close is reachable exactly where the config
+			// allows it: with a bound, some sequence closes on silence; without
+			// one, none ever does, which is shape A and B's documented
+			// failure mode and not an accident of the alphabet.
+			if (s.idle > 0) != (idleCloses > 0) {
+				t.Fatalf("idle closes under %s: %d", s.name, idleCloses)
+			}
+		})
 	}
 }
 
-// checkSequence replays one sequence, asserts the properties, and records
-// which rules the run reached.
-func checkSequence(t *testing.T, seq []Event, fired map[string]int) {
+// checkSequence replays one sequence, asserts the properties, records the
+// rules the run reached, and reports how many idle closes it made.
+func checkSequence(t *testing.T, s shape, seq []Event, fired map[string]int) int {
 	t.Helper()
-	m := NewModel(modelDecl())
+	m := NewModel(s.decl(), 0, 1)
 	published := 0
 	seen := map[time.Time]bool{}
-
-	for i, e := range seq {
-		for _, p := range m.Apply(e) {
+	take := func(what string, pubs []Publication) {
+		for _, p := range pubs {
 			// A bucket is published once: a second publication of the same
 			// bucket is the split-bucket defect, counted here so a sequence
 			// that produces one fails rather than balancing out.
 			if seen[p.Bucket] {
-				t.Fatalf("step %d of %v: bucket %s published twice", i, kinds(seq), p.Bucket)
+				t.Fatalf("%s %v: bucket %s published twice", what, kinds(seq), p.Bucket)
 			}
 			seen[p.Bucket] = true
 			published += p.Rows
 		}
 	}
-	// Liveness, before the counting. Drain counted whatever a run ended
-	// holding as though it had been published, so the counting property could
-	// not fail on a bucket that never closes: publishing nothing at all
-	// satisfied it. That is the #183 failure mode, and it is what an early
-	// close gets traded for by a careless fix -- the worse of the two, because
-	// it has no late rows and no error to notice.
-	//
-	// So the run is quiesced instead: the source comes back and the stream
-	// goes quiet, which is the one condition under which every open bucket
-	// must close. Whatever is still open after that was never going to close.
-	// Everything the run reached on its own, before the tail adds to it.
+
+	for i, e := range seq {
+		take(fmt.Sprintf("step %d of", i), m.Apply(e))
+		// The minimum's promise: a partition that holds and was not idle at
+		// the last poll can still deliver an in-order row for any bucket at
+		// or after its own newest less the grace, so no such bucket may have
+		// closed underneath it.
+		for _, p := range []int32{0, 1} {
+			if m.InOrderRowWouldBeLate(p) {
+				t.Fatalf("step %d of %v: partition %d holds and is not idle, and its next in-order row would be late",
+					i, kinds(seq), p)
+			}
+		}
+	}
 	body := len(m.Decisions)
-	for _, e := range []Event{{Kind: SourceBack},
-		{Kind: IdleTick}, {Kind: IdleTick}, {Kind: IdleTick}, {Kind: IdleTick}} {
-		for _, p := range m.Apply(e) {
-			if seen[p.Bucket] {
-				t.Fatalf("quiescing %v: bucket %s published twice", kinds(seq), p.Bucket)
-			}
-			seen[p.Bucket] = true
-			published += p.Rows
+	idleCloses := m.IdleCloses
+
+	// Liveness, before the counting. Publishing nothing at all satisfies a
+	// counting property, which is the #183 failure mode and what an early
+	// close gets traded for by a careless fix. So the run is quiesced: every
+	// partition this worker still has comes back and the stream goes quiet.
+	// With an idle bound that closes everything. Without one, a stream that
+	// stops never publishes its last bucket, by design; so the stream is
+	// moved on instead, and what may stay open is only what the watermark
+	// has not reached.
+	var tail []Event
+	for _, p := range []int32{0, 1} {
+		if m.parts[p] == lost {
+			tail = append(tail, Event{Kind: Assign, Partition: p})
 		}
 	}
-	if stuck := m.Drain(); stuck != 0 {
-		t.Fatalf("%v: %d rows still open after the source returned and the stream "+
-			"went quiet: nothing will ever close them", kinds(seq), stuck)
+	if s.idle > 0 {
+		tail = append(tail, Event{Kind: Elapse, By: s.idle + time.Second}, Event{Kind: Elapse, By: s.idle + time.Second})
+	} else {
+		tail = append(tail,
+			Event{Kind: Produce, Partition: 0, Rows: 1, Ahead: true},
+			Event{Kind: Produce, Partition: 1, Rows: 1, Ahead: true},
+			Event{Kind: Elapse, By: 2 * (s.grace + 2*time.Minute)},
+			Event{Kind: Produce, Partition: 0, Rows: 1, Ahead: true},
+			Event{Kind: Produce, Partition: 1, Rows: 1, Ahead: true})
 	}
+	for _, e := range tail {
+		take("quiescing", m.Apply(e))
+	}
+
+	open, newestEnd := m.Open()
+	asserted, _ := m.Asserted()
+	switch {
+	case s.idle > 0 && open != 0:
+		t.Fatalf("%v: %d rows still open after every partition came back and the stream "+
+			"went quiet: nothing will ever close them", kinds(seq), open)
+	case s.idle == 0 && open != 0 && !newestEnd.After(asserted):
+		t.Fatalf("%v: %d rows still open in a bucket ending %s, under the assertion %s",
+			kinds(seq), open, newestEnd, asserted)
+	}
+	published += m.Drain()
 
 	if m.Produced != published+m.Dropped {
 		t.Fatalf("%v: produced %d, published %d, dropped %d",
 			kinds(seq), m.Produced, published, m.Dropped)
 	}
-
-	// Counting alone cannot fail on a close that came early: the close makes
-	// the next arrival late, the drop policy counts it, and the total
-	// balances. So the one close that rests on silence is checked against the
-	// evidence it rested on. The row must have said the source was
-	// delivering, and for at least the silence the close spent, because a
-	// source cannot confirm a quiet longer than it has been listening.
 	for i, d := range m.Decisions {
-		// Only the run's own decisions count as reached. The tail ends every
-		// sequence with a source that is back and a stream going quiet, so
-		// counting it would have the coverage check confirm the tail rather
-		// than the alphabet: with the tail counted, a bound longer than a
-		// sequence can run still shows close.idle as reached, which is the
-		// blindness this check exists to catch.
 		if i < body {
 			fired[d.Rule]++
 		}
-		if d.Action != CloseByIdle {
-			continue
-		}
-		// Against the model's own instants, not the row. The row carries a
-		// quiet and nothing else; the loop's hold is what stops that quiet
-		// spanning time the source could not deliver, and a hold that lets
-		// it through leaves a row the table honours and the world does not
-		// support. Recomputing from the instants is what sees that.
-		truth := d.RowAt.Sub(d.RowSince)
-		switch {
-		case !d.Delivering:
-			t.Fatalf("%v: closed on idleness from a commit made while the source held nothing",
-				kinds(seq))
-		case min(d.Quiet, truth) < m.decl.IdleClose:
-			t.Fatalf("%v: closed on %s of silence from a source delivering %s",
-				kinds(seq), d.Quiet, truth)
-		}
 	}
+	return idleCloses
 }
 
-func kinds(seq []Event) []EventKind {
-	out := make([]EventKind, len(seq))
+func kinds(seq []Event) []string {
+	out := make([]string, len(seq))
 	for i, e := range seq {
-		out[i] = e.Kind
+		out[i] = string(e.Kind)
+		if e.Kind == Produce || e.Kind == Lose || e.Kind == Assign || e.Kind == Revoke {
+			out[i] += fmt.Sprintf("(p%d)", e.Partition)
+		}
+		if e.Ahead {
+			out[i] += "+"
+		}
 	}
 	return out
 }
 
-// A source that cannot deliver holds its buckets open however long the
-// silence runs, which is the trade the engine made deliberately: before it,
-// those buckets closed early and their rows were dropped as late.
-func TestManagerWindow_ASourceThatCannotDeliverPublishesNothing(t *testing.T) {
+// A partition racing ahead in event time cannot close the buckets a slower
+// one is still filling: the minimum holds for the slow one, and its rows are
+// never late. This is the defect the simulator pinned before the watermark
+// (TestSimulate_AFastPartitionClosesASlowOnesBuckets), inverted. Under
+// shape B, with no idle bound: with one, the slow partition would leave
+// the minimum after the bound, which is the documented trade.
+func TestManagerWindow_AFastPartitionHoldsForTheSlowOne(t *testing.T) {
 	coverage.Covers(t, "manager.window")
-	m := NewModel(modelDecl())
-	m.Apply(Event{Kind: Arrive, Rows: 5})
-	m.Apply(Event{Kind: SourceLost})
-
-	for i := 0; i < 60; i++ {
-		assert.Equal(t, 0, len(m.Apply(Event{Kind: IdleTick})))
+	m := NewModel(shapes[1].decl(), 0, 1)
+	m.Apply(Event{Kind: Produce, Partition: 0, Rows: 3})
+	m.Apply(Event{Kind: Produce, Partition: 1, Rows: 3})
+	for i := 0; i < 3; i++ {
+		m.Apply(Event{Kind: Produce, Partition: 0, Rows: 4, Ahead: true})
 	}
-	assert.Equal(t, 5, m.Drain())
+	m.Apply(Event{Kind: Produce, Partition: 1, Rows: 5})
+	assert.Equal(t, 0, m.Dropped)
+	assert.That(t, !m.InOrderRowWouldBeLate(1))
 }
 
-// A burst's first rows, visible before the commit that accounts for them,
-// close the bucket on the silence they ended and take the rest of the burst
-// with them. This is #374, in the model, and it is the interleaving neither
-// layer of this framework could express until Insert existed: Arrive did the
-// handler's write and the progress write as one step, so there was nowhere to
-// put the poll.
-//
-// It asserts the defect rather than the fix, because the defect is what the
-// engine has: #375 fixed it, #377 reverted that to clear main, and the
-// watermark design in 2026-09-24-window-watermark-design.md removes the two
-// separate facts this depends on. When that lands, this test inverts -- the
-// burst survives, and the sequence below becomes indistinguishable from the
-// one above it.
-func TestManagerWindow_RowsSeenBeforeTheirCommitCloseTheBucketEarly(t *testing.T) {
+// A lost partition holds the window: however long the silence, nothing
+// closes until it is back and has been silent for the bound.
+func TestManagerWindow_ALostPartitionHoldsTheWindow(t *testing.T) {
 	coverage.Covers(t, "manager.window")
-	m := NewModel(modelDecl())
-
-	// A bucket, then silence long enough to close it: the ordinary path.
-	m.Apply(Event{Kind: Arrive, Rows: 2})
-	for i := 0; i < 3; i++ {
-		m.Apply(Event{Kind: IdleTick})
+	m := NewModel(shapes[3].decl(), 0)
+	m.Apply(Event{Kind: Produce, Partition: 0, Rows: 5})
+	m.Apply(Event{Kind: Lose, Partition: 0})
+	for i := 0; i < 60; i++ {
+		assert.Equal(t, 0, len(m.Apply(Event{Kind: Elapse, By: time.Minute})))
 	}
-	// The stream moves on two minutes, so the burst lands in a new bucket
-	// rather than the closed one.
-	m.Apply(Event{Kind: ClockStep, By: 2 * time.Minute})
+	m.Apply(Event{Kind: Assign, Partition: 0})
+	// Back for the one second the step itself takes: under the bound.
+	assert.Equal(t, 0, len(m.Apply(Event{Kind: Elapse})))
+	pubs := m.Apply(Event{Kind: Elapse, By: 3 * time.Second})
+	assert.Equal(t, 1, len(pubs))
+	assert.Equal(t, 5, pubs[0].Rows)
+}
 
-	// The burst. Its first rows are visible; the row still confirms the
-	// silence they just ended.
+// A revoked partition leaves the minimum: the remaining partition's
+// progress closes what the revoked one contributed. Holding for it would
+// freeze the window on this worker for good.
+func TestManagerWindow_ARevokedPartitionLeavesTheMinimum(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	m := NewModel(shapes[1].decl(), 0, 1)
+	m.Apply(Event{Kind: Produce, Partition: 0, Rows: 3})
+	m.Apply(Event{Kind: Produce, Partition: 1, Rows: 3})
+	m.Apply(Event{Kind: Revoke, Partition: 1})
 	published := 0
-	for _, p := range m.Apply(Event{Kind: Insert, Rows: 5}) {
+	for _, p := range m.Apply(Event{Kind: Produce, Partition: 0, Rows: 1, Ahead: true}) {
 		published += p.Rows
 	}
-	assert.Equal(t, 5, published)
-
-	// And the rest of the same burst is behind the watermark that close just
-	// moved, so it is late.
-	before := m.Dropped
-	m.Apply(Event{Kind: Insert, Rows: 10})
-	assert.Equal(t, before+10, m.Dropped)
-
-	// Ten of the fifteen rows the burst produced, gone, with the bucket
-	// published from the five that happened to be committed first.
-	assert.Equal(t, 17, m.Produced)
-	assert.Equal(t, 10, m.Dropped)
+	assert.Equal(t, 6, published)
 }
 
-// The same silence from a source that is back does close, once it has been
-// back longer than the bound.
-func TestManagerWindow_ASourceThatIsBackClosesOnIdleness(t *testing.T) {
+// A stream that stops closes only under an idle bound. Shapes A and B leave
+// the last bucket open, which is documented, and shapes C and D close it.
+func TestManagerWindow_AStreamThatStopsClosesOnlyWithAnIdleBound(t *testing.T) {
 	coverage.Covers(t, "manager.window")
-	m := NewModel(modelDecl())
-	m.Apply(Event{Kind: Arrive, Rows: 5})
-
-	published := 0
-	for i := 0; i < 30; i++ {
-		for _, p := range m.Apply(Event{Kind: IdleTick}) {
-			published += p.Rows
+	for _, s := range shapes {
+		m := NewModel(s.decl(), 0)
+		m.Apply(Event{Kind: Produce, Partition: 0, Rows: 5})
+		published := 0
+		for i := 0; i < 10; i++ {
+			for _, p := range m.Apply(Event{Kind: Elapse, By: time.Minute}) {
+				published += p.Rows
+			}
 		}
+		if s.idle > 0 {
+			assert.Equal(t, 5, published)
+		} else {
+			assert.Equal(t, 0, published)
+			assert.Equal(t, 5, m.Drain())
+		}
+	}
+}
+
+// A restart loses nothing the table and the row hold: the buckets and both
+// watermarks survive, and the idle close still finds the newest bucket.
+func TestManagerWindow_ARestartStillClosesByIdleness(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	m := NewModel(shapes[3].decl(), 0)
+	m.Apply(Event{Kind: Produce, Partition: 0, Rows: 5})
+	m.Apply(Event{Kind: Restart})
+	published := 0
+	for _, p := range m.Apply(Event{Kind: Elapse, By: 3 * time.Second}) {
+		published += p.Rows
 	}
 	assert.Equal(t, 5, published)
 }

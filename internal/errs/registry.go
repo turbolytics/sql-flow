@@ -91,7 +91,13 @@ const (
 	// failure fails the batch's commit, which rolls back and is reported as
 	// CodeStateCommitFailed instead.
 	CodeProgressWriteFailed Code = "system.state.progress_write_failed"
-	CodeStateInternal       Code = "system.state.internal"
+	// CodeWatermarkWriteFailed is a window's watermark failing to write on
+	// a pipeline with no state database, where the write autocommits by
+	// itself and the batch is unaffected. The window holds until the next
+	// move writes. With a state database the write rides the batch's
+	// transaction and a failure is CodeStateCommitFailed instead.
+	CodeWatermarkWriteFailed Code = "system.state.watermark_write_failed"
+	CodeStateInternal        Code = "system.state.internal"
 
 	// Batch orchestration.
 	CodeBatchInternal Code = "system.batch.internal"

@@ -1,6 +1,27 @@
 # The window as an asserted watermark
 
-**Status:** proposal, revised after an adversarial review of #369.
+**Status:** implemented in #393, having been revised after an adversarial
+review of #369. Three things the implementation decided that this document
+left open or got wrong, recorded here so the spec and the code agree:
+
+1. **Revoked leaves the minimum; lost holds it.** This document says "a
+   revoked partition is not idle, it holds the minimum". That is right for a
+   partition whose session failed and wrong for one a rebalance moved: the
+   latter never delivers here again and never goes idle, so the minimum pins
+   at its last position for the life of the process, no window on that worker
+   closes again, and its table grows without bound. Kafka reports the two
+   facts separately and the engine follows it. The argument is in
+   `internal/core/watermarks.go`.
+2. **Two rows, two owners.** The engine asserts into `sqlflow_watermarks`;
+   the manager keeps what it has closed in `sqlflow_windows`. One row with two
+   writers on two connections would make every batch a write-write conflict
+   with every poll.
+3. **The watermark's write is paced**, at one second, and forced by the drain.
+   This document's cost section assumed the write was free because an idle
+   pipeline makes none; a busy one advances event time on every batch, and one
+   UPDATE is about 126 microseconds. Pacing leaves the watermark older than
+   the rows it describes, which delays a close and can never bring one
+   forward -- the same argument the progress write's pace rests on.
 **Relates to:** #369 (the correctness framework), #374 (a burst's rows dropped as late), #183 (a bucket split across workers).
 
 No windowed pipeline outside this repository depends on the current design, so

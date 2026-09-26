@@ -216,12 +216,23 @@ invariants:
 
   # No invariant owned the window's output, which is how a local reproduction
   # of #183 published 12% fewer records than were produced while all 52 of
-  # these passed. Two live defects break it. A rebalance: two workers each
-  # hold part of a bucket, both publish, and an upserting sink keeps the last
-  # writer (#183). And a burst on a pipeline with no state path: the handler's
-  # rows autocommit before the commit that accounts for them, so a poll
-  # between the two closes the bucket on the silence the burst just ended and
-  # drops the rest of it as late (#374).
+  # these passed. Two defects broke it; one is left.
+  #
+  # A rebalance: two workers each hold part of a bucket, both publish, and an
+  # upserting sink keeps the last writer (#183). Still open, and the
+  # watermark does not touch it -- per-partition watermarks fix the ordering
+  # half of scale-out, not the splitting half, which is a destination-schema
+  # contract (pipeline.writers.merge_exactly) or a co-partitioning rule.
+  #
+  # And a burst on a pipeline with no state path: the handler's rows
+  # autocommitted before the commit that accounted for them, so a poll
+  # between the two closed the bucket on the silence the burst just ended and
+  # dropped the rest of it as late (#374). Unrepresentable now rather than
+  # fixed: the engine asserts the window's watermark in that same commit, and
+  # a poll decides on the assertion alone, so there is no instant at which
+  # rows are visible without the watermark that accounts for them. The
+  # reading the manager used to infer this from -- the gap between the
+  # progress row's two clocks -- is gone, and so is every rule that read it.
   - id: pipeline.window.counts_every_row
     family: checkpoint
     class: safety
@@ -233,7 +244,7 @@ invariants:
       different contract and is out of scope.
     verified_by: harness
     requires: []
-    tracked_by: "#183 and #374"
+    tracked_by: "#183"
 
   - id: source.commit.only_processed
     family: checkpoint

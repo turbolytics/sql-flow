@@ -108,20 +108,21 @@ func TestSimulate_ARevokedPartitionStopsArriving(t *testing.T) {
 	assert.Equal(t, 0, r.Duplicated)
 }
 
-// A worker holding no partitions says so through Deliverer, which is what
-// stops a window closing on a silence the source could not have filled.
+// A worker holding no partitions says so through Deliverer, which is how a
+// source with no partitions of its own to report -- a websocket, a webhook --
+// tells the engine its one partition is out.
 //
 //	step         owns     produced   Delivering() says
 //	--------------------------------------------------------------------
 //	Produce 5    p0       5          yes, since it was assigned
 //	Revoke p0    none     5          no: it holds nothing at all
-//	IdleTick     none     5          the loop commits, and holds its quiet
-//	                                 clock rather than letting the silence
-//	                                 accrue against a source that could not
-//	                                 have broken it
+//	IdleTick     none     5          the loop commits, and asks the source
+//	                                 before it does
 //
 //	Without a window there is nothing to close, so this pins the reporting
-//	rather than the decision. window_test.go has the decision.
+//	rather than the decision. window_test.go has the decision, and for a
+//	source that does report its partitions the engine hears them directly
+//	rather than through this.
 func TestSimulate_AWorkerHoldingNothingReportsItCannotDeliver(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 	r := Run(t, []int32{0}, []Step{

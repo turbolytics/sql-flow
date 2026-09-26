@@ -9,69 +9,54 @@ import (
 // Every operation a window performs is a row in one of two tables here.
 //
 // A poll builds a State from what it read, hands it to Decide, and performs
-// the Action it gets back. The tables are the only place a combination of
-// facts meets an action, so the logic is read in one place, every
-// combination is accounted for, and checkTables proves it at load: each
-// combination selects exactly one row, and every row is reachable. The
-// Markdown in docs/windows/decisions.md is rendered from these tables by a
-// test, so what is published is what runs.
+// the Action it gets back. The tables are the only place a fact meets an
+// action, so the logic is read in one place, every combination is accounted
+// for, and checkTables proves it at load: each combination selects exactly
+// one row, and every row is reachable. The Markdown in
+// docs/windows/decisions.md is rendered from these tables by a test, so what
+// is published is what runs.
+//
+// The watermark table has one fact. The engine asserts each window's
+// watermark (core.Watermarks), in the commit that makes the rows it
+// describes visible, and the manager closes on that and on nothing else: no
+// clock, no progress row, no reading of the table's newest bucket. Where
+// the assertion stands against what this window has already closed is the
+// whole of what a poll decides on.
 
-// Data is where the window's rows stand against the committed watermark, in
-// event time.
-type Data string
-
-const (
-	// DataNone is a window with no rows.
-	DataNone Data = "none"
-	// DataBehind is a newest bucket that ends at or before the watermark:
-	// everything the window holds has already closed.
-	DataBehind Data = "behind"
-	// DataOpen is a newest bucket that ends after the watermark while its
-	// start less the grace does not pass it: something is open, and the
-	// stream has not moved far enough past it to close it.
-	DataOpen Data = "open"
-	// DataRipe is a newest bucket whose start less the grace passes the
-	// watermark, or any rows at all before the first close.
-	DataRipe Data = "ripe"
-)
-
-// Idle is what the engine's progress row confirms about the stream.
-type Idle string
+// Asserted is where the engine's watermark stands against the closed one,
+// in event time.
+type Asserted string
 
 const (
-	// IdleOff is a window with no idle_close_seconds.
-	IdleOff Idle = "off"
-	// IdleUnconfirmed is a row that confirms less quiet than the bound,
-	// including a row the engine has not written yet.
-	IdleUnconfirmed Idle = "unconfirmed"
-	// IdleConfirmed is a commit made at least the bound after the newest
-	// arrival.
-	IdleConfirmed Idle = "confirmed"
+	// AssertedNone is a window the engine has asserted nothing for yet.
+	AssertedNone Asserted = "none"
+	// AssertedBehind is an assertion at or before the closed watermark:
+	// everything it covers has already closed.
+	AssertedBehind Asserted = "behind"
+	// AssertedAhead is an assertion past the closed watermark, or one made
+	// before anything has closed.
+	AssertedAhead Asserted = "ahead"
 )
 
 // State is what one poll knows before it decides.
 type State struct {
-	Data Data
-	Idle Idle
+	Asserted Asserted
 }
 
-func (s State) String() string { return fmt.Sprintf("data=%s idle=%s", s.Data, s.Idle) }
+func (s State) String() string { return fmt.Sprintf("asserted=%s", s.Asserted) }
 
-// Action is what a poll does with the watermark.
+// Action is what a poll does with the closed watermark.
 type Action string
 
 const (
-	// Hold leaves the watermark where it is.
+	// Hold leaves it where it is.
 	Hold Action = "hold"
-	// CloseByGrace moves the watermark to the newest bucket's start less the
-	// grace.
-	CloseByGrace Action = "close.grace"
-	// CloseByIdle moves the watermark to the newest bucket's end.
-	CloseByIdle Action = "close.idle"
+	// Follow moves it to the asserted watermark.
+	Follow Action = "follow"
 )
 
-// Bucket is where one bucket stands against the previous watermark and the
-// one this poll decided.
+// Bucket is where one bucket stands against the previous closed watermark
+// and the one this poll decided.
 type Bucket string
 
 const (
@@ -108,29 +93,18 @@ const (
 	ReemitLate BucketAction = "late.reemit"
 )
 
-// StateOf reduces a poll's readings to the facts the table decides on.
-//
-// newest is the newest bucket's start when hasRows; previous is the committed
-// watermark when hadPrevious; quiet is what the progress row confirms.
-func StateOf(decl Declaration, newest time.Time, hasRows bool, previous time.Time, hadPrevious bool, quiet time.Duration) State {
-	s := State{Idle: IdleOff}
-	if decl.IdleClose > 0 {
-		s.Idle = IdleUnconfirmed
-		if quiet >= decl.IdleClose {
-			s.Idle = IdleConfirmed
-		}
-	}
+// StateOf reduces a poll's readings to the fact the table decides on:
+// asserted is the engine's watermark when hasAsserted, closed is this
+// window's when hadClosed.
+func StateOf(asserted time.Time, hasAsserted bool, closed time.Time, hadClosed bool) State {
 	switch {
-	case !hasRows:
-		s.Data = DataNone
-	case !hadPrevious, newest.Add(-decl.Grace).After(previous):
-		s.Data = DataRipe
-	case !newest.Add(decl.Size).After(previous):
-		s.Data = DataBehind
+	case !hasAsserted:
+		return State{AssertedNone}
+	case hadClosed && !asserted.After(closed):
+		return State{AssertedBehind}
 	default:
-		s.Data = DataOpen
+		return State{AssertedAhead}
 	}
-	return s
 }
 
 // BucketStateOf reduces one bucket's end to its fact.
@@ -147,63 +121,44 @@ func BucketStateOf(decl Declaration, end, previous, next time.Time) BucketState 
 	return b
 }
 
-// watermarkRule is one row of the watermark table. An empty Data or Idle
-// matches every value of that fact. Deciding names the fact that selected
-// the row, and Claim says the rule in words.
+// watermarkRule is one row of the watermark table. An empty Asserted matches
+// every value. Deciding names the fact that selected the row, and Claim says
+// the rule in words.
 type watermarkRule struct {
 	Name     string
-	Data     []Data
-	Idle     []Idle
+	Asserted []Asserted
 	Action   Action
 	Deciding string
 	Claim    string
 }
 
 func (r watermarkRule) matches(s State) bool {
-	return (len(r.Data) == 0 || contains(r.Data, s.Data)) &&
-		(len(r.Idle) == 0 || contains(r.Idle, s.Idle))
+	return len(r.Asserted) == 0 || contains(r.Asserted, s.Asserted)
 }
 
 // watermarkTable is the watermark's truth table. checkTables proves that
 // the order of its rows does not matter: no state matches two of them.
 var watermarkTable = []watermarkRule{
 	{
-		Name:     "hold.empty",
-		Data:     []Data{DataNone},
+		Name:     "hold.unasserted",
+		Asserted: []Asserted{AssertedNone},
 		Action:   Hold,
-		Deciding: "data",
-		Claim:    "The window holds no rows, so there is nothing to close.",
+		Deciding: "asserted",
+		Claim:    "The engine has asserted no watermark for this window, so nothing is known to be complete and nothing closes.",
 	},
 	{
 		Name:     "hold.behind",
-		Data:     []Data{DataBehind},
+		Asserted: []Asserted{AssertedBehind},
 		Action:   Hold,
-		Deciding: "data",
-		Claim:    "Everything the window holds ended at or before the watermark, so it has already closed; the watermark never moves backwards.",
+		Deciding: "asserted",
+		Claim:    "The assertion is at or before what this window has already closed, so it has been acted on; the closed watermark never moves backwards.",
 	},
 	{
-		Name:     "hold.open",
-		Data:     []Data{DataOpen},
-		Idle:     []Idle{IdleOff, IdleUnconfirmed},
-		Action:   Hold,
-		Deciding: "idle",
-		Claim:    "A bucket is open, the stream has not moved past it by the grace, and the engine has not confirmed the stream quiet.",
-	},
-	{
-		Name:     "close.idle",
-		Data:     []Data{DataOpen, DataRipe},
-		Idle:     []Idle{IdleConfirmed},
-		Action:   CloseByIdle,
-		Deciding: "idle",
-		Claim:    "The engine committed idle_close_seconds after the newest arrival with nothing else arriving, so every open bucket closes, up to the newest bucket's end.",
-	},
-	{
-		Name:     "close.grace",
-		Data:     []Data{DataRipe},
-		Idle:     []Idle{IdleOff, IdleUnconfirmed},
-		Action:   CloseByGrace,
-		Deciding: "data",
-		Claim:    "The stream has moved past the watermark by the grace, so the watermark follows it to the newest bucket's start less the grace.",
+		Name:     "follow",
+		Asserted: []Asserted{AssertedAhead},
+		Action:   Follow,
+		Deciding: "asserted",
+		Claim:    "The engine has promised that every row it will ever write ends at or after the asserted watermark, so every bucket ending at or before it is complete: the closed watermark follows it, and those buckets publish.",
 	},
 }
 
@@ -262,16 +217,13 @@ func Decide(s State) Action {
 	return watermarkRuleFor(s).Action
 }
 
-// Next is where an action puts the watermark, and whether that moved it.
-func (a Action) Next(decl Declaration, newest, previous time.Time) (time.Time, bool) {
-	switch a {
-	case CloseByGrace:
-		return newest.Add(-decl.Grace), true
-	case CloseByIdle:
-		return newest.Add(decl.Size), true
-	default:
-		return previous, false
+// Next is where an action puts the closed watermark, and whether that moved
+// it.
+func (a Action) Next(asserted, closed time.Time) (time.Time, bool) {
+	if a == Follow {
+		return asserted, true
 	}
+	return closed, false
 }
 
 // DecideBucket returns the action for a bucket.
@@ -306,18 +258,15 @@ func contains[T comparable](vals []T, v T) bool {
 
 // Every value of every fact, for the exhaustiveness check and the rendering.
 var (
-	dataValues   = []Data{DataNone, DataBehind, DataOpen, DataRipe}
-	idleValues   = []Idle{IdleOff, IdleUnconfirmed, IdleConfirmed}
-	bucketValues = []Bucket{BucketLate, BucketDue, BucketOpen}
-	policyValues = []LatePolicy{LateDrop, LateReemit}
+	assertedValues = []Asserted{AssertedNone, AssertedBehind, AssertedAhead}
+	bucketValues   = []Bucket{BucketLate, BucketDue, BucketOpen}
+	policyValues   = []LatePolicy{LateDrop, LateReemit}
 )
 
 func allStates() []State {
 	var out []State
-	for _, d := range dataValues {
-		for _, i := range idleValues {
-			out = append(out, State{Data: d, Idle: i})
-		}
+	for _, a := range assertedValues {
+		out = append(out, State{Asserted: a})
 	}
 	return out
 }

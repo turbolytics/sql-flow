@@ -1,54 +1,55 @@
 package managers
 
-import "time"
+import (
+	"time"
 
-// The model is the table's rules over a sequence of events, with no database
-// under it. checkTables proves every state selects one rule; this proves that
-// a run of events ends with every row published once, which is the property
-// no invariant owned while a reproduction of #183 lost 12% of its records.
+	"github.com/turbolytics/sql-flow/internal/core"
+)
+
+// The model is the window over a sequence of events, with no database under
+// it. Its engine half is core.Watermarks itself -- the real computation,
+// driven on a clock the model owns, not a copy of it -- and its manager half
+// is the table in decide.go. checkTables proves every state selects one
+// rule; this proves that a run of events ends with every row published once
+// or dropped under the declared policy, which is the property no invariant
+// owned while a reproduction of #183 lost 12% of its records.
 //
-// Two clocks, as the engine has. mono advances only by elapsing, and the
-// engine's three instants are taken from it, so their differences survive a
-// wall-clock step. wall is mono plus a skew a step moves, and rows land in
-// buckets by wall time, because event time comes from the producer.
+// One clock. Event time is what a producer stamps, and here producers stamp
+// the model's clock, so a row's bucket is where the clock stood when it was
+// produced -- except a row produced Ahead, which is stamped beyond the grace
+// and is what moves the stream on. The engine's clock, the same one, decides
+// only which partitions are idle.
 
 // EventKind is one thing that can happen to a pipeline.
 type EventKind string
 
 const (
-	// Arrive is a batch reaching the handler and committing, the two as one
-	// step. That is what a state path gives: the handler's rows and the
-	// progress row that accounts for them ride the same transaction, so a
-	// manager reading both sees them together or not at all.
-	Arrive EventKind = "arrive"
-	// Insert is the first half of that batch on its own: the rows reach the
-	// window table, where a manager on another connection can see them, and
-	// the commit that accounts for them has not happened yet. Without a state
-	// path that is every batch -- the handler's INSERT autocommits as it
-	// runs, while the arrival clock is stamped after the sink has flushed and
-	// its write is throttled besides -- and a poll landing in between reads
-	// the rows beside the silence they just ended (#374).
-	Insert EventKind = "insert"
-	// IdleTick is a commit with nothing buffered.
-	IdleTick EventKind = "idle_tick"
-	// Restart is the process dying and coming back: in-memory nothing
-	// survives but the state database, which holds the buckets and the
-	// watermark.
+	// Produce is rows from one partition reaching the handler and committing,
+	// with the watermark asserted in that commit. A partition that is lost
+	// delivers nothing; one that was revoked delivers to another worker.
+	Produce EventKind = "produce"
+	// Elapse is the clock moving with nothing arriving, then an idle tick
+	// committing: a partition silent for the bound leaves the minimum here.
+	Elapse EventKind = "elapse"
+	// Lose is the partition's session failing. It may come back.
+	Lose EventKind = "lose"
+	// Assign is the partition being assigned, or assigned again.
+	Assign EventKind = "assign"
+	// Revoke is another worker holding the partition from now on.
+	Revoke EventKind = "revoke"
+	// Restart is the process dying and coming back with its table and both
+	// watermarks, and nothing in memory.
 	Restart EventKind = "restart"
-	// SourceLost is a consumer losing its partitions, or a websocket
-	// dropping.
-	SourceLost EventKind = "source_lost"
-	// SourceBack is the assignment or the dial that follows.
-	SourceBack EventKind = "source_back"
-	// ClockStep is NTP moving the wall clock, in either direction.
-	ClockStep EventKind = "clock_step"
 )
 
-// Event is one step of a sequence.
+// Event is one step of a sequence. A poll follows every step.
 type Event struct {
-	Kind EventKind
-	Rows int
-	By   time.Duration
+	Kind      EventKind
+	Partition int32
+	Rows      int
+	// Ahead stamps the rows beyond the grace, so the stream moves on.
+	Ahead bool
+	By    time.Duration
 }
 
 // Publication is what a close handed the sink.
@@ -57,212 +58,232 @@ type Publication struct {
 	Rows   int
 }
 
-// Decision is one poll: the rule the facts selected, and the facts. Counting
-// the rows a run published cannot fail on a close that came early, so the
-// evidence each close rested on is kept for the property to read.
+// Decision is one poll: the rule the one fact selected, and the fact.
 type Decision struct {
-	Rule   string
-	Action Action
-	Quiet  time.Duration
-	// The source as the loop saw it at the commit this row came from, and
-	// the two instants that say how long it had been delivering. The row
-	// itself carries none of this: the loop's hold is what keeps the quiet
-	// honest, and the property recomputes from these rather than trusting
-	// that it did.
-	Delivering bool
-	RowAt      time.Time
-	RowSince   time.Time
+	Rule     string
+	Action   Action
+	Asserted time.Time
+	Closed   time.Time
 }
 
-// Model is one pipeline: its buckets, its watermark, and the engine instants
-// the window decides on.
+// held is what the source knows about a partition.
+type held int
+
+const (
+	holding held = iota
+	lost
+	revoked
+)
+
+// Model is one pipeline: its partitions, its buckets, the engine's tracker
+// over both, and the two watermarks.
 type Model struct {
 	decl Declaration
+	spec core.WindowSpec
 
-	mono time.Time
-	skew time.Duration
+	clock  time.Time
+	engine *core.Watermarks
+	parts  map[int32]held
+	// The newest event time each partition delivered, for the property that
+	// an in-order row is never late.
+	newest map[int32]time.Time
+	// Whether each partition was idle at the last poll, for the same
+	// property: a partition that went idle may find its bucket closed.
+	// Idleness is measured as the engine measures it, from the later of the
+	// partition's last row and its assignment.
+	idleAtPoll map[int32]bool
+	// behind is a partition that left the minimum by going idle and has not
+	// yet delivered past what closed while it was out. Its in-order rows may
+	// be late until it catches up: that is idle_close's documented trade,
+	// the same one Flink makes, and not a close the minimum owed it.
+	behind    map[int32]bool
+	lastRow   map[int32]time.Time
+	heldSince map[int32]time.Time
 
 	buckets map[time.Time]int
-	// Produced counts rows the source actually delivered. A batch while the
-	// source holds nothing delivers none, so it is not produced against this
-	// pipeline at all.
-	Produced int
-	// Dropped counts rows that arrived for a bucket the watermark had
-	// already passed, which late_rows drop discards and the property
-	// excludes.
-	Dropped int
+	// Produced counts rows the source actually delivered. Dropped counts
+	// rows that arrived for a bucket the window had already closed, which
+	// late_rows drop discards and the property excludes. Late counts the
+	// rows that were dropped while in order for their partition, and not
+	// idle: what the minimum exists to prevent.
+	Produced, Dropped, EarlyClosed int
 
-	watermark    time.Time
-	hadWatermark bool
+	asserted    time.Time
+	hasAsserted bool
+	closed      time.Time
+	hadClosed   bool
 
-	// What the loop holds in memory: when its quiet began, and what the
-	// source is doing right now.
-	quietSince      time.Time
-	deliveringSince time.Time
-	delivering      bool
-
-	// What the progress row holds, which is the whole of what the manager
-	// can see. The loop asks the source before an idle tick's commit and at
-	// no other time, so a source that goes or comes back changes nothing the
-	// manager reads until a commit writes the held clock down.
-	rowArrival time.Time
-	rowCommit  time.Time
-	// The source and its instants at that commit, for the property.
-	rowDelivering bool
-	rowAt         time.Time
-	rowSince      time.Time
-
-	// Decisions is every poll's rule and the facts it read, in order.
+	// IdleCloses counts assertions made by an idle tick with nothing
+	// arriving: the all-idle close.
+	IdleCloses int
+	// Decisions is every poll's rule and the fact it read, in order.
 	Decisions []Decision
 }
 
 var modelEpoch = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 
-// NewModel starts a pipeline whose source is delivering and whose window is
-// empty.
-func NewModel(decl Declaration) *Model {
+// NewModel starts a pipeline holding the given partitions, with an empty
+// window and nothing asserted.
+func NewModel(decl Declaration, partitions ...int32) *Model {
 	m := &Model{
-		decl:    decl,
-		mono:    modelEpoch,
-		buckets: map[time.Time]int{},
-
-		quietSince:      modelEpoch,
-		deliveringSince: modelEpoch,
-		delivering:      true,
-
-		// A progress table with no row in it reads as never said: no quiet,
-		// no duration, and nothing denying that the source delivers.
-		rowArrival:    modelEpoch,
-		rowCommit:     modelEpoch,
-		rowDelivering: true,
+		decl:       decl,
+		spec:       core.WindowSpec{Name: decl.Table, Size: decl.Size, Grace: decl.Grace, IdleClose: decl.IdleClose},
+		clock:      modelEpoch,
+		parts:      map[int32]held{},
+		newest:     map[int32]time.Time{},
+		idleAtPoll: map[int32]bool{},
+		behind:     map[int32]bool{},
+		lastRow:    map[int32]time.Time{},
+		heldSince:  map[int32]time.Time{},
+		buckets:    map[time.Time]int{},
+	}
+	m.engine = core.NewWatermarks([]core.WindowSpec{m.spec}, m.now)
+	for _, p := range partitions {
+		m.assign(p)
 	}
 	return m
 }
 
-// insert puts a batch's rows in their buckets, where a reader on another
-// connection can see them. It is the half of a batch that the handler does.
-func (m *Model) insert(rows int) {
-	if !m.delivering {
-		return
-	}
-	m.Produced += rows
-	bucket := m.wall().Truncate(m.decl.Size)
-	// A row for a bucket the watermark has passed is late, and the drop
-	// policy discards it.
-	if m.hadWatermark && !bucket.Add(m.decl.Size).After(m.watermark) {
-		m.Dropped += rows
-	} else {
-		m.buckets[bucket] += rows
-	}
-	// The engine stamps the quiet clock after the sink write, so an arrival
-	// ends whatever quiet was accruing.
-	m.quietSince = m.mono
+func (m *Model) assign(p int32) {
+	m.parts[p] = holding
+	m.heldSince[p] = m.clock
+	m.engine.Assigned(map[string][]int32{"t": {p}})
 }
 
-// hold is holdQuietWhileNotDelivering: before every commit that is not a
-// batch's, the loop keeps the quiet clock from running over time the source
-// could not deliver. A source that is not delivering resets it to now; one
-// that resumed since the clock was last set moves it to the resumption, so
-// the tick after a rebalance confirms quiet from the assignment.
-func (m *Model) hold() {
-	switch {
-	case !m.delivering:
-		m.quietSince = m.mono
-	case m.deliveringSince.After(m.quietSince):
-		m.quietSince = m.deliveringSince
+func (m *Model) now() time.Time { return m.clock }
+
+// commit is the engine's commit: whatever moved is asserted.
+func (m *Model) commit() (moved bool) {
+	for _, at := range m.engine.Advance() {
+		m.asserted, m.hasAsserted = at, true
+		moved = true
 	}
+	return moved
 }
-
-// commit is a progress write, which is the only moment the row changes.
-func (m *Model) commit() {
-	m.rowArrival, m.rowCommit = m.quietSince, m.mono
-	m.rowDelivering = m.delivering
-	m.rowAt, m.rowSince = m.mono, m.deliveringSince
-}
-
-// wall is the clock the data is stamped on.
-func (m *Model) wall() time.Time { return m.mono.Add(m.skew) }
 
 // Apply advances the model by one event and returns what the poll after it
 // published.
 func (m *Model) Apply(e Event) []Publication {
 	// Every event takes a second, so a sequence spans time without the
 	// caller saying so.
-	m.mono = m.mono.Add(time.Second)
+	m.clock = m.clock.Add(time.Second)
 
 	switch e.Kind {
-	case Insert:
-		m.insert(e.Rows)
-	case Arrive:
-		// A batch is messages, and a source holding nothing delivers none:
-		// no rows, no commit. The only commit a loop makes while its source
-		// holds nothing is the idle tick, and that one holds the clock
-		// first. An earlier cut committed here regardless, and the row's
-		// own source column hid it; against an engine whose row carries
-		// only the quiet, that phantom commit confirms two seconds of
-		// silence with nothing to say the source was gone.
-		if m.delivering {
-			m.insert(e.Rows)
-			m.commit()
+	case Produce:
+		if m.parts[e.Partition] != holding {
+			break
 		}
-	case IdleTick:
-		m.hold()
+		at := m.clock
+		if e.Ahead {
+			at = at.Add(m.decl.Grace + 2*m.decl.Size)
+		}
+		m.Produced += e.Rows
+		m.buckets[at.Truncate(m.decl.Size)] += e.Rows
+		m.engine.Observe("t", e.Partition, at.UnixNano())
+		m.lastRow[e.Partition] = m.clock
+		if at.After(m.newest[e.Partition]) {
+			m.newest[e.Partition] = at
+		}
+		m.commit()
+	case Elapse:
+		m.clock = m.clock.Add(e.By)
+		if m.commit() {
+			m.IdleCloses++
+		}
+	// A change to what the source holds reaches the row at the next commit,
+	// which the loop makes at its next batch or tick; here that commit
+	// follows the change. It is not an idle close: nothing went silent.
+	case Lose:
+		m.parts[e.Partition] = lost
+		m.engine.Lost(map[string][]int32{"t": {e.Partition}})
+		m.commit()
+	case Assign:
+		m.assign(e.Partition)
+		m.commit()
+	case Revoke:
+		m.parts[e.Partition] = revoked
+		m.engine.Released(map[string][]int32{"t": {e.Partition}})
 		m.commit()
 	case Restart:
-		// The loop seeds its quiet clock at its start, so the outage before
-		// it is not quiet this process watched — but it writes no row until
-		// its first commit, so until then the manager is still polling the
-		// dead process's. The source is new too: it has delivered since this
-		// instant and no longer.
-		m.quietSince = m.mono
-		if m.delivering {
-			m.deliveringSince = m.mono
+		// Nothing in memory survives: a new tracker, restored from the table
+		// and the row, and the group assigns every partition this worker is
+		// still a member for. A lost session is over; a revoked partition is
+		// another worker's.
+		m.engine = core.NewWatermarks([]core.WindowSpec{m.spec}, m.now)
+		var newest time.Time
+		for b := range m.buckets {
+			if b.After(newest) {
+				newest = b
+			}
 		}
-	case SourceLost:
-		m.delivering = false
-		m.deliveringSince = time.Time{}
-	case SourceBack:
-		m.delivering = true
-		m.deliveringSince = m.mono
-	case ClockStep:
-		m.skew += e.By
+		m.engine.Restore(m.spec.Name, newest, m.asserted)
+		m.lastRow = map[int32]time.Time{}
+		for p, h := range m.parts {
+			if h != revoked {
+				m.assign(p)
+			}
+		}
+		m.commit()
 	}
 
 	return m.poll()
 }
 
-// poll is one manager pass: reduce to facts, decide, act.
+// poll is one manager pass: reduce to the fact, decide, act.
 func (m *Model) poll() []Publication {
-	var newest time.Time
-	for b := range m.buckets {
-		if b.After(newest) {
-			newest = b
+	// Late rows first, against the closed watermark, as the manager does.
+	// Under drop they are deleted and counted; an in-order row from a
+	// partition that was in the minimum should never be among them.
+	if m.hadClosed {
+		for b, rows := range m.buckets {
+			if !b.Add(m.decl.Size).After(m.closed) {
+				m.Dropped += rows
+				delete(m.buckets, b)
+			}
 		}
 	}
-	hasRows := len(m.buckets) > 0
 
-	// Three readings of one row, which is all the manager gets.
-	quiet := m.rowCommit.Sub(m.rowArrival)
-
-	state := StateOf(m.decl, newest, hasRows, m.watermark, m.hadWatermark, quiet)
+	state := StateOf(m.asserted, m.hasAsserted, m.closed, m.hadClosed)
 	rule := watermarkRuleFor(state)
 	m.Decisions = append(m.Decisions, Decision{
-		Rule: rule.Name, Action: rule.Action, Quiet: quiet,
-		Delivering: m.rowDelivering, RowAt: m.rowAt, RowSince: m.rowSince,
+		Rule: rule.Name, Action: rule.Action, Asserted: m.asserted, Closed: m.closed,
 	})
-	next, moved := rule.Action.Next(m.decl, newest, m.watermark)
-	if !moved || (m.hadWatermark && !next.After(m.watermark)) {
+	next, moved := rule.Action.Next(m.asserted, m.closed)
+	m.noteIdle()
+	if !moved {
 		return nil
 	}
-	m.watermark, m.hadWatermark = next, true
+	m.closed, m.hadClosed = next, true
 	return m.collect()
+}
+
+// noteIdle records which partitions are idle as of this poll, for the
+// in-order property: a partition that has been silent for the bound has
+// left the minimum, and a row it delivers afterwards may be late by
+// design.
+func (m *Model) noteIdle() {
+	for p := range m.parts {
+		since := m.heldSince[p]
+		if last := m.lastRow[p]; last.After(since) {
+			since = last
+		}
+		m.idleAtPoll[p] = m.decl.IdleClose > 0 && m.clock.Sub(since) >= m.decl.IdleClose
+		switch {
+		case m.idleAtPoll[p]:
+			m.behind[p] = true
+		case m.behind[p] && m.hadClosed && !m.newest[p].Add(-m.decl.Grace).Before(m.closed):
+			// Caught up: its own position is at or past what closed, so
+			// the minimum owes it again from here.
+			m.behind[p] = false
+		}
+	}
 }
 
 // collect publishes and deletes every bucket the watermark has passed.
 func (m *Model) collect() []Publication {
 	var out []Publication
 	for b, rows := range m.buckets {
-		if !b.Add(m.decl.Size).After(m.watermark) {
+		if !b.Add(m.decl.Size).After(m.closed) {
 			out = append(out, Publication{Bucket: b, Rows: rows})
 			delete(m.buckets, b)
 		}
@@ -270,14 +291,41 @@ func (m *Model) collect() []Publication {
 	return out
 }
 
-// Drain publishes what is still open, as a close that finally comes would,
-// and reports the rows it carried. A sequence's property is checked over the
-// whole run, so what a run ends holding still has to be counted.
-func (m *Model) Drain() int {
-	rows := 0
-	for _, n := range m.buckets {
-		rows += n
+// InOrderRowWouldBeLate reports whether a row the partition would deliver
+// now, in order and stamped with the clock, lands in a bucket the window
+// has already closed -- while the partition holds, was not idle at the last
+// poll, and is not still behind from an idleness it has not caught up from.
+// That is a close the minimum should have prevented.
+func (m *Model) InOrderRowWouldBeLate(p int32) bool {
+	if m.parts[p] != holding || m.idleAtPoll[p] || m.behind[p] || !m.hadClosed {
+		return false
 	}
+	at := m.clock.Add(time.Second)
+	if at.Before(m.newest[p]) {
+		return false // out of order for its own partition: may be late
+	}
+	return !at.Truncate(m.decl.Size).Add(m.decl.Size).After(m.closed)
+}
+
+// Open is how many rows the window still holds, and the newest bucket's end
+// among them.
+func (m *Model) Open() (rows int, newestEnd time.Time) {
+	for b, n := range m.buckets {
+		rows += n
+		if end := b.Add(m.decl.Size); end.After(newestEnd) {
+			newestEnd = end
+		}
+	}
+	return rows, newestEnd
+}
+
+// Drain publishes what is still open, as a close that finally comes would,
+// and reports the rows it carried.
+func (m *Model) Drain() int {
+	rows, _ := m.Open()
 	m.buckets = map[time.Time]int{}
 	return rows
 }
+
+// Asserted is the engine's watermark, if any.
+func (m *Model) Asserted() (time.Time, bool) { return m.asserted, m.hasAsserted }

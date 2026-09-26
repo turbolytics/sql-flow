@@ -90,11 +90,17 @@ func (d Declaration) validate() error {
 	return nil
 }
 
-// Watermark closes one window. It keeps an event-time watermark, persisted
-// in sqlflow_windows: every bucket ending at or before it has been published
-// to the sink and deleted from the table. The watermark never moves
-// backwards, so a bucket is closed once, and a row that arrives for it
-// afterwards is late.
+// Watermark closes one window. The engine asserts the window's watermark in
+// sqlflow_watermarks, in the commit that makes the rows it describes
+// visible (core.Watermarks); the manager keeps what it has closed up to in
+// sqlflow_windows: every bucket ending at or before it has been published to
+// the sink and deleted from the table. A poll moves the second to the first
+// and publishes the buckets between them. Neither moves backwards, so a
+// bucket is closed once, and a row that arrives for it afterwards is late.
+//
+// The manager has no clock. Every decision is `bucket end <= watermark`, in
+// event time; the engine's clock decides only which partitions are in its
+// minimum, and no reading of any clock reaches here.
 //
 // It runs on a connection of its own, with autocommit off, so it reads
 // committed rows only and its delete commits together with its watermark.
@@ -107,9 +113,6 @@ type Watermark struct {
 	sink  core.Sink
 	poll  time.Duration
 
-	// now is the clock the idle rule reads. Injected so a test can make the
-	// stream quiet without waiting.
-	now func() time.Time
 	// pollTrigger replaces the poll ticker when set; see WithPollTrigger.
 	pollTrigger <-chan time.Time
 
@@ -149,11 +152,6 @@ func WithPollTrigger(c <-chan time.Time) Option {
 	return func(w *Watermark) { w.pollTrigger = c }
 }
 
-// WithClock replaces the wall clock the idle rule reads.
-func WithClock(now func() time.Time) Option {
-	return func(w *Watermark) { w.now = now }
-}
-
 // NewWatermark builds the manager for one window on conn, which must be a
 // connection of its own with autocommit off: every poll ends with a commit or
 // a rollback on it.
@@ -176,7 +174,6 @@ func NewWatermark(conn adbc.Connection, d Declaration, poll time.Duration, sink 
 		store:   NewStore(conn),
 		sink:    sink,
 		poll:    poll,
-		now:     time.Now,
 		logger:  zap.NewNop(),
 		metrics: NewWindowMetrics(nil, d.Table),
 	}
@@ -280,12 +277,12 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 		}
 	}()
 
-	previous, hadPrevious, err := w.store.Load(ctx, w.decl.Table)
+	closed, hadClosed, err := w.store.Load(ctx, w.decl.Table)
 	if err != nil {
 		return err
 	}
-	if hadPrevious {
-		settled, settledKnown = previous, true
+	if hadClosed {
+		settled, settledKnown = closed, true
 	}
 
 	// Late rows belong to buckets that already closed. Under drop they leave
@@ -297,8 +294,8 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 	// 1,000. This counter is the data-loss signal, so it counts what
 	// happened rather than what was attempted.
 	var lateToReemit, dropped, lateCounted int64
-	if hadPrevious {
-		late, _, err := queryInt64(ctx, w.conn, w.decl.countClosedSQL(previous))
+	if hadClosed {
+		late, _, err := queryInt64(ctx, w.conn, w.decl.countClosedSQL(closed))
 		if err != nil {
 			return fmt.Errorf("counting late rows: %w", err)
 		}
@@ -306,7 +303,7 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 			lateCounted = late
 			switch DecideBucket(BucketState{Bucket: BucketLate, Policy: w.decl.Late}) {
 			case DropLate:
-				if _, err := execRows(ctx, w.conn, w.decl.deleteClosedSQL(previous)); err != nil {
+				if _, err := execRows(ctx, w.conn, w.decl.deleteClosedSQL(closed)); err != nil {
 					return fmt.Errorf("dropping late rows: %w", err)
 				}
 				dropped = late
@@ -319,14 +316,31 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 		}
 	}
 
-	watermark, moved, newest, hasRows, err := w.nextWatermark(ctx, previous, hadPrevious)
+	// The one fact: what the engine has asserted.
+	asserted, hasAsserted, err := core.LoadWatermark(ctx, w.conn, w.decl.Table)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading the asserted watermark: %w", err)
 	}
-	candidate, candidateKnown = watermark, true
-	if !hadPrevious && hasRows {
+	if hasAsserted {
+		candidate, candidateKnown = asserted, true
+	}
+
+	// Observation, not decision: where the window's data stands, for the
+	// gauges. Nothing below reads it.
+	newestMicros, hasRows, err := queryInt64(ctx, w.conn, w.decl.newestSQL())
+	if err != nil {
+		return fmt.Errorf("reading the newest bucket: %w", err)
+	}
+	if hasRows {
+		// Every poll that sees rows, not only one that commits. Rows stamped
+		// in the future are reported the moment they arrive, even if the close
+		// that would record them fails.
+		w.metrics.NewestStart.Record(ctx, time.UnixMicro(newestMicros).Unix(),
+			metric.WithAttributes(attribute.String("window", w.decl.Table)))
+	}
+	if !hadClosed && hasRows {
 		// Never closed: the first close is due once the watermark reaches the
-		// oldest bucket's end, so that is what the candidate is measured from.
+		// oldest bucket's end, so that is what the lag is measured from.
 		// Without it a window whose sink was down from the start would report
 		// no lag at all while its rows piled up.
 		oldestMicros, ok, err := queryInt64(ctx, w.conn, w.decl.oldestSQL())
@@ -337,20 +351,21 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 			settled, settledKnown = time.UnixMicro(oldestMicros).UTC().Add(w.decl.Size), true
 		}
 	}
-	if hasRows {
-		// Every poll that sees rows, not only one that commits. Rows stamped
-		// in the future are reported the moment they arrive, even if the close
-		// that would record them fails. This is an observation, not an
-		// effect: a rollback changes nothing about where the newest bucket
-		// was seen.
-		w.metrics.NewestStart.Record(ctx, newest.Unix(),
-			metric.WithAttributes(attribute.String("window", w.decl.Table)))
+
+	state := StateOf(asserted, hasAsserted, closed, hadClosed)
+	rule := watermarkRuleFor(state)
+	watermark, moved := rule.Action.Next(asserted, closed)
+	if moved {
+		w.logger.Debug("close decided",
+			zap.String("rule", rule.Name),
+			zap.Stringer("state", state),
+			zap.Time("watermark", watermark))
 	}
 	if !moved && lateToReemit == 0 && dropped == 0 {
 		return nil
 	}
 	if !moved {
-		watermark = previous
+		watermark = closed
 	}
 
 	// Anything to publish? A watermark that moved over an empty stretch
@@ -373,7 +388,9 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 		}
 	}
 
-	if err := w.store.Save(ctx, w.decl.Table, watermark, w.now().UTC()); err != nil {
+	// closed_at is the wall clock, for an operator reading the table; no
+	// decision reads it back.
+	if err := w.store.Save(ctx, w.decl.Table, watermark, time.Now().UTC()); err != nil {
 		return err
 	}
 	if err := w.tx.Commit(ctx); err != nil {
@@ -395,70 +412,6 @@ func (w *Watermark) Poll(ctx context.Context) (err error) {
 		w.logger.Debug("closed", zap.Time("watermark", watermark), zap.Int64("rows", rows))
 	}
 	return nil
-}
-
-// nextWatermark reads what the watermark's decision needs, reduces it to a
-// State, and performs the Action the table returns. The rules themselves are
-// in decide.go, one row each.
-//
-// While data arrives the watermark is the newest bucket start less the
-// grace: a bucket closes once the stream has moved past its end by the grace.
-// Once the engine has confirmed the idle bound with nothing arriving it is
-// the newest bucket's end: a stream that stops closes everything it has. It
-// never moves backwards, so a delete that lowers the newest bucket changes
-// nothing.
-//
-// Confirmed is the operative word. The idle rule acts on what the progress
-// row proves, a commit made the idle bound after the newest arrival, and not
-// on how old the row looks from here. A row that has stopped moving closes
-// nothing, which is the late direction: late leaves rows in the table for the
-// next poll, early splits a bucket and publishes it twice.
-//
-// The price is that a quiet stream closes on the first commit past the bound
-// rather than the first poll. With nothing arriving those commits are idle
-// ticks one flush interval apart, so the close can trail the bound by up to
-// that much. On shutdown the drain forces the write, so the final poll sees
-// the quiet up to the moment of the signal.
-func (w *Watermark) nextWatermark(ctx context.Context, previous time.Time, hadPrevious bool) (
-	watermark time.Time, moved bool, newest time.Time, hasRows bool, err error) {
-
-	newestMicros, hasRows, err := queryInt64(ctx, w.conn, w.decl.newestSQL())
-	if err != nil {
-		return time.Time{}, false, time.Time{}, false, fmt.Errorf("reading the newest bucket: %w", err)
-	}
-	if hasRows {
-		newest = time.UnixMicro(newestMicros).UTC()
-	}
-
-	var quiet time.Duration
-	if w.decl.IdleClose > 0 && hasRows {
-		// A row the engine has not written yet is NULL, which reads as no
-		// quiet confirmed at all.
-		quietMicros, _, err := queryInt64(ctx, w.conn, confirmedQuietSQL())
-		if err != nil {
-			return time.Time{}, false, time.Time{}, false, fmt.Errorf("reading the progress row: %w", err)
-		}
-		quiet = time.Duration(quietMicros) * time.Microsecond
-	}
-
-	state := StateOf(w.decl, newest, hasRows, previous, hadPrevious, quiet)
-	rule := watermarkRuleFor(state)
-	watermark, moved = rule.Action.Next(w.decl, newest, previous)
-	if moved {
-		// An idle close is the rare one and the one that explains an early
-		// close after the fact, so it is logged at Info with the quiet it
-		// acted on. Grace closes are routine and stay at Debug.
-		log := w.logger.Debug
-		if rule.Action == CloseByIdle {
-			log = w.logger.Info
-		}
-		log("close decided",
-			zap.String("rule", rule.Name),
-			zap.Stringer("state", state),
-			zap.Duration("quiet", quiet),
-			zap.Time("watermark", watermark))
-	}
-	return watermark, moved, newest, hasRows, nil
 }
 
 // recordCloseLag records how far the window's closes trail its own data, in
