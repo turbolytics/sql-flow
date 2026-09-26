@@ -27,6 +27,11 @@ import (
 //	Keyed on (bucket, key) and upserting: the last writer wins and 100 rows
 //	are lost. That is the 12% loss reproduced under #183.
 //
+//	The per-partition watermark does not touch this. It fixes the ordering
+//	half -- a partition just assigned holds the minimum until it delivers, so
+//	the survivor cannot close buckets its new partitions still have data for
+//	-- and leaves the splitting half exactly where it was.
+//
 //	Two ways out, and the engine has to declare which:
 //	  co-partition        the window key is the message key, so a key never
 //	                      spans partitions and is never split

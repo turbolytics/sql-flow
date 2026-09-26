@@ -30,9 +30,13 @@ type PartitionEvents struct {
 	// the late direction, and the added partitions' backlog was not
 	// deliverable before.
 	assignedAt time.Time
-	assigned   func(map[string][]int32)
-	released   func(map[string][]int32)
-	lost       func(map[string][]int32)
+	// subs is every subscriber, in the order they arrived: the lag table
+	// and, on a windowing pipeline, the engine's watermark tracker.
+	subs []partitionSubscriber
+}
+
+type partitionSubscriber struct {
+	assigned, released, lost func(map[string][]int32)
 }
 
 func NewPartitionEvents() *PartitionEvents {
@@ -67,11 +71,12 @@ func (e *PartitionEvents) Closing() {
 	e.closing = true
 }
 
-// Subscribe hands assigned the partitions held now, then relays every change.
+// Subscribe hands assigned the partitions held now, then relays every
+// change. More than one party may subscribe; each gets every event.
 func (e *PartitionEvents) Subscribe(assigned, released, lost func(map[string][]int32)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.assigned, e.released, e.lost = assigned, released, lost
+	e.subs = append(e.subs, partitionSubscriber{assigned, released, lost})
 	if current := e.current(); len(current) > 0 && assigned != nil {
 		assigned(current)
 	}
@@ -105,8 +110,10 @@ func (e *PartitionEvents) onAssigned(_ context.Context, _ *kgo.Client, parts map
 			e.owned[topic][p] = true
 		}
 	}
-	if e.assigned != nil {
-		e.assigned(parts)
+	for _, s := range e.subs {
+		if s.assigned != nil {
+			s.assigned(parts)
+		}
 	}
 }
 
@@ -114,8 +121,13 @@ func (e *PartitionEvents) onRevoked(_ context.Context, _ *kgo.Client, parts map[
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.forget(parts)
-	if e.released != nil && !e.closing {
-		e.released(parts)
+	if e.closing {
+		return
+	}
+	for _, s := range e.subs {
+		if s.released != nil {
+			s.released(parts)
+		}
 	}
 }
 
@@ -123,8 +135,13 @@ func (e *PartitionEvents) onLost(_ context.Context, _ *kgo.Client, parts map[str
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.forget(parts)
-	if e.lost != nil && !e.closing {
-		e.lost(parts)
+	if e.closing {
+		return
+	}
+	for _, s := range e.subs {
+		if s.lost != nil {
+			s.lost(parts)
+		}
 	}
 }
 

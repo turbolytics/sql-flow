@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,10 +60,16 @@ type IdleTick struct{}
 // which carries both readings (internal/managers/model.go).
 type Elapse struct{ By time.Duration }
 
-// Revoke takes a partition away, as a rebalance does.
+// Revoke moves a partition to another worker, as a rebalance does. Its
+// future rows are that worker's; the engine stops holding the window for
+// it.
 type Revoke struct{ Partition int32 }
 
-// Assign gives one back.
+// Lose is the session failing: nobody knows who holds the partition, and it
+// may come back here with a backlog. The engine holds the window for it.
+type Lose struct{ Partition int32 }
+
+// Assign gives a partition to this worker, or gives a lost one back.
 type Assign struct{ Partition int32 }
 
 // Restart kills the worker and starts a new one, which resumes from the
@@ -130,6 +137,13 @@ type source struct {
 	coord      *coordinator
 	generation int
 	closed     bool
+	// subs is who wants to hear about the partitions: the engine's
+	// watermark tracker, as the Kafka source's relay tells it.
+	subs []partitionSubscriber
+}
+
+type partitionSubscriber struct {
+	assigned, released, lost func(map[string][]int32)
 }
 
 func newSource(coord *coordinator, clock func() time.Time, owned ...int32) *source {
@@ -146,10 +160,35 @@ func newSource(coord *coordinator, clock func() time.Time, owned ...int32) *sour
 	return s
 }
 
-func (s *source) Start() error                                  { return nil }
-func (s *source) Stream() <-chan []core.Message                 { return s.ch }
-func (s *source) Commit() error                                 { return nil }
-func (s *source) OnPartitions(a, r, l func(map[string][]int32)) {}
+func (s *source) Start() error                  { return nil }
+func (s *source) Stream() <-chan []core.Message { return s.ch }
+func (s *source) Commit() error                 { return nil }
+
+// OnPartitions implements core.PartitionOwner the way the Kafka relay does:
+// the subscriber is told what is held now, then every change.
+func (s *source) OnPartitions(a, r, l func(map[string][]int32)) {
+	s.mu.Lock()
+	s.subs = append(s.subs, partitionSubscriber{a, r, l})
+	current := make([]int32, 0, len(s.owned))
+	for p := range s.owned {
+		current = append(current, p)
+	}
+	s.mu.Unlock()
+	if len(current) > 0 && a != nil {
+		a(map[string][]int32{topic: current})
+	}
+}
+
+func (s *source) tell(which func(partitionSubscriber) func(map[string][]int32), p int32) {
+	s.mu.Lock()
+	subs := append([]partitionSubscriber(nil), s.subs...)
+	s.mu.Unlock()
+	for _, sub := range subs {
+		if f := which(sub); f != nil {
+			f(map[string][]int32{topic: {p}})
+		}
+	}
+}
 
 func (s *source) Close() error {
 	s.mu.Lock()
@@ -184,15 +223,24 @@ func (s *source) CommitMarks(marks *core.Marks) error {
 
 func (s *source) revoke(p int32) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.owned, p)
+	s.mu.Unlock()
+	s.tell(func(x partitionSubscriber) func(map[string][]int32) { return x.released }, p)
+}
+
+func (s *source) lose(p int32) {
+	s.mu.Lock()
+	delete(s.owned, p)
+	s.mu.Unlock()
+	s.tell(func(x partitionSubscriber) func(map[string][]int32) { return x.lost }, p)
 }
 
 func (s *source) assign(p int32) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.owned[p] = true
 	s.assignedAt = s.clock()
+	s.mu.Unlock()
+	s.tell(func(x partitionSubscriber) func(map[string][]int32) { return x.assigned }, p)
 }
 
 func (s *source) owns(p int32) bool {
@@ -295,6 +343,11 @@ type run struct {
 	// window is set when the run pairs the loop with a real manager.
 	window *windowRun
 
+	// loopErr is what ConsumeLoop returned, if it has returned. A loop that
+	// died makes every await after it time out, and a timeout says nothing
+	// about why; await reports this instead when it is set.
+	loopErr atomic.Pointer[error]
+
 	mu       sync.Mutex
 	now      time.Time
 	produced int
@@ -358,7 +411,10 @@ func (r *run) start() {
 	r.cancel = cancel
 	r.done = make(chan struct{})
 	go func() {
-		_, _ = r.tb.ConsumeLoop(ctx, 0)
+		_, err := r.tb.ConsumeLoop(ctx, 0)
+		if err != nil {
+			r.loopErr.Store(&err)
+		}
 		close(r.done)
 	}()
 
@@ -376,10 +432,20 @@ func (r *run) sinkTurbine() {
 	var h core.Handler = &handler{}
 	if r.window != nil {
 		// A windowed pipeline's handler writes the window table and its sink
-		// receives nothing; the progress row is what the manager reads.
+		// receives nothing. The engine asserts the window's watermark on
+		// every commit, from what it has seen per partition, and that is what
+		// the manager reads. A restart rebuilds the tracker from the table
+		// and the row, as run does once the tables exist.
 		h = r.window.handler
+		w := r.window.newWatermarks(r.t, r.clock)
 		opts = append(opts,
 			core.WithProgressStore(core.NewProgressStore(r.window.db.pipeline)),
+			core.WithWindows(w, core.NewWatermarkStore(r.window.db.pipeline)),
+			// Every commit that moves a watermark writes it. Production paces
+			// the write at a second, which a script's steps happen to clear
+			// today; pinning it here keeps a scenario with finer steps from
+			// silently asserting nothing.
+			core.WithWatermarkWriteInterval(0),
 			// As run wires a windowing pipeline: a record whose event time
 			// the engine cannot place is refused before the handler.
 			core.WithEventTimePlacement(true))
@@ -445,23 +511,31 @@ func (r *run) deliver(p int32, ids []int64) {
 		r.t.Fatal("the loop never took the batch")
 	}
 	if r.window == nil {
-		r.await(func() bool { total, _ := r.sink.counts(); return total >= want })
+		r.await(fmt.Sprintf("the sink to hold %d rows", want),
+			func() bool { total, _ := r.sink.counts(); return total >= want })
 		return
 	}
 	// The window table plus what the manager has already published: a close
 	// between the write and this read moves rows from one to the other.
-	r.await(func() bool {
+	r.await(fmt.Sprintf("the handler to write %d rows of partition %d (table + published >= %d)",
+		len(batch), p, want), func() bool {
 		published, _ := r.window.sink.counts()
 		return int(r.windowRows()+published) >= want
 	})
 }
 
-func (r *run) await(cond func() bool) {
+// await blocks until cond holds, and says what it was waiting for when it
+// does not. The message matters: two steps wait here for different things,
+// and one message for both turns a flake into a guess.
+func (r *run) await(what string, cond func() bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for !cond() {
+		if err := r.loopErr.Load(); err != nil {
+			r.t.Fatalf("waiting for %s: the consume loop stopped: %v", what, *err)
+		}
 		if time.Now().After(deadline) {
-			r.t.Fatal("the run did not reach the state the step waited for")
+			r.t.Fatalf("waited 5s for %s and it never happened", what)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -510,19 +584,25 @@ func (p Produce) apply(r *run) {
 
 func (IdleTick) apply(r *run) {
 	// The commit the tick causes is what a poll after it reads, so the step
-	// waits for it: handing off the trigger only means the loop woke up.
-	var before int64
-	if r.window != nil {
-		before = r.lastCommitMicros()
-	}
+	// waits for it: handing off the trigger only means the loop woke up. The
+	// tick writes no progress row -- it asserts a watermark only when one
+	// moved -- so the wait is on the engine's count of completed commits.
+	//
+	// Not on the commit's timestamp, which is what this waited on first and
+	// which hangs: the loop stamps a commit with the clock as it stands when
+	// it runs, the script owns that clock, and a batch's commit landing after
+	// the script has moved it carries the same instant the tick's will. Under
+	// -race that happened reliably, and a wait for a strictly later instant
+	// never returned, because the clock only moves when the script does and
+	// the script was waiting.
+	before := r.tb.Commits()
 	select {
 	case r.trigger <- r.clock():
 	case <-time.After(5 * time.Second):
 		r.t.Fatal("the loop never took the idle tick")
 	}
-	if r.window != nil {
-		r.await(func() bool { return r.lastCommitMicros() > before })
-	}
+	r.await(fmt.Sprintf("the loop's commit number %d", before+1),
+		func() bool { return r.tb.Commits() > before })
 }
 
 func (s Elapse) apply(r *run) {
@@ -532,6 +612,8 @@ func (s Elapse) apply(r *run) {
 }
 
 func (v Revoke) apply(r *run) { r.src.revoke(v.Partition) }
+
+func (l Lose) apply(r *run) { r.src.lose(l.Partition) }
 
 func (a Assign) apply(r *run) { r.src.assign(a.Partition) }
 

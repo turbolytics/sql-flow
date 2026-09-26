@@ -3,6 +3,7 @@ package managers
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,9 @@ func newTestDB(tb testing.TB, path string) *testDB {
 		tb.Fatal(err)
 	}
 	if err := NewStore(pipeline).Init(ctx); err != nil {
+		tb.Fatal(err)
+	}
+	if err := core.NewWatermarkStore(pipeline).Init(ctx); err != nil {
 		tb.Fatal(err)
 	}
 	manager := managerConn(tb, db)
@@ -199,33 +203,28 @@ func insertBucket(tb testing.TB, conn adbc.Connection, n int, city string, count
 		bucket(n).Format("2006-01-02 15:04:05-07:00"), city, count))
 }
 
-// arrivedAt writes the progress row as the commit of a batch leaves it: the
-// arrival and the commit at the same instant. The table is created if the
-// pipeline never did.
-func arrivedAt(tb testing.TB, conn adbc.Connection, at time.Time) {
+// assertAt writes the engine's watermark for the test table by hand, as a
+// batch's commit leaves it. The table is created if no engine did.
+func assertAt(tb testing.TB, conn adbc.Connection, at time.Time) {
 	tb.Helper()
-	progressAt(tb, conn, at, at)
+	if err := core.NewWatermarkStore(conn).Init(context.Background()); err != nil {
+		tb.Fatal(err)
+	}
+	if err := core.NewWatermarkStore(conn).Save(context.Background(), testTable, at); err != nil {
+		tb.Fatal(err)
+	}
 }
 
-// progressAt writes the progress row the idle rule reads: the engine's
-// statement that, as of commit, the newest arrival was arrival. An idle tick
-// is a later commit against the same arrival.
-func progressAt(tb testing.TB, conn adbc.Connection, arrival, commit time.Time) {
-	tb.Helper()
-	exec(tb, conn, `CREATE TABLE IF NOT EXISTS sqlflow_progress (last_arrival TIMESTAMPTZ, last_commit TIMESTAMPTZ, messages BIGINT NOT NULL)`)
-	exec(tb, conn, `DELETE FROM sqlflow_progress`)
-	exec(tb, conn, fmt.Sprintf(`INSERT INTO sqlflow_progress VALUES (TIMESTAMPTZ '%s', TIMESTAMPTZ '%s', 0)`,
-		arrival.UTC().Format("2006-01-02 15:04:05-07:00"), commit.UTC().Format("2006-01-02 15:04:05-07:00")))
-}
-
-// newTestWatermark builds the manager on the manager connection with a
-// clock the test controls.
+// newTestWatermark builds the manager on the manager connection. The
+// engine's watermark table exists from here, empty until assertAt.
 func newTestWatermark(tb testing.TB, d *testDB, decl Declaration, sink interface {
 	WriteTable(context.Context, arrow.Table) error
 	Flush(context.Context) error
-}, now func() time.Time, opts ...Option) *Watermark {
+}, opts ...Option) *Watermark {
 	tb.Helper()
-	opts = append([]Option{WithClock(now)}, opts...)
+	if err := core.NewWatermarkStore(d.pipeline).Init(context.Background()); err != nil {
+		tb.Fatal(err)
+	}
 	w, err := NewWatermark(d.manager, decl, time.Hour, sink, opts...)
 	if err != nil {
 		tb.Fatal(err)

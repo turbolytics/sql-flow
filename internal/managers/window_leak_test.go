@@ -3,6 +3,7 @@ package managers
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -209,6 +210,10 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 	if err := NewStore(conn).Init(ctx); err != nil {
 		tb.Fatal(err)
 	}
+	watermarks := core.NewWatermarkStore(conn)
+	if err := watermarks.Init(ctx); err != nil {
+		tb.Fatal(err)
+	}
 	mconn := managerConn(tb, db)
 	defer mconn.Close()
 
@@ -265,6 +270,13 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 			}
 			if tbl != nil {
 				tbl.Release()
+			}
+			// The engine's commit: the batch's newest event time less the
+			// grace, asserted beside the rows. minute is one past the
+			// messages' minute by now.
+			newest := time.Unix(int64(minute-1)*60, 0).UTC()
+			if err := watermarks.Save(ctx, "w", newest.Add(-sc.declaration().Grace)); err != nil {
+				tb.Fatal(err)
 			}
 			// The pipeline polls on a timer, about six times a minute at the
 			// demo's rate. Once per batch keeps the ratio close enough.

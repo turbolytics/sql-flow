@@ -140,27 +140,20 @@ type Source interface {
 }
 
 // Deliverer is implemented by a source that knows when it can deliver at
-// all: a Kafka consumer holding partitions, a websocket that is connected.
+// all: a websocket that is connected, an MQTT client with a session.
 //
-// The engine counts quiet only while it waits on a source that could have
-// delivered. A consumer rejoining its group after a crash waits for the
-// session timeout, 45 seconds by default, before it holds anything, and
-// with idle_close_seconds below that every bucket saved in the state
-// database closed before the backlog arrived; the backlog's rows were then
-// late. Delivering reports whether the source can deliver now and for how
-// long it has been able to, and the engine's quiet clock never runs
-// earlier than that. It is a duration rather than an instant so that no
-// implementer can hand back a wall-clock reading with the monotonic clock
-// stripped, which would put the clock-step bug back on this path. A source
-// that does not implement this is taken to be delivering whenever it is
-// running.
+// For a source that reports no partitions, this is its partition lifecycle
+// (see watermarks.go): one partition, held while the source can deliver
+// and lost while it cannot. A reconnect longer than idle_close_seconds is
+// then not a quiet stream: the window holds through it, and idleness is
+// measured again from the resumption. A source that reports its partitions
+// (PartitionOwner) is tracked through those instead; a source that
+// implements neither is taken to be delivering whenever it is running.
 //
-// The trade-off: a source that can never deliver, a consumer in a group
-// with more members than partitions or one whose topic is gone, holds the
-// quiet clock at zero for as long as that lasts, and no window closes on
-// idleness meanwhile. Before this it closed, too early. The engine logs
-// when a source stops delivering and when it resumes, with how long it was
-// out, so a hold that never ends is visible.
+// The trade-off: a source that can never deliver holds every window open
+// for as long as that lasts, and no bucket closes on idleness meanwhile.
+// The engine logs when a source stops delivering and when it resumes, so a
+// hold that never ends is visible.
 type Deliverer interface {
 	Delivering() (deliveringFor time.Duration, ok bool)
 }
@@ -338,33 +331,42 @@ type Turbine struct {
 	// snapshot is the in-memory copy of what progress last recorded, read by
 	// /stats and /healthz without touching the database. Guarded by lock.
 	snapshot Progress
-	// quietSince is the last instant this process was doing anything other
-	// than waiting on the source: seeded when the turbine is built and again
-	// when the loop starts, and stamped at the end of every batch, after the
-	// sink write. The progress row confirms quiet from here to the commit,
-	// and that is the only quiet this process watched. A restart, a sink
-	// held in retries and a wall clock stepping forward are not quiet, and
-	// each was read as quiet once: the outage between a previous process's
-	// last arrival and this one's first tick, the hold between an arrival
-	// stamped before the write and the commit after it, and a step between
-	// two wall-clock readings. It keeps its monotonic reading, so the
-	// elapsed against it is measured on the monotonic clock; UTC() would
-	// strip that. Guarded by lock.
-	quietSince time.Time
-	// notDeliveringSince is when the source last reported it could not
-	// deliver, zero while it can. Only for the two log lines. Guarded by
-	// lock.
-	notDeliveringSince time.Time
-	// commits counts successful state commits, for tests that wait on ticks.
-	// Guarded by lock.
+	// lastArrival is when the newest batch reached the sink, for the
+	// progress row's liveness: seeded when the turbine is built and when the
+	// loop starts, stamped at the end of every batch. Nothing decides a
+	// window on it. Guarded by lock.
+	lastArrival time.Time
+	// commits counts commits that completed, with or without a state
+	// transaction, for a caller that waits on ticks. It counts commits and
+	// not instants on purpose: a simulator drives the clock, so two commits
+	// can carry the same stamp and a reader waiting for a later one would
+	// wait forever. Guarded by lock.
 	commits int64
 	// progressWrittenAt is when the progress table was last written, and
 	// progressEvery is how often it may be. Guarded by lock.
 	progressWrittenAt time.Time
 	progressEvery     time.Duration
-	// confirmsQuiet is whether idle ticks write the row; see
-	// WithQuietConfirmation.
-	confirmsQuiet bool
+	// windows asserts each window's watermark, written through
+	// watermarkSaver; nil for a pipeline with no window. See WithWindows and
+	// watermarks.go.
+	windows        *Watermarks
+	watermarkSaver WatermarkSaver
+	// watermarkWrittenAt is when a watermark was last written, and
+	// watermarkEvery is how often one may be. Guarded by lock; see
+	// assertWatermarks for why the write is paced at all.
+	watermarkWrittenAt time.Time
+	watermarkEvery     time.Duration
+	// observed is what this batch's records said about their partitions,
+	// accumulated by the message loop and handed to windows once per batch;
+	// see notePlaced. Reused across batches, and the consume loop is its only
+	// party, so it takes no lock.
+	observed []Observation
+	// partitionsRelayed is whether the source reports its partitions to
+	// windows itself. Otherwise the loop asks the source whether it can
+	// deliver before each commit, and notDelivering is the last answer, for
+	// the two log lines.
+	partitionsRelayed bool
+	notDelivering     bool
 	// placesEventTime is whether a message whose event time this engine
 	// cannot place is refused; see WithEventTimePlacement. Set for a
 	// pipeline that windows, because a window is what an unplaceable event
@@ -492,15 +494,32 @@ const (
 	progressSkipped
 )
 
-// WithQuietConfirmation says whether idle ticks write the progress row.
-// The row's job between batches is to confirm a quiet stream to a window
-// with idle_close_seconds, and a pipeline with no such window has no
-// reader: its idle ticks then do no accounting at all, no statement, no
-// WAL append, no fsync, which on a box that runs its state from an SD card
-// is the difference between a quiet pipeline and a busy one. Batches still
-// write on the interval, and the drain still writes once. On by default.
-func WithQuietConfirmation(on bool) TurbineOption {
-	return func(t *Turbine) { t.confirmsQuiet = on }
+// WithWindows makes the engine assert each window's watermark on every
+// commit, through the saver, inside the state transaction where there is
+// one; see watermarks.go. The tracker learns the source's partitions from
+// the source itself: a PartitionOwner reports them, a Deliverer is one
+// partition held while it delivers, anything else is one partition always
+// held.
+//
+// A pipeline with no window leaves this unset, and its idle ticks then do
+// no accounting at all: no statement, no WAL append, no fsync, which on a
+// box that runs its state from an SD card is the difference between a quiet
+// pipeline and a busy one. A windowing pipeline's idle tick writes only
+// when a watermark moved, which on a quiet stream is once, when the last
+// partition goes idle.
+func WithWindows(w *Watermarks, s WatermarkSaver) TurbineOption {
+	return func(t *Turbine) {
+		t.windows = w
+		t.watermarkSaver = s
+	}
+}
+
+// WithWatermarkWriteInterval bounds how often a window's watermark is
+// written. Zero writes on every commit that moves one, which is what a test
+// wants when it is checking what gets asserted rather than how often.
+// Production leaves it at watermarkWriteInterval; see assertWatermarks.
+func WithWatermarkWriteInterval(d time.Duration) TurbineOption {
+	return func(t *Turbine) { t.watermarkEvery = d }
 }
 
 // WithEventTimePlacement refuses a message whose event time this engine
@@ -517,9 +536,9 @@ func WithQuietConfirmation(on bool) TurbineOption {
 // decides on event time against the watermark, in one domain, and
 // window.close_lag_ignores_the_host_clock says its host's clock cannot move
 // a window; putting the comparison here keeps that true. The engine already
-// owns a clock -- it is what the quiet clock and the idle tick are measured
-// on -- and it is where the record and its event time are, which is where
-// Flink puts the timestamp assigner too.
+// owns a clock -- it is what a partition's idleness is measured on -- and it
+// is where the record and its event time are, which is where Flink puts the
+// timestamp assigner too.
 //
 // The exposure this leaves is a host whose own clock is wrong: a gateway
 // with no real-time clock boots near 1970 and would refuse every correctly
@@ -559,12 +578,18 @@ func (t *Turbine) Progress() Progress {
 	return p
 }
 
-// commitCount is how many state commits have succeeded; tests wait on it.
+// commitCount is how many commits have completed; tests wait on it.
 func (t *Turbine) commitCount() int64 {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	return t.commits
 }
+
+// Commits is how many commits have completed, batches and idle ticks alike.
+// A caller that drives the loop's flush trigger waits on this to know the
+// commit it asked for has happened: it counts events rather than reporting
+// an instant, so a driven clock cannot make two commits indistinguishable.
+func (t *Turbine) Commits() int64 { return t.commitCount() }
 
 // progressWriteInterval bounds how often sqlflow_progress is written. The
 // snapshot behind /stats and /healthz is updated on every commit regardless;
@@ -572,80 +597,142 @@ func (t *Turbine) commitCount() int64 {
 // its two clocks against an idle bound measured in tens of seconds.
 const progressWriteInterval = time.Second
 
-// holdQuietWhileNotDelivering keeps the quiet clock from running over time
-// the source could not deliver. A source that is not delivering resets it
-// to now; one that resumed since the clock was last set moves it to the
-// resumption, so the tick after a rebalance ends confirms quiet from the
-// assignment rather than from the loop's last stamp. Called before every
-// commit that is not a batch's: the idle tick, and the drain, where a
-// forced write during a rebalance would otherwise span it.
-//
-// The transitions are logged once each, so a source that never resumes
-// shows up as a stop with no resumption after it.
-func (t *Turbine) holdQuietWhileNotDelivering() {
+// watermarkWriteInterval bounds how often a window's watermark is written.
+// One UPDATE measures about 130 microseconds through ADBC
+// (BenchmarkCommitStateWindowed), and on a busy pipeline event time advances
+// on every batch, so writing per commit is a statement per batch -- the same
+// cost the progress write was paced to avoid, for a value with the same
+// reader. A window manager reads this once per poll_interval_seconds, ten
+// seconds by default, so writing it more often than the pace below buys
+// nothing at all.
+const watermarkWriteInterval = time.Second
+
+// watchSource tells the tracker what the source holds. A source that
+// reports its partitions is subscribed once, here; the tracker then hears
+// every assignment, revocation and loss from the source's own goroutine. A
+// source that only knows whether it can deliver is asked before each
+// commit, in noteDelivering.
+func (t *Turbine) watchSource() {
+	if t.windows == nil {
+		return
+	}
+	switch s := t.source.(type) {
+	case PartitionOwner:
+		t.partitionsRelayed = true
+		s.OnPartitions(t.windows.Assigned, t.windows.Released, t.windows.Lost)
+	case Deliverer:
+		_, ok := s.Delivering()
+		t.windows.SetDelivering(ok)
+		t.notDelivering = !ok
+	default:
+		t.windows.SetDelivering(true)
+	}
+}
+
+// noteDelivering asks a partition-less source whether it can deliver, so
+// the tracker holds its one partition as lost through a reconnect. The
+// transitions are logged once each, so a source that never resumes shows
+// up as a stop with no resumption after it.
+func (t *Turbine) noteDelivering() {
+	if t.windows == nil || t.partitionsRelayed {
+		return
+	}
 	d, ok := t.source.(Deliverer)
 	if !ok {
 		return
 	}
-	deliveringFor, delivering := d.Delivering()
-	now := t.now()
-
-	// The transition is decided under the lock and logged after it: the
-	// lock is the connection's, which the debug API also takes, and a log
-	// line is I/O.
-	var stopped bool
-	var outage time.Duration
-	t.lock.Lock()
+	_, delivering := d.Delivering()
+	t.windows.SetDelivering(delivering)
 	switch {
-	case !delivering:
-		if t.notDeliveringSince.IsZero() {
-			t.notDeliveringSince = now
-			stopped = true
-		}
-		t.quietSince = now
-	default:
-		if !t.notDeliveringSince.IsZero() {
-			outage = now.Sub(t.notDeliveringSince)
-			t.notDeliveringSince = time.Time{}
-		}
-		if since := now.Add(-deliveringFor); since.After(t.quietSince) {
-			t.quietSince = since
-		}
+	case !delivering && !t.notDelivering:
+		t.notDelivering = true
+		t.logger.Warn("source is not delivering; its windows hold until it does")
+	case delivering && t.notDelivering:
+		t.notDelivering = false
+		t.logger.Info("source is delivering again")
 	}
-	t.lock.Unlock()
+}
 
-	if stopped {
-		t.logger.Warn("source is not delivering; no window closes on idleness until it does")
+// assertWatermarks writes every window's watermark that moved, on the
+// pipeline's connection. Inside the state transaction it rides the batch:
+// the rows and the promise about them commit together or not at all, which
+// is what makes #374 unrepresentable rather than fixed. Without one the
+// write autocommits after the handler's rows have, which is the late
+// direction: a reader can see rows without the watermark that accounts for
+// them, and holds, but never a watermark without its rows.
+//
+// The write is paced, at watermarkWriteInterval, and forced by the drain.
+// Skipping one leaves the watermark older than the rows it describes, which
+// is the safe direction in exactly the same way: a close that is late leaves
+// rows in the table for the next poll, and only an early one splits a bucket
+// and publishes it twice. Nothing is lost by the skip, because the value is
+// recomputed from the tracker each time rather than accumulated, so the next
+// write carries wherever the stream has got to by then. What it buys is one
+// statement a second instead of one a batch.
+//
+// The tracker records the values only once the caller reports the commit, so
+// a batch that rolls back -- and a write the pace skipped -- asserts again
+// later.
+func (t *Turbine) assertWatermarks(ctx context.Context, write progressWrite) (map[string]time.Time, error) {
+	if t.windows == nil {
+		return nil, nil
 	}
-	if outage > 0 {
-		t.logger.Info("source is delivering again", zap.Duration("not_delivering_for", outage))
+	moved := t.windows.Next()
+	if len(moved) == 0 {
+		return moved, nil
 	}
+	// Both stamps carry monotonic readings, so a wall clock stepping back
+	// cannot make this negative; the guard is for a stamp without one, which
+	// a test can inject, and which would otherwise stop the write for as long
+	// as the step was.
+	now := t.now()
+	t.lock.Lock()
+	elapsed := now.Sub(t.watermarkWrittenAt)
+	due := elapsed >= t.watermarkEvery || elapsed < 0
+	t.lock.Unlock()
+	if !due && write != progressForced {
+		return nil, nil
+	}
+	// Held through the writes: they run on the pipeline's connection, which
+	// the debug API also runs statements on, and DuckDB closes a pending
+	// result the moment another statement runs on the same connection (#283).
+	// The window managers are not a party -- they poll on connections of
+	// their own -- and the state branch of commitState takes this lock after
+	// this returns, so nothing here nests.
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	// Advanced on every attempt, success or not, so a store that keeps
+	// failing is retried once an interval rather than on every commit.
+	t.watermarkWrittenAt = now
+	for name, at := range moved {
+		if err := t.watermarkSaver.Save(ctx, name, at); err != nil {
+			return nil, err
+		}
+	}
+	return moved, nil
 }
 
 // recordProgress runs at the top of every commit, before the state guard.
 //
 // Two audiences, and they are not the same requirement. The snapshot is what
 // /stats and /healthz read, so every pipeline needs it whether or not it has
-// a state database, and it costs an assignment. The table is what SQL reads,
-// and it costs a statement on the commit path. The engine reads it in one
-// place, the idle-close branch of the watermark predicate; handler SQL,
-// emit_sql, a sqlcommand sink and /debug can read it too.
+// a state database, and it costs an assignment. The table is what SQL reads
+// -- handler SQL, emit_sql, a sqlcommand sink and /debug -- and it costs a
+// statement on the commit path. The engine itself reads nothing from it:
+// a window's progress is the watermark the engine asserts, not a gap
+// between this row's clocks.
 //
-// The table is written on every pipeline, including those where the engine
-// never reads it: a table that exists but silently stops being maintained is
-// a worse trap than one that costs a little. It is written on the interval,
-// and forced by the drain. A commit inside the interval of the last write
-// skips it, and nothing is lost by the skip: every write carries the arrival
-// clock as it stands, so the next write reports the same arrival at its true
-// time, and a reader measures the quiet from the right instant.
+// The table is written on every pipeline: a table that exists but silently
+// stops being maintained is a worse trap than one that costs a little. It
+// is written on the interval by batches, and forced by the drain; an idle
+// tick keeps the snapshot and leaves the table alone, so a quiet pipeline
+// writes nothing. A commit inside the interval of the last write skips it,
+// and nothing is lost by the skip: every write carries the arrival as it
+// stands, so the next write reports the same arrival at its true time.
 //
 // The interval used to be overridden by any commit carrying a newer arrival,
 // which under load is every commit: a statement per batch, 8 percent of
-// throughput at batch 5000 and a quarter at batch 500. That existed for a
-// reader that compared last_arrival against its own clock, for which a stale
-// arrival meant an early close. The reader now compares the row's two clocks
-// against each other (managers.nextWatermark), so a late write is a late
-// close, never an early one, and the interval is enough.
+// throughput at batch 5000 and a quarter at batch 500.
 //
 // A batch since the last commit moves the arrival clock; an idle tick moves
 // the commit clock only.
@@ -665,31 +752,20 @@ func (t *Turbine) recordProgress(ctx context.Context, write progressWrite) error
 	// poll on connections of their own and never take this lock.
 	t.lock.Lock()
 	defer t.lock.Unlock()
-	// The commit clock is the arrival clock plus the monotonic elapsed, not
-	// a second wall-clock reading: the row's difference is then what the
-	// monotonic clock measured, and a wall clock stepped forward between the
-	// two is not read as quiet. The arrival itself is written as stamped, so
-	// it is the same value on every write until the next batch.
 	p := Progress{
-		LastArrival: t.quietSince,
-		LastCommit:  t.quietSince.Add(now.Sub(t.quietSince)),
+		LastArrival: t.lastArrival,
+		LastCommit:  now,
 		Messages:    t.stats.MessagesConsumed(),
 	}
 	t.snapshot.LastArrival = p.LastArrival
 	t.snapshot.LastCommit = p.LastCommit
 	t.snapshot.Messages = p.Messages
 
-	// The clock term is load-bearing for windows, not only housekeeping. An
-	// idle tick is due on it alone, and that write, a later last_commit
-	// against the same last_arrival, is the only thing that confirms to a
-	// window manager that the stream is quiet. Without it no window would
-	// ever close on idleness.
-	//
 	// Both stamps carry monotonic readings, so a wall clock stepping back
 	// cannot make this negative. The guard stays for a stamp without one,
 	// which a test can inject: comparing now.Sub(written) >= interval alone
-	// would then be false for as long as the step was, the table would stop
-	// being written, and with it every window's idle close.
+	// would then be false for as long as the step was, and the table would
+	// stop being written.
 	elapsed := now.Sub(t.progressWrittenAt)
 	due := elapsed >= t.progressEvery || elapsed < 0
 
@@ -713,8 +789,7 @@ func (t *Turbine) recordProgress(ctx context.Context, write progressWrite) error
 	// The throttle advances on every attempt, success or not, so a store
 	// that keeps failing is retried once an interval and not on every
 	// commit. A failed write's arrival is not carried specially: the next
-	// write reports it, at shutdown the drain forces one, and until a write
-	// succeeds the row confirms no quiet, so no window closes on it.
+	// write reports it, and at shutdown the drain forces one.
 	t.progressWrittenAt = now
 
 	return t.progress.Record(ctx, p)
@@ -751,19 +826,19 @@ func NewTurbine(
 	opts ...TurbineOption,
 ) *Turbine {
 	t := &Turbine{
-		source:        source,
-		marks:         NewMarks(),
-		committed:     NewMarks(),
-		sink:          sink,
-		handler:       handler,
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		progressEvery: progressWriteInterval,
-		confirmsQuiet: true,
-		lock:          lock,
-		running:       true,
-		stats:         &Stats{},
-		errorPolicy:   policy,
+		source:         source,
+		marks:          NewMarks(),
+		committed:      NewMarks(),
+		sink:           sink,
+		handler:        handler,
+		batchSize:      batchSize,
+		flushInterval:  flushInterval,
+		progressEvery:  progressWriteInterval,
+		watermarkEvery: watermarkWriteInterval,
+		lock:           lock,
+		running:        true,
+		stats:          &Stats{},
+		errorPolicy:    policy,
 
 		logger: zap.NewNop(),
 	}
@@ -800,10 +875,10 @@ func NewTurbine(
 	}
 
 	// Seeded after the options, so WithClock governs the first instants as
-	// well as every later one. The quiet a row may confirm starts no earlier
-	// than the turbine itself.
-	t.quietSince = t.now()
+	// well as every later one.
+	t.lastArrival = t.now()
 	t.stats.StartTime = t.now().UTC()
+	t.watchSource()
 
 	if t.drain == nil {
 		t.drain = NewDrainBudget(DefaultDrainDeadline)
@@ -891,10 +966,8 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 
 	t.stats.StartTime = t.now().UTC()
 	t.stats.SetNumMessagesConsumed(0)
-	// The quiet the row may confirm starts here, not at the previous
-	// process's last arrival, which the row still carries.
 	t.lock.Lock()
-	t.quietSince = t.now()
+	t.lastArrival = t.now()
 	t.lock.Unlock()
 	// Under the lock: the debug API may already be running statements on
 	// this connection.
@@ -954,25 +1027,16 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				numBatchMessages = 0
 				continue
 			}
-			// Nothing buffered. This tick's job is the progress write: a
-			// commit with a later last_commit against the same last_arrival
-			// is the only thing that confirms to a window manager that the
-			// stream is quiet, and without it no window would ever close on
-			// idleness. With a state path it also ends the batch transaction
+			// Nothing buffered. This tick's job is the watermark: a
+			// partition that has gone idle since the last commit leaves the
+			// minimum here, and when the last one does, every window closes
+			// through what it holds. That is the only write a tick makes,
+			// and only when a watermark moved, so a quiet pipeline writes
+			// nothing. With a state path it also ends the batch transaction
 			// left open since the last commit, so nothing stays uncommitted
-			// on the connection for as long as the stream is silent.
-			//
-			// Where no window closes on idleness nothing reads the row
-			// between batches, and the tick writes nothing: that is the
-			// accounting a pipeline that is not a windowed stream does not
-			// pay for.
-			write := progressOnInterval
-			if t.confirmsQuiet {
-				t.holdQuietWhileNotDelivering()
-			} else {
-				write = progressSkipped
-			}
-			if err := t.commitState(batchCtx, write); err != nil {
+			// on the connection for as long as the stream is silent. The
+			// progress row is left alone: nothing reads it between batches.
+			if err := t.commitState(batchCtx, progressSkipped); err != nil {
 				t.recordError(ctx, err, phaseStateCommit, "error committing state on idle tick")
 				return nil, err
 			}
@@ -1114,6 +1178,19 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 					break
 				}
 				continue
+			}
+			// Placed, so it counts toward the watermark, whether or not the
+			// handler takes it: a record an error policy drops still says
+			// where the stream has got to, as Flink's assigner does.
+			//
+			// Accumulated here and handed to the tracker once, when the batch
+			// is processed. Calling the tracker per record takes its mutex per
+			// record, which measured at 52ns against a loop whose own budget
+			// is around 40 -- the same shape as the phase timing this loop
+			// already refuses. A partition is one entry, and a fetch spans
+			// few, so the scan below is a comparison or two.
+			if t.windows != nil {
+				t.notePlaced(raw.Topic, raw.Partition, raw.EventAtNanos)
 			}
 			if err := t.writeMessage(raw); err != nil {
 				t.recordError(ctx, err, phaseHandlerWrite, "error writing message")
@@ -1504,20 +1581,41 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 //
 // A pipeline with no state database commits nothing here; its progress write
 // autocommits by itself.
+//
+// The watermark is asserted before the progress row is recorded, and that
+// order is load-bearing rather than incidental. The progress snapshot is the
+// observable "this commit happened" signal -- /stats and /healthz read it,
+// and so does anything waiting on a commit -- so a reader that sees a newer
+// commit clock can rely on the watermark that commit asserted being visible
+// already. Recorded first, the snapshot moved while the assertion was still
+// unwritten, and a poll that ran in between read the older watermark.
 func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
+	t.noteDelivering()
+	moved, watermarkErr := t.assertWatermarks(ctx, write)
 	progressErr := t.recordProgress(ctx, write)
 
 	if t.offsets == nil || t.stateTx == nil {
 		if progressErr != nil {
 			// The write autocommitted by itself, so the batch is untouched
-			// and the pipeline carries on. What stops is the idle close: it
-			// acts on what this row confirms, so while the write fails no
-			// window closes on idleness and a quiet stream's last buckets
-			// wait. It gets its own code so an alert can tell it from a state
-			// commit that failed, which means the pipeline is stopping.
+			// and the pipeline carries on. It gets its own code so an alert
+			// can tell it from a state commit that failed, which means the
+			// pipeline is stopping.
 			t.recordError(ctx, errs.Wrap(errs.CodeProgressWriteFailed, progressErr,
 				"sqlflow_progress not written"), phaseStateCommit, "sqlflow_progress not written")
 		}
+		// The watermark autocommitted by itself too, after the handler's
+		// rows. A failed write leaves the manager holding, which is the
+		// late direction; the next move writes the newer value.
+		switch {
+		case watermarkErr != nil:
+			t.recordError(ctx, errs.Wrap(errs.CodeWatermarkWriteFailed, watermarkErr,
+				"sqlflow_watermarks not written"), phaseStateCommit, "sqlflow_watermarks not written")
+		case t.windows != nil:
+			t.windows.Commit(moved)
+		}
+		t.lock.Lock()
+		t.commits++
+		t.lock.Unlock()
 		return nil
 	}
 
@@ -1545,6 +1643,15 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 			"the progress write failed inside the state transaction")
 	}
 
+	// The watermark rode this transaction, beside the rows it describes, so a
+	// write DuckDB refused is this batch's failure like any other.
+	if watermarkErr != nil {
+		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
+			t.logger.Error("rollback after failed watermark write", zap.Error(rbErr))
+		}
+		return errs.Wrap(errs.CodeStateCommitFailed, watermarkErr, "asserting the watermark")
+	}
+
 	if err := t.offsets.Save(ctx, t.marks); err != nil {
 		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed offset save", zap.Error(rbErr))
@@ -1561,6 +1668,9 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		}
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing state")
 	}
+	if t.windows != nil {
+		t.windows.Commit(moved)
+	}
 
 	t.commits++
 	t.committed.Reset(t.marks)
@@ -1573,30 +1683,19 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 }
 
 // SyncState closes the open state transaction, making everything written
-// since the last commit durable, and forces the progress write whether or not
-// the interval has come due. A pipeline with no state database has no
-// transaction to close, but its progress write is still forced, because a
-// window's final poll reads it with or without a state path.
+// since the last commit durable, forces the progress write whether or not
+// the interval has come due, and asserts the watermarks as they stand. A
+// pipeline with no state database has no transaction to close, but the
+// other two still happen.
 //
 // Shutdown uses it twice: once before the table managers run their final
-// poll, so that poll reads a progress row confirming the quiet up to the
-// signal rather than up to the last interval write, and once after, so the
-// batch transaction is closed with everything the drain wrote. The managers
+// poll, so that poll reads the watermark up to the signal -- a partition
+// that went idle just before it leaves the minimum here, and the buckets a
+// clean shutdown should close are closed -- and once after, so the batch
+// transaction is closed with everything the drain wrote. The managers
 // commit their own transactions on their own connections; neither call is
-// for them. The second forced write is one statement, and keeping
-// SyncState's contract the same both times is worth more than saving it.
+// for them.
 func (t *Turbine) SyncState(ctx context.Context) error {
-	// The drain forces the progress write. root.go calls this before the
-	// managers' final poll, and that poll closes on idleness only for the
-	// quiet the row confirms. The last regular write was up to an interval
-	// ago, or failed, and either way the quiet since then is unconfirmed:
-	// a stream that stopped just under idle_close before the signal would
-	// leave the poll with buckets open that a clean shutdown should close.
-	//
-	// And the same hold the idle tick applies: a signal during a rebalance
-	// or a reconnect forced a write whose quiet spanned it, the final poll
-	// closed every open bucket, and the backlog after the restart was late.
-	t.holdQuietWhileNotDelivering()
 	return t.commitState(ctx, progressForced)
 }
 
@@ -1611,6 +1710,12 @@ func (t *Turbine) SyncState(ctx context.Context) error {
 
 func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error {
 	b0 := time.Now()
+
+	// What this batch's records said about their partitions, handed over
+	// before the commit that asserts a watermark from it. Here rather than
+	// in the message loop above, so a batch the loop abandoned -- max-msgs
+	// reached, a fatal error -- reports only the records it actually reached.
+	t.flushObservations()
 
 	t.lock.Lock()
 	batch, err := t.handler.Invoke(ctx)
@@ -1707,13 +1812,10 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	// duplicate -- recoverable -- while state and offsets stay consistent.
 	// Committing first would move the offsets past rows the sink never
 	// received, which loses them silently.
-	// The batch is done with the sink, so from here the loop is back to
-	// waiting on the source, and that is where the quiet the row may confirm
-	// starts. Stamped before the write, not the handler: the time inside a
-	// sink held in retries was not watched, and messages may have waited at
-	// the source through all of it.
+	// The batch has reached the sink: that is the arrival the progress row
+	// reports.
 	t.lock.Lock()
-	t.quietSince = t.now()
+	t.lastArrival = t.now()
 	t.lock.Unlock()
 
 	c0 := time.Now()
@@ -1809,6 +1911,33 @@ func (t *Turbine) logThroughput() {
 // second record here counted every failed flush twice.
 func (t *Turbine) flush(ctx context.Context, batch arrow.Table) error {
 	return t.sink.Flush(ctx)
+}
+
+// notePlaced accumulates one placed record against its partition, for
+// flushObservations to hand to the watermark tracker. Runs on the consume
+// loop only, so it takes no lock.
+func (t *Turbine) notePlaced(topic string, partition int32, atNanos int64) {
+	for i := range t.observed {
+		if t.observed[i].Partition == partition && t.observed[i].Topic == topic {
+			if atNanos > t.observed[i].NewestNanos {
+				t.observed[i].NewestNanos = atNanos
+			}
+			return
+		}
+	}
+	t.observed = append(t.observed, Observation{
+		Topic: topic, Partition: partition, NewestNanos: atNanos,
+	})
+}
+
+// flushObservations hands the batch's observations to the tracker and keeps
+// the slice for the next batch, so a steady pipeline allocates nothing here.
+func (t *Turbine) flushObservations() {
+	if t.windows == nil || len(t.observed) == 0 {
+		return
+	}
+	t.windows.ObserveBatch(t.observed)
+	t.observed = t.observed[:0]
 }
 
 // canPlace reports whether an event time is one this engine can put somewhere

@@ -46,11 +46,9 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
 
-	// The idle rule closes everything: the stream went quiet an hour ago, and
-	// the engine's idle ticks have said so ever since. The rule acts on that
-	// confirmation and not on the wall clock.
-	now := func() time.Time { return t0.Add(time.Hour) }
-	progressAt(t, d.pipeline, t0, t0.Add(time.Hour))
+	// The engine's assertion is written by hand where a check changes the
+	// table: Seed asserts exactly its buckets' end, SeedNewer asserts past the
+	// bucket it adds. Everything closes on that and on nothing else.
 
 	// The handler the bluesky demo runs, on the pipeline's connection. It
 	// checkpoints each time it re-initialises, which is the statement a
@@ -80,7 +78,7 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 			decl := testDecl()
 			decl.Late = LatePolicy(late)
 			w, err := NewWatermark(conn, decl, poll, sink,
-				WithDrainBudget(budget), WithClock(now))
+				WithDrainBudget(budget))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,6 +93,8 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 			for i := 0; i < n; i++ {
 				insertBucket(t, d.pipeline, i, "city", i+1)
 			}
+			// The engine has asserted the last seeded bucket's end.
+			assertAt(t, d.pipeline, bucket(n))
 		},
 
 		// The first bucket closed with Seed's, so rows for it are late.
@@ -146,7 +146,7 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 			decl := testDecl()
 			decl.Late = LatePolicy(late)
 			w, err := NewWatermark(heldConn{Connection: conn, hold: hold}, decl, time.Hour, sink,
-				WithDrainBudget(budget), WithClock(now))
+				WithDrainBudget(budget))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -159,16 +159,17 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 			decl := testDecl()
 			decl.Late = LatePolicy(late)
 			w, err := NewWatermark(conn, decl, time.Hour, sink,
-				WithDrainBudget(budget), WithClock(now), WithMeterProvider(mp))
+				WithDrainBudget(budget), WithMeterProvider(mp))
 			if err != nil {
 				t.Fatal(err)
 			}
 			return w
 		},
 
-		// A bucket past every one Seed wrote. The idle rule closes it.
+		// A bucket past every one Seed wrote, still under the assertion.
 		SeedNewer: func(t *testing.T) {
 			insertBucket(t, d.pipeline, 10, "newer", 1)
+			assertAt(t, d.pipeline, bucket(11))
 		},
 
 		LateInstrument: "window_late_rows",

@@ -59,6 +59,9 @@ func openWindowDB(t *testing.T) *windowDB {
 	if err := managers.NewStore(pipeline).Init(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := core.NewWatermarkStore(pipeline).Init(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err := core.NewProgressStore(pipeline).Init(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -349,11 +352,36 @@ func (Poll) apply(r *run) {
 	}
 }
 
-// lastCommitMicros is the commit clock the manager reads, so a step can wait
-// for the commit it caused rather than for a duration.
-func (r *run) lastCommitMicros() int64 {
-	return queryInt(r.t, r.window.db.reader,
-		`SELECT coalesce(epoch_us(last_commit), 0)::BIGINT FROM sqlflow_progress`)
+// newWatermarks builds the engine's tracker for the window, restored from
+// what the table and the row hold, the way run does at start. On the first
+// start both are empty; after a Restart they are what the previous process
+// left.
+func (w *windowRun) newWatermarks(t *testing.T, clock func() time.Time) *core.Watermarks {
+	t.Helper()
+	ctx := context.Background()
+	wm := core.NewWatermarks([]core.WindowSpec{{
+		Name: w.decl.Table, Size: w.decl.Size, Grace: w.decl.Grace, IdleClose: w.decl.IdleClose,
+	}}, clock)
+	newest, _, err := core.NewestBucketStart(ctx, w.db.reader, w.decl.Table, w.decl.TimeColumn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asserted, _, err := core.LoadWatermark(ctx, w.db.reader, w.decl.Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wm.Restore(w.decl.Table, newest, asserted)
+	return wm
+}
+
+// asserted is the engine's watermark for the window, for a diagram's
+// column: zero when nothing has been asserted.
+func (r *run) asserted() time.Time {
+	at, _, err := core.LoadWatermark(context.Background(), r.window.db.reader, r.window.decl.Table)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return at
 }
 
 // windowRows is what the window table still holds.

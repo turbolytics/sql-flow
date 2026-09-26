@@ -18,13 +18,10 @@ import (
 )
 
 // The idle close is a contract between two parties that never share a
-// connection: the engine writes sqlflow_progress, and a window manager reads
-// it to decide whether the stream has stopped. The manager's own tests seed
-// that row by hand. These drive the real writer and the real reader together,
-// built the way run builds them, because the rule is only as good as what
-// the engine actually writes -- and the engine writes on an interval, not on
-// every commit, so the rule has to hold against a row that is up to an
-// interval behind.
+// connection: the engine asserts the window's watermark, and the manager
+// reads it. The manager's own tests write that row by hand. These drive the
+// real writer and the real reader together, built the way run builds them,
+// because the rule is only as good as what the engine actually writes.
 
 // nilHandler accepts every message and yields no table, as the real handlers
 // do for an empty batch. The consume loop marks the arrival either way.
@@ -98,8 +95,9 @@ func (f *failingAfter) Record(ctx context.Context, p core.Progress) error {
 
 // idleCloseRig is a pipeline with one windowed table holding one open bucket,
 // a manager built the way run builds it, and a turbine wired the way run
-// wires it. The handler writes nothing: the bucket is seeded, and the stream
-// exists to move the arrival clock.
+// wires it -- including the watermark tracker, restored from the table as run
+// restores it once the tables exist. The handler writes nothing: the bucket is
+// seeded, and the stream exists to keep the partition out of idleness.
 type idleCloseRig struct {
 	published func() int64
 	poll      func() error
@@ -155,11 +153,20 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSa
 	// mode, manufactured by the rig rather than by the engine.
 	lock := &sync.Mutex{}
 
+	// The watermark tracker, wired and restored the way run does it. The
+	// pipeline has seen no rows of its own, so the close it makes when the
+	// stream stops is measured from what the table holds.
+	watermarks, windowOpts := windowOptions(conf, conn)
+	lock.Lock()
+	assert.NoError(t, restoreWindows(ctx, conf, conn, watermarks))
+	lock.Unlock()
+
 	// A 20ms flush interval, so a quiet stream ticks often. The progress
 	// write interval stays at its production second, and the store is wired
 	// the one way run wires it.
 	tb := core.NewTurbine(src, nilHandler{}, noopSink{}, 1, 20*time.Millisecond,
-		lock, core.PipelineErrorPolicies{}, core.WithProgressStore(recorder))
+		lock, core.PipelineErrorPolicies{},
+		append([]core.TurbineOption{core.WithProgressStore(recorder)}, windowOpts...)...)
 
 	loopCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -189,9 +196,10 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSa
 }
 
 // A stream that stops closes what it has. One batch, then silence: the
-// engine's idle ticks keep committing against the same arrival, and once one
-// lands the idle bound after it the manager has its confirmation.
-func TestManagerWindow_AQuietStreamClosesOnTheEnginesConfirmation(t *testing.T) {
+// engine's ticks keep committing, and once one finds the partition silent for
+// the idle bound the stream is done with what it has -- the assertion moves
+// past the newest bucket the table holds, and the manager publishes it.
+func TestManagerWindow_AQuietStreamClosesOnTheEnginesAssertion(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	rig := newIdleCloseRig(t, &tickingSource{every: time.Millisecond, limit: 1, release: make(chan struct{})}, nil)
 
@@ -208,12 +216,16 @@ func TestManagerWindow_AQuietStreamClosesOnTheEnginesConfirmation(t *testing.T) 
 }
 
 // The other direction, and the one that loses data. The stream is live the
-// whole time, a batch every ten milliseconds, but the progress store starts
-// refusing writes after the first. last_arrival freezes. Judged against the
-// wall clock that row looks like a stream that stopped, and idle_close_seconds
-// later every open bucket was published and deleted while rows for it were
-// still arriving.
-func TestManagerWindow_ALiveStreamWithAFailingProgressStoreNeverClosesOnIdleness(t *testing.T) {
+// whole time, a batch every ten milliseconds, so the partition is never
+// silent for the bound and nothing closes on idleness -- while the progress
+// store refuses every write after the first, which under the old design
+// froze last_arrival and made a live stream read as a stopped one.
+//
+// The progress row cannot affect a close at all now: the engine asserts the
+// watermark from what it has seen per partition, and a failing liveness write
+// is a failing liveness write. This proves the two are independent rather
+// than that the old reading was careful.
+func TestManagerWindow_ALiveStreamNeverClosesOnIdleness(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	src := &tickingSource{every: 10 * time.Millisecond, release: make(chan struct{})}
 	rig := newIdleCloseRig(t, src, func(inner core.ProgressSaver) core.ProgressSaver {
@@ -225,7 +237,7 @@ func TestManagerWindow_ALiveStreamWithAFailingProgressStoreNeverClosesOnIdleness
 		assert.NoError(t, rig.poll())
 		if n := rig.published(); n != 0 {
 			t.Fatalf("a live stream had its open bucket closed on idleness (%d rows published): "+
-				"the rule read a frozen last_arrival as a quiet stream", n)
+				"a partition that keeps delivering must never leave the minimum", n)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

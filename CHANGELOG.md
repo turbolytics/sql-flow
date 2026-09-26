@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### Changed
+
+- **Windowing is now decided by a watermark the engine asserts.** A window
+  manager needs one thing, how far the stream has got, and nothing used to
+  tell it: it inferred the answer from the newest bucket in its own table and
+  from the gap between two clocks in `sqlflow_progress`, written by the engine
+  in another transaction. Every window defect this project has had was one of
+  those readings being wrong, or two of them disagreeing.
+
+  The engine now computes the watermark where the facts are -- per source
+  partition, from the event time of the records it has placed, as
+  `min over partitions of (newest event time - grace_seconds)` -- and writes
+  it to a new engine table, `sqlflow_watermarks`, in the same commit as the
+  rows it describes. A poll compares one value against what the window has
+  already closed and publishes the buckets between them. No clock, no
+  liveness reading, one comparison in one clock.
+
+  What this changes for a running pipeline:
+
+  - **A fast partition can no longer close a slow one's buckets.** The
+    watermark is the minimum over the partitions that could still deliver, so
+    a lagging partition holds the buckets it shares with a faster one open
+    until it catches up. Before, the manager took the newest bucket in the
+    table, whoever wrote it, and the slow partition's share was dropped as
+    late. The simulator pinned that loss at five rows; it now asserts that
+    nothing is lost.
+  - **A burst's rows are no longer dropped as late (#374).** The watermark is
+    written in the transaction that makes the rows visible, so there is no
+    instant at which a reader can see rows without the watermark that accounts
+    for them. Unrepresentable rather than fixed: the two separate facts it
+    needed are gone.
+  - **A partition that may come back holds its windows; one that moved on
+    does not.** A failed session holds the minimum at its last position and is
+    never idle, so a reconnect or a rejoin longer than `idle_close_seconds`
+    does not close a bucket the backlog still has rows for. A partition
+    another member now holds leaves the minimum, so a scale-out closes by the
+    remaining partitions instead of freezing this process's windows forever.
+  - **A quiet pipeline writes less, and a busy one writes no more.** An idle
+    tick writes only when a watermark moved, which on a stream that stopped is
+    once; before, every tick rewrote `sqlflow_progress` on every windowed
+    pipeline -- a statement, a WAL append and an fsync per flush interval --
+    because that row was what confirmed the quiet. `sqlflow_progress` remains
+    as liveness for `/stats`, `/healthz` and SQL; no window decision rests on
+    it. The watermark's own write is paced at one second and forced by the
+    drain, for the same reason the progress write is: one `UPDATE` measures
+    about 130µs through ADBC, a busy pipeline advances event time on every
+    batch, and a manager reads the row once per `poll_interval_seconds`. A
+    paced write leaves the watermark older than the rows it describes, which
+    delays a close and can never bring one forward.
+  - **Windowing costs nothing measurable per record.** The engine accumulates
+    what each batch's records say about their partitions as it already walks
+    them, and hands that to the watermark tracker once per batch. Called per
+    record it took the consume loop from about 40ns a message to 85; per batch
+    it is 42, inside the noise, with no allocations
+    (`BenchmarkConsumeLoopWindowedWritePath`).
+  - **The window's decision table is three rows on one fact**, down from five
+    on two, and the manager has no clock at all.
+
+  `idle_close_seconds` is now documented as what it is in Flink's vocabulary:
+  source idleness, per partition. `grace_seconds` is bounded out-of-orderness,
+  as before. No configuration changes, and no pipeline outside this repository
+  windows, so there is nothing to migrate.
+
 ### Added
 
 - Every source can now be told where its event time is. `event_time`, the
