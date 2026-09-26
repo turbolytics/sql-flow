@@ -106,6 +106,10 @@ type Watermarks struct {
 	// as from what this process has seen, so a quiet stream's last buckets
 	// close after a restart that saw none of their rows.
 	floor map[string]int64
+	// maxSeen is the newest event time this process has placed from any
+	// partition, kept across revocations: a revoked partition's rows are
+	// still in the table, and the all-idle close must reach them.
+	maxSeen int64
 	// stored is each window's asserted watermark, in nanoseconds, zero
 	// before the first assertion. It only ever grows.
 	stored map[string]int64
@@ -245,6 +249,9 @@ func (w *Watermarks) Observe(topic string, partition int32, atNanos int64) {
 	if atNanos > s.seen {
 		s.seen = atNanos
 	}
+	if atNanos > w.maxSeen {
+		w.maxSeen = atNanos
+	}
 	s.lastRow = now
 }
 
@@ -302,12 +309,9 @@ func (w *Watermarks) compute(spec WindowSpec, now time.Time) (int64, bool) {
 	var (
 		inMinimum bool
 		minimum   int64
-		maxSeen   = w.floor[spec.Name]
+		maxSeen   = max(w.floor[spec.Name], w.maxSeen)
 	)
 	for _, s := range w.parts {
-		if s.seen > maxSeen {
-			maxSeen = s.seen
-		}
 		if !s.lost && spec.IdleClose > 0 {
 			since := s.heldSince
 			if s.lastRow.After(since) {

@@ -1501,9 +1501,18 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 //
 // A pipeline with no state database commits nothing here; its progress write
 // autocommits by itself.
+//
+// The watermark is asserted before the progress row is recorded, and that
+// order is load-bearing rather than incidental. The progress snapshot is the
+// observable "this commit happened" signal -- /stats and /healthz read it,
+// and so does anything waiting on a commit -- so a reader that sees a newer
+// commit clock can rely on the watermark that commit asserted being visible
+// already. Recorded first, the snapshot moved while the assertion was still
+// unwritten, and a poll that ran in between read the older watermark.
 func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
-	progressErr := t.recordProgress(ctx, write)
 	t.noteDelivering()
+	moved, watermarkErr := t.assertWatermarks(ctx)
+	progressErr := t.recordProgress(ctx, write)
 
 	if t.offsets == nil || t.stateTx == nil {
 		if progressErr != nil {
@@ -1514,12 +1523,11 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 			t.recordError(ctx, errs.Wrap(errs.CodeProgressWriteFailed, progressErr,
 				"sqlflow_progress not written"), phaseStateCommit, "sqlflow_progress not written")
 		}
-		// The watermark autocommits by itself too, after the handler's
+		// The watermark autocommitted by itself too, after the handler's
 		// rows. A failed write leaves the manager holding, which is the
 		// late direction; the next move writes the newer value.
-		moved, err := t.assertWatermarks(ctx)
-		if err != nil {
-			t.recordError(ctx, errs.Wrap(errs.CodeWatermarkWriteFailed, err,
+		if watermarkErr != nil {
+			t.recordError(ctx, errs.Wrap(errs.CodeWatermarkWriteFailed, watermarkErr,
 				"sqlflow_watermarks not written"), phaseStateCommit, "sqlflow_watermarks not written")
 			return nil
 		}
@@ -1553,20 +1561,20 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 			"the progress write failed inside the state transaction")
 	}
 
+	// The watermark rode this transaction, beside the rows it describes, so a
+	// write DuckDB refused is this batch's failure like any other.
+	if watermarkErr != nil {
+		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
+			t.logger.Error("rollback after failed watermark write", zap.Error(rbErr))
+		}
+		return errs.Wrap(errs.CodeStateCommitFailed, watermarkErr, "asserting the watermark")
+	}
+
 	if err := t.offsets.Save(ctx, t.marks); err != nil {
 		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed offset save", zap.Error(rbErr))
 		}
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offsets")
-	}
-
-	// The watermark rides this transaction, beside the rows it describes.
-	moved, err := t.assertWatermarks(ctx)
-	if err != nil {
-		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
-			t.logger.Error("rollback after failed watermark write", zap.Error(rbErr))
-		}
-		return errs.Wrap(errs.CodeStateCommitFailed, err, "asserting the watermark")
 	}
 
 	if err := t.stateTx.Commit(ctx); err != nil {

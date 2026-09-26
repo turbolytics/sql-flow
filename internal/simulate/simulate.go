@@ -59,10 +59,16 @@ type IdleTick struct{}
 // which carries both readings (internal/managers/model.go).
 type Elapse struct{ By time.Duration }
 
-// Revoke takes a partition away, as a rebalance does.
+// Revoke moves a partition to another worker, as a rebalance does. Its
+// future rows are that worker's; the engine stops holding the window for
+// it.
 type Revoke struct{ Partition int32 }
 
-// Assign gives one back.
+// Lose is the session failing: nobody knows who holds the partition, and it
+// may come back here with a backlog. The engine holds the window for it.
+type Lose struct{ Partition int32 }
+
+// Assign gives a partition to this worker, or gives a lost one back.
 type Assign struct{ Partition int32 }
 
 // Restart kills the worker and starts a new one, which resumes from the
@@ -130,6 +136,13 @@ type source struct {
 	coord      *coordinator
 	generation int
 	closed     bool
+	// subs is who wants to hear about the partitions: the engine's
+	// watermark tracker, as the Kafka source's relay tells it.
+	subs []partitionSubscriber
+}
+
+type partitionSubscriber struct {
+	assigned, released, lost func(map[string][]int32)
 }
 
 func newSource(coord *coordinator, clock func() time.Time, owned ...int32) *source {
@@ -146,10 +159,35 @@ func newSource(coord *coordinator, clock func() time.Time, owned ...int32) *sour
 	return s
 }
 
-func (s *source) Start() error                                  { return nil }
-func (s *source) Stream() <-chan []core.Message                 { return s.ch }
-func (s *source) Commit() error                                 { return nil }
-func (s *source) OnPartitions(a, r, l func(map[string][]int32)) {}
+func (s *source) Start() error                  { return nil }
+func (s *source) Stream() <-chan []core.Message { return s.ch }
+func (s *source) Commit() error                 { return nil }
+
+// OnPartitions implements core.PartitionOwner the way the Kafka relay does:
+// the subscriber is told what is held now, then every change.
+func (s *source) OnPartitions(a, r, l func(map[string][]int32)) {
+	s.mu.Lock()
+	s.subs = append(s.subs, partitionSubscriber{a, r, l})
+	current := make([]int32, 0, len(s.owned))
+	for p := range s.owned {
+		current = append(current, p)
+	}
+	s.mu.Unlock()
+	if len(current) > 0 && a != nil {
+		a(map[string][]int32{topic: current})
+	}
+}
+
+func (s *source) tell(which func(partitionSubscriber) func(map[string][]int32), p int32) {
+	s.mu.Lock()
+	subs := append([]partitionSubscriber(nil), s.subs...)
+	s.mu.Unlock()
+	for _, sub := range subs {
+		if f := which(sub); f != nil {
+			f(map[string][]int32{topic: {p}})
+		}
+	}
+}
 
 func (s *source) Close() error {
 	s.mu.Lock()
@@ -184,15 +222,24 @@ func (s *source) CommitMarks(marks *core.Marks) error {
 
 func (s *source) revoke(p int32) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.owned, p)
+	s.mu.Unlock()
+	s.tell(func(x partitionSubscriber) func(map[string][]int32) { return x.released }, p)
+}
+
+func (s *source) lose(p int32) {
+	s.mu.Lock()
+	delete(s.owned, p)
+	s.mu.Unlock()
+	s.tell(func(x partitionSubscriber) func(map[string][]int32) { return x.lost }, p)
 }
 
 func (s *source) assign(p int32) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.owned[p] = true
 	s.assignedAt = s.clock()
+	s.mu.Unlock()
+	s.tell(func(x partitionSubscriber) func(map[string][]int32) { return x.assigned }, p)
 }
 
 func (s *source) owns(p int32) bool {
@@ -376,10 +423,15 @@ func (r *run) sinkTurbine() {
 	var h core.Handler = &handler{}
 	if r.window != nil {
 		// A windowed pipeline's handler writes the window table and its sink
-		// receives nothing; the progress row is what the manager reads.
+		// receives nothing. The engine asserts the window's watermark on
+		// every commit, from what it has seen per partition, and that is what
+		// the manager reads. A restart rebuilds the tracker from the table
+		// and the row, as run does once the tables exist.
 		h = r.window.handler
+		w := r.window.newWatermarks(r.t, r.clock)
 		opts = append(opts,
 			core.WithProgressStore(core.NewProgressStore(r.window.db.pipeline)),
+			core.WithWindows(w, core.NewWatermarkStore(r.window.db.pipeline)),
 			// As run wires a windowing pipeline: a record whose event time
 			// the engine cannot place is refused before the handler.
 			core.WithEventTimePlacement(true))
@@ -510,10 +562,13 @@ func (p Produce) apply(r *run) {
 
 func (IdleTick) apply(r *run) {
 	// The commit the tick causes is what a poll after it reads, so the step
-	// waits for it: handing off the trigger only means the loop woke up.
-	var before int64
+	// waits for it: handing off the trigger only means the loop woke up. The
+	// tick writes no row -- it asserts a watermark only when one moved -- so
+	// the wait is on the engine's own record of its last commit, which every
+	// commit moves.
+	var before time.Time
 	if r.window != nil {
-		before = r.lastCommitMicros()
+		before = r.tb.Progress().LastCommit
 	}
 	select {
 	case r.trigger <- r.clock():
@@ -521,7 +576,7 @@ func (IdleTick) apply(r *run) {
 		r.t.Fatal("the loop never took the idle tick")
 	}
 	if r.window != nil {
-		r.await(func() bool { return r.lastCommitMicros() > before })
+		r.await(func() bool { return r.tb.Progress().LastCommit.After(before) })
 	}
 }
 
@@ -532,6 +587,8 @@ func (s Elapse) apply(r *run) {
 }
 
 func (v Revoke) apply(r *run) { r.src.revoke(v.Partition) }
+
+func (l Lose) apply(r *run) { r.src.lose(l.Partition) }
 
 func (a Assign) apply(r *run) { r.src.assign(a.Partition) }
 

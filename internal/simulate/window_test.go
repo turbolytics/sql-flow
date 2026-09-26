@@ -26,18 +26,20 @@ func windowDecl() managers.Declaration {
 //
 // Event time comes from the engine clock here, because the script sets no
 // At: Elapse is what moves the stream on. See event_time_test.go for the
-// notation and for rows that carry their own time.
+// notation and for rows that carry their own time. The asserted column is
+// the engine's watermark after the step's commit: the newest event time it
+// has placed, less the one-minute grace.
 //
-//	step         bucket   window table                  watermark
-//	--------------------------------------------------------------------
-//	Produce 4    12:00    12:00: 4                      -
-//	Elapse 1m    -        (same)                        -
-//	Produce 6    12:01    12:00: 4, 12:01: 6            -
-//	Elapse 1m    -        (same)                        -
-//	Produce 5    12:02    12:00: 4, 12:01: 6, 12:02: 5  -
-//	Poll         -        12:02: 5                      12:01
-//	               ^ grace close: newest 12:02 - 1m = 12:01, so 12:00 (ending
-//	                 12:01) publishes. 12:01 ends at 12:02 and stays open.
+//	step         event time   window table                  asserted   closed
+//	----------------------------------------------------------------------------
+//	Produce 4    12:00:01     12:00: 4                      11:59:01   -
+//	Elapse 1m
+//	Produce 6    12:01:02     12:00: 4, 12:01: 6            12:00:02   -
+//	Elapse 1m
+//	Produce 5    12:02:03     12:00: 4, 12:01: 6, 12:02: 5  12:01:03   -
+//	Poll                      12:01: 6, 12:02: 5            12:01:03   12:01:03
+//	               ^ 12:00 ends at 12:01, at or before the assertion: it
+//	                 publishes. 12:01 ends at 12:02 and stays open.
 //	                 Published + still open = 15, the whole run.
 func TestSimulate_AWindowedRunAccountsForEveryRow(t *testing.T) {
 	coverage.Covers(t, "manager.window")
@@ -51,30 +53,33 @@ func TestSimulate_AWindowedRunAccountsForEveryRow(t *testing.T) {
 	})
 
 	assert.Equal(t, 15, r.Produced)
-	assert.That(t, r.Published > 0)
-	assert.Equal(t, int64(15), r.Published+r.StillOpen)
+	assert.Equal(t, int64(4), r.Published)
+	assert.Equal(t, int64(11), r.StillOpen)
 	assert.Equal(t, 0, r.Republished)
 }
 
-// The idle close needs the engine to confirm the quiet: the loop's idle tick
-// writes the row the manager reads, and only then does the bucket close.
+// The idle close needs the loop to assert it: time passing moves nothing
+// until a commit finds the partition silent for the bound, and only then
+// does the bucket close. The manager has no clock of its own to grow
+// impatient on.
 //
-//	step         window table   watermark   why
-//	--------------------------------------------------------------------
-//	Produce 7    12:00: 7       -           one bucket, nothing past it
-//	Poll         12:00: 7       -           held: no grace passed, and the
-//	                                        engine has confirmed no quiet
-//	Elapse 30s   12:00: 7       -           time passes, but the row does
-//	                                        not move on its own
-//	IdleTick     12:00: 7       -           now the loop commits, and the
-//	                                        row says 30s of silence > 10s
-//	Poll         empty          12:01       idle close: newest 12:00 + 1m
-func TestSimulate_AnIdleCloseNeedsTheLoopToConfirmTheQuiet(t *testing.T) {
+//	step         engine clock  window table   asserted   why
+//	--------------------------------------------------------------------------
+//	Produce 7    12:00:01      12:00: 7       11:59:01   grace: 12:00:01 - 1m
+//	Poll         12:00:02      12:00: 7       11:59:01   held: 12:00 ends 12:01
+//	Elapse 30s   12:00:33      12:00: 7       11:59:01   time passed; no commit,
+//	                                                     so the row did not move
+//	IdleTick     12:00:34      12:00: 7       12:01:01   the partition has been
+//	                                                     silent 33s > 10s: idle.
+//	                                                     Nothing in the minimum:
+//	                                                     newest 12:00:01 + 1m
+//	Poll         12:00:35      empty          12:01:01   12:00 ends 12:01: closed
+func TestSimulate_AnIdleCloseNeedsTheLoopToAssertIt(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 7},
-		// A poll before any quiet is confirmed closes nothing: one bucket,
-		// no grace passed, no idle bound reached.
+		// A poll before any tick closes nothing: the assertion is a minute
+		// behind the only bucket, and nothing has said the stream stopped.
 		Poll{},
 		Elapse{By: 30 * time.Second},
 		IdleTick{},
@@ -86,31 +91,25 @@ func TestSimulate_AnIdleCloseNeedsTheLoopToConfirmTheQuiet(t *testing.T) {
 	assert.Equal(t, int64(0), r.StillOpen)
 }
 
-// The loop holds the quiet clock while the source can deliver nothing, so
-// the manager never reads that silence as a quiet stream. Without the hold
-// this bucket closes early and the backlog after the reassignment is late.
+// A lost partition holds the window. The session failed and the partition
+// may come back with a backlog for the buckets this process holds, so the
+// engine keeps it in the minimum at its last position, never idle. Five
+// minutes of wall time, and nothing closes.
 //
-//	step          source      window table   quiet the row shows   watermark
-//	-----------------------------------------------------------------------
-//	Produce 9     owns p0     12:00: 9       ~0                    -
-//	Revoke p0     owns none   12:00: 9       ~0                    -
-//	Elapse 5m     owns none   12:00: 9       (still ~0: the loop   -
-//	                                          resets the clock on
-//	                                          every idle commit
-//	                                          while it holds
-//	                                          nothing)
-//	IdleTick      owns none   12:00: 9       ~0                    -
-//	Poll          owns none   12:00: 9       ~0 < 10s: held        -
-//	IdleTick      owns none   12:00: 9       ~0                    -
-//	Poll          owns none   12:00: 9       ~0 < 10s: held        -
-//
-//	Five minutes of wall time, and not one second of it counts as the
-//	stream being quiet, because the stream was never asked.
-func TestSimulate_ASourceThatCannotDeliverStopsTheIdleClose(t *testing.T) {
+//	step          source        window table   asserted   why
+//	--------------------------------------------------------------------------
+//	Produce 9     holds p0      12:00: 9       11:59:01   grace
+//	Lose p0       p0 lost       12:00: 9       11:59:01   holds at 12:00:01 - 1m
+//	Elapse 5m
+//	IdleTick      p0 lost       12:00: 9       11:59:01   lost is not idle
+//	Poll          p0 lost       12:00: 9       11:59:01   held
+//	IdleTick      p0 lost       12:00: 9       11:59:01   still
+//	Poll          p0 lost       12:00: 9       11:59:01   held
+func TestSimulate_ALostPartitionHoldsTheWindow(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 9},
-		Revoke{Partition: 0},
+		Lose{Partition: 0},
 		// Far past the idle bound, with the loop committing all the while.
 		Elapse{By: 5 * time.Minute},
 		IdleTick{},
@@ -124,31 +123,27 @@ func TestSimulate_ASourceThatCannotDeliverStopsTheIdleClose(t *testing.T) {
 	assert.Equal(t, int64(9), r.StillOpen)
 }
 
-// A source that is back but has not been back long is the case the bound
-// exists for, and the only scenario where the bound is what decides. The
-// others elapse a minute after the reassignment, so the quiet the row shows
-// and the quiet the source could have filled are both past the idle close
-// and either one would close the bucket. Here they disagree.
+// A partition that is back but has not been back long is the case the bound
+// exists for: idleness is measured from the assignment, so five minutes of
+// outage count for nothing and five seconds of silence since the return is
+// not ten.
 //
-//	step          source     silence so far   what the engine may confirm
+//	step          source     silent since   idle?          asserted
 //	--------------------------------------------------------------------
-//	Produce 9     owns p0    -                -
-//	Revoke p0     owns none  -                -
-//	Elapse 5m     owns none  5m of wall time  none of it: it held nothing
-//	IdleTick      owns none  5m               none
-//	Poll          owns none  5m               held
-//	Assign p0     owns p0    5m               none yet: back for 0s
-//	Elapse 3s     owns p0    5m               3s
-//	IdleTick      owns p0    5m               ~5s, bounded by the resumption
-//	Poll          owns p0    5m               5s < 10s: still held
-//
-//	The row would say five minutes. The source has been back five seconds.
-//	Five seconds is the honest number, and it is not enough to close.
-func TestSimulate_TheResumptionBoundsTheQuiet(t *testing.T) {
+//	Produce 9     holds p0   12:00:01        -              11:59:01
+//	Lose p0       lost       -               lost: never    11:59:01
+//	Elapse 5m
+//	IdleTick      lost       -               no             11:59:01
+//	Poll          lost                                      held
+//	Assign p0     holds p0   12:05:05        0s: no         11:59:01
+//	Elapse 3s
+//	IdleTick      holds p0   12:05:05        5s < 10s: no   11:59:01
+//	Poll                                                    held
+func TestSimulate_TheAssignmentBoundsTheIdleness(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 9},
-		Revoke{Partition: 0},
+		Lose{Partition: 0},
 		Elapse{By: 5 * time.Minute},
 		IdleTick{},
 		Poll{},
@@ -165,28 +160,23 @@ func TestSimulate_TheResumptionBoundsTheQuiet(t *testing.T) {
 	assert.Equal(t, int64(9), r.StillOpen)
 }
 
-// And the same silence closes once the source has been back longer than the
-// bound, because by then it has had the chance to deliver through it.
+// And the same silence closes once the partition has been back longer than
+// the bound, because by then it has had the chance to deliver through it.
 //
-//	step          source     what the engine may confirm   watermark
-//	--------------------------------------------------------------------
-//	Produce 9     owns p0    -                             -
-//	Revoke p0     owns none  none                          -
-//	Elapse 5m     owns none  none                          -
-//	IdleTick/Poll owns none  none: held                    -
-//	Assign p0     owns p0    back for 0s                   -
-//	Elapse 1m     owns p0    1m                            -
-//	IdleTick      owns p0    1m, bounded by the resumption -
-//	Poll          owns p0    1m > 10s: close               12:01
-//
-//	Same five minutes of silence as the scenario above. What changed is that
-//	the source has now had a minute in which it could have delivered and did
-//	not, which is what the idle close is entitled to act on.
-func TestSimulate_TheIdleCloseResumesWhenTheSourceIsBack(t *testing.T) {
+//	step          source     silent since   idle?           asserted
+//	----------------------------------------------------------------------
+//	Produce 9     holds p0   12:00:01        -               11:59:01
+//	Lose p0       lost                       lost: never     11:59:01
+//	Elapse 5m, IdleTick, Poll                                held
+//	Assign p0     holds p0   12:05:05        0s              11:59:01
+//	Elapse 1m
+//	IdleTick      holds p0   12:05:05        1m > 10s: yes   12:01:01  = 12:00:01 + 1m
+//	Poll                                                     12:00 closes
+func TestSimulate_TheIdleCloseResumesWhenThePartitionIsBack(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 9},
-		Revoke{Partition: 0},
+		Lose{Partition: 0},
 		Elapse{By: 5 * time.Minute},
 		IdleTick{},
 		Poll{},
@@ -198,5 +188,66 @@ func TestSimulate_TheIdleCloseResumesWhenTheSourceIsBack(t *testing.T) {
 
 	assert.Equal(t, 9, r.Produced)
 	assert.Equal(t, int64(9), r.Published)
+	assert.Equal(t, int64(0), r.StillOpen)
+}
+
+// A revoked partition is another worker's now, and it leaves the minimum:
+// what it contributed to this worker's table closes by the remaining
+// partition's progress. Holding for it would freeze every window on this
+// worker for as long as the other one kept the partition, which after a
+// scale-out is for good.
+//
+//	step            part  event time   window table        asserted        why
+//	------------------------------------------------------------------------------
+//	Produce 3       p0    12:00:30     12:00: 3            -               p1 at -inf holds
+//	Produce 3       p1    12:00:30     12:00: 6            11:59:30        min(p0, p1) - 1m
+//	Revoke p1                          12:00: 6            11:59:30        p1 gone
+//	Produce 4       p0    12:05:00     12:00: 6, 12:05: 4  12:04           p0 alone
+//	Poll                               12:05: 4            closed 12:04    12:00 publishes 6
+//	Produce 5       p1    12:00:45     (not ours)                          another worker's rows
+func TestSimulate_ARevokedPartitionLeavesTheMinimum(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	r := RunWindowed(t, []int32{0, 1}, windowDecl(), []Step{
+		Produce{Partition: 0, Rows: 3, At: base.Add(30 * time.Second)},
+		Produce{Partition: 1, Rows: 3, At: base.Add(30 * time.Second)},
+		Revoke{Partition: 1},
+		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
+		Poll{},
+		// Produced against the other worker, not this one: nothing arrives
+		// here, and it is not a loss.
+		Produce{Partition: 1, Rows: 5, At: base.Add(45 * time.Second)},
+	})
+
+	assert.Equal(t, 10, r.Produced)
+	assert.Equal(t, int64(6), r.Published)
+	assert.Equal(t, int64(4), r.StillOpen)
+	assert.Equal(t, int64(0), r.LateDropped)
+}
+
+// A restart loses nothing the table and the row hold, and the idle close
+// still finds the newest bucket: the new process has seen no rows, so it
+// measures the close from what its table holds instead.
+//
+//	step          window table   asserted   why
+//	--------------------------------------------------------------------
+//	Produce 7     12:00: 7       11:59:01   grace
+//	Restart       12:00: 7       11:59:01   a new tracker: nothing seen, the
+//	                                        table's newest bucket restored
+//	Elapse 30s
+//	IdleTick      12:00: 7       12:01      idle with nothing seen: the
+//	                                        newest bucket's end
+//	Poll          empty          12:01      12:00 closes
+func TestSimulate_ARestartStillClosesByIdleness(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
+		Produce{Partition: 0, Rows: 7},
+		Restart{},
+		Elapse{By: 30 * time.Second},
+		IdleTick{},
+		Poll{},
+	})
+
+	assert.Equal(t, 7, r.Produced)
+	assert.Equal(t, int64(7), r.Published)
 	assert.Equal(t, int64(0), r.StillOpen)
 }
