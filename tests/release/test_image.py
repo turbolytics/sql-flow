@@ -697,8 +697,12 @@ def test_cli_rollup_run_reports_its_rollups_and_freshness(image):
         .with_command(["python", "-u", "-c", RECEIVER])
     receiver.start()
     try:
+        # Over TCP, not the socket: the image's entrypoint runs a temporary
+        # server on the socket alone to initialize the database, then restarts.
+        # pg_isready on the socket answered during that server, and psql ran
+        # in the restart's gap.
         deadline = time.time() + 60
-        while db.exec(["pg_isready", "-U", "postgres"]).exit_code != 0:
+        while db.exec(["pg_isready", "-h", "127.0.0.1", "-U", "postgres"]).exit_code != 0:
             assert time.time() < deadline, "postgres never became ready"
             time.sleep(0.5)
         for sql in [
@@ -706,7 +710,7 @@ def test_cli_rollup_run_reports_its_rollups_and_freshness(image):
             "INSERT INTO posts_per_minute SELECT g, 1 FROM generate_series("
             "'2026-09-12T00:00:00Z'::timestamptz, '2026-09-12T23:59:00Z', interval '1 minute') AS g",
         ]:
-            result = db.exec(["psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql])
+            result = db.exec(["psql", "-h", "127.0.0.1", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql])
             assert result.exit_code == 0, result.output
 
         with tempfile.TemporaryDirectory() as tmp:
