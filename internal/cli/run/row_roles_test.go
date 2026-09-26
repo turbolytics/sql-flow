@@ -5,12 +5,14 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
 	"github.com/turbolytics/sql-flow/internal/sinks"
@@ -149,6 +151,10 @@ func TestWindowManagerRowsAreCounted(t *testing.T) {
 	assert.NoError(t, initWindowStores(context.Background(), &config.Conf{
 		Tables: &config.Tables{SQL: []config.TableSQL{{Name: "agg", Window: &config.Window{}}}},
 	}, conn))
+	// The engine has asserted past the first bucket and not the second, which
+	// is what a stream that has moved on by one bucket asserts.
+	assert.NoError(t, core.NewWatermarkStore(conn).Save(context.Background(), "agg",
+		time.Date(2026, 9, 13, 10, 1, 0, 0, time.UTC)))
 
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))

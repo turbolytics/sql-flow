@@ -346,6 +346,12 @@ func (w *Watermarks) compute(spec WindowSpec, now time.Time) (int64, bool) {
 
 // WatermarkSaver is what the engine writes assertions through; the DuckDB
 // store below is the one run wires.
+//
+// A saver on the pipeline's connection is written to under the pipeline's
+// lock, as every statement on that connection must be (#283): the debug API
+// runs statements on it too, and DuckDB closes a pending result the moment
+// another statement runs. The turbine holds the lock around the write; the
+// store does not take one of its own.
 type WatermarkSaver interface {
 	Save(ctx context.Context, name string, watermark time.Time) error
 }

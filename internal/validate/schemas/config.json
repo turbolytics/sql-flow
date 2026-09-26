@@ -985,7 +985,7 @@
                   "idle_close_seconds": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "How long the stream may be quiet before every open bucket closes.\nAbsent means never: a stream that stops leaves its last bucket open.\nThe quiet is the engine's to confirm, by a commit that late, so the\nclose can trail this by up to one flush_interval_seconds; validate\nwarns when that interval is the longer of the two."
+                    "description": "How long a source partition may be silent before it stops holding the\nwindow open. Absent means never: a stream that stops leaves its last\nbucket open, and only event time moving on closes anything. When every\npartition has been silent this long the stream is done with what it\nhas, and every open bucket closes. Measured by the engine from its own\nmonotonic clock, at each commit, so the close can trail this by up to\none flush_interval_seconds; validate warns when that interval is the\nlonger of the two."
                   },
                   "late_rows": {
                     "type": "string",

@@ -632,6 +632,17 @@ func (t *Turbine) assertWatermarks(ctx context.Context) (map[string]time.Time, e
 		return nil, nil
 	}
 	moved := t.windows.Next()
+	if len(moved) == 0 {
+		return moved, nil
+	}
+	// Held through the writes: they run on the pipeline's connection, which
+	// the debug API also runs statements on, and DuckDB closes a pending
+	// result the moment another statement runs on the same connection (#283).
+	// The window managers are not a party -- they poll on connections of
+	// their own -- and the state branch of commitState takes this lock after
+	// this returns, so nothing here nests.
+	t.lock.Lock()
+	defer t.lock.Unlock()
 	for name, at := range moved {
 		if err := t.watermarkSaver.Save(ctx, name, at); err != nil {
 			return nil, err

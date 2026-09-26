@@ -1198,37 +1198,49 @@ pipeline:
       GROUP BY bucket, city
 ```
 
-**The watermark.** One instant per window, in event time, persisted in
-`sqlflow_windows`, never moving backwards. A bucket is closed when its end,
-`time_column + size_seconds`, is at or before the watermark. While data
-arrives the watermark is the newest bucket start the table holds, less
-`grace_seconds`: a bucket closes once the stream has moved past it, so a
-replay and a live run produce the same rows. The newest bucket start is what
-the table holds, so a grace shorter than one bucket rounds up to one. Once the
-engine has confirmed `idle_close_seconds` with nothing arriving, the watermark
-moves past the newest bucket and every open bucket closes.
+**The watermark.** The engine asserts it, the window follows it. One instant
+per window, in event time, written to `sqlflow_watermarks` in the same commit
+as the rows it describes, never moving backwards. Its meaning is a promise:
+as of this commit, every row this pipeline will ever write for this window has
+`time_column` at or after the watermark. A bucket is closed when its end,
+`time_column + size_seconds`, is at or before it; `sqlflow_windows` holds what
+each window has closed up to, and a poll moves that to the assertion and
+publishes the buckets between them. That is the whole decision -- no clock, no
+liveness reading, one comparison in one clock.
 
-The confirmation is the engine's own: a commit that late which still reports
-the same newest arrival, and the quiet it counts is only the time the engine
-spent waiting on a source that could deliver, measured on the monotonic
-clock. A restart, a sink write held in retries, a wall clock stepping
-forward, a Kafka consumer waiting to rejoin its group and a websocket
-reconnecting are not quiet.
-With nothing arriving the commits are idle ticks, one `flush_interval_seconds`
-apart, so the close can trail `idle_close_seconds` by up to one flush
-interval; `validate` warns when the interval is the longer of the two. The
-manager's clock appears nowhere in the rule. A pipeline whose progress write
-is failing confirms nothing, and its open buckets stay open rather than
-closing on a stream that may still be live; so does one whose source cannot
-deliver, and a source that never can, a consumer in a group with more
-members than partitions, holds every bucket open until it does, which the
-log says. On shutdown the drain commits first, so the final poll sees the
-quiet up to the signal.
+The engine computes it per source partition, from the event time of the
+records it has placed:
 
-A pipeline with no window that closes on idleness has no reader of that
-confirmation, and its idle ticks write nothing: no statement, no WAL append,
-no fsync. Batches still record progress, at most once a second, and the
-drain records the clean stop.
+```
+candidate(p) = newest event time from p − grace_seconds
+W            = min over the partitions that could still deliver
+```
+
+A partition that has delivered nothing holds `W` open: it may still bring
+data older than anything seen, so nothing closes until it speaks. A partition
+lagging another holds the buckets they share, so a fast partition cannot
+close a slow one's bucket. A partition silent for `idle_close_seconds` leaves
+the minimum, and when every partition has, the stream is done with what it
+has: `W` becomes the newest event time plus one bucket, which closes
+everything held. Idleness is measured on the engine's monotonic clock from the
+later of the partition's last record and its assignment, so a wall clock
+stepping forward is not silence and an outage counts for nothing.
+
+A partition whose session failed holds the minimum at its last position and is
+never idle: it may come back with a backlog for the buckets this process
+holds. A partition another member now holds is gone from the minimum, because
+its rows are that member's and holding for them would freeze this process's
+windows for good. A Kafka consumer waiting to rejoin its group, and a
+websocket reconnecting, are the first case: the window holds through the
+outage, and the clock restarts on the return. A source that can never deliver
+holds every bucket open until it does, which the log says.
+
+`poll_interval_seconds` only bounds how soon a closed bucket is noticed; on
+shutdown the drain asserts first, so the final poll sees the watermark up to
+the signal. A pipeline's idle ticks write nothing unless a watermark moved --
+no statement, no WAL append, no fsync -- so a quiet stream costs one write,
+when its last partition goes idle. `sqlflow_progress` is liveness for `/stats`
+and `/healthz` and for SQL to read; no window decision rests on it.
 
 Every decision a window makes is a row in one of two tables, rendered from
 the code to [docs/windows/decisions.md](docs/windows/decisions.md).

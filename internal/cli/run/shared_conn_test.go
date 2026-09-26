@@ -142,14 +142,22 @@ func TestPipelineSharedConnection_EveryPartyHoldsTheLock(t *testing.T) {
 	defer closeConns()
 	assert.Equal(t, 1, len(managed))
 
-	msg := func(v string) core.Message { return core.Message{Value: []byte(v)} }
+	// Event times, because the engine's watermark is computed from them: the
+	// payload's a is the bucket in seconds, and the message carries the same
+	// instant, as a real source stamps it.
+	msg := func(v string, at time.Time) core.Message {
+		return core.Message{Value: []byte(v), EventAtNanos: at.UnixNano()}
+	}
+	second := func(n int64) time.Time { return time.Unix(n, 0).UTC() }
 	src := &sliceSource{batches: [][]core.Message{
-		{msg(`{"a": 1}`), msg(`{"a": 1}`)},
-		{msg(`not json`), msg(`{"a": 2}`)},
-		{msg(`{"a": 2}`), msg(`{"a": 3}`)},
+		{msg(`{"a": 1}`, second(1)), msg(`{"a": 1}`, second(1))},
+		{msg(`not json`, second(2)), msg(`{"a": 2}`, second(2))},
+		{msg(`{"a": 2}`, second(2)), msg(`{"a": 3}`, second(3))},
 	}}
+	watermarks, windowOpts := windowOptions(conf, conn)
 	tb := core.NewTurbine(src, handler, sink, 2, time.Hour, lock, policies,
-		core.WithProgressStore(progress))
+		append([]core.TurbineOption{core.WithProgressStore(progress)}, windowOpts...)...)
+	assert.That(t, watermarks != nil)
 
 	_, err = tb.ConsumeLoop(ctx, 6)
 	assert.NoError(t, err)
