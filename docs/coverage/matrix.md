@@ -162,7 +162,7 @@ drains. An invariant holds only if it holds on all four.
 | `pipeline.shutdown.commits_only_delivered` | After the consume loop returns, clean or failed, the commits the process makes on its way out never make a position durable past the last message the sink acknowledged. Not in the state database, and not at the source. *(violated once: #279)* | ✅ u | ✅ u |
 | `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u | ✅ u |
 | `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
-| `pipeline.window.counts_every_row` | A bucket's published value counts exactly the rows produced for it, once. Rows the engine dropped under late_rows drop are excluded and counted in window_late_rows_total; late_rows reemit publishes a different contract and is out of scope. *(declared, tracked by #183 and #374)* | ❌ missing | ❌ missing |
+| `pipeline.window.counts_every_row` | A bucket's published value counts exactly the rows produced for it, once. Rows the engine dropped under late_rows drop are excluded and counted in window_late_rows_total; late_rows reemit publishes a different contract and is out of scope. *(declared, tracked by #183)* | ❌ missing | ❌ missing |
 
 ## Safety invariants: types
 
