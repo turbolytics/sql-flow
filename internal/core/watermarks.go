@@ -50,9 +50,60 @@ import (
 // The last two are the one place this departs from Flink, where a split's
 // state travels with it and a removed split simply leaves. Here the rows a
 // partition contributed stay in this process's table, so a partition that
-// may come back is held for and one that will not is not: holding for a
-// partition that was moved for good would freeze every window on this
-// process, since it is never idle and never delivers again.
+// may come back is held for and one that will not is not.
+//
+// # Why revoked and lost are not the same fact
+//
+// Kafka reports them separately and the difference decides whether this
+// process will ever see the partition again. A revocation means another
+// member holds it now, after a rebalance: its future records are that
+// member's. A loss means this member's session failed -- heartbeats stopped
+// reaching the broker, or it was fenced -- and says nothing about who holds
+// it, so it may come back here with a backlog for the buckets this process
+// already holds rows for.
+//
+// The design this implements said "a revoked partition is not idle, it holds
+// the minimum", reasoning that closing over the rows it contributed would
+// make its backlog late on reassignment. That is right for a loss and wrong
+// for a rebalance, and taken literally it wedges a scale-out:
+//
+//	worker A holds p0 and p1        a second worker joins; the group gives p1 to B
+//	------------------------------------------------------------------------------
+//	candidate(p0) = seen[p0] - grace     moves as p0 delivers
+//	candidate(p1) = seen[p1] - grace     frozen: p1 delivers to B now, and
+//	                                     "not idle" means it never leaves
+//
+//	W = min(p0, p1) = p1's frozen value, for the life of the process
+//
+// Every window on A stops closing -- not late, never -- and A's table grows
+// without bound. The all-idle close cannot rescue it either, because there is
+// always one non-idle term in the minimum. So a revoked partition leaves the
+// minimum at once, and what it contributed closes by the remaining
+// partitions' progress.
+//
+// What that costs, stated plainly: a bucket both workers wrote rows for can
+// close on A while B still holds its share, so the destination sees two
+// partial values for one (bucket, key). That is #183's split-state problem,
+// it exists whatever this rule does, and its answer is a co-partitioning rule
+// or a merge at the destination (pipeline.writers.merge_exactly) -- not
+// holding, which would only wedge A as well.
+//
+// The rows a revoked partition left behind still close, by two paths, and
+// both are pinned in internal/simulate:
+//
+//	the remaining partitions deliver   W moves with them, past those buckets
+//	they go quiet too                  nothing is in the minimum, so the
+//	                                   all-idle close fires -- and it is
+//	                                   measured over max(seen) across every
+//	                                   partition this process ever placed a
+//	                                   record from, the revoked one included,
+//	                                   which is why maxSeen is kept here and
+//	                                   not read out of parts
+//
+// A worker that loses its whole assignment therefore publishes what it holds
+// rather than stranding it. Without idle_close_seconds neither path's second
+// half exists, and a stream that stops leaves its last bucket open -- shape A
+// and B's documented behaviour, for any stream, not a property of revocation.
 
 // WindowSpec is what the engine needs to assert one window's watermark: the
 // name it is stored under, and the three durations the config declares.

@@ -193,9 +193,14 @@ func TestSimulate_TheIdleCloseResumesWhenThePartitionIsBack(t *testing.T) {
 
 // A revoked partition is another worker's now, and it leaves the minimum:
 // what it contributed to this worker's table closes by the remaining
-// partition's progress. Holding for it would freeze every window on this
-// worker for as long as the other one kept the partition, which after a
-// scale-out is for good.
+// partition's progress.
+//
+// Holding for it instead -- which is what "revoked is not idle" would mean --
+// pins the minimum at the partition's last position for the life of the
+// process: it never delivers here again and never goes idle, so no window on
+// this worker ever closes again and its table grows without bound. See
+// core.Watermarks for the whole argument, and Lose for the case where holding
+// is right.
 //
 //	step            part  event time   window table        asserted        why
 //	------------------------------------------------------------------------------
@@ -222,6 +227,66 @@ func TestSimulate_ARevokedPartitionLeavesTheMinimum(t *testing.T) {
 	assert.Equal(t, int64(6), r.Published)
 	assert.Equal(t, int64(4), r.StillOpen)
 	assert.Equal(t, int64(0), r.LateDropped)
+}
+
+// The rows a revoked partition left behind still close, even after every
+// remaining partition has gone quiet. This is the liveness half of the rule
+// above: leaving the minimum is what lets the window close, and the all-idle
+// close is measured over everything this process ever placed -- not only what
+// it still holds -- so the revoked partition's rows have a closer even when
+// nothing is left to carry the watermark.
+//
+// Without that, a scale-out would strand those rows in this worker's table
+// for the life of the process, which is unbounded growth rather than a late
+// close.
+//
+//	step            part  event time   window table        asserted   why
+//	--------------------------------------------------------------------------
+//	Produce 3       p0    12:00:30     12:00: 3            -          p1 at -inf
+//	Produce 4       p1    12:02:00     12:00: 3, 12:02: 4  11:59:30   min is p0
+//	Revoke p1                          (same)              11:59:30   p1 gone
+//	Elapse 30s
+//	IdleTick              -            (same)              12:03      p0 idle too, so
+//	                                                                  nothing is in the
+//	                                                                  minimum: newest
+//	                                                                  12:02 + 1m, and the
+//	                                                                  newest is p1's
+//	Poll                               empty               12:03      both buckets close
+func TestSimulate_ARevokedPartitionsRowsStillCloseOnIdleness(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	r := RunWindowed(t, []int32{0, 1}, windowDecl(), []Step{
+		Produce{Partition: 0, Rows: 3, At: base.Add(30 * time.Second)},
+		Produce{Partition: 1, Rows: 4, At: base.Add(2 * time.Minute)},
+		Revoke{Partition: 1},
+		Elapse{By: 30 * time.Second},
+		IdleTick{},
+		Poll{},
+	})
+
+	assert.Equal(t, 7, r.Produced)
+	assert.Equal(t, int64(7), r.Published)
+	assert.Equal(t, int64(0), r.StillOpen)
+	assert.Equal(t, int64(0), r.LateDropped)
+}
+
+// And a worker that loses its whole assignment closes what it holds. Nothing
+// more will ever arrive for those buckets here, so holding them would strand
+// them: a worker scaled down to nothing publishes its table and stops.
+func TestSimulate_AWorkerHoldingNothingClosesWhatItHas(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	r := RunWindowed(t, []int32{0, 1}, windowDecl(), []Step{
+		Produce{Partition: 0, Rows: 3, At: base.Add(30 * time.Second)},
+		Produce{Partition: 1, Rows: 4, At: base.Add(2 * time.Minute)},
+		Revoke{Partition: 0},
+		Revoke{Partition: 1},
+		Elapse{By: 30 * time.Second},
+		IdleTick{},
+		Poll{},
+	})
+
+	assert.Equal(t, 7, r.Produced)
+	assert.Equal(t, int64(7), r.Published)
+	assert.Equal(t, int64(0), r.StillOpen)
 }
 
 // A restart loses nothing the table and the row hold, and the idle close

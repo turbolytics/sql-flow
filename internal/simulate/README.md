@@ -130,6 +130,8 @@ Each test's doc comment carries its own table. This is the index.
 | `TheAssignmentBoundsTheIdleness` | rule 3's bound, and the only scenario where the bound is what decides: five minutes of outage, back for five seconds, and five seconds is the honest number |
 | `TheIdleCloseResumesWhenThePartitionIsBack` | the same silence does close once the partition has had a minute in which it could have delivered and did not |
 | `ARevokedPartitionLeavesTheMinimum` | rule 3's other half: a scale-out closes by the remaining partition rather than freezing |
+| `ARevokedPartitionsRowsStillCloseOnIdleness` | the liveness that rule depends on: the rows a revoked partition left behind close even after every remaining partition goes quiet, because the all-idle close is measured over everything this process ever placed |
+| `AWorkerHoldingNothingClosesWhatItHas` | a worker scaled down to no partitions publishes its table rather than stranding it |
 | `ARestartStillClosesByIdleness` | a new process has seen no rows, so the idle close is measured from what its table holds |
 
 ### Event time — `event_time_test.go`

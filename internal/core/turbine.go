@@ -336,8 +336,11 @@ type Turbine struct {
 	// loop starts, stamped at the end of every batch. Nothing decides a
 	// window on it. Guarded by lock.
 	lastArrival time.Time
-	// commits counts successful state commits, for tests that wait on ticks.
-	// Guarded by lock.
+	// commits counts commits that completed, with or without a state
+	// transaction, for a caller that waits on ticks. It counts commits and
+	// not instants on purpose: a simulator drives the clock, so two commits
+	// can carry the same stamp and a reader waiting for a later one would
+	// wait forever. Guarded by lock.
 	commits int64
 	// progressWrittenAt is when the progress table was last written, and
 	// progressEvery is how often it may be. Guarded by lock.
@@ -557,12 +560,18 @@ func (t *Turbine) Progress() Progress {
 	return p
 }
 
-// commitCount is how many state commits have succeeded; tests wait on it.
+// commitCount is how many commits have completed; tests wait on it.
 func (t *Turbine) commitCount() int64 {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	return t.commits
 }
+
+// Commits is how many commits have completed, batches and idle ticks alike.
+// A caller that drives the loop's flush trigger waits on this to know the
+// commit it asked for has happened: it counts events rather than reporting
+// an instant, so a driven clock cannot make two commits indistinguishable.
+func (t *Turbine) Commits() int64 { return t.commitCount() }
 
 // progressWriteInterval bounds how often sqlflow_progress is written. The
 // snapshot behind /stats and /healthz is updated on every commit regardless;
@@ -1537,14 +1546,16 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		// The watermark autocommitted by itself too, after the handler's
 		// rows. A failed write leaves the manager holding, which is the
 		// late direction; the next move writes the newer value.
-		if watermarkErr != nil {
+		switch {
+		case watermarkErr != nil:
 			t.recordError(ctx, errs.Wrap(errs.CodeWatermarkWriteFailed, watermarkErr,
 				"sqlflow_watermarks not written"), phaseStateCommit, "sqlflow_watermarks not written")
-			return nil
-		}
-		if t.windows != nil {
+		case t.windows != nil:
 			t.windows.Commit(moved)
 		}
+		t.lock.Lock()
+		t.commits++
+		t.lock.Unlock()
 		return nil
 	}
 

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -342,6 +343,11 @@ type run struct {
 	// window is set when the run pairs the loop with a real manager.
 	window *windowRun
 
+	// loopErr is what ConsumeLoop returned, if it has returned. A loop that
+	// died makes every await after it time out, and a timeout says nothing
+	// about why; await reports this instead when it is set.
+	loopErr atomic.Pointer[error]
+
 	mu       sync.Mutex
 	now      time.Time
 	produced int
@@ -405,7 +411,10 @@ func (r *run) start() {
 	r.cancel = cancel
 	r.done = make(chan struct{})
 	go func() {
-		_, _ = r.tb.ConsumeLoop(ctx, 0)
+		_, err := r.tb.ConsumeLoop(ctx, 0)
+		if err != nil {
+			r.loopErr.Store(&err)
+		}
 		close(r.done)
 	}()
 
@@ -497,23 +506,31 @@ func (r *run) deliver(p int32, ids []int64) {
 		r.t.Fatal("the loop never took the batch")
 	}
 	if r.window == nil {
-		r.await(func() bool { total, _ := r.sink.counts(); return total >= want })
+		r.await(fmt.Sprintf("the sink to hold %d rows", want),
+			func() bool { total, _ := r.sink.counts(); return total >= want })
 		return
 	}
 	// The window table plus what the manager has already published: a close
 	// between the write and this read moves rows from one to the other.
-	r.await(func() bool {
+	r.await(fmt.Sprintf("the handler to write %d rows of partition %d (table + published >= %d)",
+		len(batch), p, want), func() bool {
 		published, _ := r.window.sink.counts()
 		return int(r.windowRows()+published) >= want
 	})
 }
 
-func (r *run) await(cond func() bool) {
+// await blocks until cond holds, and says what it was waiting for when it
+// does not. The message matters: two steps wait here for different things,
+// and one message for both turns a flake into a guess.
+func (r *run) await(what string, cond func() bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for !cond() {
+		if err := r.loopErr.Load(); err != nil {
+			r.t.Fatalf("waiting for %s: the consume loop stopped: %v", what, *err)
+		}
 		if time.Now().After(deadline) {
-			r.t.Fatal("the run did not reach the state the step waited for")
+			r.t.Fatalf("waited 5s for %s and it never happened", what)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -563,21 +580,24 @@ func (p Produce) apply(r *run) {
 func (IdleTick) apply(r *run) {
 	// The commit the tick causes is what a poll after it reads, so the step
 	// waits for it: handing off the trigger only means the loop woke up. The
-	// tick writes no row -- it asserts a watermark only when one moved -- so
-	// the wait is on the engine's own record of its last commit, which every
-	// commit moves.
-	var before time.Time
-	if r.window != nil {
-		before = r.tb.Progress().LastCommit
-	}
+	// tick writes no progress row -- it asserts a watermark only when one
+	// moved -- so the wait is on the engine's count of completed commits.
+	//
+	// Not on the commit's timestamp, which is what this waited on first and
+	// which hangs: the loop stamps a commit with the clock as it stands when
+	// it runs, the script owns that clock, and a batch's commit landing after
+	// the script has moved it carries the same instant the tick's will. Under
+	// -race that happened reliably, and a wait for a strictly later instant
+	// never returned, because the clock only moves when the script does and
+	// the script was waiting.
+	before := r.tb.Commits()
 	select {
 	case r.trigger <- r.clock():
 	case <-time.After(5 * time.Second):
 		r.t.Fatal("the loop never took the idle tick")
 	}
-	if r.window != nil {
-		r.await(func() bool { return r.tb.Progress().LastCommit.After(before) })
-	}
+	r.await(fmt.Sprintf("the loop's commit number %d", before+1),
+		func() bool { return r.tb.Commits() > before })
 }
 
 func (s Elapse) apply(r *run) {
