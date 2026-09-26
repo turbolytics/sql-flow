@@ -15,24 +15,18 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// live is a clock that says the stream is not idle: the last arrival was a
-// moment ago.
-func live(d *testDB, tb testing.TB) func() time.Time {
-	arrivedAt(tb, d.pipeline, t0)
-	return func() time.Time { return t0.Add(time.Second) }
-}
+// The manager against the one fact it reads. assertAt is the engine's
+// commit, written by hand; every test here is a poll against it.
 
-// Bucket 0 closes once the stream is one grace past its end: with one-minute
-// buckets and a one-minute grace, when bucket 2 has a row. Bucket 1 has not
-// been passed by the grace yet and stays.
-func TestManagerWindow_ClosesAgainstTheStreamClock(t *testing.T) {
+// Buckets close up to the asserted watermark and no further: with the
+// engine at bucket 0's end, bucket 0 publishes and bucket 1 stays.
+func TestManagerWindow_ClosesUpToTheAssertedWatermark(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, now)
+	w := newTestWatermark(t, d, testDecl(), sink)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 1, "NYC", 1)
@@ -41,13 +35,12 @@ func TestManagerWindow_ClosesAgainstTheStreamClock(t *testing.T) {
 	assert.Equal(t, int64(0), rows)
 	assert.Equal(t, 0, flushes)
 
-	// The stream reaches bucket 2: bucket 0's end plus the grace.
-	insertBucket(t, d.pipeline, 2, "NYC", 7)
+	assertAt(t, d.pipeline, bucket(1))
 	assert.NoError(t, w.Poll(ctx))
 	rows, flushes = sink.counts()
 	assert.Equal(t, int64(1), rows)
 	assert.Equal(t, 1, flushes)
-	assert.Equal(t, int64(2), countRows(t, d.pipeline, testTable))
+	assert.Equal(t, int64(1), countRows(t, d.pipeline, testTable))
 
 	wm, ok, err := NewStore(d.pipeline).Load(ctx, testTable)
 	assert.NoError(t, err)
@@ -61,31 +54,19 @@ func TestManagerWindow_ClosesAgainstTheStreamClock(t *testing.T) {
 	assert.Equal(t, 1, flushes)
 }
 
-// Once the engine has confirmed the idle bound with no arrival, every bucket
-// closes, the newest included. The confirmation is an idle tick: a commit
-// that late, still carrying the same arrival.
-func TestManagerWindow_IdleCloseClosesEverything(t *testing.T) {
+// An assertion past every bucket closes everything, the newest included.
+// That is what the engine asserts when every partition has gone idle.
+func TestManagerWindow_AnAssertionPastEveryBucketClosesEverything(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	arrivedAt(t, d.pipeline, t0)
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return t0.Add(time.Hour) })
+	w := newTestWatermark(t, d, testDecl(), sink)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 1, "SF", 1)
-	assert.NoError(t, w.Poll(ctx))
-	rows, _ := sink.counts()
-	assert.Equal(t, int64(0), rows)
-
-	// An idle tick one second short of the idle bound: still open.
-	progressAt(t, d.pipeline, t0, t0.Add(5*time.Minute-time.Second))
-	assert.NoError(t, w.Poll(ctx))
-	rows, _ = sink.counts()
-	assert.Equal(t, int64(0), rows)
-
-	progressAt(t, d.pipeline, t0, t0.Add(5*time.Minute))
+	assertAt(t, d.pipeline, bucket(2))
 	assert.NoError(t, w.Poll(ctx))
 	rows, flushes := sink.counts()
 	assert.Equal(t, int64(2), rows)
@@ -97,112 +78,82 @@ func TestManagerWindow_IdleCloseClosesEverything(t *testing.T) {
 	assert.That(t, wm.Equal(bucket(2)))
 }
 
-// A progress row that has stopped moving proves nothing about the stream. The
-// writes may be failing, or the pipeline may be wedged in a sink's retry
-// ladder with messages still waiting at the source. Read against the wall
-// clock, a frozen last_arrival looks exactly like a quiet stream, and the idle
-// rule closed every open bucket on a live one: the rows still arriving then
-// reopened the same bucket starts, which published a second time. Split and
-// duplicated rollups, pipeline still running.
-//
-// The row is the engine's statement that, as of last_commit, the newest
-// arrival was last_arrival. Only a commit made the idle bound after the
-// arrival says the stream was quiet that long, so however far the wall clock
-// runs, a frozen row closes nothing.
-func TestManagerWindow_AFrozenProgressRowNeverClosesOnIdleness(t *testing.T) {
+// Without an assertion nothing closes, however many polls run and whatever
+// the table holds: the manager has no clock to grow impatient on, and the
+// newest bucket is an observation, not a fact it decides on.
+func TestManagerWindow_AnUnassertedWindowNeverCloses(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	arrivedAt(t, d.pipeline, t0) // the last write that succeeded
-	clock := t0.Add(time.Second)
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return clock })
+	w := newTestWatermark(t, d, testDecl(), sink)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
-	insertBucket(t, d.pipeline, 1, "SF", 1)
-
-	for _, after := range []time.Duration{5 * time.Minute, time.Hour, 24 * time.Hour} {
-		clock = t0.Add(after)
+	insertBucket(t, d.pipeline, 5, "SF", 1)
+	for i := 0; i < 3; i++ {
 		assert.NoError(t, w.Poll(ctx))
 		if rows, _ := sink.counts(); rows != 0 {
-			t.Fatalf("%v after a progress row froze, %d rows were published: "+
-				"the idle rule read a stale arrival as a quiet stream", after, rows)
+			t.Fatalf("%d rows published with no watermark asserted", rows)
 		}
 	}
 	assert.Equal(t, int64(2), countRows(t, d.pipeline, testTable))
-
-	// The engine writes again and confirms the quiet: now it closes.
-	progressAt(t, d.pipeline, t0, t0.Add(24*time.Hour))
-	assert.NoError(t, w.Poll(ctx))
-	rows, _ := sink.counts()
-	assert.Equal(t, int64(2), rows)
+	_, ok, err := NewStore(d.pipeline).Load(ctx, testTable)
+	assert.NoError(t, err)
+	assert.That(t, !ok)
 }
 
-// An arrival after the confirmation withdraws it. The stream was quiet, an
-// idle tick said so, and then a batch arrived before the manager polled: the
-// row now says the stream is live, and the poll must believe the row.
-func TestManagerWindow_AnArrivalAfterTheIdleTickKeepsBucketsOpen(t *testing.T) {
+// A watermark that moved over an empty stretch is still saved, or the next
+// poll would decide the same move again.
+func TestManagerWindow_AnAssertionOverAnEmptyTableIsSaved(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return t0.Add(time.Hour) })
+	w := newTestWatermark(t, d, testDecl(), sink)
 
-	insertBucket(t, d.pipeline, 0, "NYC", 3)
-	insertBucket(t, d.pipeline, 1, "SF", 1)
-
-	// Quiet for six minutes and confirmed, then a batch at minute seven.
-	progressAt(t, d.pipeline, t0, t0.Add(6*time.Minute))
-	arrivedAt(t, d.pipeline, t0.Add(7*time.Minute))
+	assertAt(t, d.pipeline, bucket(5))
 	assert.NoError(t, w.Poll(ctx))
-	rows, _ := sink.counts()
-	assert.Equal(t, int64(0), rows)
+	_, flushes := sink.counts()
+	assert.Equal(t, 0, flushes)
+	wm, ok, err := NewStore(d.pipeline).Load(ctx, testTable)
+	assert.NoError(t, err)
+	assert.That(t, ok)
+	assert.That(t, wm.Equal(bucket(5)))
 }
 
-// A progress table the engine has not written yet says nothing either way.
-func TestManagerWindow_AnUnwrittenProgressRowNeverClosesOnIdleness(t *testing.T) {
-	coverage.Covers(t, "manager.window")
-	ctx := context.Background()
-	d := newTestDB(t, "")
-	createWindowTable(t, d.pipeline)
-	exec(t, d.pipeline, `CREATE TABLE sqlflow_progress (last_arrival TIMESTAMPTZ, last_commit TIMESTAMPTZ, messages BIGINT NOT NULL)`)
-	exec(t, d.pipeline, `INSERT INTO sqlflow_progress VALUES (NULL, NULL, 0)`)
-	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, func() time.Time { return t0.Add(time.Hour) })
-
-	insertBucket(t, d.pipeline, 0, "NYC", 3)
-	assert.NoError(t, w.Poll(ctx))
-	rows, _ := sink.counts()
-	assert.Equal(t, int64(0), rows)
-}
-
-// The watermark never moves backwards. Once bucket 0 has closed, deleting the
-// newer rows leaves a table whose newest bucket is older than the watermark,
-// and a poll changes nothing.
+// The closed watermark never moves backwards. An assertion at or below it
+// is one that has been acted on, and a poll changes nothing; the rows it
+// would cover are late.
 func TestManagerWindow_WatermarkNeverRegresses(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, now)
+	decl := testDecl()
+	decl.Late = LateDrop
+	w := newTestWatermark(t, d, decl, sink)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 5, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(4))
 	assert.NoError(t, w.Poll(ctx))
 	wm, _, err := NewStore(d.pipeline).Load(ctx, testTable)
 	assert.NoError(t, err)
 	assert.That(t, wm.Equal(bucket(4)))
 
+	// The engine cannot assert lower, by construction; were the row to say
+	// so anyway, the manager holds.
 	exec(t, d.pipeline, `DELETE FROM agg_cities_count`)
 	insertBucket(t, d.pipeline, 1, "late", 1)
+	assertAt(t, d.pipeline, bucket(2))
 	assert.NoError(t, w.Poll(ctx))
 	wm2, _, err := NewStore(d.pipeline).Load(ctx, testTable)
 	assert.NoError(t, err)
 	assert.That(t, wm2.Equal(bucket(4)))
+	assert.Equal(t, int64(0), countRows(t, d.pipeline, testTable))
 }
 
 // A manager built over the state another one saved starts from its
@@ -213,12 +164,12 @@ func TestManagerWindow_ARestartResumesFromTheWatermark(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	d := newTestDB(t, path)
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, now)
+	w := newTestWatermark(t, d, testDecl(), sink)
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 	assert.NoError(t, w.Poll(ctx))
 	rows, _ := sink.counts()
 	assert.Equal(t, int64(1), rows)
@@ -229,7 +180,7 @@ func TestManagerWindow_ARestartResumesFromTheWatermark(t *testing.T) {
 	sink2 := &recordingSink{}
 	decl := testDecl()
 	decl.Late = LateDrop
-	w2, err := NewWatermark(managerConn(t, d.db), decl, time.Hour, sink2, WithClock(now))
+	w2, err := NewWatermark(managerConn(t, d.db), decl, time.Hour, sink2)
 	assert.NoError(t, err)
 	assert.NoError(t, w2.Poll(ctx))
 	rows2, flushes2 := sink2.counts()
@@ -248,16 +199,16 @@ func TestManagerWindow_LateRowsFollowThePolicy(t *testing.T) {
 			ctx := context.Background()
 			d := newTestDB(t, "")
 			createWindowTable(t, d.pipeline)
-			now := live(d, t)
 			reader := sdkmetric.NewManualReader()
 			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 			sink := &recordingSink{}
 			decl := testDecl()
 			decl.Late = policy
-			w := newTestWatermark(t, d, decl, sink, now, WithMeterProvider(mp))
+			w := newTestWatermark(t, d, decl, sink, WithMeterProvider(mp))
 
 			insertBucket(t, d.pipeline, 0, "NYC", 3)
 			insertBucket(t, d.pipeline, 2, "NYC", 1)
+			assertAt(t, d.pipeline, bucket(1))
 			assert.NoError(t, w.Poll(ctx))
 
 			insertBucket(t, d.pipeline, 0, "late", 1)
@@ -290,15 +241,15 @@ func TestManagerWindow_LateRowsAreCountedOnlyWhenTheCloseCommits(t *testing.T) {
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	decl := testDecl()
 	decl.Late = LateDrop
 
-	first := newTestWatermark(t, d, decl, &recordingSink{}, now, WithMeterProvider(mp))
+	first := newTestWatermark(t, d, decl, &recordingSink{}, WithMeterProvider(mp))
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 	assert.NoError(t, first.Poll(ctx))
 
 	// Two late rows for the closed bucket, and a newer bucket so the next
@@ -306,12 +257,13 @@ func TestManagerWindow_LateRowsAreCountedOnlyWhenTheCloseCommits(t *testing.T) {
 	insertBucket(t, d.pipeline, 0, "late", 1)
 	insertBucket(t, d.pipeline, 0, "late", 1)
 	insertBucket(t, d.pipeline, 4, "NYC", 1)
-	failing := newTestWatermark(t, d, decl, &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	assertAt(t, d.pipeline, bucket(3))
+	failing := newTestWatermark(t, d, decl, &failingSink{err: errors.New("sink down")}, WithMeterProvider(mp))
 	assert.Error(t, failing.Poll(ctx))
 	late, _ := metricValue(t, reader, "window_late_rows")
 	assert.Equal(t, int64(0), late)
 
-	retry := newTestWatermark(t, d, decl, &recordingSink{}, now, WithMeterProvider(mp))
+	retry := newTestWatermark(t, d, decl, &recordingSink{}, WithMeterProvider(mp))
 	assert.NoError(t, retry.Poll(ctx))
 	assert.Equal(t, int64(2), counterValue(t, reader, "window_late_rows"))
 }
@@ -324,144 +276,115 @@ func TestManagerWindow_TheNewestBucketIsReportedEvenWhenTheCloseFails(t *testing
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
-	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	assertAt(t, d.pipeline, bucket(1))
+	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, WithMeterProvider(mp))
 	assert.Error(t, failing.Poll(ctx))
 	assert.Equal(t, bucket(2).Unix(), gaugeValue(t, reader, "window_newest_bucket_start_seconds"))
 }
 
-// closeLag runs a window whose closes stall while rows keep arriving: one
-// close commits, two more buckets arrive, and the next close fails. The host
-// clock is offset from event time by skew, and every clock the host keeps --
-// the manager's and the arrival it records -- moves with it.
-func closeLag(t *testing.T, skew time.Duration) int64 {
-	t.Helper()
+// Closes that stall while the engine's assertion moves on show as lag, in
+// event time: the asserted watermark less the closed one.
+//
+// One close commits at bucket 1; the engine then asserts bucket 3 and the
+// next close fails. Two minutes of closes are overdue. No clock enters
+// it: the manager has none, so a gateway that booted without a real-time
+// clock reports the same figure.
+func TestManagerWindow_AStalledCloseIsLagInEventTime(t *testing.T) {
+	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	arrivedAt(t, d.pipeline, t0.Add(skew))
-	clock := func() time.Time { return t0.Add(skew + time.Second) }
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
-	ok := newTestWatermark(t, d, testDecl(), &recordingSink{}, clock, WithMeterProvider(mp))
+	assertAt(t, d.pipeline, bucket(1))
+	ok := newTestWatermark(t, d, testDecl(), &recordingSink{}, WithMeterProvider(mp))
 	assert.NoError(t, ok.Poll(ctx))
 	assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
 
 	insertBucket(t, d.pipeline, 3, "NYC", 1)
 	insertBucket(t, d.pipeline, 4, "NYC", 1)
-	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, clock, WithMeterProvider(mp))
+	assertAt(t, d.pipeline, bucket(3))
+	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, WithMeterProvider(mp))
 	assert.Error(t, failing.Poll(ctx))
-	return gaugeValue(t, reader, "window_close_lag_seconds")
-}
-
-// Closes that stall while rows keep arriving show as lag, in event time.
-//
-// The watermark committed at bucket 1; bucket 4 has arrived, so it should be
-// at bucket 3. Two minutes of closes are overdue.
-func TestManagerWindow_AStalledCloseIsLagInEventTime(t *testing.T) {
-	coverage.Covers(t, "manager.window")
-	assert.Equal(t, int64(120), closeLag(t, 0))
-}
-
-// Close lag is the same on a host whose clock is a day wrong.
-//
-// It compares the window's data with its own watermark, both event time, so
-// a gateway that booted without a real-time clock reports it correctly. The
-// earlier readings subtracted event time from this host's clock and did not.
-func TestManagerWindow_CloseLagIgnoresTheHostClock(t *testing.T) {
-	coverage.Covers(t, "manager.window")
-	assert.Equal(t, closeLag(t, 0), closeLag(t, 24*time.Hour))
+	assert.Equal(t, int64(120), gaugeValue(t, reader, "window_close_lag_seconds"))
 }
 
 // A stall that began before a restart is reported by the first poll after
-// it, with no close needed.
-//
-// Lag used to be recorded only when a close committed. A process restarted
-// into a stalled window never committed one, so the stall never appeared. The
-// stored watermark says where the window is, and the rows say where it should
-// be.
+// it, with no close needed: the stored watermark says where the window is,
+// and the assertion says where it should be.
 func TestManagerWindow_AStallIsReportedByTheFirstPollAfterARestart(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
-	before := newTestWatermark(t, d, testDecl(), &recordingSink{}, now)
+	assertAt(t, d.pipeline, bucket(1))
+	before := newTestWatermark(t, d, testDecl(), &recordingSink{})
 	assert.NoError(t, before.Poll(ctx))
 	insertBucket(t, d.pipeline, 4, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(3))
 
 	// A new process: fresh metrics, the same database, a sink that is down.
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	after := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	after := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, WithMeterProvider(mp))
 	assert.Error(t, after.Poll(ctx))
 	assert.Equal(t, int64(120), gaugeValue(t, reader, "window_close_lag_seconds"))
 }
 
 // A window whose sink was down from the start reports lag before its first
-// close, measured from when that close was due.
+// close, measured from when that close was due: the oldest bucket's end.
 func TestManagerWindow_ANeverClosedWindowReportsLag(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	// Bucket 0 was due to close once the watermark reached its end, bucket 1;
-	// bucket 4 has arrived, so the watermark should be at bucket 3.
+	// the engine has asserted bucket 3.
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 4, "NYC", 1)
-	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, now, WithMeterProvider(mp))
+	assertAt(t, d.pipeline, bucket(3))
+	failing := newTestWatermark(t, d, testDecl(), &failingSink{err: errors.New("sink down")}, WithMeterProvider(mp))
 	assert.Error(t, failing.Poll(ctx))
 	assert.Equal(t, int64(120), gaugeValue(t, reader, "window_close_lag_seconds"))
 }
 
-// A sparse stream is not a stalled window.
-//
-// After an idle close has closed everything, nothing is overdue however long
-// the stream stays quiet. Measured against the wall clock, the window read an
-// hour behind an hour later, so a store-and-forward device that reports once
-// an hour looked stalled all the time.
+// A sparse stream is not a stalled window. After the assertion has closed
+// everything, nothing is overdue however long the stream stays quiet: the
+// lag compares the two watermarks, and neither moves while nothing arrives.
 func TestManagerWindow_AQuietStreamAfterAnIdleCloseIsNotLag(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	arrivedAt(t, d.pipeline, t0)
-	clock := t0.Add(time.Second)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	w := newTestWatermark(t, d, testDecl(), &recordingSink{}, func() time.Time { return clock }, WithMeterProvider(mp))
+	w := newTestWatermark(t, d, testDecl(), &recordingSink{}, WithMeterProvider(mp))
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 1, "SF", 1)
-	assert.NoError(t, w.Poll(ctx))
-
-	// The idle close: the engine commits five minutes after the newest
-	// arrival. The manager's own clock is not what closes it.
-	progressAt(t, d.pipeline, t0, t0.Add(5*time.Minute))
-	clock = t0.Add(5 * time.Minute)
+	assertAt(t, d.pipeline, bucket(2))
 	assert.NoError(t, w.Poll(ctx))
 	assert.Equal(t, int64(0), countRows(t, d.pipeline, testTable))
 	assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
 
-	progressAt(t, d.pipeline, t0, t0.Add(time.Hour)) // an hour of silence
-	clock = t0.Add(time.Hour)
-	assert.NoError(t, w.Poll(ctx))
-	assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
+	for i := 0; i < 3; i++ {
+		assert.NoError(t, w.Poll(ctx))
+		assert.Equal(t, int64(0), gaugeValue(t, reader, "window_close_lag_seconds"))
+	}
 }
 
 // A window reports that it exists before its first close.
@@ -484,15 +407,15 @@ func TestManagerWindow_ReemitPublishesTheLateRowsAlone(t *testing.T) {
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	sink := &recordingSink{}
 	decl := testDecl()
 	decl.Late = LateReemit
 	decl.EmitSQL = "SELECT sum(count)::INT AS total, bucket, city FROM closed GROUP BY ALL"
-	w := newTestWatermark(t, d, decl, sink, now)
+	w := newTestWatermark(t, d, decl, sink)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 5)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 	assert.NoError(t, w.Poll(ctx))
 
 	insertBucket(t, d.pipeline, 0, "NYC", 1)
@@ -508,12 +431,12 @@ func TestManagerWindow_UncommittedRowsAreNotPublished(t *testing.T) {
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, now)
+	w := newTestWatermark(t, d, testDecl(), sink)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 
 	open := managerConn(t, d.db)
 	defer open.Close()
@@ -532,12 +455,12 @@ func TestManagerWindow_AFailedFlushLeavesEverything(t *testing.T) {
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	failing := &failingSink{err: errors.New("sink down")}
-	w := newTestWatermark(t, d, testDecl(), failing, now)
+	w := newTestWatermark(t, d, testDecl(), failing)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 	assert.Error(t, w.Poll(ctx))
 	assert.Equal(t, int64(2), countRows(t, d.pipeline, testTable))
 	_, ok, err := NewStore(d.pipeline).Load(ctx, testTable)
@@ -545,26 +468,26 @@ func TestManagerWindow_AFailedFlushLeavesEverything(t *testing.T) {
 	assert.That(t, !ok)
 
 	sink := &recordingSink{}
-	w2 := newTestWatermark(t, d, testDecl(), sink, now)
+	w2 := newTestWatermark(t, d, testDecl(), sink)
 	assert.NoError(t, w2.Poll(ctx))
 	rows, _ := sink.counts()
 	assert.Equal(t, int64(1), rows)
 }
 
 // A poll that finds nothing ends its transaction, so the next poll sees rows
-// committed in between.
+// and assertions committed in between.
 func TestManagerWindow_AnEmptyPollDoesNotFreezeTheView(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	sink := &recordingSink{}
-	w := newTestWatermark(t, d, testDecl(), sink, now)
+	w := newTestWatermark(t, d, testDecl(), sink)
 
 	assert.NoError(t, w.Poll(ctx))
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 	assert.NoError(t, w.Poll(ctx))
 	rows, _ := sink.counts()
 	assert.Equal(t, int64(1), rows)
@@ -577,17 +500,17 @@ func TestManagerWindow_EmitSQLShapesTheClosedRows(t *testing.T) {
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	sink := &recordingSink{}
 	decl := testDecl()
 	decl.EmitSQL = `WITH totals AS (SELECT city, sum(count)::INT AS count FROM closed GROUP BY ALL)
 		SELECT city, count FROM totals ORDER BY city`
-	w := newTestWatermark(t, d, decl, sink, now)
+	w := newTestWatermark(t, d, decl, sink)
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 0, "NYC", 4)
 	insertBucket(t, d.pipeline, 0, "SF", 1)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 	assert.NoError(t, w.Poll(ctx))
 	rows, _ := sink.counts()
 	assert.Equal(t, int64(2), rows)
@@ -601,13 +524,13 @@ func TestManagerWindow_MetricsReportTheWatermark(t *testing.T) {
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	w := newTestWatermark(t, d, testDecl(), &recordingSink{}, now, WithMeterProvider(mp))
+	w := newTestWatermark(t, d, testDecl(), &recordingSink{}, WithMeterProvider(mp))
 
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 	assert.NoError(t, w.Poll(ctx))
 
 	assert.Equal(t, bucket(1).Unix(), gaugeValue(t, reader, "window_watermark_seconds"))
@@ -621,12 +544,12 @@ func TestManagerWindow_FinalPollStopsAtTheDrainDeadline(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
-	now := live(d, t)
 	budget := core.NewDrainBudget(200 * time.Millisecond)
 	defer budget.Stop()
-	w := newTestWatermark(t, d, testDecl(), hangingSink{}, now, WithDrainBudget(budget))
+	w := newTestWatermark(t, d, testDecl(), hangingSink{}, WithDrainBudget(budget))
 	insertBucket(t, d.pipeline, 0, "NYC", 3)
 	insertBucket(t, d.pipeline, 2, "NYC", 1)
+	assertAt(t, d.pipeline, bucket(1))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
