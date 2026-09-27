@@ -23,7 +23,7 @@ func NewCommand() *cobra.Command {
 			"their history. verify checks every table against the table it is built from. " +
 			"check fails when a committed copy of a generated file has drifted.",
 	}
-	cmd.AddCommand(newDDLCommand(), newServeCommand(), newCheckCommand(), newInstallCommand(), newRunCommand(), newVerifyCommand())
+	cmd.AddCommand(newDDLCommand(), newServeCommand(), newCheckCommand(), newInstallCommand(), newRunCommand(), newVerifyCommand(), newTestCommand())
 	return cmd
 }
 
