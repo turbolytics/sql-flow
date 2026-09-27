@@ -253,3 +253,136 @@ func TestIntegrationRollupTest_ASourceWithoutAKeyIndexNamesTheKey(t *testing.T) 
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "unique index on (bucket, region)"))
 }
+
+// runCase runs one case in a sandbox for conf, after the workload, as the
+// command does.
+func runCase(t *testing.T, conn *pgx.Conn, conf *config.RollupsConf, tc config.RollupTestCase) ([]CaseFailure, error) {
+	t.Helper()
+	workload(t, conn, conf, 42)
+	return RunCase(context.Background(), conn, conf, 0, tc)
+}
+
+func write(rows ...map[string]any) []map[string]any { return rows }
+
+// The demo's fixture file passes, each case from empty tables after the
+// workload filled them.
+func TestIntegrationRollupTest_TheDemosCasesPass(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	conf := loadExample(t)
+	tests, err := config.LoadRollupTests("../../dev/config/rollups/bluesky.test.yml")
+	assert.NoError(t, err)
+	workload(t, srv.conn, conf, 42)
+	for i, tc := range tests.Tests {
+		failures, err := RunCase(context.Background(), srv.conn, conf, i, tc)
+		assert.NoError(t, err)
+		for _, f := range failures {
+			t.Errorf("%s: %s %s %s: expected %s, got %s", tc.Name, f.Table, f.Kind, f.Key, f.Expected, f.Actual)
+		}
+	}
+}
+
+// An expectation the writes do not make fails with the table, the key and
+// both rows.
+func TestIntegrationRollupTest_AWrongExpectationFailsWithADiff(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	failures, err := runCase(t, srv.conn, loadExample(t), config.RollupTestCase{
+		Name: "wrong", Rollup: "posts",
+		Writes: [][]map[string]any{write(map[string]any{"bucket": "2026-09-24T12:07:00Z", "lang": "en", "posts": 9})},
+		Expect: map[string][]map[string]any{
+			"posts_by_lang_5m": {{"bucket": "2026-09-24T12:05:00Z", "lang": "en", "posts": 8}},
+		},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []CaseFailure{{
+		Table: "posts_by_lang_5m", Key: "bucket=2026-09-24T12:05:00Z, lang=en", Kind: "differs",
+		Expected: "bucket=2026-09-24T12:05:00Z, lang=en, posts=8",
+		Actual:   "bucket=2026-09-24T12:05:00Z, lang=en, posts=9",
+	}}, failures)
+}
+
+// A row the table lacks and a row it holds unexpected each fail by key.
+func TestIntegrationRollupTest_AMissingRowAndAnExtraRowFailByKey(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	failures, err := runCase(t, srv.conn, loadExample(t), config.RollupTestCase{
+		Name: "rows", Rollup: "posts",
+		Writes: [][]map[string]any{write(
+			map[string]any{"bucket": "2026-09-24T12:07:00Z", "lang": "en", "posts": 9},
+			map[string]any{"bucket": "2026-09-24T12:07:00Z", "lang": "ja", "posts": 2},
+		)},
+		Expect: map[string][]map[string]any{
+			"posts_by_lang_5m": {
+				{"bucket": "2026-09-24T12:05:00Z", "lang": "en", "posts": 9},
+				{"bucket": "2026-09-24T12:05:00Z", "lang": "de", "posts": 1},
+			},
+		},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []CaseFailure{
+		{Table: "posts_by_lang_5m", Key: "bucket=2026-09-24T12:05:00Z, lang=de", Kind: "missing",
+			Expected: "bucket=2026-09-24T12:05:00Z, lang=de, posts=1"},
+		{Table: "posts_by_lang_5m", Key: "bucket=2026-09-24T12:05:00Z, lang=ja", Kind: "extra",
+			Actual: "bucket=2026-09-24T12:05:00Z, lang=ja, posts=2"},
+	}, failures)
+}
+
+// A double sum matches its expectation within verify's tolerance, so 0.1
+// and 0.2 sum to 0.3.
+func TestIntegrationRollupTest_ADoubleSumMatchesWithinTolerance(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	execSQL(t, srv.conn, `CREATE TABLE gauge_1m (bucket TIMESTAMPTZ NOT NULL, v DOUBLE PRECISION NOT NULL, PRIMARY KEY (bucket))`)
+	conf, err := config.ParseRollups([]byte(`rollups:
+  - name: gauge
+    source: {table: gauge_1m, time_column: bucket, grain: 1m}
+    grains:
+      5m: {from: 1m}
+    dimension_sets:
+      - name: gauge
+        dimensions: []
+        measures:
+          v: {type: sum, column: v, numeric: double}
+`))
+	assert.NoError(t, err)
+	failures, err := runCase(t, srv.conn, conf, config.RollupTestCase{
+		Name: "tolerance", Rollup: "gauge",
+		Writes: [][]map[string]any{write(
+			map[string]any{"bucket": "2026-09-24T12:00:00Z", "v": 0.1},
+			map[string]any{"bucket": "2026-09-24T12:01:00Z", "v": 0.2},
+		)},
+		Expect: map[string][]map[string]any{"gauge_5m": {{"bucket": "2026-09-24T12:00:00Z", "v": 0.3}}},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(failures))
+}
+
+// A write naming a column the source lacks is refused at its YAML path,
+// before the case writes anything.
+func TestIntegrationRollupTest_AWriteToAColumnTheSourceLacksIsRefusedAtItsPath(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	_, err := runCase(t, srv.conn, loadExample(t), config.RollupTestCase{
+		Name: "nope", Rollup: "posts",
+		Writes: [][]map[string]any{write(map[string]any{"bucket": "2026-09-24T12:07:00Z", "lang": "en", "posts": 9, "nope": 1})},
+	})
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "tests.0.writes.0.0.nope"))
+	assert.Equal(t, int64(0), count(t, srv.conn, "SELECT count(*) FROM posts_per_minute_by_lang WHERE bucket = '2026-09-24T12:07:00Z'"))
+}
