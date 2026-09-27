@@ -79,19 +79,66 @@ func TestCoreConsumeLoop_AnUnplaceableEventTimeIsRefusedBeforeTheHandler(t *test
 	assert.Equal(t, int64(3), p.Messages)
 }
 
-// The rule itself, at its edges. Zero is placeable; the floor and now are
-// inclusive; a nanosecond past now is not.
+// The rule itself, at its edges. Zero is placeable; the floor and the ceiling
+// are inclusive; a nanosecond past the ceiling is not.
 func TestCoreConsumeLoop_PlacementRule(t *testing.T) {
 	coverage.Covers(t, "core.consume_loop")
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC).UnixNano()
 	floor := EventTimeFloor.UnixNano()
+	ceiling := now + int64(EventTimeCeiling)
 
 	assert.That(t, CanPlace(0, now))
 	assert.That(t, CanPlace(floor, now))
 	assert.That(t, CanPlace(now, now))
+	assert.That(t, CanPlace(now+1, now))
+	assert.That(t, CanPlace(ceiling, now))
+	assert.That(t, !CanPlace(ceiling+1, now))
 	assert.That(t, !CanPlace(floor-1, now))
-	assert.That(t, !CanPlace(now+1, now))
 	// A source that assigns event time and found none on this record.
 	assert.That(t, !CanPlace(EventTimeMissing, now))
 	assert.That(t, !CanPlace(time.Date(1970, 1, 1, 0, 0, 1, 0, time.UTC).UnixNano(), now))
+}
+
+// A producer whose clock leads the consumer's is believed; a producer that
+// believes it is 2099 is not.
+//
+// This is the case zero tolerance got wrong. A timestamp is written upstream
+// and read downstream, so it is ahead of the reader's clock whenever the
+// writer's clock leads by more than the transit between them, and a few
+// milliseconds of NTP disagreement does that for a producer in the same
+// region. The Bluesky demo on v2026.09.27 refused 9,739 of 11,873 posts in
+// ninety seconds for exactly this reason: Jetstream stamps time_us a few
+// milliseconds ahead of the consumer's clock, and nothing was wrong with the
+// data, the clocks, or the pipeline.
+//
+// Flink makes no such judgement at all: a watermark there comes only from the
+// timestamps observed, so a record from 2099 advances it to 2099 and makes
+// everything after it late, which is #358. The guard stays; its threshold is
+// what this pins.
+func TestCoreConsumeLoop_ASkewedProducerClockIsBelievedAndAWrongOneIsNot(t *testing.T) {
+	coverage.Covers(t, "core.consume_loop")
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	nowNanos := now.UnixNano()
+
+	// Ordinary clock disagreement, at the magnitudes hosts actually show.
+	for _, ahead := range []time.Duration{
+		time.Millisecond, 8 * time.Millisecond, 100 * time.Millisecond,
+		time.Second, 30 * time.Second,
+	} {
+		if !CanPlace(now.Add(ahead).UnixNano(), nowNanos) {
+			t.Fatalf("a producer %s ahead of this host was refused; that is clock skew, not a wrong clock", ahead)
+		}
+	}
+
+	// A clock that is wrong, not merely skewed.
+	for _, ahead := range []time.Duration{
+		2 * time.Minute, time.Hour, 24 * time.Hour, 365 * 24 * time.Hour,
+	} {
+		if CanPlace(now.Add(ahead).UnixNano(), nowNanos) {
+			t.Fatalf("a producer %s ahead of this host was believed; beyond the ceiling the clock is wrong", ahead)
+		}
+	}
+
+	// #358 itself: the device that believes it is 2099.
+	assert.That(t, !CanPlace(time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano(), nowNanos))
 }

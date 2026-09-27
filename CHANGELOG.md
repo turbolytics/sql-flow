@@ -292,6 +292,22 @@
 
 ### Fixed
 
+- **A producer whose clock leads the consumer's is no longer refused.** The
+  placement rule that keeps a record stamped in 2099 from emptying a windowed
+  stream (#358) had zero tolerance: any event time a nanosecond ahead of the
+  engine's clock was refused as unplaceable. A timestamp is written upstream
+  and read downstream, so it is ahead whenever the producer's clock leads the
+  consumer's by more than the transit between them, and a few milliseconds of
+  NTP disagreement does that for a producer in the same region. The Bluesky
+  demo on v2026.09.27 refused 82% of posts -- 9,739 of 11,873 in ninety
+  seconds -- with nothing wrong in the data, the clocks or the pipeline. The
+  rule now admits an event time up to `EventTimeCeiling`, one minute, ahead of
+  the engine's clock; a year ahead is still refused. A minute is what the
+  Render template already used for the same judgement in SQL. Flink makes no
+  such judgement at all, which is #358; the guard stays, and only its
+  threshold changed. The refusal log line now carries the ceiling and how far
+  ahead the record was, so skew and a wrong clock read differently.
+
 - The `turbostats/wire` package's comment on `event_lag_basis` named
   `kafka_timestamp`, a value no engine sends. It now names what the engine
   does send -- `kafka_create_time`, `kafka_log_append_time`, `arrival`, or a
