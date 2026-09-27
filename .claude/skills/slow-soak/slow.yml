@@ -33,8 +33,6 @@ tables:
         size_seconds: 60
         grace_seconds: 60
         idle_close_seconds: 60
-        late_rows: drop
-        poll_interval_seconds: 10
         emit_sql: |
           SELECT bucket, sum(count)::BIGINT AS count, max(max_latency_s) AS max_latency_s
           FROM closed
@@ -64,13 +62,16 @@ pipeline:
       auto_offset_reset: earliest
       topics:
         - "{{ SQLFLOW_TOPIC|default('slow-soak') }}"
+      event_time:
+        path: sent_at
+        format: rfc3339
   handler:
     type: 'handlers.InferredMemBatch'
     sql: |
       INSERT INTO agg_slow
       BY NAME
       SELECT
-        date_trunc('minute', CAST(sent_at AS TIMESTAMPTZ)) AS bucket,
+        time_bucket(INTERVAL '1 minute', event_time) AS bucket,
         count(*) AS count,
         max(epoch(now() - CAST(sent_at AS TIMESTAMPTZ))) AS max_latency_s
       FROM batch

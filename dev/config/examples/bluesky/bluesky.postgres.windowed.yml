@@ -5,6 +5,7 @@ commands:
     sql: |
       CREATE TABLE IF NOT EXISTS posts (
         time_us BIGINT,
+        event_time TIMESTAMPTZ,
         commit STRUCT(
           operation TEXT,
           record STRUCT(langs TEXT[])
@@ -38,18 +39,19 @@ tables:
       # land. After idle_close_seconds with nothing arriving, every open
       # bucket closes.
       #
-      # late_rows: drop, because the sink replaces. A row for a bucket that
-      # already closed is discarded and counted in window_late_rows_total.
-      # reemit would run emit_sql over the late rows alone, because the
-      # bucket's other rows were deleted when it closed, and the upsert would
-      # replace the bucket's count with theirs. validate refuses that pairing.
+      # allowed_lateness_seconds keeps a closed minute's rows for five more
+      # minutes. A post that arrives for it in that time is written, and the
+      # minute is republished whole -- emit_sql over every row it has -- so
+      # the upsert below replaces the row for (bucket, lang) with the exact
+      # count. Past that a late post is refused before the handler and
+      # counted in window_late_rows_total. This is the one shipped example
+      # that admits late rows, because its sink replaces by key.
       window:
         time_column: bucket
         size_seconds: 60
         grace_seconds: 60
         idle_close_seconds: 60
-        late_rows: drop
-        poll_interval_seconds: 10
+        allowed_lateness_seconds: 300
         emit_sql: |
           SELECT bucket, lang, sum(posts)::INTEGER AS posts
           FROM closed
@@ -57,8 +59,9 @@ tables:
         sink:
           # A keyed sink replaces the row a (bucket, lang) already identifies.
           # The engine deletes a window only after the sink accepts it, so a
-          # crash between the two republishes that window on the next poll,
-          # and the republish lands harmlessly. Each flush costs the batch: a
+          # crash between the two republishes that window on the next pass,
+          # and the republish lands harmlessly; so does a late post's
+          # recompute. Each flush costs the batch: a
           # COPY into a staging table and a server-side merge, in one
           # transaction. The target needs PRIMARY KEY (bucket, lang) or a
           # unique index on the pair; the sink checks at startup.
@@ -77,6 +80,11 @@ pipeline:
     type: websocket
     websocket:
       uri: 'wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post'
+      # The post's own time: time_us, microseconds since the epoch. The
+      # engine fills the batch table's event_time column from it.
+      event_time:
+        path: time_us
+        format: unix_us
 
   handler:
     type: handlers.StructuredBatch
@@ -84,7 +92,7 @@ pipeline:
     sql: |
       INSERT INTO posts_per_minute_by_lang
       SELECT
-        time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000)) AS bucket,
+        time_bucket(INTERVAL '1 minute', event_time) AS bucket,
         coalesce(commit.record.langs[1], 'unknown') AS lang,
         count(*) AS posts
       FROM posts

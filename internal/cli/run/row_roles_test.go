@@ -164,25 +164,23 @@ func TestWindowManagerRowsAreCounted(t *testing.T) {
 			SQL: []config.TableSQL{{
 				Name: "agg",
 				Window: &config.Window{
-					TimeColumn:       "bucket",
-					SizeSeconds:      60,
-					LateRows:         "drop",
-					PollIntervalSecs: 3600,
-					Sink:             config.Sink{Type: "console"},
+					TimeColumn:  "bucket",
+					SizeSeconds: 60,
+					Sink:        config.Sink{Type: "console"},
 				},
 			}},
 		},
 	}
 
 	built, closeConns, err := buildManagedTables(
-		context.Background(), conf, db, zap.NewNop(), mp, nil, sinks.RetryEvents{})
+		context.Background(), conf, db, nil, zap.NewNop(), mp, nil, sinks.RetryEvents{})
 	assert.NoError(t, err)
 	defer closeConns()
 	assert.Equal(t, 1, len(built))
 
-	// One poll closes the bucket, writes the rows to the manager's sink and
+	// One pass closes the bucket, writes the rows to the manager's sink and
 	// flushes them.
-	assert.NoError(t, built[0].Poll(context.Background()))
+	assert.NoError(t, built[0].Pass(context.Background()))
 
 	byRole := writtenRowsByRole(t, reader)
 	assert.Equal(t, int64(3), byRole["manager"])

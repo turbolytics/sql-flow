@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
@@ -146,30 +147,30 @@ func TestCollect_AKafkaPipelineHoldingNoPartitionsReportsZero(t *testing.T) {
 
 // Late rows are split by what happened to them, and never summed.
 //
-// policy is an outcome: a dropped row is gone and a reemitted row is not, so
-// their sum is true of neither. window is a shard, and collapses. This drives
-// the real instruments, so a rename in managers fails here.
+// outcome is an outcome: a refused row is gone and a recomputed row is in
+// its bucket's republished value, so their sum is true of neither. window is
+// a shard, and collapses. This drives the real instruments -- the engine's
+// counter, since the engine decides lateness -- so a rename fails here.
 func TestCollect_LateRowsSplitByOutcomeAndCollapseByWindow(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	ctx := context.Background()
 	reader, mp := windowed()
+	engine, err := core.NewMetrics(mp)
+	assert.NoError(t, err)
 	hourly := managers.NewWindowMetrics(mp, "hourly")
 	daily := managers.NewWindowMetrics(mp, "daily")
-	drop := func(w string) metric.AddOption {
-		return metric.WithAttributes(attribute.String("window", w), attribute.String("policy", string(managers.LateDrop)))
+	late := func(w, outcome string) metric.AddOption {
+		return metric.WithAttributes(attribute.String("window", w), attribute.String("outcome", outcome))
 	}
-	reemit := func(w string) metric.AddOption {
-		return metric.WithAttributes(attribute.String("window", w), attribute.String("policy", string(managers.LateReemit)))
-	}
-	hourly.Late.Add(ctx, 3, drop("hourly"))
-	daily.Late.Add(ctx, 4, drop("daily"))
-	hourly.Late.Add(ctx, 10, reemit("hourly"))
+	engine.WindowLateRows.Add(ctx, 3, late("hourly", "refused"))
+	engine.WindowLateRows.Add(ctx, 4, late("daily", "refused"))
+	engine.WindowLateRows.Add(ctx, 10, late("hourly", "recomputed"))
 	hourly.Closed.Add(ctx, 2, win("hourly"))
 	daily.Closed.Add(ctx, 1, win("daily"))
 
 	p := pipelineOf(t, reader)
 	assert.Equal(t, int64(7), *p.LateRowsDropped)
-	assert.Equal(t, int64(10), *p.LateRowsReemitted)
+	assert.Equal(t, int64(10), *p.LateRowsRecomputed)
 	assert.Equal(t, int64(3), *p.WindowClosedCount)
 }
 
@@ -185,33 +186,35 @@ func TestCollect_WindowCountersArePresentBeforeTheFirstClose(t *testing.T) {
 
 	p := pipelineOf(t, reader)
 	assert.That(t, p.LateRowsDropped != nil)
-	assert.That(t, p.LateRowsReemitted != nil)
+	assert.That(t, p.LateRowsRecomputed != nil)
 	assert.That(t, p.WindowClosedCount != nil)
 	assert.Equal(t, int64(0), *p.LateRowsDropped)
 
 	reader, _, _ = provider(t)
 	plain := pipelineOf(t, reader)
 	assert.That(t, plain.LateRowsDropped == nil)
-	assert.That(t, plain.LateRowsReemitted == nil)
+	assert.That(t, plain.LateRowsRecomputed == nil)
 	assert.That(t, plain.WindowClosedCount == nil)
 	assert.That(t, plain.WindowLagSeconds == nil)
 	assert.That(t, plain.WindowNewestBucketAt == nil)
 }
 
-// A policy the contract has no field for leaves both late counts out.
+// An outcome the contract has no field for leaves both late counts out.
 //
 // Adding it to neither would report the known counts as complete while some
 // rows went uncounted, on the field an operator reads for data loss.
-func TestCollect_AnUnknownLatePolicyReportsNeitherCount(t *testing.T) {
+func TestCollect_AnUnknownLateOutcomeReportsNeitherCount(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, mp := windowed()
-	w := managers.NewWindowMetrics(mp, "hourly")
-	w.Late.Add(context.Background(), 5, metric.WithAttributes(
-		attribute.String("window", "hourly"), attribute.String("policy", "quarantine")))
+	managers.NewWindowMetrics(mp, "hourly")
+	engine, err := core.NewMetrics(mp)
+	assert.NoError(t, err)
+	engine.WindowLateRows.Add(context.Background(), 5, metric.WithAttributes(
+		attribute.String("window", "hourly"), attribute.String("outcome", "quarantine")))
 
 	p := pipelineOf(t, reader)
 	assert.That(t, p.LateRowsDropped == nil)
-	assert.That(t, p.LateRowsReemitted == nil)
+	assert.That(t, p.LateRowsRecomputed == nil)
 	// The window is still there, and says so.
 	assert.That(t, p.WindowClosedCount != nil)
 }
@@ -455,7 +458,7 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 			StateCommitCount: big, StateDBSizeBytes: &big, LastMessageAt: &at,
 			SinkRetryCount: &big, LagMaxMessages: &big, LagTotalMessages: &big,
 			LagPartitions: &n, LagObservedAt: &at, LateRowsDropped: &big,
-			LateRowsReemitted: &big, WindowClosedCount: &big,
+			LateRowsRecomputed: &big, WindowClosedCount: &big,
 			WindowLagSeconds: &big, WindowNewestBucketAt: &at,
 			SourceErrorCount: &big, HandlerErrorCount: &big, SinkErrorCount: &big,
 			StateErrorCount: &big, DLQRows: &big, LastErrorCode: &code,

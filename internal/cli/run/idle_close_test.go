@@ -100,7 +100,7 @@ func (f *failingAfter) Record(ctx context.Context, p core.Progress) error {
 // seeded, and the stream exists to keep the partition out of idleness.
 type idleCloseRig struct {
 	published func() int64
-	poll      func() error
+	pass      func() error
 	turbine   *core.Turbine
 	stop      func()
 }
@@ -123,8 +123,6 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSa
 			SizeSeconds:      60,
 			GraceSeconds:     60,
 			IdleCloseSeconds: 1,
-			LateRows:         "drop",
-			PollIntervalSecs: 3600,
 			EmitSQL:          "SELECT bucket, sum(n)::BIGINT AS n FROM closed GROUP BY ALL",
 			Sink: config.Sink{Type: "sqlcommand", SQLCommand: &config.SQLCommandSink{
 				SQL: "INSERT INTO published SELECT bucket, n FROM sqlflow_sink_batch",
@@ -136,7 +134,12 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSa
 	assert.NoError(t, store.Init(ctx))
 	assert.NoError(t, initWindowStores(ctx, conf, conn))
 
-	managed, closeConns, err := buildManagedTables(ctx, conf, db, zap.NewNop(),
+	// The watermark tracker, wired and restored the way run does it. The
+	// pipeline has seen no rows of its own, so the close it makes when the
+	// stream stops is measured from what the table holds. The manager gets
+	// the tracker's signal, as run wires it; the rig drives Pass by hand.
+	watermarks, windowOpts := windowOptions(conf, conn)
+	managed, closeConns, err := buildManagedTables(ctx, conf, db, watermarks, zap.NewNop(),
 		sdkmetric.NewMeterProvider(), nil, sinks.RetryEvents{})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(managed))
@@ -153,10 +156,6 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSa
 	// mode, manufactured by the rig rather than by the engine.
 	lock := &sync.Mutex{}
 
-	// The watermark tracker, wired and restored the way run does it. The
-	// pipeline has seen no rows of its own, so the close it makes when the
-	// stream stops is measured from what the table holds.
-	watermarks, windowOpts := windowOptions(conf, conn)
 	lock.Lock()
 	assert.NoError(t, restoreWindows(ctx, conf, conn, watermarks))
 	lock.Unlock()
@@ -189,7 +188,7 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, wrap func(core.ProgressSa
 			defer lock.Unlock()
 			return sharedConnCount(t, conn, "published")
 		},
-		poll:    func() error { return managed[0].Poll(ctx) },
+		pass:    func() error { return managed[0].Pass(ctx) },
 		turbine: tb,
 		stop:    stop,
 	}
@@ -209,7 +208,7 @@ func TestManagerWindow_AQuietStreamClosesOnTheEnginesAssertion(t *testing.T) {
 			t.Fatal("the stream has been quiet for far longer than idle_close_seconds and the bucket " +
 				"never closed: the engine's idle ticks are not confirming the quiet")
 		}
-		assert.NoError(t, rig.poll())
+		assert.NoError(t, rig.pass())
 		time.Sleep(25 * time.Millisecond)
 	}
 	assert.Equal(t, int64(1), rig.published())
@@ -234,7 +233,7 @@ func TestManagerWindow_ALiveStreamNeverClosesOnIdleness(t *testing.T) {
 
 	// Three times the idle bound, polling all the way through.
 	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); {
-		assert.NoError(t, rig.poll())
+		assert.NoError(t, rig.pass())
 		if n := rig.published(); n != 0 {
 			t.Fatalf("a live stream had its open bucket closed on idleness (%d rows published): "+
 				"a partition that keeps delivering must never leave the minimum", n)

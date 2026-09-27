@@ -10,8 +10,8 @@ import (
 )
 
 // sinksConfig has four holes: the attach command's TYPE, the window's
-// late_rows, the window's sink block at ten spaces, and the pipeline's sink
-// block at four.
+// allowed_lateness_seconds, the window's sink block at ten spaces, and the
+// pipeline's sink block at four.
 const sinksConfig = `commands:
   - name: attach
     sql: |
@@ -23,7 +23,7 @@ tables:
       window:
         time_column: bucket
         size_seconds: 60
-        late_rows: %s
+        allowed_lateness_seconds: %s
         sink:
 %s
 pipeline:
@@ -71,10 +71,10 @@ sqlcommand:
 	noopBlock    = `type: noop`
 )
 
-func validateSinks(t *testing.T, attachType, lateRows, windowSink, pipelineSink string) Report {
+func validateSinks(t *testing.T, attachType, lateness, windowSink, pipelineSink string) Report {
 	t.Helper()
 	cfg := sinksConfig
-	for _, v := range []string{attachType, lateRows, indent(windowSink, 10), indent(pipelineSink, 4)} {
+	for _, v := range []string{attachType, lateness, indent(windowSink, 10), indent(pipelineSink, 4)} {
 		cfg = strings.Replace(cfg, "%s", v, 1)
 	}
 	rep, err := Validate(context.Background(), Request{Path: "p.yml", Config: cfg})
@@ -93,33 +93,35 @@ func sinkDiagnostics(rep Report) []Diagnostic {
 	return out
 }
 
-// upsert with reemit is refused: the sink replaces a bucket's row with what
-// it is handed, and a reemit hands it emit_sql over the late rows alone.
-func TestValidateSchema_PostgresUpsertRefusesReemit(t *testing.T) {
+// Lateness with an upsert is the pairing that works: a republished bucket
+// replaces its earlier row. Nothing is said about the sink.
+func TestValidateSchema_PostgresUpsertTakesLateness(t *testing.T) {
 	coverage.Covers(t, "validate.schema")
-	rep := validateSinks(t, "POSTGRES", "reemit", upsertBlock, noopBlock)
+	rep := validateSinks(t, "POSTGRES", "300", upsertBlock, noopBlock)
+	assert.That(t, rep.OK)
+	assert.Equal(t, 0, len(sinkDiagnostics(rep)))
+	assert.Equal(t, StatusPass, checkStatus(t, rep, "sinks.postgres"))
+
+	rep = validateSinks(t, "POSTGRES", "0", upsertBlock, noopBlock)
+	assert.That(t, rep.OK)
+	assert.Equal(t, 0, len(sinkDiagnostics(rep)))
+}
+
+// append with lateness is refused, as kafka and iceberg are, and only once:
+// a republished bucket lands beside its first publication.
+func TestValidateSchema_PostgresAppendRefusesLateness(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep := validateSinks(t, "POSTGRES", "300", appendBlock, noopBlock)
 	assert.That(t, !rep.OK)
 	diags := sinkDiagnostics(rep)
 	assert.Equal(t, 1, len(diags))
 	assert.Equal(t, SeverityError, diags[0].Severity)
-	assert.That(t, strings.Contains(diags[0].Message, "late_rows is reemit and the postgres sink upserts"))
-	assert.Equal(t, StatusFail, checkStatus(t, rep, "sinks.postgres"))
+	assert.That(t, strings.Contains(diags[0].Message, "the postgres sink appends"))
 
-	rep = validateSinks(t, "POSTGRES", "drop", upsertBlock, noopBlock)
+	// Without lateness an appending sink sees each bucket once, and passes.
+	rep = validateSinks(t, "POSTGRES", "0", appendBlock, noopBlock)
 	assert.That(t, rep.OK)
 	assert.Equal(t, 0, len(sinkDiagnostics(rep)))
-	assert.Equal(t, StatusPass, checkStatus(t, rep, "sinks.postgres"))
-}
-
-// append with reemit warns, as kafka and iceberg do, and only once.
-func TestValidateSchema_PostgresAppendWarnsOnReemit(t *testing.T) {
-	coverage.Covers(t, "validate.schema")
-	rep := validateSinks(t, "POSTGRES", "reemit", appendBlock, noopBlock)
-	assert.That(t, rep.OK)
-	diags := sinkDiagnostics(rep)
-	assert.Equal(t, 1, len(diags))
-	assert.Equal(t, SeverityWarning, diags[0].Severity)
-	assert.That(t, strings.Contains(diags[0].Message, "the postgres sink appends"))
 }
 
 // A sqlcommand upsert into an attached Postgres reads the whole target table
@@ -131,7 +133,7 @@ func TestValidateSchema_SqlcommandUpsertIntoPostgresWarns(t *testing.T) {
 		"window sink":   {conflictBlock, noopBlock},
 		"pipeline sink": {consoleBlock, conflictBlock},
 	} {
-		rep := validateSinks(t, "POSTGRES", "drop", c.window, c.pipeline)
+		rep := validateSinks(t, "POSTGRES", "0", c.window, c.pipeline)
 		assert.That(t, rep.OK)
 		diags := sinkDiagnostics(rep)
 		if len(diags) != 1 {
@@ -144,7 +146,7 @@ func TestValidateSchema_SqlcommandUpsertIntoPostgresWarns(t *testing.T) {
 
 	// Without an attached Postgres, ON CONFLICT is DuckDB's own and the
 	// extension's cost does not apply.
-	rep := validateSinks(t, "DUCKDB", "drop", conflictBlock, noopBlock)
+	rep := validateSinks(t, "DUCKDB", "0", conflictBlock, noopBlock)
 	assert.Equal(t, 0, len(sinkDiagnostics(rep)))
 }
 
@@ -158,7 +160,7 @@ func TestValidateSchema_PostgresBlockShape(t *testing.T) {
 		"needs key":               "type: postgres\npostgres:\n  dsn: x\n  table: t\n  mode: upsert",
 		"takes no key":            "type: postgres\npostgres:\n  dsn: x\n  table: t\n  mode: append\n  key: [a]",
 	} {
-		rep := validateSinks(t, "POSTGRES", "drop", block, noopBlock)
+		rep := validateSinks(t, "POSTGRES", "0", block, noopBlock)
 		assert.That(t, !rep.OK)
 		found := false
 		for _, d := range sinkDiagnostics(rep) {
@@ -181,13 +183,13 @@ func TestValidateSchema_SqlcommandUpsertWarnsOnlyForThePostgresTarget(t *testing
 	local := `type: sqlcommand
 sqlcommand:
   sql: INSERT INTO agg SELECT * FROM sqlflow_sink_batch ON CONFLICT (bucket) DO UPDATE SET count = EXCLUDED.count`
-	rep := validateSinks(t, "POSTGRES", "drop", local, noopBlock)
+	rep := validateSinks(t, "POSTGRES", "0", local, noopBlock)
 	assert.Equal(t, 0, len(sinkDiagnostics(rep)))
 
 	replace := `type: sqlcommand
 sqlcommand:
   sql: INSERT OR REPLACE INTO "pg".agg SELECT * FROM sqlflow_sink_batch`
-	rep = validateSinks(t, "POSTGRES", "drop", replace, noopBlock)
+	rep = validateSinks(t, "POSTGRES", "0", replace, noopBlock)
 	diags := sinkDiagnostics(rep)
 	assert.Equal(t, 1, len(diags))
 	assert.That(t, strings.Contains(diags[0].Message, "whole target table"))
@@ -201,7 +203,7 @@ func TestValidateSchema_SqlcommandUpsertWarnsWhenTheAliasIsImplicit(t *testing.T
 	local := `type: sqlcommand
 sqlcommand:
   sql: INSERT INTO agg SELECT * FROM sqlflow_sink_batch ON CONFLICT (bucket) DO UPDATE SET count = EXCLUDED.count`
-	for _, v := range []string{"POSTGRES", "drop", indent(local, 10), indent(noopBlock, 4)} {
+	for _, v := range []string{"POSTGRES", "0", indent(local, 10), indent(noopBlock, 4)} {
 		cfg = strings.Replace(cfg, "%s", v, 1)
 	}
 	rep, err := Validate(context.Background(), Request{Path: "p.yml", Config: cfg})

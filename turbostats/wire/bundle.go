@@ -281,16 +281,21 @@ type Pipeline struct {
 	// when it runs none.
 	//
 	// That is what makes LateRowsDropped readable. It counts rows the engine
-	// deleted because they arrived after the watermark, which is silent data
+	// refused before the handler because their bucket had closed more than
+	// allowed_lateness_seconds before the watermark, which is silent data
 	// loss, and an operator has to be able to tell "no rows were dropped"
 	// from "nothing here drops rows". Absent says the second; zero says the
-	// first.
+	// first. LateRowsRecomputed counts rows admitted within the lateness,
+	// each of which republished its bucket whole; nothing was lost.
 	//
-	// Dropped and reemitted are separate fields because the policy that
-	// splits them is an outcome, not a shard: one number loses data and the
-	// other does not, and a sum of the two is true of neither. Both are
-	// absent if a window reports a policy this contract has no field for,
-	// because a count that leaves some rows out is worse than none.
+	// Dropped and recomputed are separate fields because the outcome that
+	// splits them is not a shard: one number loses data and the other does
+	// not, and a sum of the two is true of neither. Both are absent if a
+	// window reports an outcome this contract has no field for, because a
+	// count that leaves some rows out is worse than none. late_rows_reemitted
+	// was the field before recomputes replaced the delta; an older receiver
+	// sees it absent, the way it sees every window field of a pipeline with
+	// no window.
 	//
 	// The unit is rows of the window table, not source events. The handler's
 	// SQL runs before the window sees anything, so a batch of forty late
@@ -300,9 +305,9 @@ type Pipeline struct {
 	// input count is comparing different units. A count in events would
 	// need the window to know which column carries each row's event count,
 	// which nothing declares today.
-	LateRowsDropped   *int64 `json:"late_rows_dropped,omitempty"`
-	LateRowsReemitted *int64 `json:"late_rows_reemitted,omitempty"`
-	WindowClosedCount *int64 `json:"window_closed_count,omitempty"`
+	LateRowsDropped    *int64 `json:"late_rows_dropped,omitempty"`
+	LateRowsRecomputed *int64 `json:"late_rows_recomputed,omitempty"`
+	WindowClosedCount  *int64 `json:"window_closed_count,omitempty"`
 
 	// WindowLagSeconds is how far the most behind window's closes trail the
 	// data it holds, in event seconds: where its watermark should be, given

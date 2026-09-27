@@ -83,9 +83,8 @@ func runDemoWindow(t *testing.T, name string, sink core.Sink, setup func(*testDB
 		Size:       time.Minute,
 		Grace:      time.Minute,
 		IdleClose:  time.Minute,
-		Late:       LateDrop,
 		EmitSQL:    "SELECT bucket, lang, sum(posts)::INTEGER AS posts FROM closed GROUP BY bucket, lang",
-	}, time.Hour, sink)
+	}, sink, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,9 +113,8 @@ func runDemoWindow(t *testing.T, name string, sink core.Sink, setup func(*testDB
 		if err := progress.Record(ctx, core.Progress{LastArrival: now, LastCommit: now, Messages: consumed}); err != nil {
 			t.Fatal(err)
 		}
-		// One poll per batch: on Render a batch of 500 lands every 10 to 17
-		// seconds and the manager polls every 10.
-		if err := m.Poll(ctx); err != nil {
+		// One pass per batch: the kick the engine sends after each commit.
+		if err := m.Pass(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if err := h.Init(ctx); err != nil {

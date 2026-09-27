@@ -13,4 +13,5 @@ pipeline.progress.no_silent_stall: {unit: missing, integration: missing, release
 pipeline.shutdown.commits_only_delivered: {unit: covered, integration: missing, release: missing}
 pipeline.state.with_offsets: {unit: covered, integration: missing, release: missing}
 pipeline.window.counts_every_row: {unit: missing, integration: missing, release: missing}
+pipeline.window.lateness_decided_at_arrival: {unit: missing, integration: missing, release: missing}
 pipeline.writers.merge_exactly: {unit: missing, integration: missing, release: missing}

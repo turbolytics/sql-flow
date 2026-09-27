@@ -34,8 +34,6 @@ tables:
         size_seconds: 3600
         grace_seconds: 3600
         idle_close_seconds: 3600
-        late_rows: drop
-        poll_interval_seconds: 3600
         # GROUP BY ALL groups by the output columns. GROUP BY bucket would
         # group by the table's bucket column, which the output renames.
         emit_sql: |
@@ -63,6 +61,10 @@ pipeline:
       auto_offset_reset: earliest
       topics:
         - "{{ SQLFLOW_TOPIC|default('input-stateful-window') }}"
+      # The record's own time, from its payload, which the handler buckets on.
+      event_time:
+        path: timestamp
+        format: rfc3339
 
   handler:
     type: 'handlers.InferredMemBatch'
@@ -70,7 +72,7 @@ pipeline:
       INSERT INTO agg_city_count
       BY NAME
       SELECT
-        date_trunc('hour', CAST(timestamp AS TIMESTAMPTZ)) AS bucket,
+        time_bucket(INTERVAL '1 hour', event_time) AS bucket,
         properties.city AS city,
         count(*) AS count
       FROM batch

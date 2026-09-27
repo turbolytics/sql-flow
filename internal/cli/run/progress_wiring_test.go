@@ -37,7 +37,7 @@ func windowedConf(idleCloseSeconds int) *config.Conf {
 		Name: "t",
 		Window: &config.Window{
 			TimeColumn: "bucket", SizeSeconds: 60, GraceSeconds: 5,
-			IdleCloseSeconds: idleCloseSeconds, LateRows: "drop",
+			IdleCloseSeconds: idleCloseSeconds,
 		},
 	}}}}
 }

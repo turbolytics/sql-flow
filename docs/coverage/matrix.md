@@ -79,7 +79,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**53 invariants declared: 45 safety and 8 liveness. Of 187 (invariant, integration) cells: 99 proven, 53 missing, 0 skipped, 0 failing, 35 exempt. 0 gap(s).**
+**52 invariants declared: 44 safety and 8 liveness. Of 187 (invariant, integration) cells: 97 proven, 55 missing, 0 skipped, 0 failing, 35 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -146,8 +146,6 @@ drains. An invariant holds only if it holds on all four.
 | `manager.delete.nothing_on_failure` | A failed flush deletes nothing. Every closed window stays in the state table for the next attempt. | · | · | · | · | ✅ u |
 | `manager.watermark.never_regresses` | The persisted watermark never moves backwards, across polls and across a restart. A manager built over the state another one saved publishes nothing that one published. | · | · | · | · | ✅ u |
 | `manager.close.committed_rows_only` | A close publishes rows the pipeline has committed and no others. Rows an open batch has written are not counted, so a batch that rolls back was never published. | · | · | · | · | ✅ u |
-| `manager.late.policy_holds` | A row for a bucket below the watermark is late. Under drop it is discarded and counted, and the bucket is never published again. Under reemit it is published once. | · | · | · | · | ✅ u |
-| `manager.late.counted_once` | A late row is counted once, when the close that dropped or reemitted it commits. A close that fails counts nothing; the close that later settles those rows counts them. *(violated once: #354)* | · | · | · | · | ✅ u |
 
 These checkpoint invariants are properties of the consume loop
 rather than of anything a config file names. The columns are
@@ -163,7 +161,8 @@ drains. An invariant holds only if it holds on all four.
 | `pipeline.shutdown.commits_only_delivered` | After the consume loop returns, clean or failed, the commits the process makes on its way out never make a position durable past the last message the sink acknowledged. Not in the state database, and not at the source. *(violated once: #279)* | ✅ u | ✅ u |
 | `pipeline.commit.nothing_on_failure` | A failed flush commits nothing. Not offsets, not state. | ✅ u | ✅ u |
 | `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
-| `pipeline.window.counts_every_row` | A bucket's published value counts exactly the rows produced for it, once. Rows the engine dropped under late_rows drop are excluded and counted in window_late_rows_total; late_rows reemit publishes a different contract and is out of scope. *(declared, tracked by #183)* | ❌ missing | ❌ missing |
+| `pipeline.window.counts_every_row` | A bucket's published value counts exactly the rows produced for it, once. Rows the engine refused as late are excluded and counted in window_late_rows_total; a row admitted within allowed_lateness_seconds is in the bucket's republished value. *(declared, tracked by #183)* | ❌ missing | ❌ missing |
+| `pipeline.window.lateness_decided_at_arrival` | A record whose bucket ended at or before the watermark less allowed_lateness_seconds is refused before the handler and counted; one within lateness is written and its bucket is republished as a whole value; the window table never holds a row the engine did not admit. *(declared, tracked by the conformance harness has no windowed pipeline subject yet; internal/core, internal/managers/model.go and internal/simulate verify it)* | ❌ missing | ❌ missing |
 
 ## Safety invariants: types
 
@@ -223,7 +222,7 @@ drains. An invariant holds only if it holds on all four.
 
 | Invariant | Claim | `manager.watermark` |
 | --- | --- | --- |
-| `manager.publish.eventually` | A closed window reaches the sink without anything else happening. The loop polls on its own, and a window that closes is published. | ✅ u |
+| `manager.publish.eventually` | A closed window reaches the sink on the manager's start pass or on the kick that follows the commit which closed it, without anything else happening. The manager has no clock; the engine tells it. | ✅ u |
 | `manager.failure.exits` | A poll the sink refuses stops the manager with the sink's error, after one attempt, and the process exits with its code. The sink ran its retry ladder before the error arrived, so the manager does not retry in place, and a window the destination will not take is never collected, written and refused every tick while the process reports healthy. *(violated once: #267)* | ✅ u |
 | `manager.drain.bounded` | The final poll after a cancel finishes or fails inside the drain deadline. A sink that never answers cannot hold the process past it, and every closed window it did not deliver stays in the state table. | ✅ u |
 

@@ -27,7 +27,7 @@ func windowDeclaration(table config.TableSQL) managers.Declaration {
 		Size:       time.Duration(w.SizeSeconds) * time.Second,
 		Grace:      time.Duration(w.GraceSeconds) * time.Second,
 		IdleClose:  time.Duration(w.IdleCloseSeconds) * time.Second,
-		Late:       managers.LatePolicy(w.LateRows),
+		Lateness:   w.Lateness(),
 		EmitSQL:    w.EmitSQL,
 	}
 }
@@ -45,7 +45,7 @@ func windowSpecs(conf *config.Conf) []core.WindowSpec {
 		}
 		d := windowDeclaration(table)
 		specs = append(specs, core.WindowSpec{
-			Name: d.Table, Size: d.Size, Grace: d.Grace, IdleClose: d.IdleClose,
+			Name: d.Table, Size: d.Size, Grace: d.Grace, IdleClose: d.IdleClose, Lateness: d.Lateness,
 		})
 	}
 	return specs
@@ -119,8 +119,18 @@ func initWindowStores(ctx context.Context, conf *config.Conf, conn adbc.Connecti
 	return core.NewWatermarkStore(conn).Init(ctx)
 }
 
+// signalFor is the window's signal from the tracker, or nil without one: a
+// manager built without a signal runs its start pass and its drain pass.
+func signalFor(w *core.Watermarks, name string) *core.WindowSignal {
+	if w == nil {
+		return nil
+	}
+	return w.Signal(name)
+}
+
 // buildManagedTables constructs a watermark manager per table that declares
-// a window. Each manager gets two connections of its own to the pipeline's
+// a window. Each gets the window's signal from the engine's tracker, which
+// is how it learns the watermark moved. Each manager gets two connections of its own to the pipeline's
 // DuckDB: one with autocommit off for the close, so it reads committed rows
 // only and its delete commits with its watermark, and one for its sink,
 // because a transaction may write to one database only and a sink stages a
@@ -130,6 +140,7 @@ func buildManagedTables(
 	ctx context.Context,
 	conf *config.Conf,
 	db *duckdb.DB,
+	watermarks *core.Watermarks,
 	l *zap.Logger,
 	mp metric.MeterProvider,
 	budget *core.DrainBudget,
@@ -157,9 +168,9 @@ func buildManagedTables(
 		if table.Window == nil {
 			continue
 		}
-		if table.Window.ReemitOverwrites() {
+		if table.Window.LatenessNeedsReplacingSink() {
 			return nil, closeConns, errs.New(errs.CodeConfigInvalid,
-				"table %q window: %s", table.Name, config.ReemitOverwritesMessage)
+				"table %q window: %s", table.Name, config.LatenessNeedsReplacingSinkMessage(*table.Window))
 		}
 
 		conn, err := db.Connect(ctx)
@@ -201,8 +212,7 @@ func buildManagedTables(
 			return nil, closeConns, fmt.Errorf("table %q window sink: %w", table.Name, err)
 		}
 
-		m, err := managers.NewWatermark(conn, windowDeclaration(table),
-			time.Duration(table.Window.PollIntervalSecs)*time.Second, sink,
+		m, err := managers.NewWatermark(conn, windowDeclaration(table), sink, signalFor(watermarks, table.Name),
 			managers.WithLogger(l),
 			managers.WithDrainBudget(budget),
 			managers.WithMeterProvider(mp))

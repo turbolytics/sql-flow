@@ -30,10 +30,11 @@ tables:
         # first row arrives. Zero says that plainly.
         grace_seconds: 0
         idle_close_seconds: 60
-        # The sink is a topic, which appends. drop keeps each bucket to one
-        # message; reemit would publish a second message counted over the
-        # late rows alone, which the consumer has to add to the first.
-        late_rows: drop
+        # The sink is a topic, which appends, so no lateness: a row for a
+        # bucket that has closed is refused before the handler and counted in
+        # window_late_rows_total, and each bucket reaches the topic once.
+        # allowed_lateness_seconds above 0 would republish a bucket whole,
+        # which needs a sink that replaces by key.
         # emit_sql shapes the closed rows. closed is every row of every bucket
         # that just closed. GROUP BY ALL groups by the output columns, which
         # is what the renamed bucket needs.
@@ -62,6 +63,12 @@ pipeline:
       auto_offset_reset: earliest
       topics:
         - "{{ SQLFLOW_TOPIC|default('tumbling-window') }}"
+      # The record's own time, from its payload. The handler buckets on the
+      # event_time column the source fills from it, and the engine decides
+      # each record's lateness against that same bucket.
+      event_time:
+        path: timestamp
+        format: rfc3339
 
   handler:
     type: 'handlers.InferredMemBatch'
@@ -69,7 +76,7 @@ pipeline:
       INSERT INTO agg_cities_count
       BY NAME
       SELECT
-        date_trunc('hour', CAST(timestamp as TIMESTAMPTZ)) as bucket,
+        time_bucket(INTERVAL '1 hour', event_time) AS bucket,
         properties.city as city,
         count(*) as count
       FROM batch
