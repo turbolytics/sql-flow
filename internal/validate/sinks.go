@@ -60,11 +60,6 @@ func checkSinks(rendered []byte, rep *Report) {
 			}
 			node := windowNode(&root, i)
 			checkSink(fmt.Sprintf("tables.sql[%d] window sink", i), table.Window.Sink, mappingValue(node, "sink"), attached, fail, warn)
-
-			if table.Window.ReemitOverwrites() {
-				fail(fmt.Sprintf("tables.sql[%d] window: %s", i, config.ReemitOverwritesMessage),
-					position(mappingKey(node, "late_rows")))
-			}
 		}
 	}
 

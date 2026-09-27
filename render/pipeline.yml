@@ -38,7 +38,10 @@ commands:
     sql: |
       CREATE TABLE IF NOT EXISTS events (
         name TEXT, type TEXT, value TEXT, dimensions TEXT, timestamp TEXT,
-        metrics STRUCT(name TEXT, type TEXT, value TEXT, dimensions TEXT, timestamp TEXT)[]
+        metrics STRUCT(name TEXT, type TEXT, value TEXT, dimensions TEXT, timestamp TEXT)[],
+        -- The engine's time for the request: when the webhook received it.
+        -- The window cuts minutes on this column; see the handler.
+        event_time TIMESTAMPTZ
       );
 
 tables:
@@ -55,18 +58,16 @@ tables:
           value_last DOUBLE, last_at TIMESTAMPTZ
         );
 
-      # late_rows is drop, not reemit. The sink replaces a minute, it does not
-      # merge into one, so a late row republished alone would replace the
-      # minute's values with its own. sqlflow validate refuses reemit with an
-      # upserting sink. A metric whose timestamp is older than the open minutes
-      # is dropped and counted in window_late_rows_total.
+      # No lateness: a metric whose timestamp is older than the open minutes
+      # is refused before the handler and counted in window_late_rows_total.
+      # allowed_lateness_seconds above 0 would keep closed minutes and
+      # republish one whole when a late metric lands, which the upsert below
+      # would take; it is off so a minute is written once.
       window:
         time_column: bucket
         size_seconds: 60
         grace_seconds: {{ SQLFLOW_WINDOW_GRACE_SECONDS|default('60') }}
         idle_close_seconds: {{ SQLFLOW_WINDOW_IDLE_SECONDS|default('60') }}
-        late_rows: drop
-        poll_interval_seconds: {{ SQLFLOW_WINDOW_POLL_SECONDS|default('10') }}
         # value_last is the value with the latest last_at, not the last row
         # appended: batches of one minute can arrive out of order.
         emit_sql: |
@@ -141,28 +142,32 @@ pipeline:
     # string, compact JSON. This is its only author. Nothing reads a key back
     # into this form.
     #
-    # A timestamp more than a minute ahead is dropped. The window closes
-    # minutes against the newest event time it has seen, so one metric dated
-    # 2030 would close every minute until 2030 and drop all that follows as
-    # late.
+    # The minute is cut on event_time, the instant the webhook received the
+    # request, which the engine decides each request's lateness against. A
+    # metric's own timestamp is kept as ts, for value_last and last_at; it is
+    # not the bucket, because a request's timestamp is optional and a batched
+    # request carries one per metric, and a bucket the engine did not decide
+    # on would be one it cannot refuse late rows for. A timestamp more than a
+    # minute ahead is still dropped: one metric dated 2030 would otherwise
+    # claim to be the latest value of its series until then.
     #
     # The column is ts, not at: AT is reserved in DuckDB.
     sql: |
       INSERT INTO metrics_1m
       WITH raw AS (
-        SELECT name, type, value, dimensions, timestamp FROM events WHERE metrics IS NULL
+        SELECT name, type, value, dimensions, timestamp, event_time FROM events WHERE metrics IS NULL
         UNION ALL
-        SELECT m.name, m.type, m.value, m.dimensions, m.timestamp
-        FROM (SELECT unnest(metrics) AS m FROM events WHERE metrics IS NOT NULL)
+        SELECT m.name, m.type, m.value, m.dimensions, m.timestamp, event_time
+        FROM (SELECT unnest(metrics) AS m, event_time FROM events WHERE metrics IS NOT NULL)
       ),
       parsed AS (
-        SELECT name, type,
+        SELECT name, type, event_time,
                CASE WHEN value IS NULL THEN 1.0 ELSE TRY_CAST(value AS DOUBLE) END AS value,
                TRY(from_json(coalesce(dimensions, '{}'), '"MAP(VARCHAR, VARCHAR)"')) AS dims,
                CASE WHEN timestamp IS NULL THEN now() ELSE TRY_CAST(timestamp AS TIMESTAMPTZ) END AS ts
         FROM raw
       )
-      SELECT time_bucket(INTERVAL '1 minute', ts) AS bucket, name, type,
+      SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, name, type,
              to_json(map_from_entries(list_sort(map_entries(dims))))::TEXT AS dimensions_key,
              sum(value), count(*), min(value), max(value), arg_max(value, ts), max(ts)
       FROM parsed

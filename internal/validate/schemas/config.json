@@ -987,18 +987,10 @@
                     "minimum": 0,
                     "description": "How long a source partition may be silent before it stops holding the\nwindow open. Absent means never: a stream that stops leaves its last\nbucket open, and only event time moving on closes anything. When every\npartition has been silent this long the stream is done with what it\nhas, and every open bucket closes. Measured by the engine from its own\nmonotonic clock, at each commit, so the close can trail this by up to\none flush_interval_seconds; validate warns when that interval is the\nlonger of the two."
                   },
-                  "late_rows": {
-                    "type": "string",
-                    "enum": [
-                      "drop",
-                      "reemit"
-                    ],
-                    "description": "What happens to a row for a bucket that already closed. drop discards\nit and counts it. reemit publishes emit_sql over the late rows alone,\nfor a sink that adds them to the bucket it holds; a sink that replaces\nthe bucket's value loses the rows published before.\nRequired: the two are different promises to the sink."
-                  },
-                  "poll_interval_seconds": {
+                  "allowed_lateness_seconds": {
                     "type": "integer",
-                    "minimum": 1,
-                    "description": "How often the engine looks for closed buckets. Absent means 10."
+                    "minimum": 0,
+                    "description": "How long after a bucket closes its rows are kept and late rows for it\nare still accepted. A late row within this republishes the bucket as a\nwhole value, so the sink must replace by key; validate refuses a sink\nthat appends. Absent or 0: a row for a closed bucket is refused before\nthe handler and counted in window_late_rows_total; the window table\nnever holds it. Flink's allowedLateness. Measured in event time,\nagainst the watermark, like everything a window decides."
                   },
                   "emit_sql": {
                     "type": "string",
@@ -1254,7 +1246,6 @@
                 "required": [
                   "time_column",
                   "size_seconds",
-                  "late_rows",
                   "sink"
                 ],
                 "description": "A tumbling window over this table, closed by the engine."

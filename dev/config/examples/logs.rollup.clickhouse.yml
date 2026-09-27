@@ -22,7 +22,7 @@
 #       bytes       UInt64
 #   ) ENGINE = MergeTree() ORDER BY (bucket, route_class, status);
 #
-# Read it with sum(requests), not requests -- see late_rows below.
+# Each bucket is published once, so a row is the hour's count.
 tables:
   sql:
     - name: agg_logs_rollup
@@ -49,25 +49,14 @@ tables:
         # default of thirty the last buckets would close 10 to 40 seconds
         # after the corpus ends.
         idle_close_seconds: 10
-        # reemit, not drop, and this is the setting to understand.
-        #
-        # With `drop` this pipeline silently lost 1,060 of 3,461,542 requests
-        # (0.031%), all in one bucket, while logging only "dropped late rows:
-        # 48" -- 48 is a count of aggregate rows, each carrying many requests.
-        #
-        # The source was in perfect event-time order, so the lateness was
-        # manufactured here: one 50,000-row batch spans many hours of traffic,
-        # and that batch's own newest bucket closes earlier buckets in the same
-        # batch. Raising grace_seconds does NOT fix it -- 7200 dropped exactly
-        # the same 1,060 -- and smaller batches only scale it down (batch 1000
-        # still lost 603).
-        #
-        # reemit publishes the late rows as their own row instead of discarding
-        # them. The count then balances exactly: 3,461,542 requests in
-        # ClickHouse against 3,461,613 published less 71 unparseable. The cost
-        # is that a bucket can appear more than once, so every reader must
-        # SUM(requests) rather than read a single row.
-        late_rows: reemit
+        # No lateness. A record is late when its bucket ended at or before
+        # the watermark, and the watermark is asserted in the commit that
+        # makes a batch's rows visible: nothing in a batch is late against
+        # the batch's own newest record, so an in-order corpus is never late
+        # here, whatever the batch size. A record that is late is refused
+        # before the handler and counted in window_late_rows_total.
+        # allowed_lateness_seconds above 0 would republish a bucket whole,
+        # and the ClickHouse sink inserts rows rather than replacing them.
         emit_sql: |
           SELECT
             strftime(bucket, '%Y-%m-%d %H:%M:%S') AS bucket,
@@ -118,25 +107,27 @@ pipeline:
     # segment has no directory left once the filename is dropped, which would
     # otherwise render as //*.html.
     #
-    # Rows whose timestamp did not parse are excluded here and kept in full by
-    # the archive pipeline. A NULL bucket would corrupt the watermark.
+    # The bucket is cut on event_time, which the source fills from the log
+    # line's own timestamp; a line whose timestamp does not parse is refused
+    # by the source and kept in full by the archive pipeline.
     sql: |
       WITH m AS (
         SELECT regexp_extract(message,
           '^(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+)[^"]*" (\d{3}) (\S+)$',
-          ['host','ts','method','path','status','bytes']) AS f
+          ['host','ts','method','path','status','bytes']) AS f,
+          event_time
         FROM batch
       ),
       s AS (
         SELECT f.*,
           string_split(trim(f.path,'/'),'/') AS segs,
           lower(regexp_extract(f.path,'\.([a-zA-Z0-9]+)$',1)) AS ext,
-          try_strptime(f.ts,'%d/%b/%Y:%H:%M:%S %z') AS ets
+          event_time
         FROM m
       )
       INSERT INTO agg_logs_rollup BY NAME
       SELECT
-        date_trunc('hour', ets) AS bucket,
+        time_bucket(INTERVAL '1 hour', event_time) AS bucket,
         regexp_replace(
           regexp_replace(
             '/'||array_to_string(list_slice(
@@ -147,7 +138,6 @@ pipeline:
         count(*) AS requests,
         sum(TRY_CAST(bytes AS BIGINT)) AS bytes
       FROM s
-      WHERE ets IS NOT NULL
       GROUP BY 1,2,3
 
   # The handler's statement is an INSERT into the windowed table, so it returns

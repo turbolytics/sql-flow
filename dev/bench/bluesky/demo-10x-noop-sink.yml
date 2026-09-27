@@ -6,7 +6,6 @@
 # shrinks by the same factor, and the ratios between messages, batches,
 # polls and flushes stay what they are live:
 #
-#   poll_interval_seconds   10 -> 1
 #   flush_interval_seconds  30 (the default) -> 3
 #
 # grace_seconds is stream time and stays. idle_close_seconds only fires when
@@ -17,6 +16,7 @@ commands:
     sql: |
       CREATE TABLE IF NOT EXISTS posts (
         time_us BIGINT,
+        event_time TIMESTAMPTZ,
         commit STRUCT(
           operation TEXT,
           record STRUCT(langs TEXT[])
@@ -50,18 +50,13 @@ tables:
       # land. After idle_close_seconds with nothing arriving, every open
       # bucket closes.
       #
-      # late_rows: drop, because the sink replaces. A row for a bucket that
-      # already closed is discarded and counted in window_late_rows_total.
-      # reemit would run emit_sql over the late rows alone, because the
-      # bucket's other rows were deleted when it closed, and the upsert would
-      # replace the bucket's count with theirs. validate refuses that pairing.
+      # No lateness: a post for a bucket that already closed is refused
+      # before the handler and counted in window_late_rows_total.
       window:
         time_column: bucket
         size_seconds: 60
         grace_seconds: 60
         idle_close_seconds: 60
-        late_rows: drop
-        poll_interval_seconds: 1
         emit_sql: |
           SELECT bucket, lang, sum(posts)::INTEGER AS posts
           FROM closed
@@ -80,6 +75,9 @@ pipeline:
     type: websocket
     websocket:
       uri: "{{ SQLFLOW_JETSTREAM_URI|default('wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post') }}"
+      event_time:
+        path: time_us
+        format: unix_us
 
   handler:
     type: handlers.StructuredBatch
@@ -87,7 +85,7 @@ pipeline:
     sql: |
       INSERT INTO posts_per_minute_by_lang
       SELECT
-        time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000)) AS bucket,
+        time_bucket(INTERVAL '1 minute', event_time) AS bucket,
         coalesce(commit.record.langs[1], 'unknown') AS lang,
         count(*) AS posts
       FROM posts

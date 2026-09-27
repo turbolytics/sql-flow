@@ -128,7 +128,6 @@ tables:
       window:
         time_column: bucket
         size_seconds: 60
-        late_rows: drop
         sink:
           type: iceberg
           iceberg:

@@ -95,11 +95,9 @@ func TestPipelineSharedConnection_EveryPartyHoldsTheLock(t *testing.T) {
 				// One-second buckets with no grace: a bucket closes once a
 				// later one exists.
 				Window: &config.Window{
-					TimeColumn:       "bucket",
-					SizeSeconds:      1,
-					LateRows:         "drop",
-					PollIntervalSecs: 3600,
-					EmitSQL:          "SELECT bucket, sum(n)::BIGINT AS n FROM closed GROUP BY ALL",
+					TimeColumn:  "bucket",
+					SizeSeconds: 1,
+					EmitSQL:     "SELECT bucket, sum(n)::BIGINT AS n FROM closed GROUP BY ALL",
 					Sink: config.Sink{Type: "sqlcommand", SQLCommand: &config.SQLCommandSink{
 						SQL: "INSERT INTO published SELECT bucket, n FROM sqlflow_sink_batch",
 					}},
@@ -136,7 +134,7 @@ func TestPipelineSharedConnection_EveryPartyHoldsTheLock(t *testing.T) {
 	assert.NoError(t, err)
 	handler, err := handlers.New(conn, conf.Pipeline.Handler, zap.NewNop())
 	assert.NoError(t, err)
-	managed, closeConns, err := buildManagedTables(ctx, conf, db, zap.NewNop(), mp,
+	managed, closeConns, err := buildManagedTables(ctx, conf, db, nil, zap.NewNop(), mp,
 		nil, sinks.RetryEvents{})
 	assert.NoError(t, err)
 	defer closeConns()
@@ -163,7 +161,7 @@ func TestPipelineSharedConnection_EveryPartyHoldsTheLock(t *testing.T) {
 
 	_, err = tb.ConsumeLoop(ctx, 6)
 	assert.NoError(t, err)
-	assert.NoError(t, managed[0].Poll(ctx))
+	assert.NoError(t, managed[0].Pass(ctx))
 
 	// Every party ran at least once, or a clean result proves nothing. The
 	// window closed the two buckets a later one exists for, and the newest
