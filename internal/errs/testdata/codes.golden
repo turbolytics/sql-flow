@@ -20,6 +20,7 @@ user.config.parse_failed
 user.config.rollup
 user.config.rollup_change
 user.config.rollup_drift
+user.config.rollup_test_failed
 user.config.serve_dataset
 user.config.serve_reserved
 user.config.template_undefined
