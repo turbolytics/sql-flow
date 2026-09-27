@@ -128,6 +128,7 @@ func TestSourceMqtt_StartReportsAnUnreachableBroker(t *testing.T) {
 func TestIntegrationSourceMqtt_StreamsWithFilterAndSequence(t *testing.T) {
 	coverage.Covers(t, "source.mqtt")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	prefix := uniq("stream")
 	s := newTestSource(t, broker, uniq("c"), []string{prefix + "/#"})
 	assert.NoError(t, s.Start())
@@ -152,6 +153,7 @@ func TestIntegrationSourceMqtt_CommitMarksAcknowledgesOnlyTheProcessedPosition(t
 	coverage.Covers(t, "source.mqtt")
 	coverage.Invariant(t, "source.commit.only_processed", integration)
 	broker := brokerOrFail(t)
+	t.Parallel()
 	prefix, client := uniq("only-processed"), uniq("c")
 
 	a := newTestSource(t, broker, client, []string{prefix + "/#"})
@@ -178,6 +180,7 @@ func TestIntegrationSourceMqtt_ResumesFromTheCommittedPosition(t *testing.T) {
 	coverage.Covers(t, "source.mqtt")
 	coverage.Invariant(t, "source.resume.from_committed", integration)
 	broker := brokerOrFail(t)
+	t.Parallel()
 	prefix, client := uniq("resume"), uniq("c")
 
 	a := newTestSource(t, broker, client, []string{prefix + "/#"})
@@ -203,6 +206,7 @@ func TestIntegrationSourceMqtt_ResumesFromTheCommittedPosition(t *testing.T) {
 func TestIntegrationSourceMqtt_IgnoresRetainedReadings(t *testing.T) {
 	coverage.Covers(t, "source.mqtt")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	prefix := uniq("retained")
 	publish(t, broker, prefix+"/d/t", 0, 1, true)
 
@@ -218,6 +222,7 @@ func TestIntegrationSourceMqtt_IgnoresRetainedReadings(t *testing.T) {
 func TestIntegrationSourceMqtt_CloseReturnsWhileTheStreamIsFull(t *testing.T) {
 	coverage.Covers(t, "source.mqtt")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	prefix := uniq("full")
 	s := newTestSource(t, broker, uniq("c"), []string{prefix + "/#"}, WithChannelBuffer(1))
 	assert.NoError(t, s.Start())
@@ -236,6 +241,7 @@ func TestIntegrationSourceMqtt_CloseReturnsWhileTheStreamIsFull(t *testing.T) {
 func TestIntegrationSourceMqtt_DeliversWhileConnected(t *testing.T) {
 	coverage.Covers(t, "source.mqtt")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	s := newTestSource(t, broker, uniq("c"), []string{uniq("deliver") + "/#"})
 	_, ok := s.Delivering()
 	assert.That(t, !ok)

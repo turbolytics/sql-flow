@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,7 +93,7 @@ func publish(t *testing.T, broker *url.URL, topic string, from, to int, retain b
 		ServerUrls: []*url.URL{broker},
 		KeepAlive:  20,
 		ClientConfig: paho.ClientConfig{
-			ClientID: fmt.Sprintf("pub-%d", time.Now().UnixNano()),
+			ClientID: uniq("pub"),
 		},
 	})
 	assert.NoError(t, err)
@@ -107,4 +108,12 @@ func publish(t *testing.T, broker *url.URL, topic string, from, to int, retain b
 	}
 }
 
-func uniq(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }
+var uniqSeq atomic.Int64
+
+// uniq names a client id or a topic prefix that no other test uses. The
+// clock alone can repeat across tests running in parallel: macOS reads it in
+// microseconds. A broker that sees a client id twice disconnects the first
+// client, so a repeat would cut another test's session.
+func uniq(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), uniqSeq.Add(1))
+}
