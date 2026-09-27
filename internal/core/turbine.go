@@ -361,6 +361,17 @@ type Turbine struct {
 	// see notePlaced. Reused across batches, and the consume loop is its only
 	// party, so it takes no lock.
 	observed []Observation
+	// pendingLate is the buckets this batch's late-but-allowed records landed
+	// in, handed to the windows' signals after the commit that made the rows
+	// visible. Consume loop only; cleared on a rollback, because the replay
+	// classifies the same records again.
+	pendingLate []LateBucket
+	// lateRefusedLogged is whether a refused late record has been logged
+	// this run, so a device stuck in the past writes one line.
+	lateRefusedLogged bool
+	// lateAttrs caches the attribute set per window and outcome, because
+	// WithAttributes allocates and refusals can come per record.
+	lateAttrs map[string][]metric.AddOption
 	// partitionsRelayed is whether the source reports its partitions to
 	// windows itself. Otherwise the loop asks the source whether it can
 	// deliver before each commit, and notDelivering is the last answer, for
@@ -527,9 +538,8 @@ func WithWatermarkWriteInterval(d time.Duration) TurbineOption {
 //
 // On for a pipeline that windows. A window rests on event time, and one
 // record stamped in the future otherwise drags the watermark past real time
-// and makes every correctly stamped row after it late, which under late_rows
-// drop deletes them: one device with a fast clock empties a fleet's stream
-// (#358). A pipeline with no window has nothing for such a record to damage,
+// and makes every correctly stamped row after it late, which refuses them:
+// one device with a fast clock empties a fleet's stream (#358). A pipeline with no window has nothing for such a record to damage,
 // so it keeps it.
 //
 // Refused here rather than in the window manager on purpose. The manager
@@ -602,9 +612,9 @@ const progressWriteInterval = time.Second
 // (BenchmarkCommitStateWindowed), and on a busy pipeline event time advances
 // on every batch, so writing per commit is a statement per batch -- the same
 // cost the progress write was paced to avoid, for a value with the same
-// reader. A window manager reads this once per poll_interval_seconds, ten
-// seconds by default, so writing it more often than the pace below buys
-// nothing at all.
+// reader. The window manager reads it on the kick that follows the write, so
+// the pace below is the most a close can trail its commit, and a second of
+// that on a busy stream costs nothing a reader can see.
 const watermarkWriteInterval = time.Second
 
 // watchSource tells the tracker what the source holds. A source that
@@ -1179,17 +1189,42 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				}
 				continue
 			}
-			// Placed, so it counts toward the watermark, whether or not the
-			// handler takes it: a record an error policy drops still says
-			// where the stream has got to, as Flink's assigner does.
-			//
-			// Accumulated here and handed to the tracker once, when the batch
-			// is processed. Calling the tracker per record takes its mutex per
-			// record, which measured at 52ns against a loop whose own budget
-			// is around 40 -- the same shape as the phase timing this loop
-			// already refuses. A partition is one entry, and a fetch spans
-			// few, so the scan below is a comparison or two.
+			// Placed, so the window's lateness rule applies: a record whose
+			// bucket closed more than allowed_lateness_seconds ago has
+			// nowhere to go, and is refused before the handler for the same
+			// reason an unplaceable one is -- a row the window's promise
+			// excludes must not reach the table. One whose bucket closed
+			// within lateness is written, and the bucket is republished
+			// whole. Decided here, at arrival, as Flink's window operator
+			// decides it; nothing sweeps the table for late rows afterwards.
 			if t.windows != nil {
+				refused, late := t.windows.Classify(raw.EventAtNanos)
+				if refused {
+					t.noteRefusedLate(ctx, raw)
+					t.mark(raw)
+					totalConsumed++
+					t.stats.SetNumMessagesConsumed(totalConsumed)
+					if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
+						t.logger.Info("max messages consumed, stopping consumer loop")
+						hitMax = true
+						break
+					}
+					continue
+				}
+				if len(late) > 0 {
+					t.pendingLate = append(t.pendingLate, late...)
+				}
+				// And it counts toward the watermark, whether or not the
+				// handler takes it: a record an error policy drops still
+				// says where the stream has got to, as Flink's assigner does.
+				//
+				// Accumulated here and handed to the tracker once, when the
+				// batch is processed. Calling the tracker per record takes
+				// its mutex per record, which measured at 52ns against a loop
+				// whose own budget is around 40 -- the same shape as the
+				// phase timing this loop already refuses. A partition is one
+				// entry, and a fetch spans few, so the scan is a comparison
+				// or two.
 				t.notePlaced(raw.Topic, raw.Partition, raw.EventAtNanos)
 			}
 			if err := t.writeMessage(raw); err != nil {
@@ -1572,6 +1607,7 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 	if err := t.stateTx.Rollback(context.WithoutCancel(ctx)); err != nil {
 		t.logger.Error("rollback failed", zap.Error(err))
 	}
+	t.dropPendingLate()
 }
 
 // commitState writes the processed offsets into the state database and commits
@@ -1610,8 +1646,10 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		case watermarkErr != nil:
 			t.recordError(ctx, errs.Wrap(errs.CodeWatermarkWriteFailed, watermarkErr,
 				"sqlflow_watermarks not written"), phaseStateCommit, "sqlflow_watermarks not written")
+			t.dropPendingLate()
 		case t.windows != nil:
 			t.windows.Commit(moved)
+			t.signalWindows(ctx, moved)
 		}
 		t.lock.Lock()
 		t.commits++
@@ -1639,6 +1677,7 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed progress write", zap.Error(rbErr))
 		}
+		t.dropPendingLate()
 		return errs.Wrap(errs.CodeStateCommitFailed, progressErr,
 			"the progress write failed inside the state transaction")
 	}
@@ -1649,6 +1688,7 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed watermark write", zap.Error(rbErr))
 		}
+		t.dropPendingLate()
 		return errs.Wrap(errs.CodeStateCommitFailed, watermarkErr, "asserting the watermark")
 	}
 
@@ -1656,6 +1696,7 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed offset save", zap.Error(rbErr))
 		}
+		t.dropPendingLate()
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offsets")
 	}
 
@@ -1666,10 +1707,12 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
 			t.logger.Error("rollback after failed commit", zap.Error(rbErr))
 		}
+		t.dropPendingLate()
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing state")
 	}
 	if t.windows != nil {
 		t.windows.Commit(moved)
+		t.signalWindows(ctx, moved)
 	}
 
 	t.commits++
@@ -1929,6 +1972,73 @@ func (t *Turbine) notePlaced(topic string, partition int32, atNanos int64) {
 		Topic: topic, Partition: partition, NewestNanos: atNanos,
 	})
 }
+
+// noteRefusedLate counts a record refused as late, once per window, and
+// logs the condition once per run: a device stuck in the past writes a
+// line rather than a line per record.
+func (t *Turbine) noteRefusedLate(ctx context.Context, m Message) {
+	for _, spec := range t.windows.Specs() {
+		t.metrics.WindowLateRows.Add(ctx, 1, t.lateAttrsFor(spec.Name, "refused")...)
+	}
+	if t.lateRefusedLogged {
+		return
+	}
+	t.lateRefusedLogged = true
+	t.logger.Warn("refusing records late beyond allowed_lateness_seconds",
+		zap.Time("event_time", time.Unix(0, m.EventAtNanos).UTC()))
+}
+
+// lateAttrsFor is the cached attribute set for one window and outcome.
+func (t *Turbine) lateAttrsFor(window, outcome string) []metric.AddOption {
+	key := window + "\x00" + outcome
+	if opts, ok := t.lateAttrs[key]; ok {
+		return opts
+	}
+	if t.lateAttrs == nil {
+		t.lateAttrs = map[string][]metric.AddOption{}
+	}
+	opts := []metric.AddOption{metric.WithAttributes(
+		attribute.String("window", window), attribute.String("outcome", outcome))}
+	t.lateAttrs[key] = opts
+	return opts
+}
+
+// signalWindows tells each window's manager what this commit changed: a kick
+// for every window whose watermark moved, and the recompute buckets this
+// batch's late rows landed in, followed by a kick. After the commit, never
+// before, so a manager woken here reads what the commit wrote. Called only
+// when the commit succeeded; a rollback drops pendingLate, and the replay
+// classifies the same records again. The recompute counter is recorded here
+// for the same reason: a batch that rolls back counts nothing.
+func (t *Turbine) signalWindows(ctx context.Context, moved map[string]time.Time) {
+	if t.windows == nil {
+		return
+	}
+	kicked := map[string]bool{}
+	for name := range moved {
+		if sig := t.windows.Signal(name); sig != nil {
+			sig.Kick()
+			kicked[name] = true
+		}
+	}
+	for _, lb := range t.pendingLate {
+		sig := t.windows.Signal(lb.Window)
+		if sig == nil {
+			continue
+		}
+		sig.Recompute(lb.Bucket)
+		t.metrics.WindowLateRows.Add(ctx, 1, t.lateAttrsFor(lb.Window, "recomputed")...)
+		if !kicked[lb.Window] {
+			sig.Kick()
+			kicked[lb.Window] = true
+		}
+	}
+	t.pendingLate = t.pendingLate[:0]
+}
+
+// dropPendingLate forgets this batch's late buckets: the batch rolled back,
+// and its replay will find them again.
+func (t *Turbine) dropPendingLate() { t.pendingLate = t.pendingLate[:0] }
 
 // flushObservations hands the batch's observations to the tracker and keeps
 // the slice for the next batch, so a steady pipeline allocates nothing here.

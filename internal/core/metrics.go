@@ -87,6 +87,13 @@ type Metrics struct {
 	// WithEventTimePlacement. This is a data-loss signal, and a device with
 	// a wrong clock is what it usually means.
 	MessagesUnplaceable metric.Int64Counter
+	// WindowLateRows counts records late for a window, by outcome: refused
+	// (the bucket closed more than allowed_lateness_seconds before the
+	// watermark; never written) or recomputed (within it; written, and the
+	// bucket republished whole). Decided at arrival, by the engine, so it is
+	// counted here rather than by the manager. The data-loss half is
+	// refused.
+	WindowLateRows metric.Int64Counter
 	// LagObserved is when consumer_lag was last recorded, as Unix seconds.
 	//
 	// Lag is recorded when a message is processed, so a consumer that stops
@@ -394,6 +401,14 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithUnit("{message}"),
 	); err != nil {
 		return nil, fmt.Errorf("messages_unplaceable_total: %w", err)
+	}
+	// No unit: "count" is one the exporter does not know, and window_late_rows
+	// is the series name the bundle reads.
+	if m.WindowLateRows, err = meter.Int64Counter(
+		"window_late_rows",
+		metric.WithDescription("Rows late for a window: refused beyond allowed_lateness_seconds, or recomputed within it"),
+	); err != nil {
+		return nil, fmt.Errorf("window_late_rows: %w", err)
 	}
 
 	if m.LagObserved, err = meter.Int64Gauge(

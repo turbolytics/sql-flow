@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"math"
 	"net/url"
+	"time"
 
 	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/eventtime"
@@ -154,10 +156,11 @@ type SinkRetry struct {
 }
 
 // Window is a tumbling window the engine closes for the user. The handler
-// writes rows keyed by a bucket start into the table; the engine keeps an
+// writes rows keyed by a bucket start into the table; the engine asserts an
 // event-time watermark, publishes every bucket the watermark has passed to
-// the window's sink, and deletes it. Nothing here is SQL the user has to get
-// right twice.
+// the window's sink, keeps it for allowed_lateness_seconds so a late row can
+// republish it whole, and deletes it. Nothing here is SQL the user has to
+// get right twice, and nothing here is a clock.
 type Window struct {
 	// The column holding each row's bucket start. TIMESTAMPTZ.
 	TimeColumn string `yaml:"time_column"`
@@ -175,14 +178,14 @@ type Window struct {
 	// one flush_interval_seconds; validate warns when that interval is the
 	// longer of the two.
 	IdleCloseSeconds int `yaml:"idle_close_seconds,omitempty" jsonschema:"minimum=0"`
-	// What happens to a row for a bucket that already closed. drop discards
-	// it and counts it. reemit publishes emit_sql over the late rows alone,
-	// for a sink that adds them to the bucket it holds; a sink that replaces
-	// the bucket's value loses the rows published before.
-	// Required: the two are different promises to the sink.
-	LateRows string `yaml:"late_rows" jsonschema:"enum=drop,enum=reemit"`
-	// How often the engine looks for closed buckets. Absent means 10.
-	PollIntervalSecs int `yaml:"poll_interval_seconds,omitempty" jsonschema:"minimum=1"`
+	// How long after a bucket closes its rows are kept and late rows for it
+	// are still accepted. A late row within this republishes the bucket as a
+	// whole value, so the sink must replace by key; validate refuses a sink
+	// that appends. Absent or 0: a row for a closed bucket is refused before
+	// the handler and counted in window_late_rows_total; the window table
+	// never holds it. Flink's allowedLateness. Measured in event time,
+	// against the watermark, like everything a window decides.
+	AllowedLatenessSecs int `yaml:"allowed_lateness_seconds,omitempty" jsonschema:"minimum=0"`
 	// Shapes the closed rows before the sink. It reads one relation, closed,
 	// which holds every row of every bucket that just closed. Absent means
 	// SELECT * FROM closed.
@@ -191,20 +194,37 @@ type Window struct {
 	Sink Sink `yaml:"sink"`
 }
 
-// ReemitOverwrites reports the one pairing of late_rows and sink no pipeline
-// may run: a postgres sink that upserts by key, handed a reemit. A reemit
-// publishes emit_sql over the late rows alone, because the bucket's other
-// rows were deleted when it closed, and the upsert replaces the bucket's
-// published row with that. validate refuses it, and so does run, for a config
-// that never went through validate.
-func (w Window) ReemitOverwrites() bool {
-	return w.LateRows == "reemit" && w.Sink.Type == "postgres" &&
-		w.Sink.Postgres != nil && w.Sink.Postgres.Mode == "upsert"
+// Lateness is allowed_lateness_seconds as a duration; zero means late rows
+// are refused.
+func (w Window) Lateness() time.Duration {
+	return time.Duration(w.AllowedLatenessSecs) * time.Second
 }
 
-// ReemitOverwritesMessage says why, for validate and run alike.
-const ReemitOverwritesMessage = "late_rows is reemit and the postgres sink upserts. A reemit publishes " +
-	"emit_sql over the late rows alone, and the sink replaces the bucket's row with that. Use drop"
+// LatenessNeedsReplacingSink reports the pairing no pipeline may run:
+// lateness above zero with a sink known to append. A late row republishes
+// its bucket as a whole value, which an appending sink then holds twice.
+// validate refuses it, and so does run, for a config that never went
+// through validate. A sink validate cannot classify -- sqlcommand,
+// clickhouse -- is the user's call and is warned, not refused.
+func (w Window) LatenessNeedsReplacingSink() bool {
+	if w.AllowedLatenessSecs <= 0 {
+		return false
+	}
+	switch w.Sink.Type {
+	case "iceberg", "kafka":
+		return true
+	case "postgres":
+		return w.Sink.Postgres != nil && w.Sink.Postgres.Mode == "append"
+	}
+	return false
+}
+
+// LatenessNeedsReplacingSinkMessage says why, for validate and run alike.
+func LatenessNeedsReplacingSinkMessage(w Window) string {
+	return fmt.Sprintf("allowed_lateness_seconds is %d and the %s sink appends. A late row republishes "+
+		"its bucket as a whole value, which an appending sink holds twice. Use a sink that replaces by "+
+		"key, or set allowed_lateness_seconds to 0 so late rows are refused", w.AllowedLatenessSecs, w.Sink.Type)
+}
 
 // SQL Tables
 type TableSQL struct {

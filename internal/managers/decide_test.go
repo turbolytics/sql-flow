@@ -41,6 +41,19 @@ func TestManagerWindow_TheTableCheckerCatchesEveryFault(t *testing.T) {
 	err = checkTables()
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "row unreachable is selected by no combination"))
+
+	// The same three faults in the bucket table.
+	watermarkTable = saved
+	savedBuckets := bucketTable
+	defer func() { bucketTable = savedBuckets }()
+	bucketTable = savedBuckets[1:]
+	err = checkTables()
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "bucket=open matches no row"))
+	bucketTable = append(append([]bucketRule{}, savedBuckets...), savedBuckets[0])
+	err = checkTables()
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "matches keep and keep"))
 }
 
 // One example per row, each run from raw readings through StateOf, so the
@@ -74,22 +87,66 @@ func TestManagerWindow_EveryRuleHasAnExample(t *testing.T) {
 	}
 }
 
+// One example per bucket row, over (end, closed, hadClosed, asserted,
+// lateness): the four fates of a bucket, with and without lateness.
+func TestManagerWindow_EveryBucketRuleHasAnExample(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	closed := t0.Add(10 * time.Minute)
+	asserted := closed.Add(5 * time.Minute)
+	minute := time.Minute
+
+	examples := []struct {
+		name      string
+		end       time.Time
+		hadClosed bool
+		lateness  time.Duration
+		bucket    Bucket
+		action    BucketAction
+	}{
+		{"ends after the assertion", asserted.Add(minute), true, 0, BucketOpen, Keep},
+		{"ends after the assertion, never closed", asserted.Add(minute), false, time.Hour, BucketOpen, Keep},
+		{"ends between the two watermarks", closed.Add(minute), true, 0, BucketDue, Publish},
+		{"ends between the two watermarks, with lateness", closed.Add(minute), true, time.Hour, BucketDue, Publish},
+		{"ends at the assertion", asserted, true, 0, BucketDue, Publish},
+		{"never closed, ends before the assertion", closed.Add(-minute), false, 0, BucketDue, Publish},
+		{"closed earlier, lateness has not run out", closed, true, time.Hour, BucketRetained, Retain},
+		{"closed earlier, lateness ran out this pass", closed, true, 5 * minute, BucketExpired, Purge},
+		{"closed earlier, no lateness", closed, true, 0, BucketExpired, Purge},
+	}
+	for _, ex := range examples {
+		t.Run(ex.name, func(t *testing.T) {
+			decl := testDecl()
+			decl.Lateness = ex.lateness
+			state := BucketStateOf(decl, ex.end, closed, ex.hadClosed, asserted)
+			assert.Equal(t, ex.bucket, state.Bucket)
+			assert.Equal(t, ex.action, DecideBucket(state))
+		})
+	}
+}
+
 // The boundaries compare the way the SQL always has: an assertion exactly at
 // the closed watermark is behind, a microsecond past it is ahead; a bucket
-// that ends exactly at the watermark is closed.
+// that ends exactly at the watermark is closed, and one whose end plus
+// lateness is exactly the assertion has expired.
 func TestManagerWindow_TheBoundariesAreExact(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	decl := testDecl()
+	decl.Lateness = 5 * time.Minute
 	closed := t0.Add(10 * time.Minute)
 
 	assert.Equal(t, AssertedBehind, StateOf(closed, true, closed, true).Asserted)
 	assert.Equal(t, AssertedAhead, StateOf(closed.Add(time.Microsecond), true, closed, true).Asserted)
 
-	end := closed.Add(time.Hour)
-	assert.Equal(t, BucketLate, BucketStateOf(decl, closed, closed, end).Bucket)
-	assert.Equal(t, BucketDue, BucketStateOf(decl, closed.Add(time.Microsecond), closed, end).Bucket)
-	assert.Equal(t, BucketDue, BucketStateOf(decl, end, closed, end).Bucket)
-	assert.Equal(t, BucketOpen, BucketStateOf(decl, end.Add(time.Microsecond), closed, end).Bucket)
+	asserted := closed.Add(time.Hour)
+	assert.Equal(t, BucketExpired, BucketStateOf(decl, closed, closed, true, asserted).Bucket)
+	assert.Equal(t, BucketDue, BucketStateOf(decl, closed.Add(time.Microsecond), closed, true, asserted).Bucket)
+	assert.Equal(t, BucketDue, BucketStateOf(decl, asserted, closed, true, asserted).Bucket)
+	assert.Equal(t, BucketOpen, BucketStateOf(decl, asserted.Add(time.Microsecond), closed, true, asserted).Bucket)
+
+	// Expiry: end + lateness at the assertion is expired; a microsecond
+	// short of it is retained.
+	assert.Equal(t, BucketExpired, BucketStateOf(decl, closed, closed, true, closed.Add(decl.Lateness)).Bucket)
+	assert.Equal(t, BucketRetained, BucketStateOf(decl, closed, closed, true, closed.Add(decl.Lateness-time.Microsecond)).Bucket)
 }
 
 // window.never_backwards: no reading moves the closed watermark behind the
@@ -148,7 +205,7 @@ func renderDecisions() string {
 	b.WriteString(`# Window decisions
 
 Rendered from the truth tables in ` + "`internal/managers/decide.go`" + ` by a test, so
-this page is what runs. A poll reduces what it read to one value per fact,
+this page is what runs. A pass reduces what it read to one value per fact,
 looks the combination up, and performs the action of the one row it
 selects. The check that runs when the package loads proves each combination
 selects exactly one row and every row is reachable.
@@ -159,10 +216,13 @@ ever write for the window has ` + "`time_column`" + ` at or after the watermark.
 is computed -- the newest event time seen per source partition, less the
 grace, combined by minimum over the partitions that could still deliver --
 is ` + "`internal/core/watermarks.go`" + `. The manager reads that one value and
-nothing else: no clock, no progress row, no reading of the table's newest
-bucket. See ` + "`docs/superpowers/specs/2026-09-24-window-watermark-design.md`" + `.
+nothing else: no clock, no ticker, no progress row, no reading of the
+table's newest bucket. It runs a pass when it starts, when the engine kicks
+it after a commit that moved the watermark or admitted a late row, and when
+it drains. See ` + "`docs/superpowers/specs/2026-09-24-window-watermark-design.md`" + `
+and ` + "`docs/superpowers/specs/2026-09-26-watermark-driven-close-design.md`" + `.
 
-## The watermark, once per poll
+## The watermark, once per pass
 
 | Fact | Values | Computed from |
 |---|---|---|
@@ -178,29 +238,38 @@ bucket. See ` + "`docs/superpowers/specs/2026-09-24-window-watermark-design.md`"
 	}
 
 	b.WriteString(`
-## Each bucket, given the poll's watermark
+## Each bucket, given the pass's watermark
 
 | Fact | Values | Computed from |
 |---|---|---|
-| ` + "`bucket`" + ` | ` + "`late`, `due`, `open`" + ` | The bucket's end against the previous watermark and the one this poll decided. ` + "`late`" + `: at or before the previous, so its rows arrived after it closed. ` + "`due`" + `: after the previous and at or before the next. ` + "`open`" + `: after the next. |
-| ` + "`policy`" + ` | ` + "`drop`, `reemit`" + ` | ` + "`late_rows`" + ` in the window's config. |
+| ` + "`bucket`" + ` | ` + "`open`, `due`, `retained`, `expired`" + ` | The bucket's end against the closed watermark, the asserted one, and ` + "`allowed_lateness_seconds`" + `. ` + "`open`" + `: ends after the asserted watermark. ` + "`due`" + `: ends after the closed watermark and at or before the asserted one, so it closes in this pass. ` + "`retained`" + `: closed in an earlier pass and its end plus the lateness is still past the assertion. ` + "`expired`" + `: closed in an earlier pass and its end plus the lateness is at or before the assertion. |
 
 `)
 	fmt.Fprintf(&b, "%d combinations, %d rows.\n\n", len(allBucketStates()), len(bucketTable))
-	b.WriteString("| Rule | bucket | policy | Action | Deciding | Claim |\n|---|---|---|---|---|---|\n")
+	b.WriteString("| Rule | bucket | Action | Deciding | Claim |\n|---|---|---|---|---|\n")
 	for _, r := range bucketTable {
-		fmt.Fprintf(&b, "| `%s` | %s | %s | `%s` | %s | %s |\n",
-			r.Name, joinValues(r.Bucket), joinValues(r.Policy), r.Action, r.Deciding, r.Claim)
+		fmt.Fprintf(&b, "| `%s` | %s | `%s` | %s | %s |\n",
+			r.Name, joinValues(r.Bucket), r.Action, r.Deciding, r.Claim)
 	}
 
 	b.WriteString(`
+The engine decides a record's lateness at arrival by the same comparison,
+before the handler sees it: a record whose bucket ended at or before the
+asserted watermark less the lateness is refused and counted; one whose
+bucket ended at or before the watermark but within the lateness is written,
+and the bucket is republished whole on the next pass; anything else is on
+time. So the window table never holds a row the engine did not admit, and
+the manager never sweeps.
+
 ## What closes a bucket, by configuration
 
 Three keys decide. ` + "`grace_seconds`" + ` is how far the stream's own clock must
 pass a bucket's end before it closes (Flink's bounded out-of-orderness);
 ` + "`idle_close_seconds`" + ` is how long a partition may be silent before it stops
-holding the window open (Flink's idleness); ` + "`late_rows`" + ` is what happens to a
-row for a bucket that already closed.
+holding the window open (Flink's idleness); ` + "`allowed_lateness_seconds`" + ` is how
+long after a bucket closes a record for it is still admitted, and its rows
+kept, so that the bucket can be republished whole (Flink's allowed
+lateness).
 
 | | ` + "`grace_seconds`" + ` | ` + "`idle_close_seconds`" + ` | the stream this is for | what closes a bucket | the failure mode to know |
 |---|---|---|---|---|---|
@@ -209,9 +278,9 @@ row for a bucket that already closed.
 | **C** | 0 | set | ordered, intermittent | event time, or every partition silent for the bound | a bound shorter than the gap *within* a burst closes mid-burst, and the rest of the burst is late |
 | **D** | >0 | set | bursty and reordered: the IoT default | either | both of the above |
 
-Each crossed with ` + "`drop`" + ` (a late row is discarded and counted) or ` + "`reemit`" + `
-(a late row is republished on its own, which a replacing sink turns into
-loss).
+Each crossed with ` + "`allowed_lateness_seconds`" + `: 0 refuses a late record before
+the handler and counts it; a positive value admits it and republishes its
+bucket as a whole value, so the sink must replace by key.
 
 ## Invariants
 
@@ -222,7 +291,8 @@ Each is a claim with a check in the tests.
 | ` + "`window.never_backwards`" + ` | No reading moves the closed watermark behind the committed one, checked over ten thousand random readings here; and the engine's assertion is ` + "`max(stored, W)`" + ` by construction, checked in ` + "`internal/core`" + `. |
 | ` + "`window.asserted_in_the_commit`" + ` | The engine writes the watermark in the transaction that commits the rows it describes, so no reader can see rows without the watermark that accounts for them, or a watermark without its rows. A commit that fails leaves both where they were. Checked in ` + "`internal/core`" + `. |
 | ` + "`window.minimum_over_partitions`" + ` | The watermark is the minimum over the partitions that could still deliver: one that has not delivered holds it at -inf, a lagging one holds it, an idle one leaves it, a lost one holds at its last position, a revoked one is gone. Checked in ` + "`internal/core`" + ` and by the simulator. |
-| ` + "`window.no_clock_in_the_manager`" + ` | The manager has no clock. Every close is ` + "`bucket end <= asserted watermark`" + `, in event time; the engine's clock decides only which partitions are in its minimum. Checked by construction: the manager takes no clock. |
+| ` + "`window.no_clock_in_the_manager`" + ` | The manager has no clock. Every close is ` + "`bucket end <= asserted watermark`" + `, in event time; the engine's clock decides only which partitions are in its minimum. Checked by construction: the manager takes no clock and no interval. |
+| ` + "`window.lateness_decided_at_arrival`" + ` | A record whose bucket ended at or before the watermark less the lateness is refused before the handler and counted; one within the lateness is written and its bucket republished whole. The window table never holds a row the engine did not admit. Checked in ` + "`internal/core`" + `, by the model and by the simulator. |
 `)
 	return b.String()
 }
@@ -238,37 +308,61 @@ func joinValues[T ~string](vals []T) string {
 	return strings.Join(parts, ", ")
 }
 
-// The bucket table's boundary is the SQL's. Production splits late from
-// due with closedBefore, and BucketStateOf is the same comparison in Go;
-// this runs both at the boundary and a microsecond past it so a change to
-// either fails here.
+// The bucket table's boundary is the SQL's. Production selects due buckets
+// with dueBetween and expired ones with expiredBefore, and BucketStateOf is
+// the same comparison in Go; this runs both at each boundary and a
+// microsecond either side so a change to either fails here.
 func TestManagerWindow_TheBucketBoundaryIsTheSQLs(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	ctx := context.Background()
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
 	decl := testDecl()
+	decl.Lateness = 5 * time.Minute
 
 	// One bucket, starting at t0 and ending at t0 + size.
 	insertBucket(t, d.pipeline, 0, "NYC", 1)
 	end := bucket(0).Add(decl.Size)
-	next := end.Add(time.Hour)
 
+	// Due: the closed watermark sits a minute before the bucket's end, and
+	// the assertion moves across the end.
+	closed := end.Add(-time.Minute)
 	for _, c := range []struct {
-		name      string
-		watermark time.Time
-		want      Bucket
+		name     string
+		asserted time.Time
+		want     Bucket
 	}{
-		{"watermark a microsecond before the end", end.Add(-time.Microsecond), BucketDue},
-		{"watermark at the end", end, BucketLate},
-		{"watermark a microsecond past the end", end.Add(time.Microsecond), BucketLate},
+		{"asserted a microsecond before the end", end.Add(-time.Microsecond), BucketOpen},
+		{"asserted at the end", end, BucketDue},
+		{"asserted a microsecond past the end", end.Add(time.Microsecond), BucketDue},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			closed, _, err := queryInt64(ctx, d.pipeline, decl.countClosedSQL(c.watermark))
+			due, _, err := queryInt64(ctx, d.pipeline, decl.countSQL(decl.dueBetween(closed, true, c.asserted)))
 			assert.NoError(t, err)
-			got := BucketStateOf(decl, end, c.watermark, next).Bucket
+			got := BucketStateOf(decl, end, closed, true, c.asserted).Bucket
 			assert.Equal(t, c.want, got)
-			assert.Equal(t, got == BucketLate, closed == 1)
+			assert.Equal(t, got == BucketDue, due == 1)
+		})
+	}
+
+	// Expired: the bucket closed in an earlier pass, and the assertion moves
+	// across end + lateness.
+	expiry := end.Add(decl.Lateness)
+	for _, c := range []struct {
+		name     string
+		asserted time.Time
+		want     Bucket
+	}{
+		{"asserted a microsecond before the expiry", expiry.Add(-time.Microsecond), BucketRetained},
+		{"asserted at the expiry", expiry, BucketExpired},
+		{"asserted a microsecond past the expiry", expiry.Add(time.Microsecond), BucketExpired},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expired, _, err := queryInt64(ctx, d.pipeline, decl.countSQL(decl.expiredBefore(c.asserted)))
+			assert.NoError(t, err)
+			got := BucketStateOf(decl, end, end, true, c.asserted).Bucket
+			assert.Equal(t, c.want, got)
+			assert.Equal(t, got == BucketExpired, expired == 1)
 		})
 	}
 }

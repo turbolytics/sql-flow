@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -105,13 +107,18 @@ import (
 // half exists, and a stream that stops leaves its last bucket open -- shape A
 // and B's documented behaviour, for any stream, not a property of revocation.
 
-// WindowSpec is what the engine needs to assert one window's watermark: the
-// name it is stored under, and the three durations the config declares.
+// WindowSpec is what the engine needs to assert one window's watermark and
+// decide a record's lateness against it: the name it is stored under, and
+// the four durations the config declares.
 type WindowSpec struct {
 	Name      string
 	Size      time.Duration
 	Grace     time.Duration
 	IdleClose time.Duration
+	// Lateness is how long a closed bucket's rows are kept. A record whose
+	// bucket ended more than this before the watermark is refused; one whose
+	// bucket ended within it is written and the bucket republished whole.
+	Lateness time.Duration
 }
 
 // WatermarksTable holds the engine's assertion per window. Written by the
@@ -164,6 +171,13 @@ type Watermarks struct {
 	// stored is each window's asserted watermark, in nanoseconds, zero
 	// before the first assertion. It only ever grows.
 	stored map[string]int64
+	// asserted mirrors stored, one atomic per spec in spec order, for
+	// Classify: it runs per record on the consume loop and must not take mu.
+	asserted  []atomic.Int64
+	specIndex map[string]int
+	// signals is one per spec, in spec order: what the engine tells each
+	// window's manager.
+	signals []*WindowSignal
 }
 
 // NewWatermarks builds the tracker for a pipeline's windows on a clock. The
@@ -174,13 +188,49 @@ func NewWatermarks(specs []WindowSpec, now func() time.Time) *Watermarks {
 		now = time.Now
 	}
 	w := &Watermarks{
-		specs:  specs,
-		now:    now,
-		parts:  map[partitionKey]*partitionState{},
-		floor:  map[string]int64{},
-		stored: map[string]int64{},
+		specs:     specs,
+		now:       now,
+		parts:     map[partitionKey]*partitionState{},
+		floor:     map[string]int64{},
+		stored:    map[string]int64{},
+		asserted:  make([]atomic.Int64, len(specs)),
+		specIndex: make(map[string]int, len(specs)),
+		signals:   make([]*WindowSignal, len(specs)),
+	}
+	for i, spec := range specs {
+		w.specIndex[spec.Name] = i
+		w.signals[i] = newWindowSignal()
 	}
 	return w
+}
+
+// NewWatermarksWithSignals is NewWatermarks over signals that already exist,
+// one per spec in spec order. A process that rebuilds its tracker -- a
+// simulated restart -- keeps the managers' signals, because a manager holds
+// its signal for its lifetime.
+func NewWatermarksWithSignals(specs []WindowSpec, now func() time.Time, signals []*WindowSignal) *Watermarks {
+	w := NewWatermarks(specs, now)
+	for i := range specs {
+		if i < len(signals) && signals[i] != nil {
+			w.signals[i] = signals[i]
+		}
+	}
+	return w
+}
+
+// Specs is the windows this tracker asserts for.
+func (w *Watermarks) Specs() []WindowSpec { return w.specs }
+
+// setAsserted records a window's watermark under mu and mirrors it for
+// Classify. A value below what is stored is ignored: monotonic here too.
+func (w *Watermarks) setAsserted(name string, nanos int64) {
+	if nanos <= w.stored[name] {
+		return
+	}
+	w.stored[name] = nanos
+	if i, ok := w.specIndex[name]; ok {
+		w.asserted[i].Store(nanos)
+	}
 }
 
 // Restore seeds a window with what its table holds at start: the newest
@@ -193,7 +243,7 @@ func (w *Watermarks) Restore(name string, newestBucketStart, asserted time.Time)
 		w.floor[name] = newestBucketStart.UnixNano()
 	}
 	if !asserted.IsZero() {
-		w.stored[name] = asserted.UnixNano()
+		w.setAsserted(name, asserted.UnixNano())
 	}
 }
 
@@ -357,9 +407,7 @@ func (w *Watermarks) Commit(moved map[string]time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for name, at := range moved {
-		if n := at.UnixNano(); n > w.stored[name] {
-			w.stored[name] = n
-		}
+		w.setAsserted(name, at.UnixNano())
 	}
 }
 
@@ -419,6 +467,125 @@ func (w *Watermarks) compute(spec WindowSpec, now time.Time) (int64, bool) {
 		return 0, false
 	}
 	return maxSeen + int64(spec.Size), true
+}
+
+// Lateness is where one record stands against one window. Decided at
+// arrival from the record's bucket and the asserted watermark, as Flink's
+// window operator decides it, and nowhere else: a row below the watermark is
+// in the table only because this said it could be.
+type Lateness int
+
+const (
+	// OnTime is a record whose bucket is still open.
+	OnTime Lateness = iota
+	// LateAllowed is a record whose bucket closed within allowed lateness:
+	// written, and the bucket republished whole.
+	LateAllowed
+	// LateRefused is a record whose bucket closed beyond allowed lateness:
+	// never written, counted.
+	LateRefused
+)
+
+// LateBucket is a window and the bucket a late-but-allowed record landed in.
+type LateBucket struct {
+	Window string
+	Bucket time.Time
+}
+
+// Classify decides every window at once for one record. refused is true only
+// when every window refuses it, so a pipeline with two windows of different
+// sizes keeps a record the looser one still wants; the stricter one's purge
+// deletes it from that table on its next pass. recompute is the windows that
+// admitted it late and want the bucket republished. A record with no event
+// time has no bucket and is never late, and before a window has asserted
+// anything nothing is late for it.
+//
+// Lock-free and allocation-free on the common path: the asserted watermarks
+// are atomics, and recompute is nil until a window admits a late record. It
+// runs per record on the consume loop, where a mutex measured at 52ns.
+func (w *Watermarks) Classify(atNanos int64) (refused bool, recompute []LateBucket) {
+	if atNanos <= 0 || len(w.specs) == 0 {
+		return false, nil
+	}
+	at := time.Unix(0, atNanos).UTC()
+	refused = true
+	for i, spec := range w.specs {
+		asserted := w.asserted[i].Load()
+		if asserted == 0 {
+			refused = false
+			continue
+		}
+		end := BucketEnd(at, spec.Size).UnixNano()
+		switch {
+		case end+int64(spec.Lateness) <= asserted:
+			// Refused by this window.
+		case end <= asserted:
+			refused = false
+			recompute = append(recompute, LateBucket{Window: spec.Name, Bucket: BucketStart(at, spec.Size)})
+		default:
+			refused = false
+		}
+	}
+	return refused, recompute
+}
+
+// WindowSignal is what the engine tells one window's manager: that the
+// watermark moved, and which closed buckets a late row landed in. Both are
+// sent after the commit that made their rows visible, so a manager woken by
+// a kick reads committed state.
+type WindowSignal struct {
+	kick      chan struct{}
+	mu        sync.Mutex
+	recompute map[time.Time]struct{}
+}
+
+func newWindowSignal() *WindowSignal {
+	return &WindowSignal{kick: make(chan struct{}, 1), recompute: map[time.Time]struct{}{}}
+}
+
+// Kick wakes the manager. Non-blocking, capacity one: two kicks before the
+// manager wakes are one kick, because a pass reads the current state rather
+// than the event.
+func (s *WindowSignal) Kick() {
+	select {
+	case s.kick <- struct{}{}:
+	default:
+	}
+}
+
+// Wait is the channel a manager selects on.
+func (s *WindowSignal) Wait() <-chan struct{} { return s.kick }
+
+// Recompute records a bucket a late-but-allowed row landed in. A set, so a
+// burst of late rows for one bucket is one republish. The caller kicks after
+// the commit that made the row visible.
+func (s *WindowSignal) Recompute(bucket time.Time) {
+	s.mu.Lock()
+	s.recompute[bucket] = struct{}{}
+	s.mu.Unlock()
+}
+
+// TakeRecompute drains the set, oldest bucket first.
+func (s *WindowSignal) TakeRecompute() []time.Time {
+	s.mu.Lock()
+	out := make([]time.Time, 0, len(s.recompute))
+	for b := range s.recompute {
+		out = append(out, b)
+	}
+	s.recompute = map[time.Time]struct{}{}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	return out
+}
+
+// Signal is the window's signal, for the manager built over it; nil for a
+// name this tracker does not know.
+func (w *Watermarks) Signal(name string) *WindowSignal {
+	i, ok := w.specIndex[name]
+	if !ok {
+		return nil
+	}
+	return w.signals[i]
 }
 
 // WatermarkSaver is what the engine writes assertions through; the DuckDB

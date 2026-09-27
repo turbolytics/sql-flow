@@ -8,7 +8,7 @@ import (
 
 // Every operation a window performs is a row in one of two tables here.
 //
-// A poll builds a State from what it read, hands it to Decide, and performs
+// A pass builds a State from what it read, hands it to Decide, and performs
 // the Action it gets back. The tables are the only place a fact meets an
 // action, so the logic is read in one place, every combination is accounted
 // for, and checkTables proves it at load: each combination selects exactly
@@ -21,7 +21,13 @@ import (
 // describes visible, and the manager closes on that and on nothing else: no
 // clock, no progress row, no reading of the table's newest bucket. Where
 // the assertion stands against what this window has already closed is the
-// whole of what a poll decides on.
+// whole of what a pass decides on.
+//
+// The bucket table has one fact too: where a bucket's end stands against
+// the closed watermark, the asserted one, and the window's lateness. The
+// engine decides a record's lateness at arrival against the same
+// comparison (core.Watermarks.Classify), so the table here is the manager's
+// half of one rule.
 
 // Asserted is where the engine's watermark stands against the closed one,
 // in event time.
@@ -55,28 +61,30 @@ const (
 	Follow Action = "follow"
 )
 
-// Bucket is where one bucket stands against the previous closed watermark
-// and the one this poll decided.
+// Bucket is where one bucket stands against the closed watermark, the
+// asserted one, and the window's lateness.
 type Bucket string
 
 const (
-	// BucketLate is a bucket that ends at or before the previous watermark:
-	// its rows arrived after it closed.
-	BucketLate Bucket = "late"
-	// BucketDue is a bucket that ends after the previous watermark and at or
-	// before the next.
-	BucketDue Bucket = "due"
-	// BucketOpen is a bucket that ends after the next watermark.
+	// BucketOpen ends after the asserted watermark: its rows stay.
 	BucketOpen Bucket = "open"
+	// BucketDue ends after the closed watermark and at or before the asserted
+	// one: it closes in this pass.
+	BucketDue Bucket = "due"
+	// BucketRetained ended at or before the closed watermark and its lateness
+	// has not run out: published, kept for a late row to republish it whole.
+	BucketRetained Bucket = "retained"
+	// BucketExpired ended at or before the asserted watermark less the
+	// lateness: nothing more can arrive for it, and its rows go.
+	BucketExpired Bucket = "expired"
 )
 
 // BucketState is what is known about one bucket before it is acted on.
 type BucketState struct {
 	Bucket Bucket
-	Policy LatePolicy
 }
 
-func (b BucketState) String() string { return fmt.Sprintf("bucket=%s policy=%s", b.Bucket, b.Policy) }
+func (b BucketState) String() string { return fmt.Sprintf("bucket=%s", b.Bucket) }
 
 // BucketAction is what happens to a bucket's rows.
 type BucketAction string
@@ -84,13 +92,12 @@ type BucketAction string
 const (
 	// Keep leaves the rows in the table.
 	Keep BucketAction = "keep"
-	// Close publishes emit_sql over the bucket and deletes its rows.
-	Close BucketAction = "close"
-	// DropLate deletes the rows and counts them as late.
-	DropLate BucketAction = "late.drop"
-	// ReemitLate publishes emit_sql over the late rows alone, deletes them
-	// and counts them as late.
-	ReemitLate BucketAction = "late.reemit"
+	// Publish runs emit_sql over the bucket and hands the result to the sink.
+	Publish BucketAction = "publish"
+	// Retain leaves the rows for a late row to republish the bucket whole.
+	Retain BucketAction = "retain"
+	// Purge deletes the rows.
+	Purge BucketAction = "purge"
 )
 
 // StateOf reduces a poll's readings to the fact the table decides on:
@@ -107,18 +114,21 @@ func StateOf(asserted time.Time, hasAsserted bool, closed time.Time, hadClosed b
 	}
 }
 
-// BucketStateOf reduces one bucket's end to its fact.
-func BucketStateOf(decl Declaration, end, previous, next time.Time) BucketState {
-	b := BucketState{Policy: decl.Late}
+// BucketStateOf reduces one bucket's end to its fact. A bucket that closes
+// in this pass is due whatever the lateness; the publish rule says what
+// then happens to its rows. Retained and expired are the two fates of a
+// bucket that closed in an earlier pass.
+func BucketStateOf(decl Declaration, end, closed time.Time, hadClosed bool, asserted time.Time) BucketState {
 	switch {
-	case !end.After(previous):
-		b.Bucket = BucketLate
-	case !end.After(next):
-		b.Bucket = BucketDue
+	case end.After(asserted):
+		return BucketState{BucketOpen}
+	case !hadClosed || end.After(closed):
+		return BucketState{BucketDue}
+	case !end.Add(decl.Lateness).After(asserted):
+		return BucketState{BucketExpired}
 	default:
-		b.Bucket = BucketOpen
+		return BucketState{BucketRetained}
 	}
-	return b
 }
 
 // watermarkRule is one row of the watermark table. An empty Asserted matches
@@ -166,15 +176,13 @@ var watermarkTable = []watermarkRule{
 type bucketRule struct {
 	Name     string
 	Bucket   []Bucket
-	Policy   []LatePolicy
 	Action   BucketAction
 	Deciding string
 	Claim    string
 }
 
 func (r bucketRule) matches(b BucketState) bool {
-	return (len(r.Bucket) == 0 || contains(r.Bucket, b.Bucket)) &&
-		(len(r.Policy) == 0 || contains(r.Policy, b.Policy))
+	return len(r.Bucket) == 0 || contains(r.Bucket, b.Bucket)
 }
 
 // bucketTable is the bucket's truth table.
@@ -184,30 +192,28 @@ var bucketTable = []bucketRule{
 		Bucket:   []Bucket{BucketOpen},
 		Action:   Keep,
 		Deciding: "bucket",
-		Claim:    "The bucket ends after the watermark, so its rows stay.",
+		Claim:    "The bucket ends after the asserted watermark, so its rows stay.",
 	},
 	{
-		Name:     "close",
+		Name:     "publish",
 		Bucket:   []Bucket{BucketDue},
-		Action:   Close,
+		Action:   Publish,
 		Deciding: "bucket",
-		Claim:    "The bucket ends between the previous watermark and this one: emit_sql runs over its rows and they are deleted.",
+		Claim:    "The bucket ends between the closed watermark and the asserted one: emit_sql runs over its rows and the result is published. With allowed_lateness_seconds the rows stay for a late row to republish it whole; without, this pass purges them too.",
 	},
 	{
-		Name:     "late.drop",
-		Bucket:   []Bucket{BucketLate},
-		Policy:   []LatePolicy{LateDrop},
-		Action:   DropLate,
-		Deciding: "policy",
-		Claim:    "The bucket closed before these rows arrived, and late_rows is drop: they are deleted and counted.",
+		Name:     "retain",
+		Bucket:   []Bucket{BucketRetained},
+		Action:   Retain,
+		Deciding: "bucket",
+		Claim:    "The bucket has been published and its lateness has not run out: its rows stay, and a late row the engine admits republishes it whole.",
 	},
 	{
-		Name:     "late.reemit",
-		Bucket:   []Bucket{BucketLate},
-		Policy:   []LatePolicy{LateReemit},
-		Action:   ReemitLate,
-		Deciding: "policy",
-		Claim:    "The bucket closed before these rows arrived, and late_rows is reemit: emit_sql runs over the late rows alone, they are deleted and counted.",
+		Name:     "purge",
+		Bucket:   []Bucket{BucketExpired},
+		Action:   Purge,
+		Deciding: "bucket",
+		Claim:    "The bucket ended at or before the asserted watermark less the lateness: nothing more can arrive for it, and its rows are deleted.",
 	},
 }
 
@@ -259,8 +265,7 @@ func contains[T comparable](vals []T, v T) bool {
 // Every value of every fact, for the exhaustiveness check and the rendering.
 var (
 	assertedValues = []Asserted{AssertedNone, AssertedBehind, AssertedAhead}
-	bucketValues   = []Bucket{BucketLate, BucketDue, BucketOpen}
-	policyValues   = []LatePolicy{LateDrop, LateReemit}
+	bucketValues   = []Bucket{BucketOpen, BucketDue, BucketRetained, BucketExpired}
 )
 
 func allStates() []State {
@@ -274,9 +279,7 @@ func allStates() []State {
 func allBucketStates() []BucketState {
 	var out []BucketState
 	for _, b := range bucketValues {
-		for _, p := range policyValues {
-			out = append(out, BucketState{Bucket: b, Policy: p})
-		}
+		out = append(out, BucketState{Bucket: b})
 	}
 	return out
 }
