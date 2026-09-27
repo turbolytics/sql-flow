@@ -83,10 +83,11 @@ func runWorkload(ctx context.Context, conn *pgx.Conn, r config.Rollup, rng *rand
 	// Every type is checked before the first write, so a run that cannot
 	// finish writes nothing.
 	for _, c := range cols {
+		check := writable
 		if c.Name == r.Source.TimeColumn {
-			continue
+			check = timeColumnWritable
 		}
-		if err := writable(c); err != nil {
+		if err := check(c); err != nil {
 			return WorkloadReport{}, err
 		}
 	}
@@ -234,6 +235,17 @@ func writable(c sourceColumn) error {
 	}
 	return errs.New(errs.CodeConfigRollup,
 		"rollup test: source column %s is %s, which the generated workload cannot write; it writes smallint, integer, bigint, double precision, text, character varying and timestamps",
+		c.Name, c.Type)
+}
+
+// timeColumnWritable reports a time column the workload cannot write. It
+// holds a bucket start, which the workload writes only as a timestamp.
+func timeColumnWritable(c sourceColumn) error {
+	if c.Type == "timestamp with time zone" || c.Type == "timestamp without time zone" {
+		return nil
+	}
+	return errs.New(errs.CodeConfigRollup,
+		"rollup test: source column %s, the time column, is %s; the generated workload writes a time column only as timestamp with time zone or timestamp without time zone",
 		c.Name, c.Type)
 }
 

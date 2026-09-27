@@ -389,3 +389,20 @@ func TestIntegrationRollupTest_AWriteToAColumnTheSourceLacksIsRefusedAtItsPath(t
 	assert.That(t, strings.Contains(err.Error(), "tests.0.writes.0.0.nope"))
 	assert.Equal(t, int64(0), count(t, srv.conn, "SELECT count(*) FROM posts_per_minute_by_lang WHERE bucket = '2026-09-24T12:07:00Z'"))
 }
+
+// A role without CREATE on the database is told which grant it needs, as a
+// user error, not an internal one.
+func TestIntegrationRollupTest_ARoleWithoutCreateIsToldTheGrant(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	execSQL(t, srv.conn, "CREATE ROLE tester LOGIN PASSWORD 'tester'")
+	conn := connectIn(t, strings.Replace(srv.dsn, "rollup:rollup@", "tester:tester@", 1), "UTC")
+
+	_, err := OpenSandbox(context.Background(), conn, loadExample(t), "test")
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
+	assert.That(t, strings.Contains(err.Error(), "GRANT CREATE ON DATABASE rollup TO tester"))
+}

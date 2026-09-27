@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
 
@@ -77,4 +78,18 @@ func TestCliRollupTest_TheUpsertIsTheSinks(t *testing.T) {
 	assert.Equal(t,
 		`INSERT INTO "t" ("bucket") VALUES ($1::timestamp with time zone) ON CONFLICT ("bucket") DO NOTHING`,
 		upsertSQL("t", cols[:1], []string{"bucket"}, 1))
+}
+
+// The time column holds a bucket start, so the workload writes it only as a
+// timestamp. Any other type stops the run naming the column, before a
+// write, rather than failing a cast mid-run as an internal error.
+func TestCliRollupTest_TheTimeColumnMustBeATimestamp(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	for _, typ := range []string{"timestamp with time zone", "timestamp without time zone"} {
+		assert.NoError(t, timeColumnWritable(sourceColumn{Name: "bucket", Type: typ}))
+	}
+	err := timeColumnWritable(sourceColumn{Name: "day", Type: "date"})
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeConfigRollup, errs.CodeOf(err))
+	assert.That(t, strings.Contains(err.Error(), "day") && strings.Contains(err.Error(), "date"))
 }

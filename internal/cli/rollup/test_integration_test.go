@@ -2,11 +2,13 @@ package rollup
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -136,4 +138,78 @@ func TestIntegrationRollupTest_TheCommandNeverReadsTheStore(t *testing.T) {
 	dsn, _ := sourceOnly(t)
 	_, _, err := run(t, "test", "-c", withStore(t, unreachable), "--dsn", dsn)
 	assert.NoError(t, err)
+}
+
+// cancelWhen returns a context that a watcher on its own connection cancels
+// once ready reports true.
+func cancelWhen(t *testing.T, dsn string, ready func(*pgx.Conn) bool) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		watch, err := pgx.Connect(context.Background(), dsn)
+		if err != nil {
+			return
+		}
+		defer watch.Close(context.Background())
+		for ctx.Err() == nil {
+			if ready(watch) {
+				cancel()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	return ctx
+}
+
+// sandboxName is the one sqlflow_test_ schema, or empty.
+func sandboxName(watch *pgx.Conn) string {
+	var name string
+	_ = watch.QueryRow(context.Background(),
+		"SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sqlflow_test_%'").Scan(&name)
+	return name
+}
+
+func runIn(ctx context.Context, args ...string) error {
+	cmd := NewCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	return cmd.ExecuteContext(ctx)
+}
+
+// A run cancelled while its schema is being built, as Ctrl-C or a CI cancel
+// can, still drops the schema. pgx closes a connection whose query was
+// cancelled, so the cleanup cannot use it.
+func TestIntegrationRollupTest_ARunCancelledDuringSetupDropsItsSchema(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	dsn, conn := sourceOnly(t)
+	ctx := cancelWhen(t, dsn, func(watch *pgx.Conn) bool { return sandboxName(watch) != "" })
+	assert.Error(t, runIn(ctx, "test", "-c", example, "--dsn", dsn))
+	assert.Equal(t, int64(0), sandboxes(t, conn))
+}
+
+// A run cancelled once the workload has written rows drops its schema too:
+// the command's own cleanup, not the sandbox's, runs then.
+func TestIntegrationRollupTest_ARunCancelledMidWorkloadDropsItsSchema(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	dsn, conn := sourceOnly(t)
+	ctx := cancelWhen(t, dsn, func(watch *pgx.Conn) bool {
+		name := sandboxName(watch)
+		if name == "" {
+			return false
+		}
+		var n int64
+		err := watch.QueryRow(context.Background(), "SELECT count(*) FROM "+name+".posts_per_minute_by_lang").Scan(&n)
+		return err == nil && n > 0
+	})
+	assert.Error(t, runIn(ctx, "test", "-c", example, "--dsn", dsn))
+	assert.Equal(t, int64(0), sandboxes(t, conn))
 }

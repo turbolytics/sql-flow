@@ -117,9 +117,9 @@
   its source, and every bucket must lie on its grain's UTC boundary.
   `--tests` adds fixture cases with expected rows. A failed check exits 10
   with `user.config.rollup_test_failed`. The command connects only to
-  `--dsn` and drops its schema unless `--keep` is set. It writes integer,
-  double, text and timestamp columns, and stops on any other type, naming
-  the column.
+  `--dsn` and drops its schema unless `--keep` is set, including when
+  Ctrl-C or `SIGTERM` ends the run. It writes integer, double, text and
+  timestamp columns, and stops on any other type, naming the column.
 
 - `sqlflow rollup run` reports itself to TurboStats when its rollups file
   has a `turbostats` block that sets `report_to`. The bundle gains two
