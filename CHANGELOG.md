@@ -4,6 +4,12 @@
 
 ### Changed
 
+- **A rollup can no longer read another rollup's table.** `sqlflow
+  validate` and every `sqlflow rollup` command refuse a rollup whose
+  `source.table` another rollup of the file makes, and name the rollup to
+  add the grain or dimension set to. That grain or set does the same work,
+  and install, backfill and verify no longer order two declarations.
+
 - **Windowing is now decided by a watermark the engine asserts.** A window
   manager needs one thing, how far the stream has got, and nothing used to
   tell it: it inferred the answer from the newest bucket in its own table and

@@ -142,8 +142,8 @@ Exit codes are `errs` codes. New ones:
 
 ## Configuration
 
-`rollups.yml` gains two top-level blocks. The `rollups` list does not
-change, so every file that validates today still validates.
+`rollups.yml` gains two top-level blocks. The `rollups` list gains one
+rule: a rollup never reads another rollup's table.
 
 ```yaml
 # Where the rollup tables live. Only `run`, `install` and `verify` connect.
@@ -173,6 +173,11 @@ Rules, reported by `sqlflow validate` and every `rollup` command:
 2. `turbostats` follows the rules `run` and `serve` apply to it.
 3. A file whose `turbostats` block sets `report_to` declares at most 10
    tables. See "TurboStats".
+4. A rollup's `source.table` is no table a rollup of the file makes. A
+   second rollup over the first one's hourly table does what another grain
+   or dimension set on the first one does, and it would make install,
+   backfill and verify order two declarations. The message names the
+   rollup to add the grain or set to.
 
 An unset template variable renders as an empty string, so `validate` accepts
 an empty `dsn`. `run`, `install` and `verify` refuse one at startup.
@@ -674,10 +679,7 @@ tables exist. The role needs `CREATE` on the database. The command:
    The clone keeps the columns, `NOT NULL`, defaults, and the primary key. It
    leaves out `CHECK` constraints, so a generated value never fails a rule the
    rollups do not depend on. The Render template's `metrics_1m` has one.
-   A source that another rollup of the file makes is not cloned: its rows
-   come through that rollup's triggers.
-3. Sets `search_path` to the schema, and runs `install`'s reconcile there,
-   a layer at a time: each rollup after the rollup whose table it reads.
+3. Sets `search_path` to the schema, and runs `install`'s reconcile there.
 4. Runs the generated workload and the fixture cases.
 5. Drops the schema, unless `--keep` is set.
 
@@ -746,11 +748,10 @@ column's type. A failure prints the case, the table, the key, and the
 expected and actual rows, and the command exits with
 `user.config.rollup_test_failed`.
 
-Rules, each reported with its YAML path: `rollup` names a declared rollup
-whose source no rollup makes, every written key is a source column, every
-`expect` table is one of that rollup's tables or of a rollup chained from
-it, every expected row names every column of its table and no other, and
-no two expected rows of a table share a key.
+Rules, each reported with its YAML path: `rollup` names a declared rollup,
+every written key is a source column, every `expect` table is one of the
+rollup's tables, every expected row names every column of its table and no
+other, and no two expected rows of a table share a key.
 
 ## Tests
 
@@ -872,7 +873,6 @@ the control repository's launch freeze to lift.
 | If | Then | Caught by |
 |---|---|---|
 | Install locks a rollup table before its source | Install deadlocks beside a live writer and fails the deploy | `InstallBesideAWriterMidTransaction` |
-| Install locks sources by name when one rollup reads another's table | A deadlock per install beside a live writer, which the retry hides | `InstallBesideAWriterWhenOneRollupReadsAnother`, which asserts one attempt |
 | A retained table's record outlives the table | Declaring the set again in a new shape is refused over rows that no longer exist | `ARetainedTableDroppedByHandCanBeDeclaredAgain` |
 | Install waits for a source without a bound | A transaction left open stalls the install and every pipeline write queued behind it | `InstallGivesUpOnALockRatherThanStallThePipeline` |
 | A retained table keeps only its name | Declaring it again in another shape mixes two kinds of row in one table, and a rollback and roll-forward drops its pending backfill | `ARetainedSetDeclaredAgainInAnotherShapeIsRefused`, `ARollbackAndRollForwardKeepAPendingBackfill` |

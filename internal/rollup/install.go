@@ -268,38 +268,17 @@ func install(ctx context.Context, tx pgx.Tx, conf *config.RollupsConf, version s
 	return report, nil
 }
 
-// lockOrder returns the declared sources in the order a writer reaches
-// them. A source that another declared rollup builds, such as one rollup
-// reading another's hourly table, is written only by the triggers of that
-// rollup's source, so it comes after that source. Name order breaks ties.
-// A foreign trigger chain that writes two declared sources, such as the
-// Render template's writers table, is invisible here, so those two keep name
-// order.
+// lockOrder returns the declared sources by name. Check refuses a rollup
+// that reads another's table, so no declared source is written by the
+// triggers of another, and name order is the only order. A foreign trigger
+// chain that writes two declared sources, such as the Render template's
+// writers table, is invisible here, so those two keep name order.
 func lockOrder(rollups []config.Rollup) []string {
-	builtFrom := map[string]string{}
-	for _, r := range rollups {
-		for _, e := range edges(r) {
-			builtFrom[e.Table] = r.Source.Table
-		}
-	}
-	// depth is how many declared rollups a write passes through before it
-	// reaches src. seen stops a cycle, which no writer could complete anyway.
-	depth := func(src string) int {
-		d, seen := 0, map[string]bool{}
-		for from, ok := builtFrom[src]; ok && !seen[src]; from, ok = builtFrom[src] {
-			seen[src] = true
-			src = from
-			d++
-		}
-		return d
-	}
 	sources := map[string]bool{}
 	for _, r := range rollups {
 		sources[r.Source.Table] = true
 	}
-	out := sortedKeys(sources)
-	slices.SortStableFunc(out, func(a, b string) int { return depth(a) - depth(b) })
-	return out
+	return sortedKeys(sources)
 }
 
 // nextState is the row an install writes: the declaration as applied now,

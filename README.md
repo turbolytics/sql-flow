@@ -603,6 +603,9 @@ finer table, a statement-level trigger locks the coarse buckets it touched and
 recomputes them, in the writer's transaction. A minute written twice replaces
 its count at every grain instead of adding to it.
 
+A rollup reads a table no rollup makes. To roll up a rollup's table further,
+add a grain or a dimension set to that rollup.
+
 Writers to one rollup take turns: each trigger takes the rollup's lock
 first, so two writers never deadlock. Write the source once per transaction,
 as the Postgres sink does. A write left open in a transaction holds up every

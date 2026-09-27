@@ -88,13 +88,13 @@ func RunCase(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, inde
 
 	var out []CaseFailure
 	for _, table := range slices.Sorted(maps.Keys(tc.Expect)) {
-		// A listed table may belong to a rollup chained from the case's.
-		owner, ok := tableOwner(conf, table)
-		if !ok {
+		// Check refuses an undeclared table first; a direct caller gets the
+		// same rule rather than a panic.
+		if _, ok := findEdge(r, table); !ok {
 			return nil, caseRuleError([]config.Violation{{Code: errs.CodeConfigRollup, Path: yamlPath(path, "expect", table),
-				Message: fmt.Sprintf("test case %q expects table %s, which the rollups file does not declare", tc.Name, table)}})
+				Message: fmt.Sprintf("test case %q expects table %s, which rollup %s does not declare", tc.Name, table, r.Name)}})
 		}
-		fs, err := compareCase(ctx, conn, owner, table, tc.Expect[table], yamlPath(path, "expect", table))
+		fs, err := compareCase(ctx, conn, r, table, tc.Expect[table], yamlPath(path, "expect", table))
 		if err != nil {
 			return nil, err
 		}
@@ -120,7 +120,7 @@ func RunCase(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, inde
 }
 
 // caseTables is every source and rollup table of conf, sources first, each
-// once: a chained rollup's source is another rollup's table.
+// once: two rollups may read one source.
 func caseTables(conf *config.RollupsConf) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -132,23 +132,10 @@ func caseTables(conf *config.RollupsConf) []string {
 	}
 	for _, r := range conf.Rollups {
 		for _, e := range edges(r) {
-			if !seen[e.Table] {
-				seen[e.Table] = true
-				out = append(out, e.Table)
-			}
+			out = append(out, e.Table)
 		}
 	}
 	return out
-}
-
-// tableOwner is the rollup of conf that makes table.
-func tableOwner(conf *config.RollupsConf, table string) (config.Rollup, bool) {
-	for _, r := range conf.Rollups {
-		if _, ok := findEdge(r, table); ok {
-			return r, true
-		}
-	}
-	return config.Rollup{}, false
 }
 
 // writeCase writes one write's rows as one upsert. Its columns are every
