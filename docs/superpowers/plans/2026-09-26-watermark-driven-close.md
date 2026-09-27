@@ -515,6 +515,8 @@ For each file, remove the `late_rows:` and `poll_interval_seconds:` lines, remov
 | `dev/bench/bluesky/demo-10x*.yml` (three) | `time_bucket(INTERVAL '1 minute', event_time) AS bucket` | `event_time: {path: time_us, format: unix_us}`; delete the `poll_interval_seconds   10 -> 1` comment lines |
 | `.claude/skills/slow-soak/slow.yml` | as bluesky | as bluesky |
 
+Ruling at execution: `render/pipeline.yml` and `render/docker-compose.yml` are **not** updated in this PR. The render workflow validates the template against the image it pins (`v2026.09.21`), whose schema still requires `late_rows`, so the template moves in the PR that bumps the pin to a release carrying this change. That PR also decides the template's bucket clock: its payload timestamp is optional and per metric, so the candidate is the request's arrival `event_time`, with the metric's own timestamp kept in `last_at`.
+
 For the bluesky postgres example, add `allowed_lateness_seconds: 300` with a comment: the sink upserts by `(bucket, lang)`, so a late row republishes the minute whole and the row is replaced -- this is the one shipped example that exercises lateness.
 
 - [ ] **Step 5: Update the README**

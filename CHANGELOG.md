@@ -26,8 +26,9 @@
 
   `time_column` must be `time_bucket(INTERVAL '<size>', event_time)`, which
   validate now refuses rather than warns: the engine decides lateness from
-  that bucket, and the six shipped windowed examples and the Render template
-  are updated to it. The wire bundle's `late_rows_reemitted` is gone and
+  that bucket, and the six shipped windowed examples are updated to it. The
+  Render template follows when its image pin moves to a release that carries
+  this. The wire bundle's `late_rows_reemitted` is gone and
   `late_rows_recomputed` is new; `late_rows_dropped` now counts refusals.
   See `docs/superpowers/specs/2026-09-26-watermark-driven-close-design.md`.
 
