@@ -52,7 +52,7 @@ func OpenSandbox(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, 
 			return nil, sandboxError(err, "find source "+r.Source.Table)
 		}
 		if schema == nil {
-			return nil, errs.New(errs.CodeConfigInvalid,
+			return nil, errs.New(errs.CodeConfigRollup,
 				"rollup test: source table %s does not exist on --dsn's search_path; run the team's migrations against --dsn first",
 				r.Source.Table)
 		}

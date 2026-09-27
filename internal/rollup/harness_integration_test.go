@@ -5,10 +5,12 @@ package rollup
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
@@ -109,4 +111,145 @@ func TestIntegrationRollupTest_TheInvariantsFindAHandEditAndAnOffBoundaryBucket(
 	}
 	assert.That(t, found["posts_by_lang_1h "+InvariantEqualsSource])
 	assert.That(t, found["posts_total_5m "+InvariantOnBoundary])
+}
+
+// workload opens a sandbox for conf, runs the workload with seed, and
+// returns what it wrote. The sandbox closes when the test ends.
+func workload(t *testing.T, conn *pgx.Conn, conf *config.RollupsConf, seed int64) (*Sandbox, []WorkloadReport) {
+	t.Helper()
+	ctx := context.Background()
+	sb, err := OpenSandbox(ctx, conn, conf, "test")
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = sb.Close(ctx, conn, false) })
+	reports, err := RunWorkload(ctx, conn, conf, seed)
+	assert.NoError(t, err)
+	return sb, reports
+}
+
+func noFailures(t *testing.T, conn *pgx.Conn, conf *config.RollupsConf) {
+	t.Helper()
+	failures, err := CheckInvariants(context.Background(), conn, conf)
+	assert.NoError(t, err)
+	for _, f := range failures {
+		t.Errorf("%s %s: %s: %d buckets %v", f.Rollup, f.Table, f.Invariant, f.Buckets, f.Sample)
+	}
+}
+
+// The demo's declaration keeps both invariants through 20 batches that
+// cross the daylight saving change, in three session zones.
+func TestIntegrationRollupTest_TheDemoPassesTheWorkload(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	conf := loadExample(t)
+	_, reports := workload(t, srv.conn, conf, 42)
+	assert.Equal(t, 1, len(reports))
+	assert.Equal(t, "posts", reports[0].Rollup)
+	assert.Equal(t, 20, reports[0].Batches)
+	assert.That(t, reports[0].Rows >= 20 && reports[0].Rows <= 1000)
+	// The workload's days hold the change: 2026-03-08T07:00Z in New York.
+	assert.That(t, count(t, srv.conn, "SELECT count(*) FROM posts_by_lang_1d") >= 2)
+	noFailures(t, srv.conn, conf)
+}
+
+// The Render template's minute table passes: its CHECK constraint is left
+// out of the clone, and its defaulted updated_at is not written.
+func TestIntegrationRollupTest_TheRenderTemplatePasses(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	migration, err := os.ReadFile("../../render/migrations/0001_metrics_1m.sql")
+	assert.NoError(t, err)
+	execSQL(t, srv.conn, string(migration))
+	conf, err := config.LoadRollups("../../render/rollups.yml")
+	assert.NoError(t, err)
+	_, reports := workload(t, srv.conn, conf, 42)
+	assert.Equal(t, 20, reports[0].Batches)
+	assert.That(t, count(t, srv.conn, "SELECT count(*) FROM metrics_1m WHERE updated_at IS NULL") == 0)
+	noFailures(t, srv.conn, conf)
+}
+
+const nullableRollup = `rollups:
+  - name: events
+    source:
+      table: events_1m
+      time_column: bucket
+      grain: 1m
+      dimensions: [region]
+    grains:
+      1h: {from: 1m}
+    dimension_sets:
+      - name: events_by_region
+        dimensions: [region]
+        measures:
+          n: {type: sum, column: n}
+      - name: events_total
+        dimensions: []
+        measures:
+          n: {type: sum, column: n}
+`
+
+// A nullable dimension under a NULLS NOT DISTINCT index gets NULL keys, and
+// a NULL key upserts and pairs like any other.
+func TestIntegrationRollupTest_ANullableDimensionPasses(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	execSQL(t, srv.conn, `CREATE TABLE events_1m (bucket TIMESTAMPTZ NOT NULL, region TEXT, n BIGINT NOT NULL)`)
+	execSQL(t, srv.conn, `CREATE UNIQUE INDEX events_1m_key ON events_1m (bucket, region) NULLS NOT DISTINCT`)
+	conf, err := config.ParseRollups([]byte(nullableRollup))
+	assert.NoError(t, err)
+	workload(t, srv.conn, conf, 42)
+	assert.That(t, count(t, srv.conn, "SELECT count(*) FROM events_1m WHERE region IS NULL") > 0)
+	assert.That(t, count(t, srv.conn, "SELECT count(*) FROM events_by_region_1h WHERE region IS NULL") > 0)
+	noFailures(t, srv.conn, conf)
+}
+
+// A seed writes the same rows every time, and another seed other rows.
+func TestIntegrationRollupTest_ASeedReproducesTheWorkload(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	conf := loadExample(t)
+	digest := func(seed int64) WorkloadReport {
+		ctx := context.Background()
+		sb, err := OpenSandbox(ctx, srv.conn, conf, "test")
+		assert.NoError(t, err)
+		defer func() { assert.NoError(t, sb.Close(ctx, srv.conn, false)) }()
+		reports, err := RunWorkload(ctx, srv.conn, conf, seed)
+		assert.NoError(t, err)
+		return reports[0]
+	}
+	first, again, other := digest(7), digest(7), digest(8)
+	assert.Equal(t, first, again)
+	assert.NotEqual(t, first.Digest, other.Digest)
+}
+
+// A source whose key has no unique index stops the workload with the key
+// the sink's upsert needs.
+func TestIntegrationRollupTest_ASourceWithoutAKeyIndexNamesTheKey(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	execSQL(t, srv.conn, `CREATE TABLE events_1m (bucket TIMESTAMPTZ NOT NULL, region TEXT, n BIGINT NOT NULL)`)
+	execSQL(t, srv.conn, `CREATE INDEX events_1m_bucket ON events_1m (bucket)`)
+	conf, err := config.ParseRollups([]byte(nullableRollup))
+	assert.NoError(t, err)
+	ctx := context.Background()
+	sb, err := OpenSandbox(ctx, srv.conn, conf, "test")
+	assert.NoError(t, err)
+	defer func() { _ = sb.Close(ctx, srv.conn, false) }()
+	_, err = RunWorkload(ctx, srv.conn, conf, 42)
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "unique index on (bucket, region)"))
 }
