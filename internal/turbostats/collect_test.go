@@ -244,11 +244,12 @@ func TestCollect_ARealisticRunBundleStaysUnderItsCeiling(t *testing.T) {
 	}
 	window := managers.NewWindowMetrics(mp, "posts_by_lang")
 	w := metric.WithAttributes(attribute.String("window", "posts_by_lang"))
-	window.Late.Add(ctx, 184203, metric.WithAttributes(
-		attribute.String("window", "posts_by_lang"), attribute.String("policy", "drop")))
-	window.Late.Add(ctx, 184203, metric.WithAttributes(
-		attribute.String("window", "posts_by_lang"), attribute.String("policy", "reemit")))
+	m.WindowLateRows.Add(ctx, 184203, metric.WithAttributes(
+		attribute.String("window", "posts_by_lang"), attribute.String("outcome", "refused")))
+	m.WindowLateRows.Add(ctx, 184203, metric.WithAttributes(
+		attribute.String("window", "posts_by_lang"), attribute.String("outcome", "recomputed")))
 	window.Closed.Add(ctx, 1842033, w)
+	window.Recomputed.Add(ctx, 184203, w)
 	window.NewestStart.Record(ctx, 1757570000, w)
 	window.CloseLag.Record(ctx, 0, w)
 	sinks.RetryCounter(mp, "postgres")(1, errors.New("refused"))

@@ -57,10 +57,10 @@ func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 	for _, name := range []string{"hourly", "daily"} {
 		window := managers.NewWindowMetrics(mp, name)
 		w := metric.WithAttributes(attribute.String("window", name))
-		window.Late.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("window", name), attribute.String("policy", string(managers.LateDrop))))
-		window.Late.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("window", name), attribute.String("policy", string(managers.LateReemit))))
+		m.WindowLateRows.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("window", name), attribute.String("outcome", "refused")))
+		m.WindowLateRows.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("window", name), attribute.String("outcome", "recomputed")))
 		window.Closed.Add(ctx, 1, w)
 		window.NewestStart.Record(ctx, 1757570000, w)
 		window.CloseLag.Record(ctx, 0, w)
