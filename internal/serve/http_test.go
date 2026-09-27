@@ -572,7 +572,25 @@ func TestCliServe_ServeDrainsAnInFlightRequest(t *testing.T) {
 		status <- resp.StatusCode
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	// Cancel once the request is in flight, which is when it holds the one
+	// session: a probe that cannot acquire it within a few milliseconds says
+	// so. This slept 200ms and hoped, and on a loaded CI runner the cancel
+	// came first, the request got no response, and main went red on a test
+	// that had nothing to do with the change (200 != 0).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probe, cancelProbe := context.WithTimeout(context.Background(), 5*time.Millisecond)
+		held, err := ts.srv.exec.Acquire(probe)
+		cancelProbe()
+		if err != nil {
+			break // the session is taken: the request is running its query
+		}
+		held.Release()
+		if time.Now().After(deadline) {
+			t.Fatal("the request never took the session")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	cancel()
 
 	assert.Equal(t, http.StatusOK, <-status)
