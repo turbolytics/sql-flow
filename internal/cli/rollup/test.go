@@ -102,11 +102,7 @@ func newTestCommand() *cobra.Command {
 			for _, rep := range reports {
 				checks++
 				fs := broken[rep.Rollup]
-				wrote := fmt.Sprintf("%d batches, %d rows", rep.Batches, rep.Rows)
-				if rep.FedBy != "" {
-					wrote = "fed by rollup " + rep.FedBy
-				}
-				fmt.Fprintf(out, "workload %s: %s: %s\n", rep.Rollup, wrote, verdict(len(fs) == 0))
+				fmt.Fprintf(out, "workload %s: %d batches, %d rows: %s\n", rep.Rollup, rep.Batches, rep.Rows, verdict(len(fs) == 0))
 				if len(fs) > 0 {
 					failed++
 					printInvariants(out, fs)

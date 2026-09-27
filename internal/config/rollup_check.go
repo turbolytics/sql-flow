@@ -54,6 +54,15 @@ func (c *RollupsConf) Check() []Violation {
 	names := map[string]bool{}
 	// Dataset names share one serve file, whichever rollup declares them.
 	datasets := map[string]bool{}
+	// A rollup never reads another's table: another grain or dimension set
+	// on that rollup does the same work, and install, backfill and verify
+	// then never have to order two declarations.
+	made := map[string]string{}
+	for _, r := range c.Rollups {
+		for table := range RollupTableColumns(r) {
+			made[table] = r.Name
+		}
+	}
 	for i, r := range c.Rollups {
 		path := []string{"rollups", strconv.Itoa(i)}
 		switch {
@@ -63,6 +72,11 @@ func (c *RollupsConf) Check() []Violation {
 			add(at(path, "name"), "rollup %s is declared twice", r.Name)
 		}
 		names[r.Name] = true
+		if from, ok := made[r.Source.Table]; ok && from != r.Name {
+			add(at(path, "source", "table"),
+				"rollup %s reads %s, which rollup %s makes; a rollup reads a table no rollup makes, so add the grain or dimension set to rollup %s",
+				r.Name, r.Source.Table, from, from)
+		}
 		checkRollup(r, path, datasets, add)
 	}
 	return out

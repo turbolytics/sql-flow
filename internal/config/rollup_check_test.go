@@ -293,3 +293,27 @@ func TestCliRollup_CheckRefusesLastUnderAFold(t *testing.T) {
 	assert.Equal(t, "rollups.0.serve.datasets.0.dimension_set", strings.Join(violations[0].Path, "."))
 	assert.That(t, strings.Contains(violations[0].Message, "latest is last"))
 }
+
+// A rollup reads a table no rollup makes. A second rollup over the first
+// one's table adds a declaration to install, lock and verify in order, for
+// what one rollup already does with another grain or dimension set.
+func TestCliRollup_ARollupCannotReadAnotherRollupsTable(t *testing.T) {
+	coverage.Covers(t, "cli.rollup")
+
+	conf, err := LoadRollups("../../dev/config/rollups/bluesky.yml")
+	assert.NoError(t, err)
+	conf.Rollups = append(conf.Rollups, Rollup{
+		Name:   "lang_days",
+		Source: RollupSource{Table: "posts_by_lang_1h", TimeColumn: "bucket", Grain: "1h", Dimensions: []string{"lang"}},
+		Grains: map[string]RollupGrain{"1d": {From: "1h"}},
+		DimensionSets: []RollupDimensionSet{{
+			Name: "lang_days", Dimensions: []string{"lang"},
+			Measures: map[string]RollupMeasure{"posts": {Type: "sum", Column: "posts"}},
+		}},
+	})
+	violations := conf.Check()
+	assert.Equal(t, 1, len(violations))
+	assert.DeepEqual(t, []string{"rollups", "1", "source", "table"}, violations[0].Path)
+	assert.That(t, strings.Contains(violations[0].Message, "rollup posts makes"))
+	assert.That(t, strings.Contains(violations[0].Message, "add the grain or dimension set to rollup posts"))
+}

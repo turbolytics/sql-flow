@@ -4,6 +4,12 @@
 
 ### Changed
 
+- **A rollup can no longer read another rollup's table.** `sqlflow
+  validate` and every `sqlflow rollup` command refuse a rollup whose
+  `source.table` another rollup of the file makes, and name the rollup to
+  add the grain or dimension set to. That grain or set does the same work,
+  and install, backfill and verify no longer order two declarations.
+
 - **The window's manager no longer polls, and lateness is decided when a
   record arrives.** The engine tells the manager when a window's watermark
   moved; the manager publishes what closed, republishes what a late row
