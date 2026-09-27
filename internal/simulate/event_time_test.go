@@ -15,7 +15,7 @@ var base = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 // Reading the diagrams in this file
 //
 // Every scenario runs under windowDecl(): one-minute buckets, one minute of
-// grace, a ten-second idle close, and late rows dropped.
+// grace, a ten-second idle close, and no lateness, so a late row is refused.
 //
 // Two clocks, and keeping them apart is the point of the whole file:
 //
@@ -25,12 +25,12 @@ var base = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 //	               Produce{At}. This is what a bucket is cut on, and what the
 //	               watermark is computed from.
 //
-// The columns are what the manager could see if it polled at that moment:
+// The columns are what the manager sees when it passes at that moment:
 //
 //	step           what the script does
 //	event time     the row's own clock
 //	bucket         where that event time falls: event time truncated to a minute
-//	window table   what the handler has written, and what a poll would read
+//	window table   what the handler has written, and what a pass would read
 //	asserted       the engine's watermark after the step's commit: for each
 //	               partition that holds and is not idle, its newest event time
 //	               less the grace, and the minimum over them. A bucket closes
@@ -39,9 +39,9 @@ var base = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 // Two rules explain every outcome below. While partitions deliver, the
 // assertion is `min over partitions of (newest event time - grace)`; when
 // every partition has been silent for the idle bound, it is `newest event
-// time + size`, which closes the newest bucket too. And the manager collects
-// late rows only on a poll that finds something to do, which is why the
-// scenarios that assert a loss end by forcing a close.
+// time + size`, which closes the newest bucket too. And a record's lateness
+// is decided by the engine when it arrives, against that assertion: refused
+// before the handler with no lateness, written and recomputed within it.
 
 // Rows out of order inside the grace all land in their own buckets, and the
 // stream moving on closes them. This is the case grace_seconds exists for: a
@@ -54,7 +54,7 @@ var base = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 //	               ^ older than the row before it, same bucket, not late: the
 //	                 newest event time is still 12:01:30, so nothing moved
 //	Produce 4    12:05:00     12:05    12:01: 5, 12:05: 4    12:04
-//	Poll         -            -        12:05: 4              12:04
+//	Pass         -            -        12:05: 4              12:04
 //	               ^ 12:01 ends at 12:02, at or before 12:04, so it publishes
 //	                 all 5 rows. 12:05 ends at 12:06 and stays open.
 func TestSimulate_OutOfOrderRowsInsideTheGraceAreNotLate(t *testing.T) {
@@ -65,56 +65,151 @@ func TestSimulate_OutOfOrderRowsInsideTheGraceAreNotLate(t *testing.T) {
 		Produce{Partition: 0, Rows: 2, At: base.Add(65 * time.Second)},
 		// The stream moves on by more than the grace, which closes 12:01.
 		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 9, r.Produced)
 	assert.Equal(t, int64(5), r.Published)
 	assert.Equal(t, int64(4), r.StillOpen)
-	assert.Equal(t, int64(0), r.LateDropped)
+	assert.Equal(t, int64(0), r.LateRefused)
 	assert.Equal(t, 0, r.Republished)
 }
 
-// A row for a bucket the watermark has passed is late, and late_rows drop
-// discards it. That is the declared contract, so this is what correct looks
-// like rather than a defect.
+// A row for a bucket the watermark has passed is late. With no lateness the
+// engine refuses it before the handler: it never reaches the table, and the
+// sink's value for the bucket is the one the close published. That is the
+// declared contract, so this is what correct looks like rather than a defect.
 //
-//	step         event time   bucket   window table          asserted
-//	-----------------------------------------------------------------------
+//	step         event time   bucket   window table          asserted   engine
+//	-------------------------------------------------------------------------------
 //	Produce 5    12:00:30     12:00    12:00: 5              11:59:30
 //	Produce 4    12:05:00     12:05    12:00: 5, 12:05: 4    12:04
-//	Poll         -            -        12:05: 4              12:04
-//	               ^ 12:00 publishes its 5 rows
-//	Produce 6    12:00:30     12:00    12:00: 6, 12:05: 4    12:04
+//	Pass         -            -        12:05: 4              12:04      12:00 → 5 published, deleted
+//	Produce 6    12:00:30     (none)   12:05: 4              12:04      end 12:01 <= 12:04: refused, 6 counted
 //	               ^ back into a bucket that ended at 12:01, already at or
-//	                 before the watermark. These 6 are late on arrival, and
-//	                 do not move the assertion: 12:00:30 is not the newest.
-//	Elapse 30s
-//	IdleTick     -            -        (same)                12:06
-//	               ^ the partition has been silent 31s > 10s: idle, and it is
-//	                 the only one, so newest 12:05 + 1m
-//	Poll         -            -        empty                 12:06
-//	               ^ 12:05 publishes its 4 rows, and the 6 late rows are
-//	                 collected and dropped.
-func TestSimulate_ARowForAClosedBucketIsDropped(t *testing.T) {
+//	                 before the watermark. Late on arrival, refused before
+//	                 the handler, and the assertion does not move: 12:00:30
+//	                 is not the newest.
+func TestSimulate_ARowForAClosedBucketIsRefused(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
 		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
-		Poll{},
+		Pass{},
 		// Back in the bucket that just closed.
 		Produce{Partition: 0, Rows: 6, At: base.Add(30 * time.Second)},
-		// The manager collects late rows on a poll that has something to
-		// do, so the run reaches a close for the drop to have happened.
-		Elapse{By: 30 * time.Second},
-		IdleTick{},
-		Poll{},
 	})
 
 	assert.Equal(t, 15, r.Produced)
-	assert.Equal(t, int64(9), r.Published)
-	assert.Equal(t, int64(0), r.StillOpen)
-	assert.Equal(t, int64(6), r.LateDropped)
+	assert.Equal(t, int64(5), r.Published)
+	assert.Equal(t, int64(4), r.StillOpen)
+	assert.Equal(t, int64(6), r.LateRefused)
+	assert.Equal(t, int64(5), r.LastValue[base])
+	assert.Equal(t, int64(0), r.Recomputes)
+}
+
+// With lateness, a late row is written and the bucket republished whole: the
+// sink's last value is the exact count, never the late rows alone.
+//
+//	step         event time   bucket   window table          asserted   sink's value for 12:00
+//	-----------------------------------------------------------------------------------------
+//	Produce 5    12:00:30     12:00    12:00: 5              11:59:30   -
+//	Produce 4    12:05:00     12:05    12:00: 5, 12:05: 4    12:04      -
+//	Pass                              12:00: 5, 12:05: 4    12:04      5     kept: lateness 10m
+//	Produce 1    12:00:45     12:00    12:00: 6, 12:05: 4    12:04      5     late, allowed: recompute queued
+//	Pass                              (same)                12:04      6     the whole bucket
+//	Produce 2    12:00:50     12:00    12:00: 8, 12:05: 4    12:04      6
+//	Pass                              (same)                12:04      8
+func TestSimulate_ALateRowRecomputesTheBucket(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	decl := windowDecl()
+	decl.Lateness = 10 * time.Minute
+	r := RunWindowed(t, []int32{0}, decl, []Step{
+		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
+		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
+		Pass{},
+		Produce{Partition: 0, Rows: 1, At: base.Add(45 * time.Second)},
+		Pass{},
+		Produce{Partition: 0, Rows: 2, At: base.Add(50 * time.Second)},
+		Pass{},
+	})
+	assert.Equal(t, 12, r.Produced)
+	assert.Equal(t, int64(8), r.LastValue[base])
+	assert.Equal(t, int64(0), r.LateRefused)
+	assert.Equal(t, int64(2), r.Recomputes)
+	// The bucket is retained: its rows are still in the table.
+	assert.Equal(t, int64(12), r.StillOpen)
+}
+
+// Beyond lateness a late row is refused even though the watermark has only
+// just passed: 12:00 ended at 12:01, the lateness is two minutes, and the
+// assertion is 12:04, so 12:01 + 2m = 12:03 <= 12:04 had already expired it.
+func TestSimulate_ALateRowBeyondLatenessIsRefused(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	decl := windowDecl()
+	decl.Lateness = 2 * time.Minute
+	r := RunWindowed(t, []int32{0}, decl, []Step{
+		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
+		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
+		Pass{},
+		Produce{Partition: 0, Rows: 1, At: base.Add(45 * time.Second)},
+	})
+	assert.Equal(t, int64(1), r.LateRefused)
+	assert.Equal(t, int64(5), r.LastValue[base])
+	assert.Equal(t, int64(0), r.Recomputes)
+	// And the pass purged the expired bucket: only 12:05 is left.
+	assert.Equal(t, int64(4), r.StillOpen)
+}
+
+// Three late rows for one bucket before the next pass, one recompute.
+func TestSimulate_ABurstOfLateRowsIsOneRecompute(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	decl := windowDecl()
+	decl.Lateness = 10 * time.Minute
+	r := RunWindowed(t, []int32{0}, decl, []Step{
+		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
+		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
+		Pass{},
+		Produce{Partition: 0, Rows: 1, At: base.Add(40 * time.Second)},
+		Produce{Partition: 0, Rows: 1, At: base.Add(41 * time.Second)},
+		Produce{Partition: 0, Rows: 1, At: base.Add(42 * time.Second)},
+		Pass{},
+	})
+	assert.Equal(t, int64(8), r.LastValue[base])
+	assert.Equal(t, int64(1), r.Recomputes)
+}
+
+// A late row committed, then a restart before the manager passed: the
+// recompute set was in memory and is gone, but the rows are in the table,
+// and the start pass republishes every retained bucket, so the exact value
+// still reaches the sink.
+func TestSimulate_ARecomputeSurvivesARestart(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	decl := windowDecl()
+	decl.Lateness = 10 * time.Minute
+	r := RunWindowed(t, []int32{0}, decl, []Step{
+		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
+		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
+		Pass{},
+		Produce{Partition: 0, Rows: 1, At: base.Add(45 * time.Second)},
+		Restart{},
+		StartPass{}, // what Start does first
+	})
+	assert.Equal(t, int64(6), r.LastValue[base])
+}
+
+// The kick follows the commit: with the manager's loop running, a produce
+// that moves the watermark publishes without any Pass step.
+func TestSimulate_TheKickFollowsTheCommit(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	r := RunWindowedDriven(t, []int32{0}, windowDecl(), []Step{
+		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
+		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
+		AwaitPublished{Rows: 5},
+	})
+	assert.Equal(t, int64(5), r.Published)
+	assert.Equal(t, int64(4), r.StillOpen)
+	assert.Equal(t, int64(5), r.LastValue[base])
 }
 
 // Two partitions, one lagging in event time.
@@ -133,13 +228,13 @@ func TestSimulate_ARowForAClosedBucketIsDropped(t *testing.T) {
 //	Produce 3     p1    12:00:30     12:00    12:00: 6            11:59:30
 //	Produce 4     p0    12:05:00     12:05    12:00: 6, 12:05: 4  11:59:30
 //	                ^ p0 alone races five minutes ahead; the minimum is p1's
-//	Poll                                      (same)              11:59:30   nothing closes
+//	Pass                                      (same)              11:59:30   nothing closes
 //	Produce 5     p1    12:00:45     12:00    12:00: 11, 12:05: 4 11:59:45
 //	                ^ p1's share of the bucket, and it is not late
-//	Poll                                      (same)              11:59:45   still open
+//	Pass                                      (same)              11:59:45   still open
 //	Produce 1     p1    12:05:00     12:05    12:00: 11, 12:05: 5 12:04
 //	                ^ p1 catches up; the minimum follows
-//	Poll                                      12:05: 5            12:04      12:00 publishes 11
+//	Pass                                      12:05: 5            12:04      12:00 publishes 11
 func TestSimulate_AFastPartitionHoldsForTheSlowOne(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0, 1}, windowDecl(), []Step{
@@ -148,19 +243,19 @@ func TestSimulate_AFastPartitionHoldsForTheSlowOne(t *testing.T) {
 		Produce{Partition: 1, Rows: 3, At: base.Add(30 * time.Second)},
 		// Partition 0 races five minutes ahead in event time.
 		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
-		Poll{},
+		Pass{},
 		// Partition 1 is still delivering its own share of the early bucket.
 		Produce{Partition: 1, Rows: 5, At: base.Add(45 * time.Second)},
-		Poll{},
+		Pass{},
 		// And catches up, which is what closes the bucket both filled.
 		Produce{Partition: 1, Rows: 1, At: base.Add(5 * time.Minute)},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 16, r.Produced)
 	assert.Equal(t, int64(11), r.Published)
 	assert.Equal(t, int64(5), r.StillOpen)
-	assert.Equal(t, int64(0), r.LateDropped)
+	assert.Equal(t, int64(0), r.LateRefused)
 	assert.Equal(t, 0, r.Republished)
 }
 
@@ -175,13 +270,13 @@ func TestSimulate_AFastPartitionHoldsForTheSlowOne(t *testing.T) {
 //	                 engine cannot place an event time ahead of its own
 //	                 clock, so the record never reaches the handler, never
 //	                 enters the table, and never reaches the watermark.
-//	Poll         -              -             12:00: 5       11:59:30
+//	Pass         -              -             12:00: 5       11:59:30
 //	Produce 7    12:01:30       12:01         12:00: 5, 12:01: 7   12:00:30
 //	               ^ the stream carries on where it actually is, and it is
 //	                 not late, because nothing moved
-//	Poll, Elapse 30s, IdleTick                                12:02:30
+//	Pass, Elapse 30s, IdleTick                                12:02:30
 //	               ^ idle: newest 12:01:30 + 1m
-//	Poll                                      empty          12:02:30
+//	Pass                                      empty          12:02:30
 //	               ^ both buckets publish, all 12 rows. The bad record cost
 //	                 the pipeline exactly itself.
 //
@@ -195,21 +290,22 @@ func TestSimulate_AFastPartitionHoldsForTheSlowOne(t *testing.T) {
 // The record is refused before the handler, not held in the table: it is
 // not late, because no earlier publication of its bucket exists to amend,
 // and it is not open, because no watermark this engine computes will reach
-// it. Unplaceable, so discarded, and counted in messages_unplaceable_total.
+// it. Unplaceable, so discarded, and counted in messages_unplaceable_total,
+// not as late: it never had a bucket to be late for.
 func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
 		// One row from a device that thinks it is 2099.
 		Produce{Partition: 0, Rows: 1, At: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)},
-		Poll{},
+		Pass{},
 		// The stream carries on where it actually is.
 		Produce{Partition: 0, Rows: 7, At: base.Add(90 * time.Second)},
-		Poll{},
-		// A close at the end, so late collection has certainly happened.
+		Pass{},
+		// A close at the end, so every honest bucket has published.
 		Elapse{By: 30 * time.Second},
 		IdleTick{},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 13, r.Produced)
@@ -217,7 +313,8 @@ func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {
 	// dishonest one, refused before it could reach the table.
 	assert.Equal(t, int64(12), r.Published)
 	assert.Equal(t, int64(0), r.StillOpen)
-	assert.Equal(t, int64(1), r.LateDropped)
+	assert.Equal(t, int64(1), r.Unplaceable)
+	assert.Equal(t, int64(0), r.LateRefused)
 }
 
 // Replay: the same rows delivered twice.
@@ -236,7 +333,7 @@ func TestSimulate_APoisonTimestampClosesEveryBucket(t *testing.T) {
 //	                                                             event times
 //	Produce 4  12:05:00  ->  12:05: 4           Produce 4  ->  12:05: 4
 //	                                            Produce 4  ->  12:05: 8
-//	Poll       publishes 12:00, 5 rows          Poll       ->  publishes 10
+//	Pass       publishes 12:00, 5 rows          Poll       ->  publishes 10
 //
 // The engine has no record identity, so a replayed row is simply a new row
 // and the bucket's value doubles. Dedupe on an observation id is what closes
@@ -246,7 +343,7 @@ func TestSimulate_ReplayingEveryRowPublishesTheSameTotals(t *testing.T) {
 	once := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
 		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
-		Poll{},
+		Pass{},
 	})
 
 	twice := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -256,7 +353,7 @@ func TestSimulate_ReplayingEveryRowPublishesTheSameTotals(t *testing.T) {
 		Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
 		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
 		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
-		Poll{},
+		Pass{},
 	})
 
 	// The engine has no record identity, so a replayed row is a new row and
