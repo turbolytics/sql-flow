@@ -15,6 +15,8 @@
 package activity
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"sync/atomic"
 	"time"
 )
@@ -22,6 +24,8 @@ import (
 // Clock is one process's start and its most recent work.
 type Clock struct {
 	start time.Time
+	// id names this start. See ProcessID.
+	id string
 	// last is nanoseconds from start to the most recent Mark, plus one, so
 	// zero means no work yet.
 	last atomic.Int64
@@ -35,7 +39,7 @@ type Clock struct {
 // one whose monotonic reading was stripped: t.UTC() strips it, and the run
 // command once did exactly that.
 func Start() *Clock {
-	c := &Clock{start: time.Now()}
+	c := &Clock{start: time.Now(), id: newProcessID()}
 	c.elapsed = func() time.Duration { return time.Since(c.start) }
 	return c
 }
@@ -43,13 +47,28 @@ func Start() *Clock {
 // Fake is a clock whose elapsed time the caller supplies. It is for tests in
 // other packages, which cannot wait for the monotonic clock to move.
 func Fake(elapsed func() time.Duration) *Clock {
-	return &Clock{start: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), elapsed: elapsed}
+	return &Clock{start: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), id: newProcessID(), elapsed: elapsed}
 }
 
 // StartedAt is the start as wall time, for display. Never subtract it from
 // another wall reading: that is the arithmetic this package exists to
 // replace.
 func (c *Clock) StartedAt() time.Time { return c.start.UTC() }
+
+// ProcessID is 16 random bytes, hex-encoded, drawn when the clock started. It
+// tells two processes apart where StartedAt cannot: two gateways that boot
+// near 1970, or two replicas of one config started in the same second, share
+// a start time. An OS process id is no substitute: it repeats across boots,
+// and in a container it is usually 1.
+func (c *Clock) ProcessID() string { return c.id }
+
+// newProcessID draws a ProcessID. crypto/rand never fails and always fills
+// the buffer, so there is no error to handle.
+func newProcessID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
 
 // Mark records work now. It is safe on a nil Clock, so a caller built without
 // one does not have to check.

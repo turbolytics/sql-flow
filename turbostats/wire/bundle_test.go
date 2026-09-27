@@ -223,3 +223,24 @@ func TestBundle_AStandbyAndAnEmptyTableSayOnlyWhatIsKnown(t *testing.T) {
 		t.Fatalf("an empty table is %s", got)
 	}
 }
+
+// process.id is omitempty: an engine that predates it sends no key, and a
+// receiver falls back to started_at.
+func TestProcess_IDIsAbsentUntilSet(t *testing.T) {
+	var with, without struct {
+		Process map[string]any `json:"process"`
+	}
+	id := "0123456789abcdef0123456789abcdef"
+	if err := json.Unmarshal([]byte(mustMarshal(t, Bundle{V: Version, Process: Process{ID: id}})), &with); err != nil {
+		t.Fatal(err)
+	}
+	if with.Process["id"] != id {
+		t.Fatalf("process.id is %v, want %s", with.Process["id"], id)
+	}
+	if err := json.Unmarshal([]byte(mustMarshal(t, Bundle{V: Version})), &without); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := without.Process["id"]; ok {
+		t.Fatalf("an unset process.id is present: %v", without.Process)
+	}
+}

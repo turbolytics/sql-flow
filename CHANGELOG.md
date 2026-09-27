@@ -101,6 +101,14 @@
 
 ### Added
 
+- TurboStats bundles carry `process.id`: 16 random bytes, hex-encoded,
+  drawn once when the process starts. Every bundle a process sends carries
+  it, the final one included, and a restart draws a new one. A receiver can
+  tell two processes apart when `instance.id` and `process.started_at`
+  agree: two gateways that boot near 1970, or two replicas of one config
+  started in the same second. The field is optional in v1; a receiver falls
+  back to `started_at` when it is absent.
+
 - `sqlflow rollup test -c rollups.yml --dsn DSN` checks a rollups file on
   a real Postgres before it ships. It clones each source into a schema it
   creates, installs the rollups there, and writes a seeded workload through

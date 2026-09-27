@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"github.com/zeebo/assert"
@@ -299,4 +300,41 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatal("condition never held")
+}
+
+// Every bundle a process sends names it with one id, the final one
+// included, so a receiver files the exit under the process that sent the
+// heartbeats.
+func TestReporter_EveryBundleCarriesTheProcessID(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.reporter")
+	rc := newReceiver()
+	srv := httptest.NewServer(rc)
+	defer srv.Close()
+	reader, _, _ := provider(t)
+	src := runSource(reader, nil)
+	clock := activity.Start()
+	src.Static.Clock = clock
+
+	r, err := NewReporter(ReporterConfig{
+		ReportTo: srv.URL, Key: testKey(t), Interval: 5 * time.Millisecond,
+		Collect: func(ctx context.Context) (Bundle, error) { return Collect(ctx, src) },
+		Log:     zap.NewNop(),
+	})
+	assert.NoError(t, err)
+	stop := StartReporter(context.Background(), r)
+	waitFor(t, func() bool { return rc.count() >= 2 })
+	stop(context.Background(), Exit{Reason: "SIGTERM"})
+
+	rc.mu.Lock()
+	bodies := append([][]byte(nil), rc.bodies...)
+	rc.mu.Unlock()
+	for _, body := range bodies {
+		var b Bundle
+		assert.NoError(t, json.Unmarshal(body, &b))
+		assert.Equal(t, 32, len(b.Process.ID))
+		assert.Equal(t, clock.ProcessID(), b.Process.ID)
+	}
+	var last Bundle
+	assert.NoError(t, json.Unmarshal(bodies[len(bodies)-1], &last))
+	assert.That(t, last.Exit != nil)
 }

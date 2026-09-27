@@ -492,6 +492,7 @@ func TestCollect_NoClockSendsNoDurations(t *testing.T) {
 	assert.NoError(t, err)
 	assert.That(t, b.Process.UptimeSeconds == nil)
 	assert.That(t, b.IdleSeconds == nil)
+	assert.Equal(t, "", b.Process.ID)
 }
 
 // The contract a receiver relies on: idle is at most uptime in every
@@ -832,4 +833,26 @@ func TestCollect_ARollupSourceFillsBothSections(t *testing.T) {
 	b, err = Collect(context.Background(), src)
 	assert.NoError(t, err)
 	assert.That(t, b.Rollup == nil && b.Freshness == nil)
+}
+
+// Every bundle from one process names it with its clock's id, and a
+// restart, which is a new clock, is a new id.
+func TestCollect_TheProcessIDIsTheClocks(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	src := runSource(reader, nil)
+	clock := activity.Start()
+	src.Static.Clock = clock
+
+	first, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	second, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.Equal(t, clock.ProcessID(), first.Process.ID)
+	assert.Equal(t, first.Process.ID, second.Process.ID)
+
+	src.Static.Clock = activity.Start()
+	restarted, err := Collect(context.Background(), src)
+	assert.NoError(t, err)
+	assert.NotEqual(t, first.Process.ID, restarted.Process.ID)
 }

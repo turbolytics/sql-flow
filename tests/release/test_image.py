@@ -1441,6 +1441,64 @@ def test_turbostats_endpoint_serves_the_bundle(image, stack):
     assert "pipeline" not in bundle["instance"]
 
 
+def _turbostats_process_id(container, timeout=90):
+    """The process.id the container's /turbostats/v1 reports, once it
+    answers. The port is looked up on every try: a restarted container can
+    come back on another host port."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            port = container.get_exposed_port(8000)
+            resp = requests.get(f"http://localhost:{port}/turbostats/v1", timeout=5)
+            if resp.status_code == 200:
+                return resp.json()["process"]["id"]
+        except (requests.RequestException, ConnectionError):
+            pass
+        if time.time() > deadline:
+            raise AssertionError(f"/turbostats/v1 did not answer within {timeout}s")
+        time.sleep(0.5)
+
+
+@pytest.mark.covers("observability.turbostats")
+def test_turbostats_process_id_is_one_per_start(image, stack):
+    """The shipped binary names each start with a random process.id: the
+    same in every bundle of one process, and new after a restart.
+
+    Driven through a real restart because the property is about the process,
+    not the bundle: an id kept in the state directory, or drawn per bundle,
+    would pass a unit test and fail here. Control tells processes apart by it
+    when two share instance.id and started_at.
+    """
+    topic = f"turbostats-pid-{int(time.time())}"
+
+    with container_writable_dir() as state_dir:
+        container = DockerContainer(image) \
+            .with_volume_mapping(settings.DEV_DIR, "/tmp/conf") \
+            .with_volume_mapping(state_dir, "/state", "rw") \
+            .with_env("SQLFLOW_KAFKA_BROKERS", "kafka:9092") \
+            .with_env("SQLFLOW_STATE_PATH", "/state/state.db") \
+            .with_env("SQLFLOW_TOPIC", topic) \
+            .with_env("SQLFLOW_GROUP_ID", topic) \
+            .with_exposed_ports(8000) \
+            .with_network(stack.network) \
+            .with_command(
+                "run /tmp/conf/config/examples/kafka.stateful.window.yml --turbostats")
+        container.start()
+        try:
+            wait_for_logs(container, "consumer loop starting", timeout=90)
+            first = _turbostats_process_id(container)
+            again = _turbostats_process_id(container)
+            container.get_wrapped_container().restart(timeout=10)
+            restarted = _turbostats_process_id(container)
+        finally:
+            container.stop()
+
+    assert len(first) == 32 and all(c in "0123456789abcdef" for c in first), first
+    assert again == first
+    assert restarted != first
+    assert len(restarted) == 32
+
+
 @pytest.mark.covers("observability.turbostats")
 def test_turbostats_bundle_reports_consumer_lag(image, stack):
     """A Kafka pipeline's bundle says how far behind it is.

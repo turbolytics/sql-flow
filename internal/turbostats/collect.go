@@ -64,6 +64,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	if s.Clock != nil {
 		uptime, idle, worked := s.Clock.Read()
 		up := int64(uptime / time.Second)
+		b.Process.ID = s.Clock.ProcessID()
 		b.Process.UptimeSeconds = &up
 		if worked {
 			i := int64(idle / time.Second)
