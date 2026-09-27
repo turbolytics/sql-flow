@@ -555,6 +555,22 @@ func (r *run) deliver(p int32, ids []int64) {
 	})
 	r.await(fmt.Sprintf("the loop to commit %d batches of partition %d", accepted, p),
 		func() bool { return int(r.tb.Commits()) >= commitsBefore+accepted })
+
+	// And the offsets. The loop commits state first and the source's position
+	// second, on purpose: a crash between the two replays the batch rather
+	// than losing it. Commits() counts the first, so a step that returned here
+	// could Restart before the second had reached the group, and the new
+	// worker would replay the batch -- one extra row, once, on a loaded
+	// machine. ARecomputeSurvivesARestart read 7 for 6 in CI that way. A batch
+	// is finished when the group holds its position, so that is what this
+	// waits for. Refused records are marked too, so the position moves past
+	// them; a batch that accepted nothing made no commit to wait on, and its
+	// position reaches the group with the next one or on the drain.
+	if accepted > 0 {
+		end := from + int64(len(batch))
+		r.await(fmt.Sprintf("the group to hold partition %d committed through offset %d", p, end),
+			func() bool { next, _ := r.coord.uncommitted(p); return next >= end })
+	}
 }
 
 // await blocks until cond holds, and says what it was waiting for when it

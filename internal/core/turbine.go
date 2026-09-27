@@ -97,6 +97,29 @@ var eventTimeFloorNanos = EventTimeFloor.UnixNano()
 // is not one a watermark should rest on either.
 var EventTimeFloor = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// EventTimeCeiling is how far ahead of this host's clock an event time may be
+// and still be believed. Beyond it the producer's clock is wrong; within it
+// the two clocks merely disagree, which is the normal condition of two
+// correctly run hosts.
+//
+// It exists because zero tolerance refused real data. The Bluesky demo on
+// v2026.09.27 dropped 82% of posts -- 9,739 of 11,873 in ninety seconds --
+// because Jetstream's timestamps arrived a few milliseconds ahead of the
+// consumer's clock. A stamp is written upstream and read downstream, so it is
+// ahead whenever the producer's clock leads the consumer's by more than the
+// transit between them, and a few milliseconds of NTP disagreement does that
+// for any producer in the same region. Nothing was wrong with the data, the
+// clocks, or the pipeline.
+//
+// A minute is the number this repository already used for the same judgement,
+// in the Render template's SQL: `ts <= now() + INTERVAL '60 seconds'`. It is
+// far wider than clock disagreement between synchronised hosts and far
+// narrower than the failure the floor and this ceiling exist for, a device
+// that believes it is 2099 (#358). A window's own grace is unrelated: that
+// bounds how far out of order a stream arrives, in the stream's clock, and
+// says nothing about whether to believe the stream's clock at all.
+const EventTimeCeiling = time.Minute
+
 // EventTimeMissing is the EventAtNanos of a record from a source that assigns
 // event time but found none usable on this record: the configured field is
 // absent, the wrong type, or unparseable. It is distinct from zero, which is
@@ -534,13 +557,14 @@ func WithWatermarkWriteInterval(d time.Duration) TurbineOption {
 }
 
 // WithEventTimePlacement refuses a message whose event time this engine
-// cannot place: before EventTimeFloor, or ahead of the engine's own clock.
+// cannot place: before EventTimeFloor, or more than EventTimeCeiling ahead of
+// the engine's own clock.
 //
 // On for a pipeline that windows. A window rests on event time, and one
 // record stamped in the future otherwise drags the watermark past real time
 // and makes every correctly stamped row after it late, which refuses them:
-// one device with a fast clock empties a fleet's stream (#358). A pipeline with no window has nothing for such a record to damage,
-// so it keeps it.
+// one device with a fast clock empties a fleet's stream (#358). A pipeline
+// with no window has nothing for such a record to damage, so it keeps it.
 //
 // Refused here rather than in the window manager on purpose. The manager
 // decides on event time against the watermark, in one domain, and
@@ -1106,7 +1130,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// Below the floor is a record with no usable timestamp, or a
 			// clock that never learned the date; see eventTimeFloorNanos.
 			//
-			// After now is a clock ahead of this host's, not a pipeline
+			// Past the ceiling is a clock ahead of this host's, not a pipeline
 			// ahead of its stream. A Kafka record carries the producer's
 			// clock unless the topic sets LogAppendTime, so one fast device
 			// in a fleet can win "newest" for the whole batch. Taking it and
@@ -2051,7 +2075,8 @@ func (t *Turbine) flushObservations() {
 }
 
 // canPlace reports whether an event time is one this engine can put somewhere
-// in event time: at or after EventTimeFloor, and not ahead of its own clock.
+// in event time: at or after EventTimeFloor, and no further ahead of its own
+// clock than EventTimeCeiling.
 //
 // A source that stamps nothing leaves the field zero, which is below the
 // floor. Such a pipeline has no event time to window on, so refusing its
@@ -2073,11 +2098,16 @@ func (t *Turbine) canPlace(atNanos, nowNanos int64) bool {
 // CanPlace is the placement rule itself, exported so a harness can predict
 // what the engine will refuse with the engine's own code rather than a copy
 // of it. Zero -- a source that stamps nothing -- is placeable; see canPlace.
+//
+// The window is [EventTimeFloor, now + EventTimeCeiling]. The ceiling is not
+// zero on purpose: a stamp written upstream and read downstream is ahead of
+// the reader's clock whenever the writer's leads it, which ordinary clock
+// disagreement produces without anything being wrong. See EventTimeCeiling.
 func CanPlace(atNanos, nowNanos int64) bool {
 	if atNanos == 0 {
 		return true
 	}
-	return atNanos >= eventTimeFloorNanos && atNanos <= nowNanos
+	return atNanos >= eventTimeFloorNanos && atNanos <= nowNanos+int64(EventTimeCeiling)
 }
 
 // noteUnplaceable counts a refused record and logs the condition once per
@@ -2093,5 +2123,7 @@ func (t *Turbine) noteUnplaceable(atNanos int64, now time.Time) {
 	t.logger.Warn("refusing records whose event time this engine cannot place",
 		zap.Time("event_time", time.Unix(0, atNanos).UTC()),
 		zap.Time("engine_clock", now.UTC()),
-		zap.Time("floor", EventTimeFloor))
+		zap.Time("floor", EventTimeFloor),
+		zap.Time("ceiling", now.UTC().Add(EventTimeCeiling)),
+		zap.Duration("ahead_by", time.Unix(0, atNanos).Sub(now)))
 }
