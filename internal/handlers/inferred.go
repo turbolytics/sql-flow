@@ -35,6 +35,9 @@ type InferredMemBatchHandler struct {
 	// Parallel to rawBatch, populated only when the source supplies
 	// provenance; empty for sources that do not.
 	metadata []core.Message
+	// exposesEventTime is whether the batch gains an event_time column; off,
+	// the batch's shape is what it was before the column existed.
+	exposesEventTime bool
 
 	alloc      memory.Allocator
 	conn       adbc.Connection
@@ -79,6 +82,12 @@ func NewInferredMemBatchHandler(
 
 type InferredMemBatchHandlerOption func(*InferredMemBatchHandler)
 
+// InferredMemBatchWithEventTime adds the event_time column to the batch
+// when any record carries an assigned time; see handlers.WithEventTime.
+func InferredMemBatchWithEventTime(on bool) InferredMemBatchHandlerOption {
+	return func(h *InferredMemBatchHandler) { h.exposesEventTime = on }
+}
+
 func InferredMemBatchWithLogger(l *zap.Logger) InferredMemBatchHandlerOption {
 	return func(h *InferredMemBatchHandler) {
 		h.logger = l
@@ -115,19 +124,21 @@ func (h *InferredMemBatchHandler) Write(r []byte) error {
 	return nil
 }
 
-// WriteMessage buffers a message along with its source metadata, which Invoke
-// exposes as kafka_topic / kafka_partition / kafka_offset columns.
+// WriteMessage buffers a message along with what the source said about it,
+// which Invoke exposes as columns: kafka_topic / kafka_partition /
+// kafka_offset where the source supplied provenance, and event_time where it
+// assigned the record a time.
 func (h *InferredMemBatchHandler) WriteMessage(msg core.Message) error {
 	if err := h.Write(msg.Value); err != nil {
 		return err
 	}
-	if msg.HasMetadata() {
-		// Kept positionally against rawBatch, which Write just appended to.
-		for len(h.metadata) < len(h.rawBatch)-1 {
-			h.metadata = append(h.metadata, core.Message{})
-		}
-		h.metadata = append(h.metadata, msg)
+	// Kept positionally against rawBatch, which Write just appended to. A
+	// message that carries nothing is kept too, as a zero value, so the
+	// columns Invoke decides to add line up with the rows.
+	for len(h.metadata) < len(h.rawBatch)-1 {
+		h.metadata = append(h.metadata, core.Message{})
 	}
+	h.metadata = append(h.metadata, msg)
 	return nil
 }
 
@@ -164,7 +175,7 @@ func (h *InferredMemBatchHandler) Invoke(ctx context.Context) (arrow.Table, erro
 	if err != nil {
 		return nil, fmt.Errorf("schema inference: %w", err)
 	}
-	schema = withMetadataFields(schema, len(meta) > 0)
+	schema = withMetadataFields(schema, anyMetadata(meta), h.exposesEventTime && anyEventTime(meta))
 
 	record, err := buildRecord(h.alloc, schema, raw, meta)
 	if err != nil {
@@ -497,23 +508,67 @@ func promoteType(current, next arrow.DataType) (arrow.DataType, error) {
 
 // buildRecord extracts each message directly into Arrow builders with
 // jsonparser, the same zero-copy path StructuredBatch uses.
-// withMetadataFields appends the Kafka provenance columns the Python engine
-// injects into each row, so handler SQL can reference them.
-func withMetadataFields(schema *arrow.Schema, withMetadata bool) *arrow.Schema {
-	if !withMetadata {
+// EventTimeColumn is the column a handler exposes a record's assigned event
+// time as: the Kafka record timestamp, a websocket frame's configured field,
+// or arrival for a source with nothing better. TIMESTAMPTZ, so it is an
+// instant and not a reading in the session's zone.
+//
+// A window's time_column must be derived from it. The watermark rests on
+// the assigned time; a bucket cut from some other field in the payload is
+// on a different clock, and the one closes the other on evidence about the
+// wrong stream. sqlflow validate refuses a windowing pipeline whose handler
+// SQL does not read this column.
+const EventTimeColumn = "event_time"
+
+// EventTimeType is the Arrow type of EventTimeColumn: microseconds, in UTC,
+// which ADBC ingests as a DuckDB TIMESTAMPTZ.
+var EventTimeType = &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}
+
+// withMetadataFields appends the columns the source's word about each record
+// becomes: the Kafka provenance columns the Python engine injected, and the
+// assigned event time. Each only where some record in the batch carries it,
+// so a plain pipeline's batch table is unchanged.
+func withMetadataFields(schema *arrow.Schema, withMetadata, withEventTime bool) *arrow.Schema {
+	if !withMetadata && !withEventTime {
 		return schema
 	}
 	fields := append([]arrow.Field{}, schema.Fields()...)
-	fields = append(fields,
-		arrow.Field{Name: "kafka_topic", Type: arrow.BinaryTypes.String, Nullable: true},
-		arrow.Field{Name: "kafka_partition", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
-		arrow.Field{Name: "kafka_offset", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
-	)
+	if withMetadata {
+		fields = append(fields,
+			arrow.Field{Name: "kafka_topic", Type: arrow.BinaryTypes.String, Nullable: true},
+			arrow.Field{Name: "kafka_partition", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+			arrow.Field{Name: "kafka_offset", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		)
+	}
+	if withEventTime {
+		fields = append(fields, arrow.Field{Name: EventTimeColumn, Type: EventTimeType, Nullable: true})
+	}
 	return arrow.NewSchema(fields, nil)
 }
 
 func isMetadataField(name string) bool {
-	return name == "kafka_topic" || name == "kafka_partition" || name == "kafka_offset"
+	return name == "kafka_topic" || name == "kafka_partition" || name == "kafka_offset" || name == EventTimeColumn
+}
+
+func anyMetadata(meta []core.Message) bool {
+	for _, m := range meta {
+		if m.HasMetadata() {
+			return true
+		}
+	}
+	return false
+}
+
+// anyEventTime reports whether any record was assigned a time. The missing
+// sentinel does not count: a source that assigns but found nothing on a
+// record leaves that row null, and a batch of only such rows adds no column.
+func anyEventTime(meta []core.Message) bool {
+	for _, m := range meta {
+		if m.EventAtNanos > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func buildRecord(alloc memory.Allocator, schema *arrow.Schema, msgs [][]byte, meta []core.Message) (arrow.Record, error) {
@@ -554,20 +609,39 @@ func buildRecord(alloc memory.Allocator, schema *arrow.Schema, msgs [][]byte, me
 	return array.NewRecord(schema, arrays, int64(len(msgs))), nil
 }
 
-// appendMetadataValue fills a provenance column, leaving it null for any row
-// whose source did not supply metadata.
+// appendMetadataValue fills a column the source's word became, leaving it
+// null for any row whose source did not supply that part.
 func appendMetadataValue(b array.Builder, name string, meta []core.Message, row int) {
-	if row >= len(meta) || !meta[row].HasMetadata() {
+	if row >= len(meta) {
 		b.AppendNull()
 		return
 	}
-
+	m := meta[row]
+	if name == EventTimeColumn {
+		appendEventTime(b, m.EventAtNanos)
+		return
+	}
+	if !m.HasMetadata() {
+		b.AppendNull()
+		return
+	}
 	switch name {
 	case "kafka_topic":
-		b.(*array.StringBuilder).Append(meta[row].Topic)
+		b.(*array.StringBuilder).Append(m.Topic)
 	case "kafka_partition":
-		b.(*array.Int32Builder).Append(meta[row].Partition)
+		b.(*array.Int32Builder).Append(m.Partition)
 	case "kafka_offset":
-		b.(*array.Int64Builder).Append(meta[row].Offset)
+		b.(*array.Int64Builder).Append(m.Offset)
 	}
+}
+
+// appendEventTime writes an assigned event time as microseconds, and null for
+// a record that has none: zero from a source that assigns nothing, or the
+// missing sentinel from one that found nothing usable on this record.
+func appendEventTime(b array.Builder, atNanos int64) {
+	if atNanos <= 0 {
+		b.AppendNull()
+		return
+	}
+	b.(*array.TimestampBuilder).Append(arrow.Timestamp(atNanos / 1000))
 }
