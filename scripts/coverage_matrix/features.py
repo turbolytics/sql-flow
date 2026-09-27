@@ -10,7 +10,8 @@ from .suites import parent
 
 
 def build(features, go_results, py_results, go_covers=None, py_covers=None,
-          it_results=None, it_covers=None):
+          it_results=None, it_covers=None, growth_results=None,
+          growth_covers=None):
     """Attribute tests to features, by marker and only by marker.
 
     A test used to attribute to the feature whose id its name happened to
@@ -33,6 +34,7 @@ def build(features, go_results, py_results, go_covers=None, py_covers=None,
     for level, results, extras in (
         ("unit", go_results, go_covers or {}),
         ("integration", it_results or {}, it_covers or {}),
+        ("growth", growth_results or {}, growth_covers or {}),
         ("release", py_results, py_covers or {}),
     ):
         for name, outcome in sorted(results.items()):

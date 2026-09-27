@@ -22,12 +22,14 @@ FEATURES = [
 ]
 
 def snap(go_results=None, py_results=None, go_covers=None, py_covers=None,
-         integration_results=None, integration_covers=None, features=None):
+         integration_results=None, integration_covers=None, features=None,
+         growth_results=None, growth_covers=None):
     features = features or FEATURES
     coverage, secondary, unmatched, unknown = build(
         features, go_results or {}, py_results or {},
         go_covers or {}, py_covers or {},
-        integration_results or {}, integration_covers or {})
+        integration_results or {}, integration_covers or {},
+        growth_results or {}, growth_covers or {})
     return snapshot(features, coverage, secondary, unmatched, unknown)
 
 def level(s, feature_id, lvl):

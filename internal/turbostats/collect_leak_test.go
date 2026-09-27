@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/growth"
 	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/zeebo/assert"
@@ -37,14 +38,14 @@ func liveHeap() int64 {
 // A reporter collects for weeks and a control plane may poll the route every
 // second, so a leak here is linear in collects rather than in messages. A
 // twenty-minute soak sees about a thousand of them and cannot tell 0.05 MiB a
-// minute from its own noise. This runs fifty thousand, which is five weeks of
-// a minute interval, over every attributed series the bundle summarizes: 32
-// lag partitions, two windows, late rows under both policies, and two sinks.
-//
-// It does not skip under -short. CI runs only -short and TestIntegration, so
-// a skip here would be a test nothing ever runs.
-func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
+// minute from its own noise. A bounded growth run makes fifty thousand, five
+// weeks of a minute interval, and a full one a quarter million, about six
+// months; see package growth. Each collect reads every attributed series the
+// bundle summarizes: 32 lag partitions, two windows, late rows under both
+// policies, and two sinks.
+func TestGrowthCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
+	growth.Check(t)
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -70,7 +71,8 @@ func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 	sinks.RetryCounter(mp, "kafka")(1, failed)
 
 	src := runSource(reader, nil)
-	const warmup, iters = 5_000, 50_000
+	const warmup = 5_000
+	iters := growth.Budget(t, 50_000, 250_000)
 	for i := 0; i < warmup; i++ {
 		_, err := Collect(ctx, src)
 		assert.NoError(t, err)
@@ -88,13 +90,13 @@ func TestCollect_DoesNotGrowOverManyCollects(t *testing.T) {
 	}
 	after := liveHeap()
 
-	growth := after - before
+	grew := after - before
 	t.Logf("live heap %d KiB before, %d KiB after %d collects: %+d KiB",
-		before>>10, after>>10, iters, growth>>10)
-	// Retaining one summary a collect is 160 bytes each, 7.6 MiB here. The
-	// live heap after a collection moves by kilobytes.
+		before>>10, after>>10, iters, grew>>10)
+	// Retaining one summary a collect is 160 bytes each, 7.6 MiB over fifty
+	// thousand. The live heap after a collection moves by kilobytes.
 	const limit = 1 << 20
-	if growth > limit {
-		t.Fatalf("process grew %d KiB over %d collects; Collect is retaining memory", growth>>10, iters)
+	if grew > limit {
+		t.Fatalf("process grew %d KiB over %d collects; Collect is retaining memory", grew>>10, iters)
 	}
 }

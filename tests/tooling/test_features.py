@@ -110,6 +110,42 @@ def test_a_skipped_integration_test_is_a_gap():
             "status": "skipped"} in s["gaps"]
 
 
+def test_a_growth_result_lands_at_the_growth_level():
+    s = snap(
+        growth_results={"TestGrowthCollect_DoesNotGrow": PASS},
+        growth_covers={"TestGrowthCollect_DoesNotGrow": ["state.durability"]},
+    )
+    assert level(s, "state.durability", "growth")["status"] == "covered"
+    assert level(s, "state.durability", "unit")["status"] == "missing"
+
+
+def test_a_growth_test_skipped_by_the_unit_pass_is_not_unit_coverage():
+    """-short skips every growth check in the unit pass. The growth pass
+    running it for real covers the growth level and nothing else."""
+    name = "TestGrowthCollect_DoesNotGrow"
+    s = snap(
+        go_results={name: SKIP},
+        go_covers={name: ["state.durability"]},
+        growth_results={name: PASS},
+        growth_covers={name: ["state.durability"]},
+        features=[{"id": "state.durability", "description": "state",
+                   "requires": ["unit", "growth"]}],
+    )
+    assert level(s, "state.durability", "unit")["status"] == "skipped"
+    assert level(s, "state.durability", "growth")["status"] == "covered"
+
+
+def test_a_failing_growth_test_is_a_gap():
+    s = snap(
+        growth_results={"TestGrowthCollect_DoesNotGrow": FAIL},
+        growth_covers={"TestGrowthCollect_DoesNotGrow": ["state.durability"]},
+        features=[{"id": "state.durability", "description": "state",
+                   "requires": ["growth"]}],
+    )
+    assert {"feature": "state.durability", "level": "growth",
+            "status": "failing"} in s["gaps"]
+
+
 def test_a_marker_attributes_a_second_feature():
     s = snap(
         py_results={"test_handler_inferred_mem_aggregates": PASS},
@@ -246,6 +282,7 @@ def test_feature_gaps_reads_only_status_and_requires():
         "id": "sink.clickhouse", "requires": ["unit", "release"],
         "levels": {"unit": {"status": "covered"},
                    "integration": {"status": "not_required"},
+                   "growth": {"status": "not_required"},
                    "release": {"status": "skipped"}},
     }]
     assert feature_gaps(entries) == [

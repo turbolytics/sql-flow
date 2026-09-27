@@ -10,66 +10,69 @@ its name, which credited a test whose name merely started the same way
 and credited nothing when a name drifted.
 
 Levels are derived from where a test ran, never declared, so they
-cannot drift. `unit` is `go test -short`, `integration` is the Go
-tests that need a real service, `release` is the image suite. A
-**skipped** test is not coverage at any of them: a skip that reads as
-a pass is how `sink.iceberg` shipped for months without ever being
-written to.
+cannot drift. They run in the order the columns read. `unit` is
+`go test -short` and runs near instantly. `integration` is the Go
+tests that prove the function against a real service. `growth` is the
+Go tests that prove a non-functional property once the function is
+proven: memory does not grow with the work. `release` is the image
+suite. A **skipped** test is not coverage at any of them: a skip that
+reads as a pass is how `sink.iceberg` shipped for months without ever
+being written to.
 
 Only statuses are committed. Test names and counts are in the coverage
 report CI publishes on every run: they change whenever a test is
 added, and this page changes only when a status does.
 
-| Feature | What it does | unit | integration | release |
-| --- | --- | --- | --- | --- |
-| `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | ✅ |
-| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — |
-| `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | ✅ |
-| `source.mqtt` | Consumes MQTT 5 at QoS 1 on a persistent session, acknowledging on commit. | ✅ | ✅ | — |
-| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | ✅ |
-| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | ✅ |
-| `sink.postgres` | Upserts or appends result batches into a Postgres table over a native client. | ✅ | ✅ | — |
-| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | ✅ |
-| `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | ✅ |
-| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — |
-| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | ✅ |
-| `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — |
-| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — |
-| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ |
-| `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — |
-| `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ |
-| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | ✅ |
-| `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | ✅ |
-| `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | ✅ |
-| `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | ✅ |
-| `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | ✅ |
-| `lifecycle.health` | /healthz reports starting, healthy, degraded or failed, with a reason. | ✅ | — | ✅ |
-| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — |
-| `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — |
-| `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — |
-| `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | ✅ |
-| `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | ✅ |
-| `manager.window` | A declared window is closed by the engine against a persisted event-time watermark, with a late-row policy. | ✅ | — | ✅ |
-| `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | ✅ |
-| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | ✅ |
-| `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — |
-| `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — |
-| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — |
-| `observability.turbostats` | Reports the process's own state as one versioned document, served at /turbostats/v1. | ✅ | — | ✅ |
-| `observability.turbostats.serve` | Reports `sqlflow serve`'s totals as the bundle's serve section, served at /turbostats/v1. | ✅ | — | ✅ |
-| `observability.turbostats.reporter` | Posts the process's own state to a control plane on an interval, signed. | ✅ | — | ✅ |
-| `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — |
-| `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — |
-| `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | ✅ |
-| `cli.serve` | Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits. | ✅ | ✅ | ✅ |
-| `cli.turbostats_keygen` | Generates a TurboStats keypair on the instance, writes the private half to a file only, and prints the public half to register. | ✅ | — | — |
-| `cli.rollup` | Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted. | ✅ | ✅ | — |
-| `cli.rollup_run` | Installs, backfills, checks and reports on the rollup tables a rollups file declares. | ✅ | ✅ | ✅ |
-| `cli.rollup_test` | Checks a rollups file on a real Postgres, in a schema it creates and drops, with a seeded workload and fixture cases. | ✅ | ✅ | — |
-| `template.render` | The Deploy to Render template's schema keeps the minute table and every rollup exact when several pipeline processes write to one database. | ⚠️ skipped | ✅ | — |
-| `cli.version` | The shipped binary reports the version it was built from. | — | — | ✅ |
-| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — |
-| `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — |
+| Feature | What it does | unit | integration | growth | release |
+| --- | --- | --- | --- | --- | --- |
+| `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | — | ✅ |
+| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | — |
+| `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | — | ✅ |
+| `source.mqtt` | Consumes MQTT 5 at QoS 1 on a persistent session, acknowledging on commit. | ✅ | ✅ | — | — |
+| `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | — | ✅ |
+| `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | — | ✅ |
+| `sink.postgres` | Upserts or appends result batches into a Postgres table over a native client. | ✅ | ✅ | — | — |
+| `sink.iceberg` | Appends result batches to an Iceberg table through a catalog. | ✅ | — | — | ✅ |
+| `sink.parquet` | Writes result batches as parquet files to a local path. | — | — | — | ✅ |
+| `sink.sqlcommand` | Runs a SQL command against the pipeline's own DuckDB connection. | ✅ | — | — | — |
+| `sink.console` | Writes result rows to stdout as JSON. | ✅ | — | — | ✅ |
+| `sink.noop` | Discards every result row, for measuring the engine without a sink. | ✅ | — | — | — |
+| `sink.retry` | Retries a sink whose destination is not answering, bounded by a deadline. | ✅ | — | — | — |
+| `handler.inferred_mem` | Infers a schema per batch and runs the query in memory. | ✅ | — | ✅ | ✅ |
+| `handler.inferred_disk` | Infers a schema per batch, staging the batch on disk. | ✅ | — | — | — |
+| `handler.structured` | Binds a declared schema, ingesting through Arrow. | ✅ | — | ✅ | ✅ |
+| `state.durability` | Window state and the offsets that produced it commit together. | ✅ | — | — | ✅ |
+| `state.offsets` | Kafka positions are stored in DuckDB and resumed on restart. | ✅ | — | — | ✅ |
+| `state.corruption` | A damaged state file fails the start rather than silently resetting. | ✅ | — | — | ✅ |
+| `lifecycle.drain` | SIGTERM writes the buffered batch before exiting. | ✅ | — | — | ✅ |
+| `lifecycle.exit_codes` | The process exit status carries the error code a supervisor reads. | ✅ | — | — | ✅ |
+| `lifecycle.health` | /healthz reports starting, healthy, degraded or failed, with a reason. | ✅ | — | — | ✅ |
+| `core.consume_loop` | Accumulates a batch, flushes it, and commits in that order. | ✅ | — | — | — |
+| `error.taxonomy` | Every failure carries a class.domain.reason code. | ✅ | — | — | — |
+| `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | — |
+| `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | — | ✅ |
+| `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | — | ✅ |
+| `manager.window` | A declared window is closed by the engine against a persisted event-time watermark, with a late-row policy. | ✅ | — | ✅ | ✅ |
+| `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | — | ✅ |
+| `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | — | ✅ |
+| `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — | — |
+| `validate.schema` | Validates a rendered config against the config JSON Schema, naming the line. | ✅ | — | — | — |
+| `observability.metrics` | Exports pipeline counters and histograms over Prometheus. | ✅ | — | — | — |
+| `observability.turbostats` | Reports the process's own state as one versioned document, served at /turbostats/v1. | ✅ | — | ✅ | ✅ |
+| `observability.turbostats.serve` | Reports `sqlflow serve`'s totals as the bundle's serve section, served at /turbostats/v1. | ✅ | — | ✅ | ✅ |
+| `observability.turbostats.reporter` | Posts the process's own state to a control plane on an interval, signed. | ✅ | — | — | ✅ |
+| `observability.debug_api` | Serves ad-hoc SQL against the live DuckDB connection. | ✅ | — | — | — |
+| `cli.invocation` | Resolves the config path and message limits from either flag form. | ✅ | — | — | — |
+| `cli.dev_invoke` | Runs a pipeline against a fixture file, without a source. | ✅ | — | — | ✅ |
+| `cli.serve` | Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits. | ✅ | ✅ | ✅ | ✅ |
+| `cli.turbostats_keygen` | Generates a TurboStats keypair on the instance, writes the private half to a file only, and prints the public half to register. | ✅ | — | — | — |
+| `cli.rollup` | Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted. | ✅ | ✅ | — | — |
+| `cli.rollup_run` | Installs, backfills, checks and reports on the rollup tables a rollups file declares. | ✅ | ✅ | — | ✅ |
+| `cli.rollup_test` | Checks a rollups file on a real Postgres, in a schema it creates and drops, with a seeded workload and fixture cases. | ✅ | ✅ | — | — |
+| `template.render` | The Deploy to Render template's schema keeps the minute table and every rollup exact when several pipeline processes write to one database. | ⚠️ skipped | ✅ | — | — |
+| `cli.version` | The shipped binary reports the version it was built from. | — | — | — | ✅ |
+| `tooling.conformance` | The harness proves the declared invariants for any integration. | ✅ | — | — | — |
+| `tooling.coverage` | Tests attribute to features and invariants, and the registries match the code. | ✅ | — | — | — |
 
 **48 features declared. 47 have at least one passing test attributed at every level they require, so 0 gap(s).**
 

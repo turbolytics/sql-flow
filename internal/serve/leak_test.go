@@ -10,21 +10,24 @@ import (
 
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/growth"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"github.com/zeebo/assert"
 )
 
-// TestCliServe_DoesNotLeakNativeMemory drives requests through the handler
+// TestGrowthCliServe_DoesNotLeakNativeMemory drives requests through the handler
 // and asserts the process does not grow.
 //
 // The encoder copies values out of Arrow buffers DuckDB owns, which is the
 // boundary the handler-table leaks in #243 and #247 crossed: a reader or
 // record retained once more than it is released keeps every buffer it points
-// at. Half a million rows go through here, as in the handler leak test,
-// against the same 8 MiB threshold. Retaining each record batch in readRows
+// at. A bounded growth run sends half a million rows through here, as in the
+// handler leak test, against the same 8 MiB threshold, and a full run two and
+// a half million; see package growth. Retaining each record batch in readRows
 // fails it; growth without that is about 1 MiB.
-func TestCliServe_DoesNotLeakNativeMemory(t *testing.T) {
+func TestGrowthCliServe_DoesNotLeakNativeMemory(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
+	growth.Check(t)
 	ex, _ := newExec(t, 1, `CREATE TABLE posts AS
 		SELECT TIMESTAMPTZ '2026-09-10 00:00:00+00' + INTERVAL (range) MINUTE AS bucket,
 		       'lang_' || (range % 33) AS lang,
@@ -72,7 +75,8 @@ serve:
 	// process grew 10 MiB, then 3, then 1, then 0 -- a plateau, not a leak.
 	// Fifty requests sampled the middle of that curve and read the climb as
 	// growth.
-	const warmup, iters, rowsPerRequest = 500, 500, 1000
+	const warmup, rowsPerRequest = 500, 1000
+	iters := growth.Budget(t, 500, 2500)
 	run(warmup)
 	settle()
 	before := resident()
@@ -82,10 +86,10 @@ serve:
 	after := resident()
 
 	const limit = 8 << 20
-	growth := after - before
+	grew := after - before
 	t.Logf("resident anon memory: before %d MiB, after %d MiB, growth %d MiB over %d rows",
-		before>>20, after>>20, growth>>20, iters*rowsPerRequest)
-	if growth > limit {
-		t.Fatalf("process grew %d MiB over %d rows; serve is retaining native buffers", growth>>20, iters*rowsPerRequest)
+		before>>20, after>>20, grew>>20, iters*rowsPerRequest)
+	if grew > limit {
+		t.Fatalf("process grew %d MiB over %d rows; serve is retaining native buffers", grew>>20, iters*rowsPerRequest)
 	}
 }

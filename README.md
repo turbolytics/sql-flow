@@ -1859,8 +1859,22 @@ tests under `tests/release` and the dev scripts in `cmd/` import them.
 ```
 make sqlflow        # build bin/sqlflow
 make test-go        # build, vet, gofmt check, unit tests
+make test-growth    # the growth tier, bounded; test-growth-full runs it full
 make test-image     # build the image and run tests/release against it
 ```
+
+The tests run in four tiers, in this order:
+
+1. **Unit**, `go test -short -race ./...`: near instant.
+2. **Integration**, `go test -run '^TestIntegration' ./...`: the function,
+   against a real service in a container.
+3. **Growth**, `make test-growth`: non-functional. Tests named `TestGrowth…`
+   drive a component for many iterations and fail if memory grows with the
+   work. A branch runs them bounded; main and a release run them full length.
+4. **Release**, `make test-image`: the shipped image.
+
+Growth follows unit and integration, because a leak check is worth reading
+only once the function it drives is proven.
 
 `tests/release` and the coverage matrix are Python. Both run through [uv][uv],
 which builds the environment from `uv.lock` on first use. There is no
@@ -1888,9 +1902,7 @@ allocates per message or per request.
 request. You keep your copyright; the agreement grants the license that lets
 the project ship your work, and the patent grant that goes with it.
 
-`make test-go` and `make test-image` are what CI runs on every push.
-Kafka-backed integration tests are deliberately excluded from `test-go`; they
-run from the dev stack. Backing services for local development:
+CI runs all four tiers on every push. Backing services for local development:
 
 ```
 make start-backing-services

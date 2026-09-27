@@ -17,6 +17,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/growth"
 	"github.com/turbolytics/sql-flow/internal/handlers"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"go.uber.org/zap"
@@ -34,15 +35,19 @@ import (
 //
 // A leak that is linear in window operations needs operations, not wall
 // clock. This loop builds the real handler and the real manager once, over one
-// DuckDB connection the way the pipeline does, and drives them for
-// SQLFLOW_LEAK_BATCHES batches (default 1000, so the -short pass runs it in
-// seconds; set it to 100000 to watch a component hold on to resources over a
-// long run). Every scenario reports the same three numbers, so a change to
-// DuckDB, the handler, or the manager shows up here before it shows up on a
-// dashboard.
+// DuckDB connection the way the pipeline does, and drives them for 1,000
+// batches on a bounded growth run; see package growth. A full run drives the
+// flat scenario for 5,000, where a slow leak has room to show. The two
+// scenarios that assert DuckDB still retains deleted rows stay at 1,000: the
+// leak they pin is linear and shows by then, and 5,000 batches of it cost a
+// gigabyte. SQLFLOW_LEAK_BATCHES overrides both lengths: set it to 100000 to
+// watch a component hold on to resources over a long run. Every scenario
+// reports the same three numbers, so a change to DuckDB, the handler, or the
+// manager shows up here before it shows up on a dashboard.
 
-// leakBatches is how many batches each scenario runs after warm-up.
-func leakBatches(tb testing.TB) int {
+// leakBatches is how many batches a scenario runs after warm-up: 1,000 on a
+// bounded run, full on a full one.
+func leakBatches(tb testing.TB, full int) int {
 	tb.Helper()
 	if v := os.Getenv("SQLFLOW_LEAK_BATCHES"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -51,7 +56,7 @@ func leakBatches(tb testing.TB) int {
 		}
 		return n
 	}
-	return 1000
+	return growth.Budget(tb, 1000, full)
 }
 
 const (
@@ -309,18 +314,20 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 // CONFLICT upsert, in memory. It leaks, and this test says so on purpose: if
 // it starts passing the flat check, DuckDB changed and the warning in the
 // README and #268 is out of date.
-func TestManagerTumblingWindow__IndexedTableInMemoryRetainsDeletedRows(t *testing.T) {
+func TestGrowthManagerTumblingWindow__IndexedTableInMemoryRetainsDeletedRows(t *testing.T) {
 	coverage.Covers(t, "manager.window")
-	before, after := leakLoop(t, leakScenario{name: "indexed, upsert, in memory", index: true, upsert: true}, leakBatches(t))
+	growth.Check(t)
+	before, after := leakLoop(t, leakScenario{name: "indexed, upsert, in memory", index: true, upsert: true}, leakBatches(t, 1000))
 	assertLeaks(t, before, after)
 }
 
 // The workaround: no index, one row per batch, the collect SQL sums. Storage
 // stays at one row group however long it runs: measured at 15 million
 // messages and 30,000 manager polls.
-func TestManagerTumblingWindow__PlainInsertInMemoryStaysFlat(t *testing.T) {
+func TestGrowthManagerTumblingWindow__PlainInsertInMemoryStaysFlat(t *testing.T) {
 	coverage.Covers(t, "manager.window")
-	before, after := leakLoop(t, leakScenario{name: "no index, plain insert, in memory"}, leakBatches(t))
+	growth.Check(t)
+	before, after := leakLoop(t, leakScenario{name: "no index, plain insert, in memory"}, leakBatches(t, 5000))
 	assertLeakFlat(t, before, after)
 }
 
@@ -332,10 +339,11 @@ func TestManagerTumblingWindow__PlainInsertInMemoryStaysFlat(t *testing.T) {
 // checkpoints every batch (#247), and DuckDB checkpoints on its own once the
 // log reaches checkpoint_threshold, 16 MiB by default, so a real pipeline
 // always gets there.
-func TestManagerTumblingWindow__IndexedTableOnDiskRetainsDeletedRows(t *testing.T) {
+func TestGrowthManagerTumblingWindow__IndexedTableOnDiskRetainsDeletedRows(t *testing.T) {
 	coverage.Covers(t, "manager.window")
+	growth.Check(t)
 	path := filepath.Join(t.TempDir(), "window.duckdb")
-	before, after := leakLoop(t, leakScenario{name: "indexed, upsert, on disk", path: path, index: true, upsert: true}, leakBatches(t))
+	before, after := leakLoop(t, leakScenario{name: "indexed, upsert, on disk", path: path, index: true, upsert: true}, leakBatches(t, 1000))
 	assertLeaks(t, before, after)
 }
 

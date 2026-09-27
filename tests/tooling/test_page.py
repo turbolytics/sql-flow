@@ -11,7 +11,8 @@ from samples import *  # noqa: F401,F403
 
 def test_render_carries_a_column_per_level():
     s = snap(integration_results={"TestSourceKafka_Commits": PASS})
-    assert "| Feature | What it does | unit | integration | release |" in render(s)
+    assert ("| Feature | What it does | unit | integration | growth | release |"
+            in render(s))
     assert "| Tests |" not in render(s)
 
 
@@ -108,12 +109,14 @@ def test_the_page_snapshot_reads_an_invariant_cell_from_the_files():
 def test_the_page_renders_from_status_and_registries_with_no_test_report():
     md = render_page(FEATURES, INVARIANTS, INTEGRATIONS, {
         "features": {"sink.clickhouse": {
-            "unit": "covered", "integration": "not_required", "release": "covered"}},
+            "unit": "covered", "integration": "not_required",
+            "growth": "not_required", "release": "covered"}},
         "integrations": {"sink.clickhouse": {"sink.flush.keeps_batch": {
-            "unit": "covered", "integration": "missing", "release": "missing"}}},
+            "unit": "covered", "integration": "missing", "growth": "missing",
+            "release": "missing"}}},
     })
     row = next(l for l in md.splitlines() if l.startswith("| `sink.clickhouse`"))
-    assert row == "| `sink.clickhouse` | ch | ✅ | — | ✅ |"
+    assert row == "| `sink.clickhouse` | ch | ✅ | — | — | ✅ |"
     line = next(l for l in md.splitlines() if "`sink.flush.keeps_batch`" in l)
     assert "✅ u" in line
 
