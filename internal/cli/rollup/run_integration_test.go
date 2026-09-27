@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 )
@@ -19,32 +17,11 @@ func TestIntegrationRollupRun_RunFillsHistoryAndStopsCleanly(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	ctx := context.Background()
-	pg, err := tcpostgres.Run(ctx, "postgres:18",
-		tcpostgres.WithDatabase("rollup"),
-		tcpostgres.WithUsername("rollup"),
-		tcpostgres.WithPassword("rollup"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	t.Cleanup(func() { _ = pg.Terminate(context.Background()) })
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	assert.NoError(t, err)
-	conn, err := pgx.Connect(ctx, dsn)
-	assert.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	for _, sql := range []string{
-		`CREATE TABLE posts_per_minute_by_lang (
-  bucket TIMESTAMPTZ NOT NULL, lang TEXT NOT NULL, posts INTEGER NOT NULL,
-  PRIMARY KEY (bucket, lang))`,
-		`INSERT INTO posts_per_minute_by_lang (bucket, lang, posts)
-SELECT g, 'en', 1 FROM generate_series('2026-09-12T00:00:00Z'::timestamptz, '2026-09-12T23:59:00Z', interval '1 minute') AS g`,
-	} {
-		_, err := conn.Exec(ctx, sql)
-		assert.NoError(t, err)
-	}
+	dsn, conn := sourceOnly(t)
+	sqlExec(t, conn, `INSERT INTO posts_per_minute_by_lang (bucket, lang, posts)
+SELECT g, 'en', 1 FROM generate_series('2026-09-12T00:00:00Z'::timestamptz, '2026-09-12T23:59:00Z', interval '1 minute') AS g`)
 
 	rctx, cancel := context.WithCancel(ctx)
 	cmd := NewCommand()

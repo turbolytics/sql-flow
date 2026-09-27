@@ -11,36 +11,31 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
+	"github.com/turbolytics/sql-flow/internal/pgtest"
 	"github.com/zeebo/assert"
 )
 
-// sourceOnly starts a Postgres holding the demo's source table and nothing
-// else: the database `sqlflow rollup test` expects, with the team's
+// sharedPostgres is the package's one container. Every test's database
+// starts with the demo's source table.
+var sharedPostgres = pgtest.New(pgtest.Options{User: "rollup", Password: "rollup", Template: []string{
+	`CREATE TABLE posts_per_minute_by_lang (
+  bucket TIMESTAMPTZ NOT NULL, lang TEXT NOT NULL, posts INTEGER NOT NULL,
+  PRIMARY KEY (bucket, lang))`,
+}})
+
+func TestMain(m *testing.M) { os.Exit(sharedPostgres.Run(m)) }
+
+// sourceOnly gives the test a database holding the demo's source table and
+// nothing else: the database `sqlflow rollup test` expects, with the team's
 // migrations applied and no rollups installed.
 func sourceOnly(t *testing.T) (string, *pgx.Conn) {
 	t.Helper()
-	ctx := context.Background()
-	pg, err := tcpostgres.Run(ctx, "postgres:18",
-		tcpostgres.WithDatabase("rollup"),
-		tcpostgres.WithUsername("rollup"),
-		tcpostgres.WithPassword("rollup"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	t.Cleanup(func() { _ = pg.Terminate(context.Background()) })
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	assert.NoError(t, err)
-	conn, err := pgx.Connect(ctx, dsn)
+	dsn, _ := sharedPostgres.Database(t)
+	conn, err := pgx.Connect(context.Background(), dsn)
 	assert.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	sqlExec(t, conn, `CREATE TABLE posts_per_minute_by_lang (
-  bucket TIMESTAMPTZ NOT NULL, lang TEXT NOT NULL, posts INTEGER NOT NULL,
-  PRIMARY KEY (bucket, lang))`)
 	return dsn, conn
 }
 
@@ -79,6 +74,7 @@ func TestIntegrationRollupTest_TheCommandPassesTheDemo(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := sourceOnly(t)
 	out, _, err := run(t, "test", "-c", example, "--dsn", dsn, "--tests", exampleTests, "--seed", "42")
 	assert.NoError(t, err)
@@ -97,6 +93,7 @@ func TestIntegrationRollupTest_AFailingCaseExitsWithTheCodeAndTheDiff(t *testing
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, _ := sourceOnly(t)
 	out, _, err := run(t, "test", "-c", example, "--dsn", dsn, "--tests", wrongCase(t))
 	assert.Error(t, err)
@@ -115,6 +112,7 @@ func TestIntegrationRollupTest_TheCommandDropsItsSchemaUnlessKept(t *testing.T) 
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := sourceOnly(t)
 	_, _, err := run(t, "test", "-c", example, "--dsn", dsn, "--tests", wrongCase(t))
 	assert.Error(t, err)
@@ -135,6 +133,7 @@ func TestIntegrationRollupTest_TheCommandNeverReadsTheStore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, _ := sourceOnly(t)
 	_, _, err := run(t, "test", "-c", withStore(t, unreachable), "--dsn", dsn)
 	assert.NoError(t, err)
@@ -187,6 +186,8 @@ func TestIntegrationRollupTest_ARunCancelledDuringSetupDropsItsSchema(t *testing
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: the watcher cancels at the moment it observes, and parallel load
+	// can move that moment past the step the test names.
 	dsn, conn := sourceOnly(t)
 	ctx := cancelWhen(t, dsn, func(watch *pgx.Conn) bool { return sandboxName(watch) != "" })
 	assert.Error(t, runIn(ctx, "test", "-c", example, "--dsn", dsn))
@@ -200,6 +201,8 @@ func TestIntegrationRollupTest_ARunCancelledMidWorkloadDropsItsSchema(t *testing
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: the watcher cancels at the moment it observes, and parallel load
+	// can move that moment past the step the test names.
 	dsn, conn := sourceOnly(t)
 	ctx := cancelWhen(t, dsn, func(watch *pgx.Conn) bool {
 		name := sandboxName(watch)
