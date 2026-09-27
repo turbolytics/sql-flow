@@ -88,6 +88,7 @@ func TestIntegrationRollup_ADoubleSumKeepsItsFraction(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startMetricsPostgres(t)
 
 	putGauge(t, srv.conn, "10:00", f(0.25))
@@ -113,6 +114,7 @@ func TestIntegrationRollup_ATotalSumsAcrossDimensions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startMetricsPostgres(t)
 
 	putGauge(t, srv.conn, "10:00", f(0.25))
@@ -137,6 +139,7 @@ func TestIntegrationRollup_LastIsTheLatestMinute(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startMetricsPostgres(t)
 
 	putGauge(t, srv.conn, "10:04", f(4))
@@ -161,6 +164,7 @@ func TestIntegrationRollup_LastFollowsARewriteOfTheLatestMinuteOnly(t *testing.T
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startMetricsPostgres(t)
 
 	putGauge(t, srv.conn, "10:00", f(3))
@@ -181,6 +185,7 @@ func TestIntegrationRollup_LastOutlivesADelete(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startMetricsPostgres(t)
 
 	putGauge(t, srv.conn, "10:01", f(9))
@@ -195,6 +200,7 @@ func TestIntegrationRollup_LastSkipsANullAndStoresOneWhenNothingElseExists(t *te
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startMetricsPostgres(t)
 
 	putGauge(t, srv.conn, "10:04", nil)

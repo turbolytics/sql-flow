@@ -25,6 +25,7 @@ func TestIntegrationRollupRun_TheLeastCompleteClosedBucketIsReported(t *testing.
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -61,6 +62,7 @@ func TestIntegrationRollupRun_TriggerCostIsAbsentUntilTheServerTracksFunctions(t
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	mustInstall(t, srv.conn, loadExample(t))

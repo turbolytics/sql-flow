@@ -26,6 +26,7 @@ func TestIntegrationRollupRun_VerifyFindsNothingInACorrectTable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
 	mustInstall(t, srv.conn, loadExample(t))
@@ -48,6 +49,7 @@ func TestIntegrationRollupRun_ADisabledTriggerDriftsOneEdge(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -91,6 +93,7 @@ func TestIntegrationRollupRun_ANullDimensionAndADoubleSumVerifyClean(t *testing.
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	execSQL(t, srv.conn, `CREATE TABLE region_minutes (bucket TIMESTAMPTZ NOT NULL, region TEXT, cost DOUBLE PRECISION NOT NULL)`)
@@ -139,6 +142,7 @@ func TestIntegrationRollupRun_VerifyAcceptsDimensionsNamedLikeItsOwnColumns(t *t
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	execSQL(t, srv.conn, `CREATE TABLE trade_minutes (bucket TIMESTAMPTZ NOT NULL, side TEXT NOT NULL,
@@ -194,6 +198,7 @@ func TestIntegrationRollupRun_VerifySkipsTablesStillFilling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-11T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -231,6 +236,7 @@ func TestIntegrationRollupRun_ARetainedTableIsStillVerified(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -262,6 +268,7 @@ func TestIntegrationRollupRun_VerifyNeedsNoStateTable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -287,6 +294,7 @@ func TestIntegrationRollupRun_VerifyNewestChecksWhereATableTrails(t *testing.T) 
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:44:00Z")
@@ -319,6 +327,7 @@ func TestIntegrationRollupRun_VerifyUnderConcurrentWritesReportsNoDrift(t *testi
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")

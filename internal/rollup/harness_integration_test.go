@@ -39,6 +39,7 @@ func TestIntegrationRollupTest_TheSandboxClonesTheSourceAndInstallsThere(t *test
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	execSQL(t, srv.conn, "ALTER TABLE posts_per_minute_by_lang ADD CONSTRAINT posts_nonnegative CHECK (posts >= 0)")
@@ -74,6 +75,7 @@ func TestIntegrationRollupTest_AMissingSourceStopsTheSandbox(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	execSQL(t, srv.conn, "DROP TABLE posts_per_minute_by_lang")
 	_, err := OpenSandbox(context.Background(), srv.conn, loadExample(t), "test")
@@ -92,6 +94,7 @@ func TestIntegrationRollupTest_TheInvariantsFindAHandEditAndAnOffBoundaryBucket(
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	conf := loadExample(t)
@@ -145,6 +148,7 @@ func TestIntegrationRollupTest_TheDemoPassesTheWorkload(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	conf := loadExample(t)
 	_, reports := workload(t, srv.conn, conf, 42)
@@ -164,6 +168,7 @@ func TestIntegrationRollupTest_TheRenderTemplatePasses(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	migration, err := os.ReadFile("../../render/migrations/0001_metrics_1m.sql")
 	assert.NoError(t, err)
@@ -203,6 +208,7 @@ func TestIntegrationRollupTest_ANullableDimensionPasses(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	execSQL(t, srv.conn, `CREATE TABLE events_1m (bucket TIMESTAMPTZ NOT NULL, region TEXT, n BIGINT NOT NULL)`)
 	execSQL(t, srv.conn, `CREATE UNIQUE INDEX events_1m_key ON events_1m (bucket, region) NULLS NOT DISTINCT`)
@@ -220,6 +226,7 @@ func TestIntegrationRollupTest_ASeedReproducesTheWorkload(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	conf := loadExample(t)
 	digest := func(seed int64) WorkloadReport {
@@ -243,6 +250,7 @@ func TestIntegrationRollupTest_ASourceWithoutAKeyIndexNamesTheKey(t *testing.T) 
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	execSQL(t, srv.conn, `CREATE TABLE events_1m (bucket TIMESTAMPTZ NOT NULL, region TEXT, n BIGINT NOT NULL)`)
 	execSQL(t, srv.conn, `CREATE INDEX events_1m_bucket ON events_1m (bucket)`)
@@ -274,6 +282,7 @@ func TestIntegrationRollupTest_TheDemosCasesPass(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	conf := loadExample(t)
 	tests, err := config.LoadRollupTests("../../dev/config/rollups/bluesky.test.yml")
@@ -295,6 +304,7 @@ func TestIntegrationRollupTest_AWrongExpectationFailsWithADiff(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	failures, err := runCase(t, srv.conn, loadExample(t), config.RollupTestCase{
 		Name: "wrong", Rollup: "posts",
@@ -317,6 +327,7 @@ func TestIntegrationRollupTest_AMissingRowAndAnExtraRowFailByKey(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	failures, err := runCase(t, srv.conn, loadExample(t), config.RollupTestCase{
 		Name: "rows", Rollup: "posts",
@@ -347,6 +358,7 @@ func TestIntegrationRollupTest_ADoubleSumMatchesWithinTolerance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	execSQL(t, srv.conn, `CREATE TABLE gauge_1m (bucket TIMESTAMPTZ NOT NULL, v DOUBLE PRECISION NOT NULL, PRIMARY KEY (bucket))`)
 	conf, err := config.ParseRollups([]byte(`rollups:
@@ -380,6 +392,7 @@ func TestIntegrationRollupTest_AWriteToAColumnTheSourceLacksIsRefusedAtItsPath(t
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	_, err := runCase(t, srv.conn, loadExample(t), config.RollupTestCase{
 		Name: "nope", Rollup: "posts",
@@ -397,12 +410,15 @@ func TestIntegrationRollupTest_ARoleWithoutCreateIsToldTheGrant(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
-	execSQL(t, srv.conn, "CREATE ROLE tester LOGIN PASSWORD 'tester'")
-	conn := connectIn(t, strings.Replace(srv.dsn, "rollup:rollup@", "tester:tester@", 1), "UTC")
+	// Role names are server-wide, and every test's database shares the server.
+	tester := srv.db + "_tester"
+	execSQL(t, srv.conn, "CREATE ROLE "+tester+" LOGIN PASSWORD 'tester'")
+	conn := connectIn(t, strings.Replace(srv.dsn, "rollup:rollup@", tester+":tester@", 1), "UTC")
 
 	_, err := OpenSandbox(context.Background(), conn, loadExample(t), "test")
 	assert.Error(t, err)
 	assert.Equal(t, errs.CodeConfigInvalid, errs.CodeOf(err))
-	assert.That(t, strings.Contains(err.Error(), "GRANT CREATE ON DATABASE rollup TO tester"))
+	assert.That(t, strings.Contains(err.Error(), "GRANT CREATE ON DATABASE "+srv.db+" TO "+tester))
 }

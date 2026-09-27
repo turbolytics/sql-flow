@@ -78,6 +78,7 @@ func TestIntegrationRollupRun_BackfillFillsHistoryNewestDayFirst(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
 	mustInstall(t, srv.conn, loadExample(t))
@@ -100,6 +101,7 @@ func TestIntegrationRollupRun_BackfillResumesWhereItStopped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
 	mustInstall(t, srv.conn, loadExample(t))
@@ -127,6 +129,7 @@ func TestIntegrationRollupRun_BackfillOfAGrainAddedLater(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	mustInstall(t, srv.conn, loadExample(t))
 	// The first install marks the 5m tables; over an empty source each
@@ -159,6 +162,7 @@ func TestIntegrationRollupRun_BackfillSkipsARetainedTable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	mustInstall(t, srv.conn, loadExample(t))
 	withWeek := loadExample(t)
@@ -183,6 +187,7 @@ func TestIntegrationRollupRun_BackfillTakesTheTriggersBucketLock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	mustInstall(t, srv.conn, loadExample(t))
@@ -211,6 +216,7 @@ func TestIntegrationRollupRun_ABackfillChunkGivesUpOnAnOpenWrite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: withBusy sets package variables every chunk reads.
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -239,6 +245,7 @@ func TestIntegrationRollupRun_ABackfillChunkNeedsItsBucketLock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: withBusy sets package variables every chunk reads.
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -273,6 +280,7 @@ func TestIntegrationRollupRun_ABackfillChunkNeverWaitsHoldingALock(t *testing.T)
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: withBusy sets package variables every chunk reads.
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -310,6 +318,7 @@ func TestIntegrationRollupRun_ChunkedBackfillLosesNoConcurrentWrite(t *testing.T
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: parallel load can hold a chunk past the writers' 1s lock timeout.
 	srv := startRollupPostgres(t)
 	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
 	mustInstall(t, srv.conn, loadExample(t))
@@ -346,6 +355,7 @@ func TestIntegrationRollupRun_ABackfillChunkFitsTheRowBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: withRowBudget sets a package variable every chunk reads.
 	srv := startRollupPostgres(t)
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
 	mustInstall(t, srv.conn, loadExample(t))
@@ -372,6 +382,7 @@ func TestIntegrationRollupRun_AChunkWritesNoProgressOverAMovedEntry(t *testing.T
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -408,6 +419,7 @@ func TestIntegrationRollupRun_ABackfillChunkNeedsTheRollupsLock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: withBusy sets package variables every chunk reads.
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	history(t, srv.conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
