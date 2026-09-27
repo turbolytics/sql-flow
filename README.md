@@ -1174,7 +1174,7 @@ survive the process.
 
 1. Stop consuming.
 2. Write the batch it had buffered.
-3. Run each window's final poll.
+3. Run each window's final pass.
 4. Commit state and offsets.
 5. Exit 0.
 
@@ -1183,15 +1183,19 @@ loses no data either, because the buffered batch replays from the last
 committed offset. It costs that duplicate work, and it republishes any window
 that closed during shutdown.
 
-The drain has no deadline. A sink that blocks holds the process open until the
-supervisor escalates to `SIGKILL`.
+The drain is bounded by `pipeline.drain_deadline_seconds`, thirty by default.
+A sink that blocks past it fails the drain with the incomplete-drain code and
+exit 15, rather than holding the process open until the supervisor escalates
+to `SIGKILL`. Whatever the final pass did not publish stays in its window table
+for the next start.
 
 ## Tumbling windows
 
 A table declared under `tables.sql` can carry a `window`. The handler appends
 each batch's counts to the table, keyed by a bucket start, and the engine does
-the rest: it keeps a watermark, publishes every bucket the watermark has passed
-to the window's sink, and deletes it.
+the rest: it keeps a watermark, and after each commit that moves it, tells the
+window's manager to publish every bucket the watermark has passed and delete
+what nothing more can arrive for.
 
 ```yaml
 tables:
@@ -1330,24 +1334,34 @@ flush happen before the delete, and the delete and the watermark commit
 together, so a sink failure leaves the bucket in the table and stops the
 process rather than dropping the bucket. A crash between the flush and that
 commit republishes the bucket on the next start, so give a window sink a key
-it can deduplicate on. One final poll runs on shutdown, inside the drain
-deadline. With a state path the watermark survives a restart; without one the
-window table and its watermark are lost together.
+it can deduplicate on. With `allowed_lateness_seconds` set, the pass the
+manager runs when it starts republishes every bucket still inside its
+lateness, because the late rows a crash interrupted were recorded in memory;
+each is the whole bucket, so a sink that replaces by key ends where it would
+have. One final pass runs on shutdown, inside the drain deadline. With a state
+path the watermark survives a restart; without one the window table and its
+watermark are lost together.
 
 `sqlflow validate` checks the declaration: the time column must be declared
-`TIMESTAMPTZ` in the table's `CREATE`, `emit_sql` must read `closed`, and the
-old `manager` block is refused with the keys that replace it. That block and
-its two predicates are gone, and a file that carries them does not run; the
-declaration cannot be derived from two arbitrary predicates, so the change
-is a major version with the migration in the changelog.
+`TIMESTAMPTZ` in the table's `CREATE` and computed as
+`time_bucket(INTERVAL '<size>', event_time)` in the handler's SQL, a
+structured handler's batch table must declare `event_time TIMESTAMPTZ`,
+`emit_sql` must read `closed`, `allowed_lateness_seconds` above zero must pair
+with a sink that replaces by key, and the old `manager` block, `late_rows` and
+`poll_interval_seconds` are each refused with the key that replaces them. A
+file that carries any of them does not run. Each removal is a major version
+with its migration in the changelog: a declaration cannot be derived from two
+arbitrary predicates, nothing is left for an interval to pace, and `reemit`'s
+delta is replaced by the whole value a recompute publishes.
 
 See [`tumbling.window.yml`](dev/config/examples/tumbling.window.yml) and
 [`kafka.stateful.window.yml`](dev/config/examples/kafka.stateful.window.yml).
 
 ## Metrics
 
-`--metrics prometheus` serves `/metrics` on `:8000`. Twenty-four instruments
-are exported, all under the meter name `sqlflow` except the two webhook ones.
+`--metrics prometheus` serves `/metrics` on `:8000`. The tables below are every
+instrument exported, all under the meter name `sqlflow` except the two webhook
+ones.
 
 The instrument name and the Prometheus series name differ: the exporter appends
 the unit, then `_total` for counters, and skips the unit when the name already
