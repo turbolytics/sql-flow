@@ -62,7 +62,8 @@ func brokerOrFail(t *testing.T) string {
 
 // startBroker runs one container for the whole package. Six tests at ten
 // seconds each would dominate the pass, and nothing needs the isolation: every
-// test derives its topic and group from the clock, so they cannot collide.
+// test names its topic and group with a prefix no other test uses, then the
+// clock, so tests running in parallel cannot collide.
 func startBroker() {
 	ctx := context.Background()
 

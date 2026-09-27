@@ -94,6 +94,7 @@ func TestStateOffsets_SeekerUnmarkedPartitionKeepsTheGroupOffset(t *testing.T) {
 func TestIntegrationSourceKafka_SeekToIssuesNoCommit(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-seek-nocommit-%d", time.Now().UnixNano())
 	client := newTestClient(t, broker, topic, topic)
 	defer client.Close()
@@ -117,6 +118,7 @@ func TestIntegrationSourceKafka_SeekToIssuesNoCommit(t *testing.T) {
 func TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-seek-resume-%d", time.Now().UnixNano())
 
 	producer := newTestClient(t, broker, topic, topic+"-producer")
