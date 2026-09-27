@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,36 +20,33 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/pgtest"
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"github.com/zeebo/assert"
 )
 
 const examplePath = "../../../dev/config/rollups/bluesky.yml"
 
+// sharedPostgres is the package's one container. Every test's database
+// starts with the demo's source table.
+var sharedPostgres = pgtest.New(pgtest.Options{User: "rollup", Password: "rollup", Template: []string{
+	`CREATE TABLE posts_per_minute_by_lang (
+  bucket TIMESTAMPTZ NOT NULL, lang TEXT NOT NULL, posts INTEGER NOT NULL,
+  PRIMARY KEY (bucket, lang))`,
+}})
+
+func TestMain(m *testing.M) { os.Exit(sharedPostgres.Run(m)) }
+
+// startPostgres gives the test a database of its own on the package's
+// container, holding the source table and nothing else.
 func startPostgres(t *testing.T) (string, *pgx.Conn) {
 	t.Helper()
-	ctx := context.Background()
-	pg, err := tcpostgres.Run(ctx, "postgres:18",
-		tcpostgres.WithDatabase("rollup"),
-		tcpostgres.WithUsername("rollup"),
-		tcpostgres.WithPassword("rollup"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	t.Cleanup(func() { _ = pg.Terminate(context.Background()) })
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	assert.NoError(t, err)
-	conn, err := pgx.Connect(ctx, dsn)
+	dsn, _ := sharedPostgres.Database(t)
+	conn, err := pgx.Connect(context.Background(), dsn)
 	assert.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	exec(t, conn, `CREATE TABLE posts_per_minute_by_lang (
-  bucket TIMESTAMPTZ NOT NULL, lang TEXT NOT NULL, posts INTEGER NOT NULL,
-  PRIMARY KEY (bucket, lang))`)
 	return dsn, conn
 }
 
@@ -146,6 +144,7 @@ func TestIntegrationRollupRun_TheDaemonInstallsAndFillsHistory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := startPostgres(t)
 	history(t, conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
 
@@ -160,6 +159,7 @@ func TestIntegrationRollupRun_OneDaemonLeadsAndTheOtherTakesOver(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := startPostgres(t)
 	a, _ := running(t, dsn, Options{})
 	b, _ := running(t, dsn, Options{})
@@ -173,8 +173,10 @@ func TestIntegrationRollupRun_OneDaemonLeadsAndTheOtherTakesOver(t *testing.T) {
 	}
 
 	// Kill the leader's session, as a network partition or a crash would.
+	// pg_locks is server-wide, and every test's database shares the server.
 	exec(t, conn, `SELECT pg_terminate_backend(pid) FROM pg_locks
-WHERE locktype = 'advisory' AND granted AND pid <> pg_backend_pid()`)
+WHERE locktype = 'advisory' AND granted AND pid <> pg_backend_pid()
+  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`)
 	waitFor(t, "the standby to lead", func() bool { return status(standby) == "healthy" })
 	waitFor(t, "the old leader to stand by", func() bool { return status(leader) == "standby" })
 }
@@ -184,6 +186,7 @@ func TestIntegrationRollupRun_ADaemonStoppedMidBackfillIsResumed(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := startPostgres(t)
 	history(t, conn, "2026-08-01T00:00:00Z", "2026-09-12T23:59:00Z")
 
@@ -206,22 +209,26 @@ func TestIntegrationRollupRun_AnUnreachableDatabaseFailsHealthAndRecovers(t *tes
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
-	dsn, _ := startPostgres(t)
+	t.Parallel()
+	dsn, conn := startPostgres(t)
+	var db string
+	assert.NoError(t, conn.QueryRow(context.Background(), "SELECT current_database()").Scan(&db))
 	d, _ := running(t, dsn, Options{})
 	waitFor(t, "healthy", func() bool { return status(d) == "healthy" })
 
 	// From another database: Postgres refuses to disallow connections to
 	// the database a session is in.
-	admin, err := pgx.Connect(context.Background(), strings.Replace(dsn, "/rollup?", "/postgres?", 1))
+	admin, err := pgx.Connect(context.Background(), strings.Replace(dsn, "/"+db+"?", "/postgres?", 1))
 	assert.NoError(t, err)
 	t.Cleanup(func() { _ = admin.Close(context.Background()) })
 
-	// Refuse every new connection, and end the daemon's.
-	exec(t, admin, "ALTER DATABASE rollup ALLOW_CONNECTIONS false")
-	exec(t, admin, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'rollup'")
+	// Refuse every new connection, and end the daemon's. Name the test's own
+	// database: every test's database shares the server.
+	exec(t, admin, "ALTER DATABASE "+db+" ALLOW_CONNECTIONS false")
+	exec(t, admin, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '"+db+"'")
 	waitFor(t, "failed", func() bool { return status(d) == "failed" })
 
-	exec(t, admin, "ALTER DATABASE rollup ALLOW_CONNECTIONS true")
+	exec(t, admin, "ALTER DATABASE "+db+" ALLOW_CONNECTIONS true")
 	waitFor(t, "healthy again, with no restart", func() bool { return status(d) == "healthy" })
 }
 
@@ -230,6 +237,7 @@ func TestIntegrationRollupRun_TheDaemonServesHealthzAndMetrics(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := startPostgres(t)
 	history(t, conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
 	addrc := make(chan net.Addr, 1)
@@ -263,6 +271,7 @@ func TestIntegrationRollupRun_ABusyTableHoldsUpNoOther(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	ctx := context.Background()
 	dsn, conn := startPostgres(t)
 	history(t, conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
@@ -334,6 +343,7 @@ func TestIntegrationRollupRun_DriftIsCountedAndHealthStaysHealthy(t *testing.T) 
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := startPostgres(t)
 	history(t, conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
 	addrc := make(chan net.Addr, 1)
@@ -401,6 +411,7 @@ func TestIntegrationRollupRun_TheLeaderReportsItsRollupsAndFreshness(t *testing.
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := startPostgres(t)
 	history(t, conn, "2026-09-12T00:00:00Z", "2026-09-12T23:59:00Z")
 	url, bundles := receiver(t)

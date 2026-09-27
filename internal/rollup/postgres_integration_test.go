@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,15 +20,12 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/jackc/pgx/v5"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/pgtest"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/zeebo/assert"
 )
-
-// The demo runs Postgres 18. The DDL needs 15 for NULLS NOT DISTINCT.
-const rollupPostgresImage = "postgres:18"
 
 // sourceDDL is sql-flow-bluesky-demo's migration 0001, the table the demo's
 // pipeline writes.
@@ -39,32 +37,24 @@ const sourceDDL = `CREATE TABLE posts_per_minute_by_lang (
   PRIMARY KEY (bucket, lang)
 )`
 
+// sharedPostgres is the package's one container. Every test's database
+// starts with the demo's source table.
+var sharedPostgres = pgtest.New(pgtest.Options{User: "rollup", Password: "rollup", Template: []string{sourceDDL}})
+
+func TestMain(m *testing.M) { os.Exit(sharedPostgres.Run(m)) }
+
 type rollupServer struct {
 	dsn  string
+	db   string
 	conn *pgx.Conn
 }
 
+// startRollupPostgres gives the test a database of its own on the package's
+// container, holding the source table and nothing else.
 func startRollupPostgres(t *testing.T) *rollupServer {
 	t.Helper()
-	ctx := context.Background()
-	pg, err := tcpostgres.Run(ctx, rollupPostgresImage,
-		tcpostgres.WithDatabase("rollup"),
-		tcpostgres.WithUsername("rollup"),
-		tcpostgres.WithPassword("rollup"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	t.Cleanup(func() { _ = pg.Terminate(context.Background()) })
-
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
-	srv := &rollupServer{dsn: dsn, conn: connectIn(t, dsn, "UTC")}
-	execSQL(t, srv.conn, sourceDDL)
-	return srv
+	dsn, db := sharedPostgres.Database(t)
+	return &rollupServer{dsn: dsn, db: db, conn: connectIn(t, dsn, "UTC")}
 }
 
 // connectIn opens a session in zone, so a test can write the way a client in
@@ -192,7 +182,7 @@ func count(t *testing.T, conn *pgx.Conn, q string) int64 {
 }
 
 // resetRollups drops the generated objects and empties the source, so one
-// container serves several cases. Dropping a function drops its triggers.
+// database serves several cases. Dropping a function drops its triggers.
 func resetRollups(t *testing.T, srv *rollupServer) {
 	t.Helper()
 	for table := range expected {
@@ -214,6 +204,7 @@ func TestIntegrationRollup_EveryGrainEqualsItsSource(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 
 	rng := rand.New(rand.NewSource(1))
@@ -250,6 +241,7 @@ func TestIntegrationRollup_ARepublishedMinuteReplaces(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	applyDDL(t, srv.conn, exampleDDL(t))
 
@@ -268,6 +260,7 @@ func TestIntegrationRollup_AnUpsertWhereEveryRowConflicts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	applyDDL(t, srv.conn, exampleDDL(t))
 
@@ -319,6 +312,8 @@ func TestIntegrationRollup_OverlappingWritersLoseNothing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: parallel load can hold the second writer past the 500ms sleep,
+	// and the cases that must lose the first's minute would then keep it.
 	srv := startRollupPostgres(t)
 	script := exampleDDL(t)
 
@@ -373,6 +368,7 @@ func TestIntegrationRollup_RefusesAnotherIsolationLevel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	applyDDL(t, srv.conn, exampleDDL(t))
 
@@ -392,6 +388,8 @@ func TestIntegrationRollup_BackfillMissesNoConcurrentWrite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: parallel load can keep the write from reaching the lock within
+	// 500ms, and the test would pass without proving that it waits.
 	srv := startRollupPostgres(t)
 	writeMinutes(t, srv.dsn, minute{at("2026-09-15T10:01:00Z"), "en", 5}, minute{at("2026-09-15T11:30:00Z"), "ja", 2})
 
@@ -422,6 +420,7 @@ func TestIntegrationRollup_BackfillPastTheLockTable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: it fills the server's lock table, which every database shares.
 	srv := startRollupPostgres(t)
 
 	slots := count(t, srv.conn,
@@ -462,6 +461,7 @@ func TestIntegrationRollup_DeletesDoNotPropagate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	applyDDL(t, srv.conn, exampleDDL(t))
 	writeMinutes(t, srv.dsn, minute{at("2026-09-15T10:01:00Z"), "en", 5}, minute{at("2026-09-15T10:02:00Z"), "en", 7})
@@ -483,6 +483,7 @@ func TestIntegrationRollup_BucketsAreUTC(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	conf := loadExample(t)
 	conf.Rollups[0].Grains["1d"] = config.RollupGrain{From: "1h"}
@@ -518,6 +519,7 @@ func TestIntegrationRollup_CountBuckets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	applyDDL(t, srv.conn, exampleDDL(t))
 
@@ -559,6 +561,7 @@ func TestIntegrationRollup_ConcurrentWritersNeverDeadlock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	history(t, srv.conn, "2026-09-10T00:00:00Z", "2026-09-12T23:59:00Z")
 	mustInstall(t, srv.conn, loadExample(t))

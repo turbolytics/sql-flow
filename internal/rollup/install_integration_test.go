@@ -24,6 +24,7 @@ func TestIntegrationRollupRun_TheStateRowRoundTrips(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	execSQL(t, srv.conn, stateDDL)
@@ -63,6 +64,7 @@ func TestIntegrationRollupRun_SourceChecksNameWhatTheTriggersNeed(t *testing.T) 
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	check := func(r config.Rollup) []config.Violation {
 		t.Helper()
@@ -100,6 +102,7 @@ func TestIntegrationRollupRun_CompareTableNamesEachColumnThatDiffers(t *testing.
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	r := exampleRollup(t)
@@ -154,6 +157,7 @@ func TestIntegrationRollupRun_InstallOnAnEmptyDatabase(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 
 	got := mustInstall(t, srv.conn, loadExample(t)).Rollups[0]
@@ -181,6 +185,7 @@ func TestIntegrationRollupRun_InstallAdoptsTheMigrationsObjects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	rng := rand.New(rand.NewSource(2))
 	langs := []string{"en", "ja", "de"}
@@ -212,6 +217,7 @@ func TestIntegrationRollupRun_InstallRefusesAMismatchedTableAndChangesNothing(t 
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	execSQL(t, srv.conn, "CREATE TABLE posts_by_lang_5m (bucket timestamptz, lang text, posts text)")
 
@@ -232,6 +238,7 @@ func TestIntegrationRollupRun_FourInstallsAtOnce(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	type session struct {
 		conn *pgx.Conn
@@ -262,6 +269,7 @@ func TestIntegrationRollupRun_InstallKeepsARemovedGrain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	mustInstall(t, srv.conn, loadExample(t))
 
@@ -293,6 +301,7 @@ func TestIntegrationRollupRun_InstallRefusesAChangedMeasureType(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	mustInstall(t, srv.conn, loadExample(t))
 
@@ -312,6 +321,7 @@ func TestIntegrationRollupRun_InstallReportsAnUndeclaredRollup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	mustInstall(t, srv.conn, loadExample(t))
 
@@ -327,6 +337,7 @@ func TestIntegrationRollupRun_InstallRecreatesADroppedTable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	mustInstall(t, srv.conn, loadExample(t))
 	execSQL(t, srv.conn, "DROP TABLE posts_by_lang_1h")
@@ -345,6 +356,7 @@ func TestIntegrationRollupRun_InstallCreatesTablesInTheCurrentSchema(t *testing.
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	execSQL(t, srv.conn, "CREATE SCHEMA app")
 	execSQL(t, srv.conn, "ALTER TABLE posts_per_minute_by_lang SET SCHEMA app")
@@ -384,6 +396,7 @@ func TestIntegrationRollupRun_InstallBesideAWriterMidTransaction(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	mustInstall(t, srv.conn, loadExample(t))
@@ -427,6 +440,7 @@ func TestIntegrationRollupRun_InstallGivesUpOnALockRatherThanStallThePipeline(t 
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: withLockTimeout sets a package variable every install reads.
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	mustInstall(t, srv.conn, loadExample(t))
@@ -471,6 +485,7 @@ func TestIntegrationRollupRun_InstallRetriesALockHeldBriefly(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: withLockTimeout sets a package variable every install reads.
 	srv := startRollupPostgres(t)
 	ctx := context.Background()
 	mustInstall(t, srv.conn, loadExample(t))
@@ -498,8 +513,9 @@ func TestIntegrationRollupRun_FourInstallsUnderARepeatableReadDefault(t *testing
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
-	execSQL(t, srv.conn, "ALTER DATABASE rollup SET default_transaction_isolation = 'repeatable read'")
+	execSQL(t, srv.conn, "ALTER DATABASE "+srv.db+" SET default_transaction_isolation = 'repeatable read'")
 	type session struct {
 		conn *pgx.Conn
 		conf *config.RollupsConf
@@ -529,6 +545,7 @@ func TestIntegrationRollupRun_ARollbackAndRollForwardKeepAPendingBackfill(t *tes
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	mustInstall(t, srv.conn, loadExample(t))
 	withWeek := func() *config.RollupsConf {
@@ -557,6 +574,7 @@ func TestIntegrationRollupRun_ARetainedTableDroppedByHandCanBeDeclaredAgain(t *t
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := startRollupPostgres(t)
 	withPeak := func(measure config.RollupMeasure) *config.RollupsConf {
 		conf := loadExample(t)
