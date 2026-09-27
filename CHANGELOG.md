@@ -67,6 +67,18 @@
 
 ### Added
 
+- `sqlflow rollup test -c rollups.yml --dsn DSN` checks a rollups file on
+  a real Postgres before it ships. It clones each source into a schema it
+  creates, installs the rollups there, and writes a seeded workload through
+  the triggers: 20 batches per rollup across a daylight saving change, in
+  three session zones. Every table must equal a from-scratch `GROUP BY` of
+  its source, and every bucket must lie on its grain's UTC boundary.
+  `--tests` adds fixture cases with expected rows. A failed check exits 10
+  with `user.config.rollup_test_failed`. The command connects only to
+  `--dsn` and drops its schema unless `--keep` is set. It writes integer,
+  double, text and timestamp columns, and stops on any other type, naming
+  the column.
+
 - `sqlflow rollup run` reports itself to TurboStats when its rollups file
   has a `turbostats` block that sets `report_to`. The bundle gains two
   optional v1 sections: `freshness`, each table's newest bucket under one

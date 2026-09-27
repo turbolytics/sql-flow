@@ -674,7 +674,10 @@ tables exist. The role needs `CREATE` on the database. The command:
    The clone keeps the columns, `NOT NULL`, defaults, and the primary key. It
    leaves out `CHECK` constraints, so a generated value never fails a rule the
    rollups do not depend on. The Render template's `metrics_1m` has one.
-3. Sets `search_path` to the schema, and runs `install`'s reconcile there.
+   A source that another rollup of the file makes is not cloned: its rows
+   come through that rollup's triggers.
+3. Sets `search_path` to the schema, and runs `install`'s reconcile there,
+   a layer at a time: each rollup after the rollup whose table it reads.
 4. Runs the generated workload and the fixture cases.
 5. Drops the schema, unless `--keep` is set.
 
@@ -693,7 +696,8 @@ The comparison rules are verify's.
 
 ### The generated workload
 
-Without `--tests`, the command writes to each source for each rollup:
+The command writes to each source for each rollup, then runs the fixture
+cases when `--tests` names a file:
 
 - 20 batches of up to 50 rows, over three days that include 2026-03-08, a US
   daylight saving change.
@@ -701,9 +705,11 @@ Without `--tests`, the command writes to each source for each rollup:
 - Each batch comes from a session whose `TimeZone` is `UTC`,
   `America/New_York` or `Asia/Kolkata`.
 - Values follow each column's type: integers from 0 to 1,000, doubles with
-  fractions from -1,000 to 1,000, text from a pool of five values, and
+  fractions from 0 to 1,000, text from a pool of five values, and
   timestamps inside the row's bucket. `NULL` appears only in nullable
   dimension columns.
+  Doubles are never negative: verify's tolerance is relative, and a sum
+  of mixed signs near zero would fail a correct merge.
 
 It checks the invariants and prints the seed. `--seed` reproduces a run. A
 column type the generator cannot produce stops the run with the column's
@@ -740,9 +746,11 @@ column's type. A failure prints the case, the table, the key, and the
 expected and actual rows, and the command exits with
 `user.config.rollup_test_failed`.
 
-Rules, each reported with its YAML path: `rollup` names a declared rollup,
-every written key is a source column, every `expect` table is one of the
-rollup's tables, and every expected row names every column of its table.
+Rules, each reported with its YAML path: `rollup` names a declared rollup
+whose source no rollup makes, every written key is a source column, every
+`expect` table is one of that rollup's tables or of a rollup chained from
+it, every expected row names every column of its table and no other, and
+no two expected rows of a table share a key.
 
 ## Tests
 
@@ -775,7 +783,7 @@ tests stay, because the trigger SQL does not change.
 | `ReconcileKeepsRemovedTables` | Removing a grain keeps its table and triggers, and restoring it needs no backfill |
 | `ChangedMeasureTypeRefused` | The daemon stops with `user.config.rollup_change`, and no DDL runs |
 | `OneStoreIDForTwoHostnames` | Two DSNs that reach one server by different names report one `store_id` |
-| `RollupTestCommand` | The demo's file and the Render template's pass; a bad fixture fails with a diff; `--seed` reproduces a run |
+| `RollupTest_*`: `TheCommandPassesTheDemo`, `TheRenderTemplatePasses`, `AWrongExpectationFailsWithADiff`, `ASeedReproducesTheWorkload` | The demo's file and the Render template's pass; a bad fixture fails with a diff; `--seed` reproduces a run |
 
 Release, `make test-release`: `test_cli_rollup_run_reports_its_rollups_and_freshness`
 runs the image's `sqlflow rollup run` against a Postgres 18 container, and its
@@ -888,7 +896,7 @@ the control repository's launch freeze to lift.
 | A new leader reports before it reads its tables to fill | `/healthz` says `healthy` over empty tables, and a deploy check passes | `TheDaemonInstallsAndFillsHistory`, which fails once the verify pass widens that window |
 | Reconcile refuses a removal | A rollback fails every entrypoint that runs `install`, and the API goes down | `ReconcileKeepsRemovedTables` |
 | `store_id` differs between reporters | Control shows one table twice, each half as fresh | `OneStoreIDForTwoHostnames` |
-| The test clone keeps `CHECK` constraints | The generated workload fails on a correct declaration | `RollupTestCommand` on the Render template's `metrics_1m` |
+| The test clone keeps `CHECK` constraints | The generated workload fails on a correct declaration | `TheRenderTemplatePasses`, on the Render template's `metrics_1m` |
 
 ## Follow-ups
 

@@ -527,6 +527,7 @@ commits, and `serve` reads pre-aggregated rows.
 sqlflow rollup install -c rollups.yml
 sqlflow rollup run     -c rollups.yml [--metrics prometheus]
 sqlflow rollup verify  -c rollups.yml [--since T]
+sqlflow rollup test    -c rollups.yml --dsn DSN [--tests FILE] [--seed N] [--keep]
 sqlflow rollup ddl     -c rollups.yml [--backend postgres]
 sqlflow rollup serve   -c rollups.yml [--dataset NAME]
 sqlflow rollup check   -c rollups.yml --serve FILE [--migration FILE]
@@ -537,6 +538,7 @@ sqlflow rollup check   -c rollups.yml --serve FILE [--migration FILE]
 | `install` | Creates the tables, functions and triggers the file declares, in one transaction, and records what it applied in `sqlflow_rollup_state`. Refuses a change that would corrupt stored rows. Fills nothing. |
 | `run` | Installs, then leads the file's rollups and fills every table `install` marks, one chunk at a time, beside a live pipeline. Several may run: one leads, the rest stand by. `--metrics prometheus` serves `/metrics` and `/healthz` on `:8000`. |
 | `verify` | Recomputes every table from the table it is built from and exits `system.rollup.drift` when a bucket differs, printing the first rows that do. It only reads. `--since` takes an RFC 3339 time or a duration such as `36h`. |
+| `test` | Installs the file in a schema it creates on `--dsn`, writes a seeded workload and any fixture cases through the triggers, and exits `user.config.rollup_test_failed` when a table differs from its source or from a case's expected rows. Drops the schema unless `--keep`. |
 | `ddl` | Prints a migration: the same tables, functions and triggers, and a backfill in one transaction. For a team that applies SQL itself. Connects to nothing. |
 | `serve` | Prints the `serve` datasets, to paste into a serve file's `datasets`. |
 | `check` | Exits `10` when the serve file, or the migration when given, differs from what the declaration generates, or when a dataset could answer more rows than its `max_rows`. |
@@ -577,6 +579,19 @@ turbostats:
   report_to: "{{ SQLFLOW_TURBOSTATS_REPORT_TO }}"
   key: "{{ SQLFLOW_TURBOSTATS_KEY }}"
 ```
+
+`test` checks a declaration before it ships. Point `--dsn` at a scratch
+Postgres where the team's migrations have run, never production: the
+command connects only there, never to `store.postgres.dsn`. It clones each
+source into a schema named `sqlflow_test_` and 16 hex characters, installs
+the rollups there, and writes 20 batches per rollup across the 2026-03-08
+daylight saving change, each in a session zone of `UTC`, `America/New_York`
+or `Asia/Kolkata`. Every table must equal a from-scratch `GROUP BY` of its
+source, and every bucket must lie on its grain's UTC boundary. `--tests`
+adds fixture cases for what those two rules cannot see, such as `last` and
+`count_buckets`; [`dev/config/rollups/bluesky.test.yml`](dev/config/rollups/bluesky.test.yml)
+shows the format. The output starts with the seed, and `--seed` repeats a
+run.
 
 `ddl` and `check` suit a team that applies SQL through its own migration
 runner. `install` and `run` do it for you. [`dev/config/rollups/bluesky.yml`](dev/config/rollups/bluesky.yml)

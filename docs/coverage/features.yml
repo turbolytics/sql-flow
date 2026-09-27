@@ -224,6 +224,10 @@ features:
     description: Installs, backfills, checks and reports on the rollup tables a rollups file declares.
     requires: [unit, integration, release]
 
+  - id: cli.rollup_test
+    description: Checks a rollups file on a real Postgres, in a schema it creates and drops, with a seeded workload and fixture cases.
+    requires: [unit, integration]
+
   # The template is YAML, SQL and shell, so what it promises under concurrency
   # is tested from Go against its migrations, in internal/rendertemplate.
   - id: template.render

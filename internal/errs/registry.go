@@ -50,6 +50,9 @@ const (
 	// or the source. Also a table that exists with other columns than the
 	// file declares, because another declaration built it.
 	CodeConfigRollupChange Code = "user.config.rollup_change"
+	// A rollups test case or an invariant failed: a table held rows the
+	// declaration's writes do not make.
+	CodeConfigRollupTestFailed Code = "user.config.rollup_test_failed"
 
 	// Data: the messages themselves, as opposed to the pipeline definition.
 	// A malformed record is the producer's problem, never ours.
@@ -193,6 +196,11 @@ var registry = map[Code]Definition{
 		CodeConfigRollupChange,
 		"A rollups file changed in a way that would corrupt the rows its tables already hold, or a table exists with other columns than the file declares.",
 		"Declare a new dimension set or rollup for the new shape, and drop the old tables by hand once nothing reads them. The message names the change.",
+	},
+	CodeConfigRollupTestFailed: {
+		CodeConfigRollupTestFailed,
+		"A rollups test case or an invariant failed.",
+		"Read the failures the command printed: the case, the table, the key, and the expected and actual rows. Fix the declaration or the expectation, and rerun with the printed --seed to repeat the same writes.",
 	},
 	CodeDataMalformed: {
 		CodeDataMalformed,

@@ -1,0 +1,30 @@
+# Fixture cases for dev/config/rollups/bluesky.yml:
+#
+#   sqlflow rollup test -c dev/config/rollups/bluesky.yml --dsn "$TEST_DSN" \
+#     --tests dev/config/rollups/bluesky.test.yml
+#
+# Each case starts from empty tables. Each write is one statement in its own
+# transaction, in the pipeline sink's upsert shape. A listed table must hold
+# exactly the listed rows, every column of each; unlisted tables are checked
+# by the invariants only.
+tests:
+  - name: a republished minute replaces its count at every grain
+    rollup: posts
+    writes:
+      - [{bucket: "2026-09-24T12:07:00Z", lang: en, posts: 5}]
+      - [{bucket: "2026-09-24T12:07:00Z", lang: en, posts: 9}]
+    expect:
+      posts_by_lang_5m:
+        - {bucket: "2026-09-24T12:05:00Z", lang: en, posts: 9}
+      posts_total_1h:
+        - {bucket: "2026-09-24T12:00:00Z", posts: 9, minutes: 1}
+
+  - name: minutes counts the source minutes present, across languages
+    rollup: posts
+    writes:
+      - [{bucket: "2026-09-24T12:00:00Z", lang: en, posts: 1},
+         {bucket: "2026-09-24T12:00:00Z", lang: ja, posts: 2},
+         {bucket: "2026-09-24T12:02:00Z", lang: en, posts: 3}]
+    expect:
+      posts_total_5m:
+        - {bucket: "2026-09-24T12:00:00Z", posts: 6, minutes: 2}
