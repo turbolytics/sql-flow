@@ -2,32 +2,36 @@ package freshness
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/pgtest"
 	"github.com/zeebo/assert"
 )
 
+// sharedPostgres is the package's one container.
+var sharedPostgres = pgtest.New(pgtest.Options{User: "rollup", Password: "rollup"})
+
+func TestMain(m *testing.M) { os.Exit(sharedPostgres.Run(m)) }
+
+// startPostgres gives the test an empty database of its own on the
+// package's container.
 func startPostgres(t *testing.T) (string, *pgx.Conn) {
 	t.Helper()
-	ctx := context.Background()
-	pg, err := tcpostgres.Run(ctx, "postgres:18",
-		tcpostgres.WithDatabase("rollup"),
-		tcpostgres.WithUsername("rollup"),
-		tcpostgres.WithPassword("rollup"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	t.Cleanup(func() { _ = pg.Terminate(context.Background()) })
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	assert.NoError(t, err)
+	dsn, _ := sharedPostgres.Database(t)
 	return dsn, connect(t, dsn)
+}
+
+// databaseOf is the database conn is connected to.
+func databaseOf(t *testing.T, conn *pgx.Conn) string {
+	t.Helper()
+	var db string
+	assert.NoError(t, conn.QueryRow(context.Background(), "SELECT current_database()").Scan(&db))
+	return db
 }
 
 func connect(t *testing.T, dsn string) *pgx.Conn {
@@ -49,6 +53,7 @@ func TestIntegrationRollupRun_ObserveReadsTheNewestBucket(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	_, conn := startPostgres(t)
 	ctx := context.Background()
 	exec(t, conn, "CREATE TABLE posts_1h (bucket TIMESTAMPTZ PRIMARY KEY, posts BIGINT)")
@@ -75,6 +80,7 @@ func TestIntegrationRollupRun_OneStoreIDForTwoHostnames(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := startPostgres(t)
 	ctx := context.Background()
 	assert.That(t, strings.Contains(dsn, "localhost"))
@@ -87,8 +93,12 @@ func TestIntegrationRollupRun_OneStoreIDForTwoHostnames(t *testing.T) {
 	assert.Equal(t, KindSystem, a.Kind)
 	assert.Equal(t, a, b)
 
-	exec(t, conn, "CREATE DATABASE other")
-	other, err := StoreOf(ctx, connect(t, strings.Replace(dsn, "/rollup?", "/other?", 1)))
+	// Database names are server-wide, and every test's database shares the server.
+	db := databaseOf(t, conn)
+	otherDB := db + "_other"
+	exec(t, conn, "CREATE DATABASE "+otherDB)
+	t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "DROP DATABASE "+otherDB+" WITH (FORCE)") })
+	other, err := StoreOf(ctx, connect(t, strings.Replace(dsn, "/"+db+"?", "/"+otherDB+"?", 1)))
 	assert.NoError(t, err)
 	assert.That(t, other.ID != a.ID)
 }
@@ -100,10 +110,13 @@ func TestIntegrationRollupRun_AStoreThatRefusesTheControlFunctionIsNamedByAddres
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	dsn, conn := startPostgres(t)
 	exec(t, conn, "REVOKE EXECUTE ON FUNCTION pg_control_system() FROM PUBLIC")
-	exec(t, conn, "CREATE ROLE reader LOGIN PASSWORD 'reader'")
-	reader := connect(t, strings.Replace(dsn, "rollup:rollup@", "reader:reader@", 1))
+	// Role names are server-wide, and every test's database shares the server.
+	role := databaseOf(t, conn) + "_reader"
+	exec(t, conn, "CREATE ROLE "+role+" LOGIN PASSWORD 'reader'")
+	reader := connect(t, strings.Replace(dsn, "rollup:rollup@", role+":reader@", 1))
 
 	s, err := StoreOf(context.Background(), reader)
 	assert.NoError(t, err)
