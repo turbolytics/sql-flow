@@ -591,7 +591,9 @@ source, and every bucket must lie on its grain's UTC boundary. `--tests`
 adds fixture cases for what those two rules cannot see, such as `last` and
 `count_buckets`; [`dev/config/rollups/bluesky.test.yml`](dev/config/rollups/bluesky.test.yml)
 shows the format. The output starts with the seed, and `--seed` repeats a
-run.
+run. The role on `--dsn` needs `CREATE` on the database. Ctrl-C or `SIGTERM`
+ends a run and still drops its schema; a run killed with `SIGKILL` leaves
+it, so drop a leftover `sqlflow_test_` schema with `DROP SCHEMA ... CASCADE`.
 
 `ddl` and `check` suit a team that applies SQL through its own migration
 runner. `install` and `run` do it for you. [`dev/config/rollups/bluesky.yml`](dev/config/rollups/bluesky.yml)

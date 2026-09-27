@@ -64,3 +64,15 @@ func TestCliRollupTest_AFailedTestIsAUserCode(t *testing.T) {
 
 	assert.Equal(t, 10, errs.ExitCode(errs.New(errs.CodeConfigRollupTestFailed, "1 of 3 checks failed")))
 }
+
+// A connect failure names the flag the user set, not the store the file
+// declares, which the command never reads.
+func TestCliRollupTest_AnUnreachableDSNNamesTheFlag(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+
+	_, _, err := run(t, "test", "-c", example, "--dsn", unreachable)
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeRollupUnreachable, errs.CodeOf(err))
+	assert.That(t, strings.Contains(err.Error(), "--dsn 127.0.0.1/rollup"))
+	assert.False(t, strings.Contains(err.Error(), "rollup store"))
+}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -58,11 +60,15 @@ func newTestCommand() *cobra.Command {
 			if !cmd.Flags().Changed("seed") {
 				seed = time.Now().UnixNano()
 			}
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
+			// Ctrl-C and a CI runner's SIGTERM end the run through its
+			// context, so the deferred cleanup still drops the schema.
+			parent := cmd.Context()
+			if parent == nil {
+				parent = context.Background()
 			}
-			conn, err := gen.Connect(ctx, dsn)
+			ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			conn, err := gen.ConnectDSN(ctx, dsn)
 			if err != nil {
 				return err
 			}
@@ -76,7 +82,7 @@ func newTestCommand() *cobra.Command {
 			}
 			// The schema goes even when a check fails or the context ends.
 			defer func() {
-				if cerr := sb.Close(context.Background(), conn, keep); cerr != nil && err == nil {
+				if cerr := sb.Release(context.Background(), conn, keep); cerr != nil && err == nil {
 					err = cerr
 				}
 				if keep {

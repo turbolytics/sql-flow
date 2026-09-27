@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/errs"
 )
@@ -74,17 +77,57 @@ func OpenSandbox(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, 
 			quote(sb.Schema), quote(s.table), s.schema, quote(s.table)))
 	}
 	stmts = append(stmts, "SET search_path TO "+quote(sb.Schema))
-	for _, stmt := range stmts {
+	for i, stmt := range stmts {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
-			_ = sb.Close(ctx, conn, false)
+			_ = sb.Release(context.WithoutCancel(ctx), conn, false)
+			var pgErr *pgconn.PgError
+			if i == 0 && errors.As(err, &pgErr) && pgErr.Code == "42501" {
+				return nil, createDenied(ctx, conn, err)
+			}
 			return nil, sandboxError(err, stmt)
 		}
 	}
 	if _, err := Install(ctx, conn, conf, version); err != nil {
-		_ = sb.Close(ctx, conn, false)
+		_ = sb.Release(context.WithoutCancel(ctx), conn, false)
 		return nil, err
 	}
 	return sb, nil
+}
+
+// createDenied is a refused CREATE SCHEMA as the user's to fix: the role on
+// --dsn needs CREATE on its database, and the message names the grant.
+func createDenied(ctx context.Context, conn *pgx.Conn, err error) error {
+	db, role := "<database>", "<role>"
+	_ = conn.QueryRow(ctx, "SELECT quote_ident(current_database()), quote_ident(current_user)").Scan(&db, &role)
+	return errs.Wrap(errs.CodeConfigInvalid, err,
+		"rollup test: the role on --dsn cannot create the test schema; run GRANT CREATE ON DATABASE %s TO %s, or point --dsn at a database the role owns",
+		db, role)
+}
+
+// Release is Close for the end of a run or an open that failed. A query
+// cancelled by its context, as Ctrl-C does mid-run, closes pgx's
+// connection, so when conn is closed Release drops the schema over a new
+// connection made from conn's config, which pgx keeps after the close.
+func (s *Sandbox) Release(ctx context.Context, conn *pgx.Conn, keep bool) error {
+	if !conn.IsClosed() {
+		if err := s.Close(ctx, conn, keep); err == nil || !conn.IsClosed() {
+			return err
+		}
+	}
+	if keep {
+		return nil
+	}
+	cfg := conn.Config().Copy()
+	fresh, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		msg := err.Error()
+		if cfg.Password != "" {
+			msg = strings.ReplaceAll(msg, cfg.Password, "********")
+		}
+		return errs.New(errs.CodeRollupUnreachable, "rollup test: reconnect to drop %s: %s", s.Schema, msg)
+	}
+	defer fresh.Close(context.Background())
+	return s.Close(ctx, fresh, false)
 }
 
 // Close restores the session's search_path and, unless keep, drops the
