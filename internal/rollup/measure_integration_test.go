@@ -77,9 +77,11 @@ func TestIntegrationRollupRun_TriggerCostIsAbsentUntilTheServerTracksFunctions(t
 	w := connectIn(t, srv.dsn, "UTC")
 	execSQL(t, w, "SET track_functions = 'pl'")
 	execSQL(t, w, `INSERT INTO posts_per_minute_by_lang (bucket, lang, posts) VALUES ('2026-09-12T00:05:00Z', 'en', 1)`)
-	// The writer's session flushes its counts when it goes idle, and the
-	// server can show a function's row before its calls, so the test waits
-	// for the calls.
+	// A session that flushed its counts under a second ago holds new ones
+	// until it has been idle 10s. The SET above flushed, so force the next.
+	execSQL(t, w, "SELECT pg_stat_force_next_flush()")
+	// The server can show a function's row before its calls, so the test
+	// waits for the calls.
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		calls, seconds, ok, err := TriggerCost(ctx, srv.conn, r)
