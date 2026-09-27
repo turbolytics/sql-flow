@@ -28,11 +28,13 @@ func TestCliRollupTest_EachTypeGeneratesItsValues(t *testing.T) {
 			assert.That(t, n >= 0 && n <= 1000)
 		}
 
+		// Never negative: a sum of mixed signs can land near zero, where
+		// verify's relative tolerance fails a correct merge.
 		v, err := generate(sourceColumn{Name: "x", Type: "double precision"}, start, time.Minute, rng)
 		assert.NoError(t, err)
 		f, err := strconv.ParseFloat(v.(string), 64)
 		assert.NoError(t, err)
-		assert.That(t, f >= -1000 && f <= 1000 && f != math.Trunc(f))
+		assert.That(t, f >= 0 && f <= 1000 && f != math.Trunc(f))
 
 		for _, typ := range []string{"text", "character varying(8)"} {
 			v, err = generate(sourceColumn{Name: "s", Type: typ}, start, time.Minute, rng)

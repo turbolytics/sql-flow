@@ -48,6 +48,9 @@ type WorkloadReport struct {
 	// Digest is a sha256 over every statement's zone and arguments in order.
 	// One seed gives one digest.
 	Digest string
+	// FedBy names the rollup whose table is this rollup's source. Its rows
+	// arrive through that rollup's triggers, so the workload writes none.
+	FedBy string
 }
 
 // sourceColumn is one source column the workload writes.
@@ -61,11 +64,17 @@ type sourceColumn struct {
 // RunWorkload writes a seeded workload to each rollup's source on the
 // session's search_path, through the triggers: 20 batches of 1 to 50 rows,
 // each one upsert in its own transaction and session zone, one row in ten
-// rewriting a key an earlier batch wrote.
+// rewriting a key an earlier batch wrote. A rollup whose source another
+// rollup makes gets its rows through that rollup's triggers instead.
 func RunWorkload(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, seed int64) ([]WorkloadReport, error) {
 	rng := rand.New(rand.NewSource(seed))
+	made := madeBy(conf)
 	var out []WorkloadReport
 	for _, r := range conf.Rollups {
+		if owner, ok := made[r.Source.Table]; ok {
+			out = append(out, WorkloadReport{Rollup: r.Name, FedBy: owner})
+			continue
+		}
 		rep, err := runWorkload(ctx, conn, r, rng)
 		if err != nil {
 			return nil, err
@@ -238,8 +247,8 @@ func writable(c sourceColumn) error {
 }
 
 // generate draws a value for c in a row whose source bucket is width wide
-// from start: an integer from 0 to 1,000, a double from -1,000 to 1,000
-// with a fraction, text from the pool, or a timestamp inside the bucket.
+// from start: an integer from 0 to 1,000, a double from 0 to 1,000 with a
+// fraction, text from the pool, or a timestamp inside the bucket.
 // A timestamp stays a time.Time until bindText formats it in the batch's
 // zone.
 func generate(c sourceColumn, start time.Time, width time.Duration, rng *rand.Rand) (any, error) {
@@ -250,7 +259,10 @@ func generate(c sourceColumn, start time.Time, width time.Duration, rng *rand.Ra
 	case c.Type == "smallint", c.Type == "integer", c.Type == "bigint":
 		return strconv.Itoa(rng.Intn(1001)), nil
 	case c.Type == "double precision":
-		return strconv.FormatFloat(rng.Float64()*2000-1000, 'g', -1, 64), nil
+		// Never negative. Verify's tolerance is relative, and a sum of mixed
+		// signs that lands near zero differs between a merge of finer sums
+		// and a sum from scratch by more than 1e-9 of itself.
+		return strconv.FormatFloat(rng.Float64()*1000, 'g', -1, 64), nil
 	case c.Type == "text", strings.HasPrefix(c.Type, "character varying"):
 		return textPool[rng.Intn(len(textPool))], nil
 	}

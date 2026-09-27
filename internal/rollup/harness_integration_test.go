@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
 
@@ -78,6 +79,8 @@ func TestIntegrationRollupTest_AMissingSourceStopsTheSandbox(t *testing.T) {
 	_, err := OpenSandbox(context.Background(), srv.conn, loadExample(t), "test")
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "posts_per_minute_by_lang"))
+	assert.Equal(t, errs.CodeConfigRollup, errs.CodeOf(err))
+	assert.That(t, strings.Contains(err.Error(), "does not exist"))
 	assert.Equal(t, int64(0), count(t, srv.conn, "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'sqlflow_test_%'"))
 }
 
@@ -385,4 +388,39 @@ func TestIntegrationRollupTest_AWriteToAColumnTheSourceLacksIsRefusedAtItsPath(t
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "tests.0.writes.0.0.nope"))
 	assert.Equal(t, int64(0), count(t, srv.conn, "SELECT count(*) FROM posts_per_minute_by_lang WHERE bucket = '2026-09-24T12:07:00Z'"))
+}
+
+// A rollup that reads another rollup's table gets its rows through that
+// rollup's triggers: its source is neither cloned nor written.
+func TestIntegrationRollupTest_AChainedRollupPasses(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	conf := withLangDays(t)
+	_, reports := workload(t, srv.conn, conf, 42)
+	assert.Equal(t, 2, len(reports))
+	assert.Equal(t, WorkloadReport{Rollup: "lang_days", FedBy: "posts"}, reports[1])
+	assert.That(t, count(t, srv.conn, "SELECT count(*) FROM lang_days_1d") > 0)
+	noFailures(t, srv.conn, conf)
+}
+
+// A case writes to the root rollup's source and may list the tables of a
+// rollup chained from it.
+func TestIntegrationRollupTest_ACaseExpectsAChainedRollupsTables(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	srv := startRollupPostgres(t)
+	failures, err := runCase(t, srv.conn, withLangDays(t), config.RollupTestCase{
+		Name: "chained", Rollup: "posts",
+		Writes: [][]map[string]any{write(map[string]any{"bucket": "2026-09-24T12:07:00Z", "lang": "en", "posts": 9})},
+		Expect: map[string][]map[string]any{
+			"lang_days_1d": {{"bucket": "2026-09-24T00:00:00Z", "lang": "en", "posts": 9}},
+		},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(failures))
 }

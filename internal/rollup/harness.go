@@ -29,7 +29,9 @@ type Sandbox struct {
 
 // OpenSandbox creates a schema, clones each source of conf into it, points
 // the session's search_path at it alone, and installs conf there. install
-// resolves every name through search_path, so it runs unchanged.
+// resolves every name through search_path, so it runs unchanged. A source
+// that a rollup of conf makes is not cloned: install creates it with that
+// rollup's tables.
 //
 // A clone keeps the source's columns, NOT NULL, defaults, identity,
 // generated columns and indexes, and so the key the sink upserts on. It
@@ -41,13 +43,16 @@ func OpenSandbox(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, 
 	type source struct{ schema, table string }
 	var sources []source
 	seen := map[string]bool{}
+	made := madeBy(conf)
 	for _, r := range conf.Rollups {
-		if seen[r.Source.Table] {
+		if _, ok := made[r.Source.Table]; ok || seen[r.Source.Table] {
 			continue
 		}
 		seen[r.Source.Table] = true
+		// The outer SELECT returns one row, NULL for a missing table, where a
+		// bare lookup would return none.
 		var schema *string
-		if err := conn.QueryRow(ctx, "SELECT relnamespace::regnamespace::text FROM pg_class WHERE oid = to_regclass($1)",
+		if err := conn.QueryRow(ctx, "SELECT (SELECT relnamespace::regnamespace::text FROM pg_class WHERE oid = to_regclass($1))",
 			quote(r.Source.Table)).Scan(&schema); err != nil {
 			return nil, sandboxError(err, "find source "+r.Source.Table)
 		}
@@ -78,11 +83,51 @@ func OpenSandbox(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, 
 			return nil, sandboxError(err, stmt)
 		}
 	}
-	if _, err := Install(ctx, conn, conf, version); err != nil {
+	if err := installInLayers(ctx, conn, conf, version); err != nil {
 		_ = sb.Close(ctx, conn, false)
 		return nil, err
 	}
 	return sb, nil
+}
+
+// installInLayers installs conf a layer at a time: first every rollup whose
+// source no rollup makes, then each rollup whose source the installed ones
+// make. install checks that a source exists before it creates anything, so
+// one install of a chained file refuses an empty schema. A team adds a
+// chained rollup to a running database the same way.
+func installInLayers(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, version string) error {
+	made := madeBy(conf)
+	done := map[string]bool{}
+	for {
+		layer := *conf
+		layer.Rollups = nil
+		added := 0
+		for _, r := range conf.Rollups {
+			owner, fed := made[r.Source.Table]
+			switch {
+			case done[r.Name]:
+				layer.Rollups = append(layer.Rollups, r)
+			case !fed || done[owner]:
+				layer.Rollups = append(layer.Rollups, r)
+				added++
+			}
+		}
+		if added == 0 {
+			if len(done) == len(conf.Rollups) {
+				return nil
+			}
+			// The rest read each other's tables in a cycle, which install
+			// refuses by name.
+			_, err := Install(ctx, conn, conf, version)
+			return err
+		}
+		if _, err := Install(ctx, conn, &layer, version); err != nil {
+			return err
+		}
+		for _, r := range layer.Rollups {
+			done[r.Name] = true
+		}
+	}
 }
 
 // Close restores the session's search_path and, unless keep, drops the
@@ -147,4 +192,15 @@ func CheckInvariants(ctx context.Context, conn *pgx.Conn, conf *config.RollupsCo
 
 func sandboxError(err error, step string) error {
 	return errs.Wrap(errs.CodeRollupInternal, err, "rollup test: %s", step)
+}
+
+// madeBy maps each table a rollup of conf makes to that rollup's name.
+func madeBy(conf *config.RollupsConf) map[string]string {
+	out := map[string]string{}
+	for _, r := range conf.Rollups {
+		for _, e := range edges(r) {
+			out[e.Table] = r.Name
+		}
+	}
+	return out
 }

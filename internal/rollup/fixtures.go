@@ -88,7 +88,13 @@ func RunCase(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, inde
 
 	var out []CaseFailure
 	for _, table := range slices.Sorted(maps.Keys(tc.Expect)) {
-		fs, err := compareCase(ctx, conn, r, table, tc.Expect[table], yamlPath(path, "expect", table))
+		// A listed table may belong to a rollup chained from the case's.
+		owner, ok := tableOwner(conf, table)
+		if !ok {
+			return nil, caseRuleError([]config.Violation{{Code: errs.CodeConfigRollup, Path: yamlPath(path, "expect", table),
+				Message: fmt.Sprintf("test case %q expects table %s, which the rollups file does not declare", tc.Name, table)}})
+		}
+		fs, err := compareCase(ctx, conn, owner, table, tc.Expect[table], yamlPath(path, "expect", table))
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +119,8 @@ func RunCase(ctx context.Context, conn *pgx.Conn, conf *config.RollupsConf, inde
 	return out, nil
 }
 
-// caseTables is every source and rollup table of conf, sources first.
+// caseTables is every source and rollup table of conf, sources first, each
+// once: a chained rollup's source is another rollup's table.
 func caseTables(conf *config.RollupsConf) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -125,10 +132,23 @@ func caseTables(conf *config.RollupsConf) []string {
 	}
 	for _, r := range conf.Rollups {
 		for _, e := range edges(r) {
-			out = append(out, e.Table)
+			if !seen[e.Table] {
+				seen[e.Table] = true
+				out = append(out, e.Table)
+			}
 		}
 	}
 	return out
+}
+
+// tableOwner is the rollup of conf that makes table.
+func tableOwner(conf *config.RollupsConf, table string) (config.Rollup, bool) {
+	for _, r := range conf.Rollups {
+		if _, ok := findEdge(r, table); ok {
+			return r, true
+		}
+	}
+	return config.Rollup{}, false
 }
 
 // writeCase writes one write's rows as one upsert. Its columns are every

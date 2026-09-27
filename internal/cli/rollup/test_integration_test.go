@@ -137,3 +137,28 @@ func TestIntegrationRollupTest_TheCommandNeverReadsTheStore(t *testing.T) {
 	_, _, err := run(t, "test", "-c", withStore(t, unreachable), "--dsn", dsn)
 	assert.NoError(t, err)
 }
+
+// A rollup that reads another rollup's table passes, and the output says
+// where its rows come from.
+func TestIntegrationRollupTest_TheCommandPassesAChainedRollup(t *testing.T) {
+	coverage.Covers(t, "cli.rollup_test")
+	if testing.Short() {
+		t.Skip("integration: starts a Postgres container")
+	}
+	dsn, _ := sourceOnly(t)
+	path := filepath.Join(t.TempDir(), "rollups.yml")
+	assert.NoError(t, os.WriteFile(path, []byte(readFile(t, example)+`
+  - name: lang_days
+    source: {table: posts_by_lang_1h, time_column: bucket, grain: 1h, dimensions: [lang]}
+    grains:
+      1d: {from: 1h}
+    dimension_sets:
+      - name: lang_days
+        dimensions: [lang]
+        measures:
+          posts: {type: sum, column: posts}
+`), 0o644))
+	out, _, err := run(t, "test", "-c", path, "--dsn", dsn)
+	assert.NoError(t, err)
+	assert.That(t, strings.Contains(out, "workload lang_days: fed by rollup posts: ok\n"))
+}
