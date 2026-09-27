@@ -42,6 +42,7 @@ func TestIntegrationSinkKafka_Conformance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	ctx := context.Background()
 
 	nw, err := network.New(ctx)

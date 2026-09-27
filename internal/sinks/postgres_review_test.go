@@ -153,6 +153,7 @@ func TestIntegrationSinkPostgres_AStalledServerFailsTheFlushInsideTheDeadline(t 
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	ctx := context.Background()
 	table := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint PRIMARY KEY, v bigint NOT NULL)")
@@ -189,6 +190,7 @@ func TestIntegrationSinkPostgres_AStalledServerFailsTheProbeInsideTheDeadline(t 
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	table := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint PRIMARY KEY, v bigint NOT NULL)")
 	p := newStallProxy(t, target(t, srv.directDSN(t)))
@@ -219,6 +221,7 @@ func TestIntegrationSinkPostgres_AConnectionClosedBetweenFlushesIsRetried(t *tes
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	for _, rst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rst=%v", rst), func(t *testing.T) {
@@ -245,6 +248,7 @@ func TestIntegrationSinkPostgres_AUserTableNamedLikeStagingSurvives(t *testing.T
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	ctx := context.Background()
 	for _, stmt := range []string{
@@ -271,6 +275,7 @@ func TestIntegrationSinkPostgres_ANullableKeyIsRefusedAtStartup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	table := newKVTable(t, srv, "CREATE TABLE %[1]s (k text, v int, UNIQUE (k))")
 	_, err := newRunSink(t, srv.directDSN(t), table, PostgresModeUpsert, []string{"k"}, nil)
@@ -287,6 +292,7 @@ func TestIntegrationSinkPostgres_DeferrableAndInvalidIndexesAreRefusedAtStartup(
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	ctx := context.Background()
 	deferrable := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint NOT NULL, v int, CONSTRAINT %[1]s_u UNIQUE (k) DEFERRABLE INITIALLY IMMEDIATE)")

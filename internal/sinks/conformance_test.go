@@ -19,9 +19,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
-	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/conformance"
 	"github.com/turbolytics/sql-flow/internal/core"
@@ -58,29 +56,15 @@ func TestIntegrationSinkClickhouse_Conformance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	ctx := context.Background()
 
-	nw, err := network.New(ctx)
-	if err != nil {
-		t.Fatalf("docker network: %v", err)
-	}
-	t.Cleanup(func() { _ = nw.Remove(context.Background()) })
-
-	ch, err := tcclickhouse.Run(ctx, clickhouseImage,
-		network.WithNetwork([]string{"clickhouse"}, nw),
-		testcontainers.WithExposedPorts("8123/tcp"),
-		tcclickhouse.WithUsername(clickhouseUser),
-		tcclickhouse.WithPassword(clickhousePassword),
-		tcclickhouse.WithDatabase(clickhouseDatabase),
-	)
-	if err != nil {
-		t.Fatalf("start clickhouse: %v", err)
-	}
-	t.Cleanup(func() { _ = ch.Terminate(context.Background()) })
+	ch := sharedClickhouse(t)
 
 	// The sink speaks the HTTP interface on 8123, and the proxy forwards to
 	// the container's alias on the shared network rather than to a host port.
-	proxy := conformance.NewProxy(t, nw, "clickhouse:8123")
+	// The proxy is this test's own, so Break hangs no other test's connections.
+	proxy := conformance.NewProxy(t, sharedNetwork(t), "clickhouse:8123")
 
 	table := fmt.Sprintf("conformance_%d", time.Now().UnixNano())
 
