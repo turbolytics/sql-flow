@@ -23,12 +23,18 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/jackc/pgx/v5"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/pgtest"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"github.com/zeebo/assert"
 )
+
+// sharedPostgres is the package's one container. The template stays empty:
+// a case can edit the migrations before it applies them.
+var sharedPostgres = pgtest.New(pgtest.Options{User: "metrics", Password: "metrics"})
+
+func TestMain(m *testing.M) { os.Exit(sharedPostgres.Run(m)) }
 
 const (
 	migrationsDir = "../../render/migrations"
@@ -63,26 +69,20 @@ type server struct {
 	conn *pgx.Conn
 }
 
-// start runs Postgres 18, the template's version, and applies the migrations
-// after edit has had its way with them. Each case gets its own container: the
-// migrations create functions and triggers a second apply would collide with.
+// start gives the case a database of its own on Postgres 18, the template's
+// version, and applies the migrations after edit has had its way with them.
+// Each case gets its own database: the migrations create functions and
+// triggers a second apply would collide with.
 func start(t *testing.T, edit func(string) string) *server {
 	t.Helper()
-	ctx := context.Background()
-	pg, err := tcpostgres.Run(ctx, "postgres:18",
-		tcpostgres.WithDatabase("metrics"),
-		tcpostgres.WithUsername("metrics"),
-		tcpostgres.WithPassword("metrics"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
+	dsn, _ := sharedPostgres.Database(t)
 	t.Cleanup(func() {
 		// A deadlock reaches the test as one line. The server's log says which
 		// locks the two processes held and wanted, which is the diagnosis.
+		// Every test's database logs there, and each entry's prefix names its
+		// database.
 		if t.Failed() {
-			if logs, err := pg.Logs(context.Background()); err == nil {
+			if logs, err := sharedPostgres.Logs(context.Background()); err == nil {
 				raw, _ := io.ReadAll(logs)
 				for _, line := range strings.Split(string(raw), "\n") {
 					if strings.Contains(line, "deadlock") || strings.Contains(line, "waits for") ||
@@ -92,10 +92,7 @@ func start(t *testing.T, edit func(string) string) *server {
 				}
 			}
 		}
-		_ = pg.Terminate(context.Background())
 	})
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	assert.NoError(t, err)
 
 	srv := &server{dsn: dsn, conn: connect(t, dsn)}
 	for _, script := range migrations(t) {
@@ -159,6 +156,8 @@ func TestIntegrationTemplateRender_TwoWritersOfOneMinuteAreSummed(t *testing.T) 
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	// Serial: parallel load can hold the second writer past the 500ms sleep,
+	// and the cases that must lose the first's write would then keep it.
 
 	for _, tt := range []struct {
 		name         string
@@ -217,6 +216,7 @@ func TestIntegrationTemplateRender_MergeRefusesAnotherIsolationLevel(t *testing.
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := start(t, nil)
 
 	exec(t, srv.conn, "BEGIN ISOLATION LEVEL REPEATABLE READ")
@@ -323,6 +323,7 @@ func TestIntegrationTemplateRender_ConcurrentWritersLoseNothingAtAnyGrain(t *tes
 	if testing.Short() {
 		t.Skip("integration: starts a Postgres container")
 	}
+	t.Parallel()
 	srv := start(t, nil)
 
 	const writers, rounds = 4, 40
