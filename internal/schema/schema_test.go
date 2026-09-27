@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -243,6 +244,11 @@ func TestRollupsSchema_AcceptsEveryShippedRollupsExample(t *testing.T) {
 	assert.That(t, len(paths) > 0)
 
 	for _, p := range paths {
+		// A <name>.test.yml beside a rollups file holds its fixture cases,
+		// which config.LoadRollupTests decodes against their own type.
+		if strings.HasSuffix(p, ".test.yml") {
+			continue
+		}
 		t.Run(filepath.Base(p), func(t *testing.T) {
 			rendered, err := config.RenderTemplate(p, nil)
 			assert.NoError(t, err)
