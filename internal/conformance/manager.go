@@ -2,15 +2,19 @@ package conformance
 
 // The manager half of the harness.
 //
-// A watermark manager is a second loop that reaches a sink: it collects the
-// buckets its watermark has passed, flushes them, deletes them, and advances
-// the watermark. The delete and the watermark are its commit. So its claims
-// are the consume loop's, restated for that commit, plus what a poll loop
-// owes on its own: a closed bucket leaves, a poll that cannot deliver stops
-// the process, and a drain ends. And three the watermark adds: it never
-// moves backwards, it publishes committed rows only, and the late-row
-// policy holds. And one the pipeline is owed: a window's I/O, however long,
-// never fails a batch.
+// A watermark manager is a second loop that reaches a sink: on the engine's
+// signal it collects the buckets the asserted watermark has passed, flushes
+// them, deletes the ones past their lateness, and advances the closed
+// watermark. The delete and the watermark are its commit. So its claims are
+// the consume loop's, restated for that commit, plus what a loop owes on its
+// own: a closed bucket leaves, a pass that cannot deliver stops the process,
+// and a drain ends. And two the watermark adds: it never moves backwards,
+// and it publishes committed rows only. And one the pipeline is owed: a
+// window's I/O, however long, never fails a batch.
+//
+// The manager has no clock. It passes on start, on each kick from the
+// engine, and on the drain; the harness drives Pass by hand where a check
+// needs one, and Start where the check is about the loop.
 //
 // The failure-exits claim is #267. The manager logged a failed poll and
 // polled again, so a bucket the destination rejected was collected, written
@@ -27,16 +31,13 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// Manager is what a subject builds: the poll loop, and one poll of it.
+// Manager is what a subject builds: the loop, and one pass of it.
 type Manager interface {
 	Start(ctx context.Context) error
-	Poll(ctx context.Context) error
+	Pass(ctx context.Context) error
 }
 
 // ManagerSubject is one manager the harness can drive.
@@ -44,22 +45,28 @@ type ManagerSubject struct {
 	// Integration is the registry id, e.g. "manager.watermark".
 	Integration string
 
-	// New builds the manager around the sink the harness supplies, polling
-	// at the given interval, with its final poll bounded by the budget and
-	// the given late-row policy, "drop" or "reemit". The harness owns the
-	// sink so it can fail a flush and record what the manager asked of it,
-	// and owns the budget so it can run one out. Every call builds over the
-	// same persisted state, which is how the watermark's memory is checked.
-	New func(t *testing.T, sink core.Sink, poll time.Duration, budget *core.DrainBudget, late string) Manager
+	// New builds the manager around the sink the harness supplies, with its
+	// final pass bounded by the budget and no signal: the harness drives
+	// Pass itself. The harness owns the sink so it can fail a flush and
+	// record what the manager asked of it, and owns the budget so it can run
+	// one out. Every call builds over the same persisted state, which is how
+	// the watermark's memory is checked.
+	New func(t *testing.T, sink core.Sink, budget *core.DrainBudget) Manager
 
-	// Seed replaces the table's contents with n closed buckets, the stream
-	// idle for longer than the window's idle bound, so every one of them
-	// closes on the next poll.
+	// Seed replaces the table's contents with n buckets, the engine having
+	// asserted past every one of them, so every one closes on the next pass.
 	Seed func(t *testing.T, n int)
 
-	// SeedLate adds n rows to a bucket below the watermark, which a manager
-	// has already closed. Called after a poll that closed what Seed wrote.
+	// SeedLate adds n rows to a bucket a manager has already closed: what a
+	// window with lateness retains, written by hand. Called after a pass that
+	// closed what Seed wrote. The harness uses them to see that a manager's
+	// memory, not the table's oldest row, decides what is published.
 	SeedLate func(t *testing.T, n int)
+
+	// SeedNewer adds a bucket newer than every one a manager has closed, the
+	// engine asserted past it, so the next pass publishes it and updates the
+	// window's row.
+	SeedNewer func(t *testing.T)
 
 	// Remaining returns how many rows the table still holds.
 	Remaining func(t *testing.T) int64
@@ -76,26 +83,10 @@ type ManagerSubject struct {
 	// the window-I/O claim.
 	Batch func(t *testing.T) error
 
-	// HoldCommit builds like New, polling only when asked, over a connection
-	// whose commit calls hold first. By then the close has written its
-	// delete and its watermark and committed neither.
-	HoldCommit func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, hold func()) Manager
-
-	// Metered builds like New, polling only when asked, recording its
-	// metrics on the given provider so the harness can read what the manager
-	// counted. Optional, with SeedNewer and LateInstrument: a subject without
-	// all three skips the counted-once claim.
-	Metered func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, mp metric.MeterProvider) Manager
-
-	// SeedNewer adds a bucket newer than every one a manager has closed,
-	// which the next poll closes and publishes. Beside late rows it makes a
-	// close that has already counted them reach the sink, so a sink that
-	// refuses the flush rolls the close back after the count.
-	SeedNewer func(t *testing.T)
-
-	// LateInstrument is the counter the manager records late rows on. The
-	// harness sums it across attributes.
-	LateInstrument string
+	// HoldCommit builds like New over a connection whose commit calls hold
+	// first. By then the close has written its delete and its watermark and
+	// committed neither.
+	HoldCommit func(t *testing.T, sink core.Sink, budget *core.DrainBudget, hold func()) Manager
 }
 
 // Managers proves every manager invariant against the subject.
@@ -104,8 +95,8 @@ func Managers(t *testing.T, s ManagerSubject) {
 	if s.Integration == "" {
 		t.Fatal("conformance: ManagerSubject.Integration is required")
 	}
-	if s.New == nil || s.Seed == nil || s.SeedLate == nil || s.Remaining == nil {
-		t.Fatal("conformance: ManagerSubject needs New, Seed, SeedLate and Remaining")
+	if s.New == nil || s.Seed == nil || s.SeedLate == nil || s.SeedNewer == nil || s.Remaining == nil {
+		t.Fatal("conformance: ManagerSubject needs New, Seed, SeedLate, SeedNewer and Remaining")
 	}
 
 	feature, hasFeature, err := coverage.FeatureFor(s.Integration)
@@ -141,8 +132,6 @@ const (
 	managerDrainBounded    = "manager.drain.bounded"
 	watermarkNeverRegress  = "manager.watermark.never_regresses"
 	closeCommittedRowsOnly = "manager.close.committed_rows_only"
-	latePolicyHolds        = "manager.late.policy_holds"
-	lateCountedOnce        = "manager.late.counted_once"
 	batchIndependentOfIO   = "pipeline.batch.independent_of_window_io"
 )
 
@@ -150,12 +139,9 @@ const (
 // a manager that deletes one bucket per flush is caught.
 const seededWindows = 2
 
-// managerPoll is the interval the harness runs the loop at.
-const managerPoll = 20 * time.Millisecond
-
-// managerWait bounds every wait on the loop. It is many times the poll
-// interval on purpose: a tighter bound asserts how fast the machine is,
-// which is how #245 failed on CI.
+// managerWait bounds every wait on the loop. It is generous on purpose: a
+// tighter bound asserts how fast the machine is, which is how #245 failed on
+// CI.
 const managerWait = 5 * time.Second
 
 func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
@@ -168,8 +154,6 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	bounded := verdict{invariant: managerDrainBounded}
 	regress := verdict{invariant: watermarkNeverRegress}
 	committedOnly := verdict{invariant: closeCommittedRowsOnly}
-	late := verdict{invariant: latePolicyHolds}
-	countedOnce := verdict{invariant: lateCountedOnce}
 	independent := verdict{invariant: batchIndependentOfIO}
 
 	if err := checkDeleteAfterFlush(t, s); err != nil {
@@ -196,15 +180,6 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	} else if err := checkCommittedRowsOnly(t, s); err != nil {
 		committedOnly.failure = err.Error()
 	}
-	if err := checkLatePolicyHolds(t, s); err != nil {
-		late.failure = err.Error()
-	}
-	if s.Metered == nil || s.SeedNewer == nil || s.LateInstrument == "" {
-		countedOnce.skipped = s.Integration + " cannot report what it counted; " +
-			"supply Metered, SeedNewer and LateInstrument"
-	} else if err := checkLateCountedOnce(t, s); err != nil {
-		countedOnce.failure = err.Error()
-	}
 	if s.Batch == nil || s.HoldCommit == nil {
 		independent.skipped = s.Integration + " cannot run a batch beside a " +
 			"held close; supply Batch and HoldCommit"
@@ -213,7 +188,7 @@ func managerVerdicts(t *testing.T, s ManagerSubject) []verdict {
 	}
 
 	return []verdict{afterFlush, onFailure, eventually, exits, bounded, regress,
-		committedOnly, late, countedOnce, independent}
+		committedOnly, independent}
 }
 
 // newManagerRun seeds the table and builds the manager on a recording sink.
@@ -228,11 +203,11 @@ func newManagerRun(t *testing.T, s ManagerSubject, fail bool) (Manager, *Recorde
 	// The default deadline, so no check but the bounded one can run it out.
 	budget := core.NewDrainBudget(core.DefaultDrainDeadline)
 	t.Cleanup(budget.Stop)
-	return s.New(t, sink.counted, managerPoll, budget, "reemit"), rec, sink
+	return s.New(t, sink.counted, budget), rec, sink
 }
 
 // checkDeleteAfterFlush holds that the table still has every closed bucket
-// at the moment the sink is flushed, and none once the poll returns.
+// at the moment the sink is flushed, and none once the pass returns.
 //
 // Observed from inside the flush rather than inferred from the count
 // afterwards: a manager that deleted first and flushed second leaves the
@@ -249,11 +224,11 @@ func checkDeleteAfterFlush(t *testing.T, s ManagerSubject) error {
 		}
 	}
 
-	if err := m.Poll(context.Background()); err != nil {
-		return fmt.Errorf("a poll with no fault injected failed: %v", err)
+	if err := m.Pass(context.Background()); err != nil {
+		return fmt.Errorf("a pass with no fault injected failed: %v", err)
 	}
 	if !sameOrder(rec.Events(), []string{"flush"}) {
-		return fmt.Errorf("the poll did %s; want one flush", list(rec.Events()))
+		return fmt.Errorf("the pass did %s; want one flush", list(rec.Events()))
 	}
 	if atFlush != seededWindows {
 		return fmt.Errorf(
@@ -265,7 +240,7 @@ func checkDeleteAfterFlush(t *testing.T, s ManagerSubject) error {
 	if left := s.Remaining(t); left != 0 {
 		return fmt.Errorf(
 			"the sink accepted %d buckets and %d rows are still in the "+
-				"table, so the next poll publishes them again",
+				"table, so the next pass publishes them again",
 			seededWindows, left)
 	}
 	return nil
@@ -276,8 +251,8 @@ func checkDeleteNothingOnFailure(t *testing.T, s ManagerSubject) error {
 	t.Helper()
 	m, rec, _ := newManagerRun(t, s, true)
 
-	if err := m.Poll(context.Background()); err == nil {
-		return fmt.Errorf("the flush failed and the poll did not")
+	if err := m.Pass(context.Background()); err == nil {
+		return fmt.Errorf("the flush failed and the pass did not")
 	}
 	if !sameOrder(rec.Events(), []string{"flush-failed"}) {
 		return fmt.Errorf("after a failed flush the manager did %s; want "+
@@ -290,28 +265,28 @@ func checkDeleteNothingOnFailure(t *testing.T, s ManagerSubject) error {
 				"nothing downstream can tell",
 			seededWindows-left, seededWindows)
 	}
-	// And the watermark did not move: a second poll publishes the same
-	// buckets rather than treating them as late.
+	// And the watermark did not move: a second pass publishes the same
+	// buckets rather than finding them behind it.
 	rec2 := &Recorder{}
 	sink2 := newRecordingSink(rec2, nil, noop.NewMeterProvider())
 	budget := core.NewDrainBudget(core.DefaultDrainDeadline)
 	defer budget.Stop()
-	m2 := s.New(t, sink2.counted, managerPoll, budget, "drop")
-	if err := m2.Poll(context.Background()); err != nil {
-		return fmt.Errorf("the poll after a failed flush failed: %v", err)
+	m2 := s.New(t, sink2.counted, budget)
+	if err := m2.Pass(context.Background()); err != nil {
+		return fmt.Errorf("the pass after a failed flush failed: %v", err)
 	}
 	if sink2.Rows() != seededWindows {
 		return fmt.Errorf(
-			"after a failed flush the next poll published %d of %d rows. The "+
-				"watermark moved past buckets the sink never took, so under "+
-				"drop they were discarded as late",
+			"after a failed flush the next pass published %d of %d rows. The "+
+				"watermark moved past buckets the sink never took, so nothing "+
+				"will ever publish them",
 			sink2.Rows(), seededWindows)
 	}
 	return nil
 }
 
 // checkPublishEventually starts the loop over closed buckets and holds that
-// they reach the sink without anything else happening.
+// they reach the sink on the start pass, without anything else happening.
 func checkPublishEventually(t *testing.T, s ManagerSubject) error {
 	t.Helper()
 	m, rec, _ := newManagerRun(t, s, false)
@@ -379,7 +354,7 @@ func checkFailureExits(t *testing.T, s ManagerSubject) error {
 		<-done
 		return fmt.Errorf(
 			"the sink rejected every flush for %s and the manager kept "+
-				"polling, %d attempts. Each poll collected the same buckets and "+
+				"going, %d attempts. Each pass collected the same buckets and "+
 				"failed the same way, and the process stayed up. A supervisor "+
 				"never notices, and the table never drains",
 			managerWait, sink.Flushes())
@@ -400,9 +375,11 @@ func checkFailureExits(t *testing.T, s ManagerSubject) error {
 	return nil
 }
 
-// checkManagerDrainBounded cancels Start against a sink that never answers
-// and holds that it returns inside the drain deadline, with every closed
-// bucket still in the table for the next start to publish.
+// checkManagerDrainBounded starts the loop on a context already cancelled,
+// against a sink that never answers, and holds that it returns inside the
+// drain deadline, with every closed bucket still in the table for the next
+// start to publish. Already cancelled, so the only pass that runs is the
+// drain's: the case this check is about.
 func checkManagerDrainBounded(t *testing.T, s ManagerSubject) error {
 	t.Helper()
 	s.Seed(t, seededWindows)
@@ -413,36 +390,35 @@ func checkManagerDrainBounded(t *testing.T, s ManagerSubject) error {
 	defer watchdog.Stop()
 	budget := core.NewDrainBudget(drainBudget)
 	defer budget.Stop()
-	// An hour between polls, so the only poll that runs is the final one.
-	m := s.New(t, sink.counted, time.Hour, budget, "reemit")
+	m := s.New(t, sink.counted, budget)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	done := make(chan error, 1)
 	started := time.Now()
 	go func() { done <- m.Start(ctx) }()
-	cancel()
 
 	select {
 	case err := <-done:
 		if err == nil {
-			return fmt.Errorf("the sink never answered the final poll and Start " +
+			return fmt.Errorf("the sink never answered the final pass and Start " +
 				"returned nil, so the shutdown reports buckets published that were not")
 		}
 	case <-time.After(2 * drainBoundedWait):
-		return fmt.Errorf("a %s drain deadline held the final poll past %s against "+
+		return fmt.Errorf("a %s drain deadline held the final pass past %s against "+
 			"a sink that never answered, and the watchdog could not release it",
 			drainBudget, 2*drainBoundedWait)
 	}
 	if took := time.Since(started); took >= drainBoundedWait {
-		return fmt.Errorf("a %s drain deadline held the final poll for %s against "+
+		return fmt.Errorf("a %s drain deadline held the final pass for %s against "+
 			"a sink that never answered", drainBudget, took)
 	}
 	if sink.Flushes() != 1 {
-		return fmt.Errorf("the final poll flushed %d times; want the one attempt the "+
+		return fmt.Errorf("the final pass flushed %d times; want the one attempt the "+
 			"deadline ended", sink.Flushes())
 	}
 	if left := s.Remaining(t); left != seededWindows {
-		return fmt.Errorf("the final poll ran out of time and %d of %d closed buckets "+
+		return fmt.Errorf("the final pass ran out of time and %d of %d closed buckets "+
 			"are gone from the table. They were never delivered, so a restart "+
 			"cannot publish them", seededWindows-left, seededWindows)
 	}
@@ -452,11 +428,13 @@ func checkManagerDrainBounded(t *testing.T, s ManagerSubject) error {
 // checkWatermarkNeverRegresses closes buckets, then builds a second manager
 // over the same persisted state and holds that it publishes nothing the
 // first one published: the watermark it loads is the one the first one
-// saved, and a table that now holds older rows does not pull it back.
+// saved, and a table that now holds older rows does not pull it back. Nor
+// does a pass in which nothing moved touch those rows: lateness is the
+// engine's to decide, and the manager deletes only what a move expired.
 func checkWatermarkNeverRegresses(t *testing.T, s ManagerSubject) error {
 	t.Helper()
 	m, _, sink := newManagerRun(t, s, false)
-	if err := m.Poll(context.Background()); err != nil {
+	if err := m.Pass(context.Background()); err != nil {
 		return fmt.Errorf("the first close failed: %v", err)
 	}
 	if sink.Rows() != seededWindows {
@@ -470,9 +448,9 @@ func checkWatermarkNeverRegresses(t *testing.T, s ManagerSubject) error {
 	sink2 := newRecordingSink(rec2, nil, noop.NewMeterProvider())
 	budget := core.NewDrainBudget(core.DefaultDrainDeadline)
 	defer budget.Stop()
-	m2 := s.New(t, sink2.counted, managerPoll, budget, "drop")
-	if err := m2.Poll(context.Background()); err != nil {
-		return fmt.Errorf("the second manager's poll failed: %v", err)
+	m2 := s.New(t, sink2.counted, budget)
+	if err := m2.Pass(context.Background()); err != nil {
+		return fmt.Errorf("the second manager's pass failed: %v", err)
 	}
 	if sink2.Rows() != 0 {
 		return fmt.Errorf(
@@ -481,8 +459,10 @@ func checkWatermarkNeverRegresses(t *testing.T, s ManagerSubject) error {
 				"watermark than the one saved, so a restart publishes buckets "+
 				"twice", sink2.Rows())
 	}
-	if left := s.Remaining(t); left != 0 {
-		return fmt.Errorf("under drop, %d late rows are still in the table", left)
+	if left := s.Remaining(t); left != 1 {
+		return fmt.Errorf("a pass in which the watermark did not move left %d rows "+
+			"of the 1 seeded behind it; it published nothing, so it had no "+
+			"business deleting anything", left)
 	}
 	return nil
 }
@@ -497,147 +477,14 @@ func checkCommittedRowsOnly(t *testing.T, s ManagerSubject) error {
 	release := s.Uncommitted(t, seededWindows)
 	defer release()
 
-	if err := m.Poll(context.Background()); err != nil {
-		return fmt.Errorf("a poll beside an open transaction failed: %v", err)
+	if err := m.Pass(context.Background()); err != nil {
+		return fmt.Errorf("a pass beside an open transaction failed: %v", err)
 	}
 	if sink.Rows() != seededWindows {
 		return fmt.Errorf(
 			"the sink received %d rows for %d committed. The close read the "+
 				"pipeline's uncommitted rows, so a batch that rolls back has "+
 				"already been published", sink.Rows(), seededWindows)
-	}
-	return nil
-}
-
-// checkLatePolicyHolds closes buckets, seeds rows for one of them, and holds
-// that drop discards them without a flush and reemit publishes them once.
-func checkLatePolicyHolds(t *testing.T, s ManagerSubject) error {
-	t.Helper()
-	for _, policy := range []string{"drop", "reemit"} {
-		s.Seed(t, seededWindows)
-		rec := &Recorder{}
-		sink := newRecordingSink(rec, nil, noop.NewMeterProvider())
-		budget := core.NewDrainBudget(core.DefaultDrainDeadline)
-		m := s.New(t, sink.counted, managerPoll, budget, policy)
-		if err := m.Poll(context.Background()); err != nil {
-			budget.Stop()
-			return fmt.Errorf("%s: the first close failed: %v", policy, err)
-		}
-
-		s.SeedLate(t, 3)
-		if err := m.Poll(context.Background()); err != nil {
-			budget.Stop()
-			return fmt.Errorf("%s: the poll after the late rows failed: %v", policy, err)
-		}
-		budget.Stop()
-
-		flushes, rows, left := sink.Flushes(), sink.Rows(), s.Remaining(t)
-		switch policy {
-		case "drop":
-			if flushes != 1 || rows != seededWindows {
-				return fmt.Errorf(
-					"drop: late rows for a closed bucket were published: %d flushes "+
-						"and %d rows, want 1 and %d. An append-only sink now holds "+
-						"the bucket twice", flushes, rows, seededWindows)
-			}
-			if left != 0 {
-				return fmt.Errorf("drop: %d late rows are still in the table", left)
-			}
-		case "reemit":
-			if flushes != 2 || rows != seededWindows+3 {
-				return fmt.Errorf(
-					"reemit: late rows for a closed bucket were not published: %d "+
-						"flushes and %d rows, want 2 and %d", flushes, rows, seededWindows+3)
-			}
-			if left != 0 {
-				return fmt.Errorf("reemit: %d late rows are still in the table after "+
-					"being published", left)
-			}
-		}
-	}
-	return nil
-}
-
-// lateRows is how many late rows the counted-once check writes.
-const lateRows = 3
-
-// checkLateCountedOnce proves the late-row counter counts what happened, not
-// what was attempted, under both policies.
-//
-// A close counts late rows, then fails -- here the sink refuses the flush of a
-// newer bucket -- and rolls back, restoring the rows it dropped or reemitted.
-// The counter must still read zero. The close that later succeeds counts the
-// same rows, once. Counted before the commit, the failed close kept its count
-// and the next one added the same rows again: under drop, the data-loss
-// counter read twice the rows that were lost.
-func checkLateCountedOnce(t *testing.T, s ManagerSubject) error {
-	t.Helper()
-	for _, policy := range []string{"drop", "reemit"} {
-		reader := sdkmetric.NewManualReader()
-		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-		counted := func() (int64, error) {
-			var rm metricdata.ResourceMetrics
-			if err := reader.Collect(context.Background(), &rm); err != nil {
-				return 0, err
-			}
-			var total int64
-			for _, sm := range rm.ScopeMetrics {
-				for _, m := range sm.Metrics {
-					if m.Name != s.LateInstrument {
-						continue
-					}
-					if sum, ok := m.Data.(metricdata.Sum[int64]); ok {
-						for _, dp := range sum.DataPoints {
-							total += dp.Value
-						}
-					}
-				}
-			}
-			return total, nil
-		}
-		poll := func(fail bool) error {
-			budget := core.NewDrainBudget(core.DefaultDrainDeadline)
-			defer budget.Stop()
-			sink := newRecordingSink(&Recorder{}, nil, noop.NewMeterProvider())
-			sink.fail = fail
-			return s.Metered(t, sink.counted, budget, policy, mp).Poll(context.Background())
-		}
-
-		s.Seed(t, seededWindows)
-		if err := poll(false); err != nil {
-			return fmt.Errorf("%s: the first close failed: %v", policy, err)
-		}
-
-		s.SeedLate(t, lateRows)
-		s.SeedNewer(t)
-		if err := poll(true); err == nil {
-			return fmt.Errorf("%s: a close whose sink refused the flush reported success", policy)
-		}
-		n, err := counted()
-		if err != nil {
-			return fmt.Errorf("%s: reading %s: %v", policy, s.LateInstrument, err)
-		}
-		if n != 0 {
-			return fmt.Errorf(
-				"%s: a close that failed and rolled back counted %d late rows, want 0. "+
-					"The rows are back in the table, and the next close counts them again",
-				policy, n)
-		}
-
-		if err := poll(false); err != nil {
-			return fmt.Errorf("%s: the close after the failure failed: %v", policy, err)
-		}
-		n, err = counted()
-		if err != nil {
-			return fmt.Errorf("%s: reading %s: %v", policy, s.LateInstrument, err)
-		}
-		if n != lateRows {
-			return fmt.Errorf("%s: %d late rows were counted, want %d: each late row "+
-				"counts once, when the close that settled it commits", policy, n, lateRows)
-		}
-		if left := s.Remaining(t); left != 0 {
-			return fmt.Errorf("%s: %d rows are still in the table after the close", policy, left)
-		}
 	}
 	return nil
 }
@@ -682,17 +529,17 @@ func checkBatchIndependentOfWindowIO(t *testing.T, s ManagerSubject) error {
 		}
 	}
 	sink := newRecordingSink(rec, nil, noop.NewMeterProvider())
-	m := s.HoldCommit(t, sink.counted, budget, "reemit", func() { hold(&commitHeld) })
+	m := s.HoldCommit(t, sink.counted, budget, func() { hold(&commitHeld) })
 
 	during := func(armed *atomic.Bool, what string) error {
 		entered, release = make(chan struct{}), make(chan struct{})
 		armed.Store(true)
-		polled := make(chan error, 1)
-		go func() { polled <- m.Poll(context.Background()) }()
+		passed := make(chan error, 1)
+		go func() { passed <- m.Pass(context.Background()) }()
 
 		select {
 		case <-entered:
-		case err := <-polled:
+		case err := <-passed:
 			return fmt.Errorf("the close returned before reaching %s: %v", what, err)
 		case <-time.After(managerWait):
 			close(release)
@@ -712,7 +559,7 @@ func checkBatchIndependentOfWindowIO(t *testing.T, s ManagerSubject) error {
 		close(release)
 
 		select {
-		case err := <-polled:
+		case err := <-passed:
 			if batchErr != nil {
 				return batchErr
 			}
@@ -730,9 +577,9 @@ func checkBatchIndependentOfWindowIO(t *testing.T, s ManagerSubject) error {
 	if err := during(&flushHeld, "its sink's flush"); err != nil {
 		return err
 	}
-	// A late row under reemit makes the next close publish, delete and
-	// update the watermark's row, then stop before committing.
-	s.SeedLate(t, 1)
+	// A newer bucket the engine asserted past makes the next close publish,
+	// delete and update the watermark's row, then stop before committing.
+	s.SeedNewer(t)
 	if err := during(&commitHeld, "its uncommitted delete and watermark"); err != nil {
 		return err
 	}

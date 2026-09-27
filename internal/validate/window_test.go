@@ -17,7 +17,6 @@ const windowedConfig = `tables:
       window:
         time_column: bucket
         size_seconds: 60
-        late_rows: drop
         %s
         sink:
           type: console
@@ -125,63 +124,100 @@ func TestValidateSchema_IndexedWindowTableWithoutStateWarns(t *testing.T) {
 	assert.Equal(t, 0, len(windowDiagnostics(rep)))
 }
 
-// reemit against a sink that appends is a warning: the config runs, and the
-// operator is told the downstream will see corrections.
-func TestValidateSchema_ReemitOnAnAppendOnlySinkWarns(t *testing.T) {
+// Lateness above zero republishes a bucket as a whole value, which an
+// append-only sink holds twice. Refused, not warned: Flink's contract is the
+// same. A sink validate cannot classify -- sqlcommand, clickhouse -- is
+// warned, because whether it replaces is the SQL's or the table engine's
+// call. A sink that replaces by key passes with nothing said.
+func TestValidateSchema_LatenessNeedsAReplacingSink(t *testing.T) {
 	coverage.Covers(t, "validate.schema")
-	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: `tables:
-  sql:
-    - name: agg
-      sql: CREATE TABLE agg (bucket TIMESTAMPTZ, count INT)
-      window:
-        time_column: bucket
-        size_seconds: 60
-        late_rows: reemit
-        sink:
+	withSink := func(sink string) string {
+		cfg := strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1),
+			"%s", "allowed_lateness_seconds: 300", 1)
+		return strings.Replace(cfg, "        sink:\n          type: console\n", sink, 1)
+	}
+	upsert := `        sink:
+          type: postgres
+          postgres:
+            dsn: postgres://u:p@localhost:5432/db
+            table: agg
+            mode: upsert
+            key: [bucket]
+`
+	append := `        sink:
           type: kafka
           kafka:
             brokers: ["localhost:9092"]
             topic: out
-pipeline:
-  batch_size: 1
-  source:
-    type: kafka
-    kafka:
-      brokers: ["localhost:9092"]
-      group_id: g
-      auto_offset_reset: earliest
-      topics: ["t"]
-  handler:
-    type: handlers.InferredMemBatch
-    sql: SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, city, count(*) FROM batch GROUP BY ALL
-  sink:
-    type: noop
-`})
+`
+	sqlcommand := `        sink:
+          type: sqlcommand
+          sqlcommand:
+            sql: INSERT OR REPLACE INTO out SELECT * FROM sqlflow_sink_batch
+`
+
+	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: withSink(upsert)})
 	assert.NoError(t, err)
 	assert.That(t, rep.OK)
-	diags := windowDiagnostics(rep)
-	assert.Equal(t, 1, len(diags))
-	assert.Equal(t, SeverityWarning, diags[0].Severity)
-	assert.That(t, strings.Contains(diags[0].Message, "the kafka sink appends"))
-	assert.Equal(t, 8, diags[0].Position.Line)
-}
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
 
-// A window with no late_rows does not pass the schema: the two policies are
-// different promises to the sink, and a config has to say which it makes.
-func TestValidateSchema_LateRowsIsRequired(t *testing.T) {
-	coverage.Covers(t, "validate.schema")
-	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: strings.Replace(
-		strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1),
-		"        late_rows: drop\n", "", 1)})
+	rep, err = Validate(context.Background(), Request{Path: "w.yml", Config: withSink(append)})
 	assert.NoError(t, err)
 	assert.That(t, !rep.OK)
-	var found bool
-	for _, d := range rep.Diagnostics {
-		if strings.Contains(d.Message, "late_rows") {
-			found = true
-		}
+	diags := windowDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.Equal(t, SeverityError, diags[0].Severity)
+	assert.That(t, strings.Contains(diags[0].Message, "allowed_lateness_seconds is 300 and the kafka sink appends"))
+	// On the key that made the pairing wrong, not on the sink.
+	assert.Equal(t, 9, diags[0].Position.Line)
+
+	rep, err = Validate(context.Background(), Request{Path: "w.yml", Config: withSink(sqlcommand)})
+	assert.NoError(t, err)
+	assert.That(t, rep.OK)
+	diags = windowDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.That(t, strings.Contains(diags[0].Message, "must replace the row"))
+}
+
+// A window with no allowed_lateness_seconds refuses late rows: the key is
+// optional and its absence is 0. Nothing is said about it.
+func TestValidateSchema_LatenessDefaultsToRefusing(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep := validateWindowed(t, "bucket TIMESTAMPTZ", "")
+	assert.That(t, rep.OK)
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
+	rep = validateWindowed(t, "bucket TIMESTAMPTZ", "allowed_lateness_seconds: 0")
+	assert.That(t, rep.OK)
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
+}
+
+// The removed keys fail with a message naming the replacement, on the line
+// they sit on, so a config written against the old schema learns what
+// changed rather than "unknown key".
+func TestValidateSchema_RemovedWindowKeysNameTheirReplacement(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	for key, want := range map[string]string{
+		"late_rows: drop":           "Set allowed_lateness_seconds instead",
+		"late_rows: reemit":         "Set allowed_lateness_seconds instead",
+		"poll_interval_seconds: 10": "nothing polls",
+	} {
+		t.Run(key, func(t *testing.T) {
+			coverage.Covers(t, "validate.schema")
+			rep := validateWindowed(t, "bucket TIMESTAMPTZ", key)
+			assert.That(t, !rep.OK)
+			var found *Diagnostic
+			for i, d := range rep.Diagnostics {
+				if d.Severity == SeverityError && strings.Contains(d.Message, want) {
+					found = &rep.Diagnostics[i]
+				}
+			}
+			if found == nil {
+				t.Fatalf("no error names %q: %v", want, rep.Diagnostics)
+			}
+			assert.Equal(t, 9, found.Position.Line)
+		})
 	}
-	assert.That(t, found)
 }
 
 // The old block is refused with its replacement named, on the line it sits
@@ -221,7 +257,7 @@ pipeline:
 		if strings.Contains(d.Message, "manager is gone") {
 			found = true
 			assert.That(t, strings.Contains(d.Message, "time_column"))
-			assert.That(t, strings.Contains(d.Message, "late_rows"))
+			assert.That(t, strings.Contains(d.Message, "allowed_lateness_seconds"))
 			assert.Equal(t, 5, d.Position.Line)
 		}
 	}
@@ -272,34 +308,53 @@ const plainConfig = `pipeline:
     type: noop
 `
 
-// A windowing pipeline's handler should derive the window's time from the
-// event_time column -- the time the source assigned -- or the buckets and
-// the engine's placement check are on different clocks. A warning until
-// every source can be told where its time is. A pipeline with no window is
-// free to cut time from any field it likes.
-func TestValidateSchema_AWindowingHandlerMustReadEventTime(t *testing.T) {
+// A windowing pipeline's time_column must be time_bucket over event_time
+// with the window's own size, because the engine decides a record's lateness
+// from that bucket and a different expression would put the row somewhere
+// else. This was a warning while the manager only swept the table; the
+// engine refuses records against that bucket now, so it is an error. A
+// pipeline with no window is free to cut time from any field it likes.
+func TestValidateSchema_AWindowingHandlerMustBucketEventTime(t *testing.T) {
 	coverage.Covers(t, "validate.schema")
-	cfg := strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1)
-	cfg = strings.Replace(cfg, "time_bucket(INTERVAL '1 minute', event_time)",
-		"time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000))", 1)
-	rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: cfg})
-	assert.NoError(t, err)
-	// A warning, not a failure: the config still runs, and validate says
-	// why it might be on two clocks.
-	assert.That(t, rep.OK)
-	diags := windowDiagnostics(rep)
-	assert.Equal(t, 1, len(diags))
-	assert.Equal(t, SeverityWarning, diags[0].Severity)
-	assert.That(t, strings.Contains(diags[0].Message, "does not read the event_time column"))
-	assert.That(t, diags[0].Position != nil)
+	base := strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1)
+	const good = "time_bucket(INTERVAL '1 minute', event_time)"
 
-	rep, err = Validate(context.Background(), Request{Path: "p.yml", Config: plainConfig})
+	// The same size spelled in seconds, and the column quoted, both pass.
+	for _, ok := range []string{
+		"time_bucket(INTERVAL '60 seconds', event_time)",
+		"TIME_BUCKET(interval '1 MINUTE', event_time)",
+	} {
+		rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: strings.Replace(base, good, ok, 1)})
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(windowDiagnostics(rep)))
+	}
+
+	for name, bad := range map[string]string{
+		"payload field": "time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000))",
+		"wrong size":    "time_bucket(INTERVAL '5 minutes', event_time)",
+		"date_trunc":    "date_trunc('minute', event_time)",
+		"no derivation": "now()",
+	} {
+		t.Run(name, func(t *testing.T) {
+			coverage.Covers(t, "validate.schema")
+			rep, err := Validate(context.Background(), Request{Path: "w.yml", Config: strings.Replace(base, good, bad, 1)})
+			assert.NoError(t, err)
+			assert.That(t, !rep.OK)
+			diags := windowDiagnostics(rep)
+			assert.Equal(t, 1, len(diags))
+			assert.Equal(t, SeverityError, diags[0].Severity)
+			assert.That(t, strings.Contains(diags[0].Message, "time_bucket(INTERVAL '60 seconds', event_time)"))
+			assert.That(t, diags[0].Position != nil)
+		})
+	}
+
+	rep, err := Validate(context.Background(), Request{Path: "p.yml", Config: plainConfig})
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(windowDiagnostics(rep)))
 }
 
 // A structured handler's batch table is the user's, and the engine fills its
-// event_time column from the record; a windowing pipeline on one should
+// event_time column from the record; a windowing pipeline on one must
 // declare that column, as TIMESTAMPTZ, or there is nothing to cut on.
 func TestValidateSchema_AStructuredWindowingHandlerMustDeclareEventTime(t *testing.T) {
 	coverage.Covers(t, "validate.schema")
@@ -320,10 +375,20 @@ func TestValidateSchema_AStructuredWindowingHandlerMustDeclareEventTime(t *testi
 	rep, err = Validate(context.Background(), Request{Path: "s.yml",
 		Config: structured("CREATE TABLE posts (text TEXT, time_us BIGINT)")})
 	assert.NoError(t, err)
-	assert.That(t, rep.OK)
+	assert.That(t, !rep.OK)
 	diags := windowDiagnostics(rep)
 	assert.Equal(t, 1, len(diags))
-	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, SeverityError, diags[0].Severity)
+
+	// The table declared in a command, as the bluesky examples do, is read
+	// the same way.
+	inCommand := strings.Replace(strings.Replace(windowedConfig, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1)
+	inCommand = "commands:\n  - name: posts\n    sql: |\n      CREATE TABLE IF NOT EXISTS posts (text TEXT, event_time TIMESTAMPTZ);\n" + inCommand
+	inCommand = strings.Replace(inCommand, "type: handlers.InferredMemBatch\n",
+		"type: handlers.StructuredBatch\n    table: posts\n", 1)
+	rep, err = Validate(context.Background(), Request{Path: "s.yml", Config: inCommand})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(windowDiagnostics(rep)))
 	assert.That(t, strings.Contains(diags[0].Message, `table "posts" does not declare event_time TIMESTAMPTZ`))
 	assert.That(t, diags[0].Position != nil)
 }

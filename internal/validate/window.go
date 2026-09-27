@@ -3,6 +3,7 @@ package validate
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/turbolytics/sql-flow/internal/config"
@@ -12,14 +13,22 @@ import (
 
 // checkWindows checks every window declaration without running anything.
 //
-// Three faults it catches before the pipeline starts:
+// The faults it catches before the pipeline starts:
 //
-//   - A `manager:` block. The engine closes windows now, and the two
-//     predicates the block carried are gone. The message names what
-//     replaces them, because the schema check alone says "unknown key".
+//   - A `manager:` block, `late_rows`, or `poll_interval_seconds`: keys
+//     whose meaning is gone. Each message names what replaces it, because
+//     the schema check alone says "unknown key".
 //   - A time column the table's CREATE does not declare as TIMESTAMPTZ. A
 //     TIMESTAMP bucket is read in the session's zone, and the watermark
 //     compares instants, so it closes windows early or never.
+//   - A time column the handler's SQL does not compute as
+//     time_bucket(INTERVAL '<size>', event_time). The engine decides a
+//     record's lateness from that bucket, computed the same way from the
+//     same clock, and a row bucketed any other way is not in the bucket the
+//     engine decided against.
+//   - allowed_lateness_seconds above zero with a sink that appends. A late
+//     row republishes its bucket as a whole value, which an appending sink
+//     then holds twice. A sink validate cannot classify is warned instead.
 //   - An emit_sql that does not read `closed`, which is the only relation a
 //     close supplies.
 //   - A window table with an index and no state path. DuckDB never reclaims
@@ -28,8 +37,8 @@ import (
 //     fifth footgun, as a warning: the pipeline runs, and the operator is
 //     told what it costs.
 //
-// The column check is textual: validate links no DuckDB, so it reads the
-// CREATE statement rather than parsing it.
+// The column checks are textual: validate links no DuckDB, so it reads the
+// CREATE statement and the handler's SQL rather than parsing them.
 func checkWindows(rendered []byte, rep *Report) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(rendered, &root); err != nil {
@@ -56,9 +65,22 @@ func checkWindows(rendered []byte, rep *Report) {
 		if key := mappingKey(table, "manager"); key != nil {
 			fail(fmt.Sprintf("tables.sql[%d]: manager is gone. Declare the window instead: "+
 				"window with time_column, size_seconds, grace_seconds, idle_close_seconds, "+
-				"late_rows, emit_sql and sink. The engine closes it; collect_closed_windows_sql "+
-				"and delete_closed_windows_sql are not written by the user", i),
+				"allowed_lateness_seconds, emit_sql and sink. The engine closes it; "+
+				"collect_closed_windows_sql and delete_closed_windows_sql are not written by the user", i),
 				position(key))
+		}
+		win := mappingValue(table, "window")
+		if key := mappingKey(win, "late_rows"); key != nil {
+			fail(fmt.Sprintf("tables.sql[%d] window: late_rows is gone. Set allowed_lateness_seconds "+
+				"instead: 0 refuses a row for a closed bucket before the handler, which is what drop did "+
+				"after the fact; a positive value keeps a closed bucket that long and republishes it whole "+
+				"when a late row arrives, which is what reemit tried to do without the delta. See "+
+				"docs/superpowers/specs/2026-09-26-watermark-driven-close-design.md", i), position(key))
+		}
+		if key := mappingKey(win, "poll_interval_seconds"); key != nil {
+			fail(fmt.Sprintf("tables.sql[%d] window: poll_interval_seconds is gone. The engine closes a "+
+				"window the moment its watermark passes a bucket's end; nothing polls. Remove the key. See "+
+				"docs/superpowers/specs/2026-09-26-watermark-driven-close-design.md", i), position(key))
 		}
 	}
 
@@ -79,23 +101,21 @@ func checkWindows(rendered []byte, rep *Report) {
 		// block, complying makes the two clocks one by construction, and
 		// this becomes an error.
 		if hasWindow(conf) {
+			// The per-window rule below requires time_column to be cut from
+			// event_time. A structured handler can only do that if its batch
+			// table declares the column, so that is refused here first, with
+			// the message that says what to add. This was a warning until
+			// every source could be told where its time is (#389) and the
+			// engine decided lateness from that bucket (#396); it is an error
+			// now, because a bucket on another clock is a bucket the engine
+			// decides against wrongly.
 			h := conf.Pipeline.Handler
-			warn := func(msg string) {
-				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, msg, position(handlerNode(&root))))
-			}
-			if !mentionsEventTime(h.SQL) {
-				warn("pipeline.handler: a windowing pipeline's handler sql does not read the " +
-					"event_time column, the time the source assigned the record. A bucket cut " +
-					"from another field of the payload is on a different clock from the one the " +
-					"engine checks, and a record the engine refuses as unplaceable is judged on " +
-					"a time the window never sees. Cut the window's time from event_time where " +
-					"the source can be told where its time is")
-			}
 			if isStructuredHandler(h.Type) {
 				if ddl, ok := tableDDL(conf, h.Table); !ok || !declaresTimestamptz(ddl, "event_time") {
-					warn(fmt.Sprintf("pipeline.handler: a windowing pipeline's table %q does not declare "+
+					fail(fmt.Sprintf("pipeline.handler: a windowing pipeline's table %q does not declare "+
 						"event_time TIMESTAMPTZ, so the time the source assigned each record cannot "+
-						"reach the handler's SQL. Declare it and the engine fills it from the record", h.Table))
+						"reach the handler's SQL. Declare it and the engine fills it from the record", h.Table),
+						position(handlerNode(&root)))
 				}
 			}
 		}
@@ -142,21 +162,81 @@ func checkWindows(rendered []byte, rep *Report) {
 					i, w.IdleCloseSeconds, flush, w.IdleCloseSeconds, w.IdleCloseSeconds+flush),
 					position(mappingKey(node, "idle_close_seconds"))))
 			}
-			// reemit publishes emit_sql over the late rows alone, for a bucket
-			// the sink already holds. A sink that appends keeps both rows, and
-			// its reader has to add them rather than keep the newest.
-			if w.LateRows == "reemit" && appendsOnly(w.Sink) {
-				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
-					"tables.sql[%d] window: late_rows is reemit and the %s sink appends, so a "+
-						"late row publishes a second row for a bucket the sink already holds, "+
-						"computed over the late rows alone. Its reader has to add the two. "+
-						"Use drop unless it does",
-					i, w.Sink.Type), position(mappingKey(node, "late_rows"))))
+			// The engine decides a record's lateness from trunc(event_time,
+			// size); the handler must put the row in that bucket and no
+			// other. This was a warning while the engine only swept the
+			// table for late rows and could tolerate the disagreement. It
+			// cannot now.
+			if !derivesTimeColumn(conf.Pipeline.Handler.SQL, w.TimeColumn, w.SizeSeconds) {
+				fail(fmt.Sprintf("tables.sql[%d] window: time_column %q must be computed as "+
+					"time_bucket(INTERVAL '%d seconds', event_time) in the handler's SQL. The engine "+
+					"decides a record's lateness from that bucket, and a row bucketed any other way is "+
+					"not in the bucket the engine decided against. Tell the source where the record's "+
+					"time is with event_time: {path, format} if it is in the payload",
+					i, w.TimeColumn, w.SizeSeconds), position(node))
+			}
+			// A late row within lateness republishes its bucket whole, which
+			// a sink that appends then holds twice. Flink's contract is the
+			// same: a downstream of a window with allowed lateness must
+			// handle updates.
+			if w.AllowedLatenessSecs > 0 {
+				switch {
+				case w.LatenessNeedsReplacingSink():
+					fail(fmt.Sprintf("tables.sql[%d] window: %s", i, config.LatenessNeedsReplacingSinkMessage(*w)),
+						position(mappingKey(node, "allowed_lateness_seconds")))
+				case w.Sink.Type == "sqlcommand" || w.Sink.Type == "clickhouse":
+					rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
+						"tables.sql[%d] window: allowed_lateness_seconds is %d, so a late row republishes "+
+							"its bucket as a whole value. The %s sink must replace the row for (bucket, key) "+
+							"rather than add to it, which is its SQL's or its table engine's to guarantee",
+						i, w.AllowedLatenessSecs, w.Sink.Type), position(mappingKey(node, "allowed_lateness_seconds"))))
+				}
 			}
 		}
 	}
 
 	rep.SetCheck("tables.window", status, "")
+}
+
+// timeBucketOverEventTime matches `time_bucket(INTERVAL '<literal>', event_time) AS <col>`,
+// the one form a windowing pipeline's time_column may take. The engine
+// buckets a record with core.BucketStart, which is time_bucket with DuckDB's
+// origin, so the handler must bucket the same way or lateness is decided
+// against a bucket the row is not in.
+var timeBucketOverEventTime = regexp.MustCompile(
+	`(?is)time_bucket\s*\(\s*INTERVAL\s+'([^']+)'\s*,\s*event_time\s*\)\s+AS\s+"?([A-Za-z_][A-Za-z0-9_]*)"?`)
+
+// intervalSeconds reads DuckDB's quoted interval literal for the units a
+// window size is written in. false for a form it does not read, which
+// validate reports rather than guesses at.
+func intervalSeconds(literal string) (int, bool) {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(literal)))
+	if len(fields) != 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(fields[0])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	per := map[string]int{"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}[strings.TrimSuffix(fields[1], "s")]
+	if per == 0 {
+		return 0, false
+	}
+	return n * per, true
+}
+
+// derivesTimeColumn reports whether handlerSQL computes column as
+// time_bucket over event_time with a size of sizeSeconds.
+func derivesTimeColumn(handlerSQL, column string, sizeSeconds int) bool {
+	for _, m := range timeBucketOverEventTime.FindAllStringSubmatch(handlerSQL, -1) {
+		if !strings.EqualFold(m[2], column) {
+			continue
+		}
+		if secs, ok := intervalSeconds(m[1]); ok && secs == sizeSeconds {
+			return true
+		}
+	}
+	return false
 }
 
 // declaresTimestamptz reports whether a CREATE statement declares column as
@@ -191,10 +271,6 @@ func appendsOnly(s config.Sink) bool {
 
 func mentionsClosed(sql string) bool { return closedRef.MatchString(sql) }
 
-var eventTimeRef = regexp.MustCompile(`(?i)\bevent_time\b`)
-
-func mentionsEventTime(sql string) bool { return eventTimeRef.MatchString(sql) }
-
 func hasWindow(conf config.Conf) bool {
 	if conf.Tables == nil {
 		return false
@@ -212,18 +288,29 @@ func isStructuredHandler(typ string) bool {
 	return typ == "handlers.StructuredBatch" || typ == "structured"
 }
 
-// tableDDL is the CREATE the config declares for a named table.
+// tableDDL is the CREATE the config declares for a named table: an entry
+// under tables.sql, or a CREATE TABLE in a command, which is where the
+// bluesky examples declare the structured handler's batch table.
 func tableDDL(conf config.Conf, name string) (string, bool) {
-	if conf.Tables == nil {
-		return "", false
+	if conf.Tables != nil {
+		for _, t := range conf.Tables.SQL {
+			if t.Name == name {
+				return t.SQL, true
+			}
+		}
 	}
-	for _, t := range conf.Tables.SQL {
-		if t.Name == name {
-			return t.SQL, true
+	for _, c := range conf.Commands {
+		for _, stmt := range strings.Split(c.SQL, ";") {
+			if m := createTable.FindStringSubmatch(stmt); m != nil && strings.EqualFold(strings.Trim(m[1], `"`), name) {
+				return stmt, true
+			}
 		}
 	}
 	return "", false
 }
+
+// createTable matches the name a CREATE TABLE statement declares.
+var createTable = regexp.MustCompile(`(?is)\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?("?[A-Za-z_][A-Za-z0-9_]*"?)`)
 
 // handlerNode is the mapping node of pipeline.handler, for a diagnostic's
 // position; nil, and so no position, if the document has no such node.

@@ -1523,10 +1523,10 @@ def test_turbostats_bundle_reports_consumer_lag(image, stack):
     assert pipeline["message_payload_bytes"] == payload_bytes, (
         pipeline["message_payload_bytes"], payload_bytes)
 
-    # This config declares a window with late_rows: drop, and its counters are
-    # present from startup, before any close. Absent would read as "nothing
-    # here drops rows".
-    for name in ("late_rows_dropped", "late_rows_reemitted", "window_closed_count"):
+    # This config declares a window that refuses late rows, and its counters
+    # are present from startup, before any close. Absent would read as
+    # "nothing here drops rows".
+    for name in ("late_rows_dropped", "late_rows_recomputed", "window_closed_count"):
         assert name in pipeline, (name, pipeline)
     assert pipeline["late_rows_dropped"] == 0, pipeline
 

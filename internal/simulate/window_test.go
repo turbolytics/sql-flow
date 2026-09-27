@@ -16,7 +16,6 @@ func windowDecl() managers.Declaration {
 		Size:       time.Minute,
 		Grace:      time.Minute,
 		IdleClose:  10 * time.Second,
-		Late:       managers.LateDrop,
 	}
 }
 
@@ -37,7 +36,7 @@ func windowDecl() managers.Declaration {
 //	Produce 6    12:01:02     12:00: 4, 12:01: 6            12:00:02   -
 //	Elapse 1m
 //	Produce 5    12:02:03     12:00: 4, 12:01: 6, 12:02: 5  12:01:03   -
-//	Poll                      12:01: 6, 12:02: 5            12:01:03   12:01:03
+//	Pass                      12:01: 6, 12:02: 5            12:01:03   12:01:03
 //	               ^ 12:00 ends at 12:01, at or before the assertion: it
 //	                 publishes. 12:01 ends at 12:02 and stays open.
 //	                 Published + still open = 15, the whole run.
@@ -49,7 +48,7 @@ func TestSimulate_AWindowedRunAccountsForEveryRow(t *testing.T) {
 		Produce{Partition: 0, Rows: 6},
 		Elapse{By: time.Minute},
 		Produce{Partition: 0, Rows: 5},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 15, r.Produced)
@@ -66,24 +65,24 @@ func TestSimulate_AWindowedRunAccountsForEveryRow(t *testing.T) {
 //	step         engine clock  window table   asserted   why
 //	--------------------------------------------------------------------------
 //	Produce 7    12:00:01      12:00: 7       11:59:01   grace: 12:00:01 - 1m
-//	Poll         12:00:02      12:00: 7       11:59:01   held: 12:00 ends 12:01
+//	Pass         12:00:02      12:00: 7       11:59:01   held: 12:00 ends 12:01
 //	Elapse 30s   12:00:33      12:00: 7       11:59:01   time passed; no commit,
 //	                                                     so the row did not move
 //	IdleTick     12:00:34      12:00: 7       12:01:01   the partition has been
 //	                                                     silent 33s > 10s: idle.
 //	                                                     Nothing in the minimum:
 //	                                                     newest 12:00:01 + 1m
-//	Poll         12:00:35      empty          12:01:01   12:00 ends 12:01: closed
+//	Pass         12:00:35      empty          12:01:01   12:00 ends 12:01: closed
 func TestSimulate_AnIdleCloseNeedsTheLoopToAssertIt(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
 		Produce{Partition: 0, Rows: 7},
 		// A poll before any tick closes nothing: the assertion is a minute
 		// behind the only bucket, and nothing has said the stream stopped.
-		Poll{},
+		Pass{},
 		Elapse{By: 30 * time.Second},
 		IdleTick{},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 7, r.Produced)
@@ -102,9 +101,9 @@ func TestSimulate_AnIdleCloseNeedsTheLoopToAssertIt(t *testing.T) {
 //	Lose p0       p0 lost       12:00: 9       11:59:01   holds at 12:00:01 - 1m
 //	Elapse 5m
 //	IdleTick      p0 lost       12:00: 9       11:59:01   lost is not idle
-//	Poll          p0 lost       12:00: 9       11:59:01   held
+//	Pass          p0 lost       12:00: 9       11:59:01   held
 //	IdleTick      p0 lost       12:00: 9       11:59:01   still
-//	Poll          p0 lost       12:00: 9       11:59:01   held
+//	Pass          p0 lost       12:00: 9       11:59:01   held
 func TestSimulate_ALostPartitionHoldsTheWindow(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -113,9 +112,9 @@ func TestSimulate_ALostPartitionHoldsTheWindow(t *testing.T) {
 		// Far past the idle bound, with the loop committing all the while.
 		Elapse{By: 5 * time.Minute},
 		IdleTick{},
-		Poll{},
+		Pass{},
 		IdleTick{},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 9, r.Produced)
@@ -134,11 +133,11 @@ func TestSimulate_ALostPartitionHoldsTheWindow(t *testing.T) {
 //	Lose p0       lost       -               lost: never    11:59:01
 //	Elapse 5m
 //	IdleTick      lost       -               no             11:59:01
-//	Poll          lost                                      held
+//	Pass          lost                                      held
 //	Assign p0     holds p0   12:05:05        0s: no         11:59:01
 //	Elapse 3s
 //	IdleTick      holds p0   12:05:05        5s < 10s: no   11:59:01
-//	Poll                                                    held
+//	Pass                                                    held
 func TestSimulate_TheAssignmentBoundsTheIdleness(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -146,13 +145,13 @@ func TestSimulate_TheAssignmentBoundsTheIdleness(t *testing.T) {
 		Lose{Partition: 0},
 		Elapse{By: 5 * time.Minute},
 		IdleTick{},
-		Poll{},
+		Pass{},
 		Assign{Partition: 0},
 		// Three seconds, plus the second each step takes: under the ten the
 		// declaration closes on.
 		Elapse{By: 3 * time.Second},
 		IdleTick{},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 9, r.Produced)
@@ -167,11 +166,11 @@ func TestSimulate_TheAssignmentBoundsTheIdleness(t *testing.T) {
 //	----------------------------------------------------------------------
 //	Produce 9     holds p0   12:00:01        -               11:59:01
 //	Lose p0       lost                       lost: never     11:59:01
-//	Elapse 5m, IdleTick, Poll                                held
+//	Elapse 5m, IdleTick, Pass                                held
 //	Assign p0     holds p0   12:05:05        0s              11:59:01
 //	Elapse 1m
 //	IdleTick      holds p0   12:05:05        1m > 10s: yes   12:01:01  = 12:00:01 + 1m
-//	Poll                                                     12:00 closes
+//	Pass                                                     12:00 closes
 func TestSimulate_TheIdleCloseResumesWhenThePartitionIsBack(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -179,11 +178,11 @@ func TestSimulate_TheIdleCloseResumesWhenThePartitionIsBack(t *testing.T) {
 		Lose{Partition: 0},
 		Elapse{By: 5 * time.Minute},
 		IdleTick{},
-		Poll{},
+		Pass{},
 		Assign{Partition: 0},
 		Elapse{By: time.Minute},
 		IdleTick{},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 9, r.Produced)
@@ -208,7 +207,7 @@ func TestSimulate_TheIdleCloseResumesWhenThePartitionIsBack(t *testing.T) {
 //	Produce 3       p1    12:00:30     12:00: 6            11:59:30        min(p0, p1) - 1m
 //	Revoke p1                          12:00: 6            11:59:30        p1 gone
 //	Produce 4       p0    12:05:00     12:00: 6, 12:05: 4  12:04           p0 alone
-//	Poll                               12:05: 4            closed 12:04    12:00 publishes 6
+//	Pass                               12:05: 4            closed 12:04    12:00 publishes 6
 //	Produce 5       p1    12:00:45     (not ours)                          another worker's rows
 func TestSimulate_ARevokedPartitionLeavesTheMinimum(t *testing.T) {
 	coverage.Covers(t, "manager.window")
@@ -217,7 +216,7 @@ func TestSimulate_ARevokedPartitionLeavesTheMinimum(t *testing.T) {
 		Produce{Partition: 1, Rows: 3, At: base.Add(30 * time.Second)},
 		Revoke{Partition: 1},
 		Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
-		Poll{},
+		Pass{},
 		// Produced against the other worker, not this one: nothing arrives
 		// here, and it is not a loss.
 		Produce{Partition: 1, Rows: 5, At: base.Add(45 * time.Second)},
@@ -226,7 +225,7 @@ func TestSimulate_ARevokedPartitionLeavesTheMinimum(t *testing.T) {
 	assert.Equal(t, 10, r.Produced)
 	assert.Equal(t, int64(6), r.Published)
 	assert.Equal(t, int64(4), r.StillOpen)
-	assert.Equal(t, int64(0), r.LateDropped)
+	assert.Equal(t, int64(0), r.LateRefused)
 }
 
 // The rows a revoked partition left behind still close, even after every
@@ -251,7 +250,7 @@ func TestSimulate_ARevokedPartitionLeavesTheMinimum(t *testing.T) {
 //	                                                                  minimum: newest
 //	                                                                  12:02 + 1m, and the
 //	                                                                  newest is p1's
-//	Poll                               empty               12:03      both buckets close
+//	Pass                               empty               12:03      both buckets close
 func TestSimulate_ARevokedPartitionsRowsStillCloseOnIdleness(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0, 1}, windowDecl(), []Step{
@@ -260,13 +259,13 @@ func TestSimulate_ARevokedPartitionsRowsStillCloseOnIdleness(t *testing.T) {
 		Revoke{Partition: 1},
 		Elapse{By: 30 * time.Second},
 		IdleTick{},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 7, r.Produced)
 	assert.Equal(t, int64(7), r.Published)
 	assert.Equal(t, int64(0), r.StillOpen)
-	assert.Equal(t, int64(0), r.LateDropped)
+	assert.Equal(t, int64(0), r.LateRefused)
 }
 
 // And a worker that loses its whole assignment closes what it holds. Nothing
@@ -281,7 +280,7 @@ func TestSimulate_AWorkerHoldingNothingClosesWhatItHas(t *testing.T) {
 		Revoke{Partition: 1},
 		Elapse{By: 30 * time.Second},
 		IdleTick{},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 7, r.Produced)
@@ -301,7 +300,7 @@ func TestSimulate_AWorkerHoldingNothingClosesWhatItHas(t *testing.T) {
 //	Elapse 30s
 //	IdleTick      12:00: 7       12:01      idle with nothing seen: the
 //	                                        newest bucket's end
-//	Poll          empty          12:01      12:00 closes
+//	Pass          empty          12:01      12:00 closes
 func TestSimulate_ARestartStillClosesByIdleness(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
@@ -309,7 +308,7 @@ func TestSimulate_ARestartStillClosesByIdleness(t *testing.T) {
 		Restart{},
 		Elapse{By: 30 * time.Second},
 		IdleTick{},
-		Poll{},
+		Pass{},
 	})
 
 	assert.Equal(t, 7, r.Produced)

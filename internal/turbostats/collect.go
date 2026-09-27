@@ -119,12 +119,12 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 	}
 	if dim.windowSeen {
 		p.WindowClosedCount = &dim.windowClosed
-		// A policy with no field of its own leaves both out. Reporting the
+		// An outcome with no field of its own leaves both out. Reporting the
 		// two known ones would state a count that omits rows, on the field
 		// an operator reads for data loss.
-		if !dim.lateUnknownPolicy {
-			p.LateRowsDropped = &dim.lateDropped
-			p.LateRowsReemitted = &dim.lateReemitted
+		if !dim.lateUnknownOutcome {
+			p.LateRowsDropped = &dim.lateRefused
+			p.LateRowsRecomputed = &dim.lateRecomputed
 		}
 	}
 	if dim.closeLagSeen {
@@ -259,12 +259,12 @@ func later(a, b *time.Time) *time.Time {
 //   - A shard attribute -- topic, partition, window, sink -- splits one
 //     measurement across parts of one system. Collapsing it is arithmetic
 //     that stays true.
-//   - An outcome attribute -- result, policy -- splits points that measure
+//   - An outcome attribute -- result, outcome -- splits points that measure
 //     different things. Collapsing it reports a number true of nothing.
 //     sink_flush_count carries result=ok and result=error, and their sum is
 //     a count of flushes that never happened; window_late_rows carries
-//     policy=drop and policy=reemit, and one of those lost data while the
-//     other did not.
+//     outcome=refused and outcome=recomputed, and one of those lost data
+//     while the other did not.
 //
 // So flat keeps ignoring every attributed point, and dim collapses shards
 // only, splitting each outcome into a field of its own.
@@ -406,11 +406,11 @@ type dimensional struct {
 	lagPoints   int
 	sinkRetries int64
 
-	windowSeen        bool
-	lateDropped       int64
-	lateReemitted     int64
-	lateUnknownPolicy bool
-	windowClosed      int64
+	windowSeen         bool
+	lateRefused        int64
+	lateRecomputed     int64
+	lateUnknownOutcome bool
+	windowClosed       int64
 
 	// The most behind window's close lag, with a seen flag because zero lag
 	// is a reading. And the newest bucket across windows, a Unix second that
@@ -477,18 +477,18 @@ func (d *dimensional) add(name string, attrs attribute.Set, v int64) {
 		d.windowSeen = true
 		d.windowClosed += v
 	case "window_late_rows":
-		// Collapses window, a shard. Splits policy, an outcome: dropped rows
-		// are gone and reemitted rows are not.
+		// Collapses window, a shard. Splits outcome: a refused row is gone
+		// and a recomputed row is in its bucket's republished value.
 		d.windowSeen = true
-		switch policy, _ := attrs.Value(attribute.Key("policy")); policy.AsString() {
-		case "drop":
-			d.lateDropped += v
-		case "reemit":
-			d.lateReemitted += v
+		switch outcome, _ := attrs.Value(attribute.Key("outcome")); outcome.AsString() {
+		case "refused":
+			d.lateRefused += v
+		case "recomputed":
+			d.lateRecomputed += v
 		default:
 			// An outcome this contract has no field for. It cannot join
 			// either count without making that count false.
-			d.lateUnknownPolicy = true
+			d.lateUnknownOutcome = true
 		}
 	case "window_close_lag_seconds":
 		// Already a duration in event time; the most behind window wins.

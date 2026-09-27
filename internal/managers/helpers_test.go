@@ -181,7 +181,6 @@ func testDecl() Declaration {
 		Size:       time.Minute,
 		Grace:      time.Minute,
 		IdleClose:  5 * time.Minute,
-		Late:       LateReemit,
 	}
 }
 
@@ -215,21 +214,36 @@ func assertAt(tb testing.TB, conn adbc.Connection, at time.Time) {
 	}
 }
 
-// newTestWatermark builds the manager on the manager connection. The
-// engine's watermark table exists from here, empty until assertAt.
-func newTestWatermark(tb testing.TB, d *testDB, decl Declaration, sink interface {
-	WriteTable(context.Context, arrow.Table) error
-	Flush(context.Context) error
-}, opts ...Option) *Watermark {
+// newTestWatermark builds the manager on the manager connection, with the
+// signal an engine tracker would hand it, so a test can kick it or queue a
+// recompute the way the engine does. The engine's watermark table exists
+// from here, empty until assertAt.
+func newTestWatermark(tb testing.TB, d *testDB, decl Declaration, sink core.Sink, opts ...Option) (*Watermark, *core.WindowSignal) {
 	tb.Helper()
 	if err := core.NewWatermarkStore(d.pipeline).Init(context.Background()); err != nil {
 		tb.Fatal(err)
 	}
-	w, err := NewWatermark(d.manager, decl, time.Hour, sink, opts...)
+	tracker := core.NewWatermarks([]core.WindowSpec{{
+		Name: decl.Table, Size: decl.Size, Grace: decl.Grace, IdleClose: decl.IdleClose, Lateness: decl.Lateness,
+	}}, time.Now)
+	sig := tracker.Signal(decl.Table)
+	w, err := NewWatermark(d.manager, decl, sink, sig, opts...)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	return w
+	return w, sig
+}
+
+// waitFor polls cond until it holds or the timeout passes.
+func waitFor(tb testing.TB, what string, timeout time.Duration, cond func() bool) {
+	tb.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			tb.Fatalf("%s did not happen within %s", what, timeout)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 var _ = array.NewInt64Builder

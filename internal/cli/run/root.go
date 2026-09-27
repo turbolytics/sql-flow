@@ -592,7 +592,7 @@ func NewCommand() *cobra.Command {
 			)
 			liveTurbine.Store(turbine)
 
-			managedTables, closeWindowConns, err := buildManagedTables(ctx, conf, db, l,
+			managedTables, closeWindowConns, err := buildManagedTables(ctx, conf, db, watermarks, l,
 				meterProvider, budget, retryEvents)
 			if err != nil {
 				return err

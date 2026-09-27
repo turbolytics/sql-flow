@@ -104,7 +104,6 @@ func (s leakScenario) declaration() Declaration {
 		TimeColumn: "bucket",
 		Size:       time.Minute,
 		Grace:      time.Duration(leakCloseAfter-1) * time.Minute,
-		Late:       LateReemit,
 	}
 	if !s.upsert {
 		d.EmitSQL = "SELECT bucket, lang, sum(posts) AS posts FROM closed GROUP BY bucket, lang"
@@ -237,7 +236,7 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 
 	// The manager on its own connection, as run builds it.
 	sink := &recordingSink{}
-	m, err := NewWatermark(mconn, sc.declaration(), time.Hour, sink)
+	m, err := NewWatermark(mconn, sc.declaration(), sink, nil)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -278,9 +277,9 @@ func leakLoop(tb testing.TB, sc leakScenario, batches int) (before, after leakSa
 			if err := watermarks.Save(ctx, "w", newest.Add(-sc.declaration().Grace)); err != nil {
 				tb.Fatal(err)
 			}
-			// The pipeline polls on a timer, about six times a minute at the
-			// demo's rate. Once per batch keeps the ratio close enough.
-			if err := m.Poll(ctx); err != nil {
+			// The engine kicks the manager after every commit that moved the
+			// watermark; one pass per batch is that.
+			if err := m.Pass(ctx); err != nil {
 				tb.Fatal(err)
 			}
 			// Init is where StructuredBatch truncates and checkpoints, after

@@ -441,6 +441,9 @@ func (r *run) sinkTurbine() {
 		opts = append(opts,
 			core.WithProgressStore(core.NewProgressStore(r.window.db.pipeline)),
 			core.WithWindows(w, core.NewWatermarkStore(r.window.db.pipeline)),
+			// The engine's instruments, so the run can report what it refused
+			// from the counter rather than from a residual.
+			core.WithMetrics(r.window.metrics),
 			// Every commit that moves a watermark writes it. Production paces
 			// the write at a second, which a script's steps happen to clear
 			// today; pinning it here keeps a scenario with finer steps from
@@ -483,18 +486,24 @@ func (r *run) deliver(p int32, ids []int64) {
 		})
 	}
 	// What the loop will accept. A windowing run places event time, and a
-	// record the engine cannot place never reaches the handler or the table,
-	// so waiting for it would wait forever. The prediction uses the engine's
-	// own rule, against the same clock it reads, so it cannot disagree with
-	// what the engine does.
+	// record the engine cannot place, or refuses as late, never reaches the
+	// handler or the table, so waiting for it would wait forever. The
+	// prediction uses the engine's own rules -- CanPlace against the clock it
+	// reads, Classify against the watermark it has asserted -- so it cannot
+	// disagree with what the engine does. Every earlier batch has committed
+	// by the time this runs, so the assertion Classify reads is current.
 	accepted := len(batch)
 	if r.window != nil {
 		nowNanos := time.Now().UnixNano()
 		accepted = 0
 		for _, m := range batch {
-			if core.CanPlace(m.EventAtNanos, nowNanos) {
-				accepted++
+			if !core.CanPlace(m.EventAtNanos, nowNanos) {
+				continue
 			}
+			if refused, _ := r.window.tracker.Classify(m.EventAtNanos); refused {
+				continue
+			}
+			accepted++
 		}
 	}
 	var want, commitsBefore int

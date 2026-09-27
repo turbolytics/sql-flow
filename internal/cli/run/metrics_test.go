@@ -146,6 +146,8 @@ func exportedNames(t *testing.T) []string {
 	m.PipelineRowsAccepted.Add(ctx, 1)
 	m.PipelineRowsWritten.Add(ctx, 1)
 	m.PipelineLastMessage.Record(ctx, 1)
+	// Late rows are the engine's counter: it decides lateness at arrival.
+	m.WindowLateRows.Add(ctx, 1)
 
 	wm, err := webhook.NewMetrics(mp)
 	assert.NoError(t, err)
@@ -157,7 +159,7 @@ func exportedNames(t *testing.T) []string {
 	win := managers.NewWindowMetrics(mp, "w")
 	win.Watermark.Record(ctx, 1)
 	win.Closed.Add(ctx, 1)
-	win.Late.Add(ctx, 1)
+	win.Recomputed.Add(ctx, 1)
 	win.NewestStart.Record(ctx, 1)
 	win.CloseLag.Record(ctx, 1)
 
@@ -236,6 +238,7 @@ func TestExportedSeriesNames(t *testing.T) {
 		"window_closed_total",
 		"window_late_rows_total",
 		"window_newest_bucket_start_seconds",
+		"window_recomputes_total",
 		"window_watermark_seconds",
 	}
 	assert.DeepEqual(t, want, exportedNames(t))

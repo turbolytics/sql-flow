@@ -3,15 +3,16 @@
 A scripted run of the **real** consume loop and the **real** window manager
 over one **real** DuckDB, with a fake Kafka coordinator underneath. You write
 a sequence of events; it tells you how many rows were produced, published,
-still open, and lost.
+still open, refused, and what the sink holds for each bucket.
 
 ```go
 r := RunWindowed(t, []int32{0}, windowDecl(), []Step{
         Produce{Partition: 0, Rows: 5, At: base.Add(30 * time.Second)},
         Produce{Partition: 0, Rows: 4, At: base.Add(5 * time.Minute)},
-        Poll{},
+        Pass{},
 })
-// r.Produced, r.Published, r.StillOpen, r.LateDropped, r.Republished
+// r.Produced, r.Published, r.StillOpen, r.LateRefused, r.Recomputes,
+// r.LastValue[bucket], r.Republished
 ```
 
 ## Why it exists
@@ -47,13 +48,13 @@ the scenarios below expressible.
 ## How to read the tables
 
 Every scenario carries a table in its doc comment. The columns are what the
-manager could see if it polled at that moment:
+manager sees when it passes at that moment:
 
 ```
 step           what the script does
 event time     the row's own clock
 bucket         event time truncated to the window size
-window table   what the handler has written, and what a poll would read
+window table   what the handler has written, and what a pass would read
 asserted       the engine's watermark after the step's commit: the minimum
                over the partitions that could still deliver, each at its
                newest event time less the grace. A bucket closes when its
@@ -66,7 +67,7 @@ clock of its own, no progress row, no reading of the table's newest bucket.
 
 Worked example — `OutOfOrderRowsInsideTheGraceAreNotLate`, under
 `windowDecl()`: one-minute buckets, one minute of grace, a ten-second idle
-close, late rows dropped.
+close, no lateness.
 
 ```
 step         event time   bucket   window table          asserted
@@ -76,9 +77,26 @@ Produce 2    12:01:05     12:01    12:01: 5              12:00:30
                ^ older than the row before it, same bucket, not late: the
                  newest event time is still 12:01:30, so nothing moved
 Produce 4    12:05:00     12:05    12:01: 5, 12:05: 4    12:04
-Poll         -            -        12:05: 4              12:04
+Pass         -            -        12:05: 4              12:04
                ^ 12:01 ends at 12:02, at or before 12:04, so it publishes
                  all 5 rows. 12:05 ends at 12:06 and stays open.
+```
+
+And with lateness -- `ALateRowRecomputesTheBucket`, `Lateness: 10 *
+time.Minute`. The sink holds the last value it was handed for each bucket,
+as a sink that replaces by key does, and that value is always the whole
+bucket:
+
+```
+step         event time   bucket   window table          asserted   sink's value for 12:00
+-----------------------------------------------------------------------------------------
+Produce 5    12:00:30     12:00    12:00: 5              11:59:30   -
+Produce 4    12:05:00     12:05    12:00: 5, 12:05: 4    12:04      -
+Pass                              12:00: 5, 12:05: 4    12:04      5     kept: lateness 10m
+Produce 1    12:00:45     12:00    12:00: 6, 12:05: 4    12:04      5     late, allowed: recompute queued
+Pass                              (same)                12:04      6     the whole bucket
+Produce 2    12:00:50     12:00    12:00: 8, 12:05: 4    12:04      6
+Pass                              (same)                12:04      8
 ```
 
 ## The four rules that explain every outcome
@@ -98,14 +116,19 @@ Poll         -            -        12:05: 4              12:04
    holding for them would freeze this worker's windows for good. Idleness is
    measured from the later of a partition's last row and its assignment, so
    an outage counts for nothing and the clock restarts on the return.
-4. **Late collection happens on a close, not on a poll.** The manager
-   collects late rows only on a poll that has something to do. A run that
-   ends without a close reports whatever the timing gave, which is why every
-   scenario asserting a loss ends by forcing one.
+4. **Lateness is decided at arrival, by the engine.** A record whose bucket
+   ended at or before the assertion is late. With no lateness it is refused
+   before the handler and `LateRefused` counts it; it never reaches the
+   table. With lateness, a late record within it is written and the bucket
+   is republished whole on the next pass -- `Recomputes` counts the
+   republications, `LastValue` is what the sink holds. Past
+   `end + lateness` the rows are deleted and later records are refused.
 
-Rule 4 is a property of the implementation rather than of the design, and it
-made three scenarios flaky before it was understood: one read six drops
-plainly and four under `-race`.
+Nothing polls. The manager passes when it starts, when the engine kicks it
+after a commit that moved the watermark or admitted a late row, and when it
+drains. A script drives those passes with `Pass` so a scenario is a
+sequence; `RunWindowedDriven` runs the manager's own loop, and
+`TheKickFollowsTheCommit` is the one scenario that needs it.
 
 ## The scenarios
 
@@ -139,7 +162,12 @@ Each test's doc comment carries its own table. This is the index.
 | scenario | what it proves |
 |---|---|
 | `OutOfOrderRowsInsideTheGraceAreNotLate` | the case `grace_seconds` exists for: records shuffled by less than the tolerance are not late |
-| `ARowForAClosedBucketIsDropped` | the contract `late_rows: drop` promises |
+| `ARowForAClosedBucketIsRefused` | rule 4 with no lateness: refused before the handler, counted, and the sink's value stands |
+| `ALateRowRecomputesTheBucket` | rule 4 with lateness: written, and the bucket republished as a whole value |
+| `ALateRowBeyondLatenessIsRefused` | the lateness bound: past `end + lateness` a late row is refused even though the watermark only just passed |
+| `ABurstOfLateRowsIsOneRecompute` | several late rows before a pass republish the bucket once |
+| `ARecomputeSurvivesARestart` | the recompute set is in memory; the start pass republishes every retained bucket for it |
+| `TheKickFollowsTheCommit` | with the manager's loop running, the commit's kick publishes with no `Pass` step |
 | `AFastPartitionHoldsForTheSlowOne` | rule 1's minimum: the lagging partition holds the bucket both were filling, and its rows are never late |
 | `APoisonTimestampClosesEveryBucket` | one wrong clock costs the pipeline exactly the record that carried it |
 | `ReplayingEveryRowPublishesTheSameTotals` | **a defect** — see below |
@@ -188,14 +216,16 @@ replay safe — and is what lets a destination skip deduplicating at read time.
 The published and still-open counts are pinned in the windowed scenarios now,
 because the close no longer races the run's own stop: a bucket closes when
 the engine has asserted past its end, and the assertion is committed before
-the commit that carries it is visible. A scenario that ends without a poll
-still leaves whatever the last poll did not close.
+the commit that carries it is visible. A scenario that ends without a pass
+still leaves whatever the last pass did not close.
 
 ## Adding a scenario
 
 1. Write the script. `Produce{Partition, Rows, At}`, `IdleTick`, `Elapse`,
-   `Revoke`, `Assign`, `Restart`, `Poll`.
-2. If it asserts a loss, end with `Elapse` / `IdleTick` / `Poll` — rule 4.
+   `Revoke`, `Assign`, `Restart`, `Pass`, `StartPass`; in a driven run,
+   `AwaitPublished`.
+2. If it is about lateness, set `decl.Lateness` and assert `LastValue` for
+   the bucket: the sink's value is the claim, not the row count.
 3. Run it and *look at the numbers* before writing the assertion. Several of
    these behaved differently from how their author expected, and the
    difference was the interesting part.

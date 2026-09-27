@@ -2,18 +2,20 @@ package managers
 
 // The watermark manager under the conformance harness.
 //
-// The subject supplies ten things: build the manager on the sink the
-// harness hands it, put closed buckets in the table, put late rows in a
-// bucket that closed, count what is left, hold rows open in the pipeline's
-// transaction, run a batch through the structured handler on the pipeline's
-// connection, build a manager whose commit waits, and build one whose metrics
-// the harness reads beside a newer bucket its sink can refuse. The harness
-// owns the sink, the faults and the verdicts.
+// The subject supplies what the harness drives: build the manager on the
+// sink the harness hands it, put closed buckets in the table, count what is
+// left, hold rows open in the pipeline's transaction, run a batch through the
+// structured handler on the pipeline's connection, and build a manager whose
+// commit waits. The harness owns the sink, the faults and the verdicts.
+//
+// The engine's assertion is written by hand where a check changes the
+// table: Seed asserts exactly its buckets' end. Everything closes on that
+// and on nothing else; the manager takes no clock and no signal here,
+// because every check drives Pass itself.
 
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -21,11 +23,10 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/handlers"
-	"go.opentelemetry.io/otel/metric"
 )
 
 // heldConn is a manager's connection whose commit calls hold first, so a
-// test can stop a close with its writes made and not committed.
+// test can stop a pass with its writes made and not committed.
 type heldConn struct {
 	adbc.Connection
 	hold func()
@@ -46,10 +47,6 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 	d := newTestDB(t, "")
 	createWindowTable(t, d.pipeline)
 
-	// The engine's assertion is written by hand where a check changes the
-	// table: Seed asserts exactly its buckets' end, SeedNewer asserts past the
-	// bucket it adds. Everything closes on that and on nothing else.
-
 	// The handler the bluesky demo runs, on the pipeline's connection. It
 	// checkpoints each time it re-initialises, which is the statement a
 	// window's uncommitted write refused.
@@ -68,40 +65,30 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 	}
 
 	// Each New builds on a fresh connection, so a manager whose connection
-	// holds an open transaction from a failed poll does not block the next.
+	// holds an open transaction from a failed pass does not block the next.
 	subject := conformance.ManagerSubject{
 		Integration: "manager.watermark",
 
-		New: func(t *testing.T, sink core.Sink, poll time.Duration, budget *core.DrainBudget, late string) conformance.Manager {
+		New: func(t *testing.T, sink core.Sink, budget *core.DrainBudget) conformance.Manager {
 			conn := managerConn(t, d.db)
 			t.Cleanup(func() { conn.Close() })
-			decl := testDecl()
-			decl.Late = LatePolicy(late)
-			w, err := NewWatermark(conn, decl, poll, sink,
-				WithDrainBudget(budget))
+			w, err := NewWatermark(conn, testDecl(), sink, nil, WithDrainBudget(budget))
 			if err != nil {
 				t.Fatal(err)
 			}
 			return w
 		},
 
-		// n buckets, one row each, and the watermark forgotten, so every
-		// check starts from a table that has never closed anything.
+		// n buckets, one row each, the watermark forgotten so every check
+		// starts from a table that has never closed anything, and the engine
+		// having asserted the last seeded bucket's end.
 		Seed: func(t *testing.T, n int) {
 			exec(t, d.pipeline, `DELETE FROM agg_cities_count`)
 			exec(t, d.pipeline, `DELETE FROM sqlflow_windows`)
 			for i := 0; i < n; i++ {
 				insertBucket(t, d.pipeline, i, "city", i+1)
 			}
-			// The engine has asserted the last seeded bucket's end.
 			assertAt(t, d.pipeline, bucket(n))
-		},
-
-		// The first bucket closed with Seed's, so rows for it are late.
-		SeedLate: func(t *testing.T, n int) {
-			for i := 0; i < n; i++ {
-				insertBucket(t, d.pipeline, 0, "late", 1)
-			}
 		},
 
 		Remaining: func(t *testing.T) int64 {
@@ -140,12 +127,10 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 			return handler.Init(ctx)
 		},
 
-		HoldCommit: func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, hold func()) conformance.Manager {
+		HoldCommit: func(t *testing.T, sink core.Sink, budget *core.DrainBudget, hold func()) conformance.Manager {
 			conn := managerConn(t, d.db)
 			t.Cleanup(func() { conn.Close() })
-			decl := testDecl()
-			decl.Late = LatePolicy(late)
-			w, err := NewWatermark(heldConn{Connection: conn, hold: hold}, decl, time.Hour, sink,
+			w, err := NewWatermark(heldConn{Connection: conn, hold: hold}, testDecl(), sink, nil,
 				WithDrainBudget(budget))
 			if err != nil {
 				t.Fatal(err)
@@ -153,28 +138,24 @@ func TestManagerWatermark_Conformance(t *testing.T) {
 			return w
 		},
 
-		Metered: func(t *testing.T, sink core.Sink, budget *core.DrainBudget, late string, mp metric.MeterProvider) conformance.Manager {
-			conn := managerConn(t, d.db)
-			t.Cleanup(func() { conn.Close() })
-			decl := testDecl()
-			decl.Late = LatePolicy(late)
-			w, err := NewWatermark(conn, decl, time.Hour, sink,
-				WithDrainBudget(budget), WithMeterProvider(mp))
-			if err != nil {
-				t.Fatal(err)
+		// A row for the first seeded bucket, which a manager has closed: what
+		// a window with lateness retains, written by hand.
+		SeedLate: func(t *testing.T, n int) {
+			for i := 0; i < n; i++ {
+				insertBucket(t, d.pipeline, 0, "late", 1)
 			}
-			return w
 		},
 
-		// A bucket past every one Seed wrote, still under the assertion.
+		// A bucket newer than every seeded one, and the engine asserted past
+		// its end, so the next pass publishes it, deletes it, and updates the
+		// window's row.
 		SeedNewer: func(t *testing.T) {
-			insertBucket(t, d.pipeline, 10, "newer", 1)
-			assertAt(t, d.pipeline, bucket(11))
+			insertBucket(t, d.pipeline, seededBuckets+1, "newer", 1)
+			assertAt(t, d.pipeline, bucket(seededBuckets+2))
 		},
-
-		LateInstrument: "window_late_rows",
 	}
 	conformance.Managers(t, subject)
 }
 
-var _ adbc.Connection
+// seededBuckets is what the harness seeds, so SeedNewer lands past it.
+const seededBuckets = 2

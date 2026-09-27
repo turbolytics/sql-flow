@@ -1,6 +1,6 @@
 # The close is driven by the watermark, and lateness is decided at arrival
 
-**Status:** proposal, approved in discussion on 2026-09-26.
+**Status:** implemented in the PR that carries this plan.
 **Builds on:** #393 (the engine asserts the watermark), #385 (`event_time` exposed to handler SQL), #389 (every source can be told where its event time is).
 **Removes:** `poll_interval_seconds`, `late_rows`, the manager's poll loop, and the manager's late-row sweep.
 **Adds:** `allowed_lateness_seconds`.

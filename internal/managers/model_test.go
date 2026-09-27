@@ -11,8 +11,9 @@ import (
 
 // modelAlphabet is every event that has produced a defect in this package
 // and that the engine is meant to survive: rows from each of two partitions,
-// rows that move the stream on, silence past the idle bound, a partition
-// lost and assigned again, one revoked for good, and a restart.
+// rows that move the stream on, a row for a bucket that closed and one for a
+// bucket long expired, silence past the idle bound, a partition lost and
+// assigned again, one revoked for good, and a restart.
 func modelAlphabet(idleClose time.Duration) []Event {
 	elapse := 3 * time.Second
 	if idleClose > 0 {
@@ -22,6 +23,8 @@ func modelAlphabet(idleClose time.Duration) []Event {
 		{Kind: Produce, Partition: 0, Rows: 2},
 		{Kind: Produce, Partition: 0, Rows: 2, Ahead: true},
 		{Kind: Produce, Partition: 1, Rows: 2},
+		{Kind: Produce, Partition: 0, Rows: 1, Late: true},
+		{Kind: Produce, Partition: 0, Rows: 1, VeryLate: true},
 		{Kind: Elapse, By: elapse},
 		{Kind: Lose, Partition: 0},
 		{Kind: Assign, Partition: 0},
@@ -30,19 +33,33 @@ func modelAlphabet(idleClose time.Duration) []Event {
 	}
 }
 
-// shape is one of the four configurations the spec works backwards from.
+// shape is one of the four configurations the spec works backwards from,
+// each with and without lateness.
 type shape struct {
-	name  string
-	grace time.Duration
-	idle  time.Duration
+	name     string
+	grace    time.Duration
+	idle     time.Duration
+	lateness time.Duration
 }
 
-var shapes = []shape{
-	{"A: grace 0, no idle bound", 0, 0},
-	{"B: grace, no idle bound", time.Minute, 0},
-	{"C: grace 0, idle bound", 0, 2 * time.Second},
-	{"D: grace and idle bound, the IoT default", time.Minute, 2 * time.Second},
-}
+var shapes = func() []shape {
+	base := []shape{
+		{"A: grace 0, no idle bound", 0, 0, 0},
+		{"B: grace, no idle bound", time.Minute, 0, 0},
+		{"C: grace 0, idle bound", 0, 2 * time.Second, 0},
+		{"D: grace and idle bound, the IoT default", time.Minute, 2 * time.Second, 0},
+	}
+	// The four first, so shapes[1] is B and shapes[3] is D for the tests
+	// that name them; then each again with a minute of lateness.
+	out := append([]shape(nil), base...)
+	for _, s := range base {
+		late := s
+		late.name += ", lateness"
+		late.lateness = time.Minute
+		out = append(out, late)
+	}
+	return out
+}()
 
 // The idle bound is two seconds because an event takes one: a bound longer
 // than a sequence can run is a bound no sequence ever reaches, and the first
@@ -55,14 +72,15 @@ func (s shape) decl() Declaration {
 		Size:       time.Minute,
 		Grace:      s.grace,
 		IdleClose:  s.idle,
-		Late:       LateDrop,
+		Lateness:   s.lateness,
 	}
 }
 
 // Every sequence of events up to four long, under each configuration shape,
-// ends with each row published exactly once or dropped as late, and never
-// drops a row that was in order for a partition still in the minimum. Once
-// the run quiesces, nothing that can close stays open.
+// ends with the sink holding, for every bucket, exactly the rows the engine
+// admitted to it -- produced less refused -- and never refuses a row that
+// was in order for a partition still in the minimum. Once the run quiesces,
+// nothing that can close stays open.
 func TestManagerWindow_EverySequenceCountsEveryRowOnce(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	for _, s := range shapes {
@@ -89,8 +107,8 @@ func TestManagerWindow_EverySequenceCountsEveryRowOnce(t *testing.T) {
 				}
 			}
 			walk(0)
-			// 8 + 64 + 512 + 4096
-			assert.Equal(t, 4680, runs)
+			// 10 + 100 + 1000 + 10000
+			assert.Equal(t, 11110, runs)
 
 			// An enumeration that never reaches a rule proves nothing about
 			// it, and says so in no way a reader would notice: the suite is
@@ -186,12 +204,32 @@ func checkSequence(t *testing.T, s shape, seq []Event, fired map[string]int) int
 		t.Fatalf("%v: %d rows still open in a bucket ending %s, under the assertion %s",
 			kinds(seq), open, newestEnd, asserted)
 	}
-	published += m.Drain()
+	m.Drain()
 
-	if m.Produced != published+m.Dropped {
-		t.Fatalf("%v: produced %d, published %d, dropped %d",
-			kinds(seq), m.Produced, published, m.Dropped)
+	// The exact-value property. For every bucket, the sink's last value is
+	// the rows produced for it less the rows refused for it -- never a delta,
+	// never a stale first publish. And a refused row is never in the table,
+	// by construction: the model inserts only what Classify admitted.
+	for b, produced := range m.ProducedPerBucket {
+		want := produced - m.RefusedPerBucket[b]
+		if got := m.Last[b]; got != want {
+			t.Fatalf("%v: bucket %s: sink holds %d, produced %d, refused %d",
+				kinds(seq), b.Format("15:04"), got, produced, m.RefusedPerBucket[b])
+		}
 	}
+	refused := 0
+	for _, n := range m.RefusedPerBucket {
+		refused += n
+	}
+	if refused != m.Refused {
+		t.Fatalf("%v: refused %d in total and %d per bucket", kinds(seq), m.Refused, refused)
+	}
+	// Without lateness nothing is ever recomputed: a late row is refused
+	// or the bucket had not closed.
+	if s.lateness == 0 && m.Recomputes != 0 {
+		t.Fatalf("%v: %d recomputes under no lateness", kinds(seq), m.Recomputes)
+	}
+	_ = published
 	for i, d := range m.Decisions {
 		if i < body {
 			fired[d.Rule]++
@@ -210,8 +248,53 @@ func kinds(seq []Event) []string {
 		if e.Ahead {
 			out[i] += "+"
 		}
+		if e.Late {
+			out[i] += "-"
+		}
+		if e.VeryLate {
+			out[i] += "--"
+		}
 	}
 	return out
+}
+
+// A late row within the lateness is admitted and republishes its bucket
+// whole; beyond it the row is refused and the bucket stays as published.
+// The exact-value property, on one sequence a reader can follow.
+func TestManagerWindow_ALateRowRecomputesOrIsRefused(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	for _, lateness := range []time.Duration{0, time.Minute} {
+		decl := shapes[0].decl()
+		decl.Lateness = lateness
+		m := NewModel(decl, 0)
+		m.Apply(Event{Kind: Produce, Partition: 0, Rows: 3})
+		first := m.bucketOf(m.clock)
+		pubs := m.Apply(Event{Kind: Produce, Partition: 0, Rows: 1, Ahead: true})
+		assert.Equal(t, 1, len(pubs))
+		assert.Equal(t, 3, pubs[0].Rows)
+		assert.Equal(t, 3, m.Last[first])
+
+		pubs = m.Apply(Event{Kind: Produce, Partition: 0, Rows: 2, Late: true})
+		assert.Equal(t, 0, len(pubs))
+		if lateness == 0 {
+			assert.Equal(t, 2, m.Refused)
+			assert.Equal(t, 0, m.Recomputes)
+		} else {
+			assert.Equal(t, 0, m.Refused)
+			assert.Equal(t, 1, m.Recomputes)
+		}
+		// Whichever closed bucket the late row landed in, the sink holds
+		// every admitted row for it.
+		for b, produced := range m.ProducedPerBucket {
+			if m.hadClosed && !b.Add(decl.Size).After(m.closed) {
+				assert.Equal(t, produced-m.RefusedPerBucket[b], m.Last[b])
+			}
+		}
+
+		before := m.Refused
+		m.Apply(Event{Kind: Produce, Partition: 0, Rows: 1, VeryLate: true})
+		assert.Equal(t, before+1, m.Refused)
+	}
 }
 
 // A partition racing ahead in event time cannot close the buckets a slower
@@ -229,7 +312,7 @@ func TestManagerWindow_AFastPartitionHoldsForTheSlowOne(t *testing.T) {
 		m.Apply(Event{Kind: Produce, Partition: 0, Rows: 4, Ahead: true})
 	}
 	m.Apply(Event{Kind: Produce, Partition: 1, Rows: 5})
-	assert.Equal(t, 0, m.Dropped)
+	assert.Equal(t, 0, m.Refused)
 	assert.That(t, !m.InOrderRowWouldBeLate(1))
 }
 

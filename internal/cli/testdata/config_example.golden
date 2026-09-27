@@ -350,14 +350,14 @@ tables:
         # one flush_interval_seconds; validate warns when that interval is the
         # longer of the two.
         idle_close_seconds: <integer>
-        # What happens to a row for a bucket that already closed. drop discards
-        # it and counts it. reemit publishes emit_sql over the late rows alone,
-        # for a sink that adds them to the bucket it holds; a sink that replaces
-        # the bucket's value loses the rows published before.
-        # Required: the two are different promises to the sink.
-        late_rows: drop | reemit
-        # How often the engine looks for closed buckets. Absent means 10.
-        poll_interval_seconds: <integer>
+        # How long after a bucket closes its rows are kept and late rows for it
+        # are still accepted. A late row within this republishes the bucket as a
+        # whole value, so the sink must replace by key; validate refuses a sink
+        # that appends. Absent or 0: a row for a closed bucket is refused before
+        # the handler and counted in window_late_rows_total; the window table
+        # never holds it. Flink's allowedLateness. Measured in event time,
+        # against the watermark, like everything a window decides.
+        allowed_lateness_seconds: <integer>
         # Shapes the closed rows before the sink. It reads one relation, closed,
         # which holds every row of every bucket that just closed. Absent means
         # SELECT * FROM closed.
