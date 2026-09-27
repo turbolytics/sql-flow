@@ -101,6 +101,14 @@ type Instance struct {
 
 // Process is what the runtime and the kernel say about this process.
 type Process struct {
+	// ID is 16 random bytes, hex-encoded, drawn once when the process
+	// starts. Every bundle a process sends carries the same id, the final
+	// one included, and a restart draws a new one. It is how a receiver
+	// tells two processes apart when instance.id and started_at agree: two
+	// gateways that boot near 1970, or two replicas of one config started in
+	// the same second. Absent from engines that predate the field; a
+	// receiver then falls back to started_at.
+	ID        string    `json:"id,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	// UptimeSeconds is how long this process has run, from its monotonic
 	// clock. Absent from engines that predate the field. StartedAt is for

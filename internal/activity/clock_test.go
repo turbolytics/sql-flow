@@ -1,6 +1,7 @@
 package activity
 
 import (
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -117,4 +118,15 @@ func TestClock_MarkAndReadDoNotAllocate(t *testing.T) {
 	assert.Equal(t, 0.0, testing.AllocsPerRun(1000, func() { _, _, _ = c.Read() }))
 	var none *Clock
 	assert.Equal(t, 0.0, testing.AllocsPerRun(1000, none.Mark))
+}
+
+// Two processes whose wall clocks agree, such as two gateways that boot near
+// 1970, still get different ids: each Start draws its own, and a clock keeps
+// its id for life.
+func TestClock_EachStartDrawsItsOwnProcessID(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	a, b := Start(), Start()
+	assert.That(t, regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(a.ProcessID()))
+	assert.Equal(t, a.ProcessID(), a.ProcessID())
+	assert.NotEqual(t, a.ProcessID(), b.ProcessID())
 }
