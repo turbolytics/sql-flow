@@ -239,12 +239,25 @@ invariants:
     applies_to: pipeline
     claim: >
       A bucket's published value counts exactly the rows produced for it,
-      once. Rows the engine dropped under late_rows drop are excluded and
-      counted in window_late_rows_total; late_rows reemit publishes a
-      different contract and is out of scope.
+      once. Rows the engine refused as late are excluded and counted in
+      window_late_rows_total; a row admitted within allowed_lateness_seconds
+      is in the bucket's republished value.
     verified_by: harness
     requires: []
     tracked_by: "#183"
+
+  - id: pipeline.window.lateness_decided_at_arrival
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      A record whose bucket ended at or before the watermark less
+      allowed_lateness_seconds is refused before the handler and counted; one
+      within lateness is written and its bucket is republished as a whole
+      value; the window table never holds a row the engine did not admit.
+    verified_by: harness
+    requires: []
+    tracked_by: "the conformance harness has no windowed pipeline subject yet; internal/core, internal/managers/model.go and internal/simulate verify it"
 
   - id: source.commit.only_processed
     family: checkpoint
@@ -482,8 +495,9 @@ invariants:
     class: liveness
     applies_to: manager
     claim: >
-      A closed window reaches the sink without anything else happening. The
-      loop polls on its own, and a window that closes is published.
+      A closed window reaches the sink on the manager's start pass or on the
+      kick that follows the commit which closed it, without anything else
+      happening. The manager has no clock; the engine tells it.
     verified_by: harness
     requires: []
     enforced: true
@@ -526,37 +540,6 @@ invariants:
     verified_by: harness
     requires: []
     enforced: true
-
-  - id: manager.late.policy_holds
-    family: checkpoint
-    class: safety
-    applies_to: manager
-    claim: >
-      A row for a bucket below the watermark is late. Under drop it is
-      discarded and counted, and the bucket is never published again. Under
-      reemit it is published once.
-    verified_by: harness
-    requires: []
-    enforced: true
-
-  # The late-row counter is the data-loss signal the TurboStats bundle reports
-  # as late_rows_dropped, so it holds to what sink_rows_written holds to:
-  # counted when the outcome is durable, never when it is attempted. It was
-  # incremented before the close committed, and a close that then failed
-  # rolled its delete back while the count stayed, so the next close counted
-  # the same rows again.
-  - id: manager.late.counted_once
-    family: checkpoint
-    class: safety
-    applies_to: manager
-    claim: >
-      A late row is counted once, when the close that dropped or reemitted it
-      commits. A close that fails counts nothing; the close that later settles
-      those rows counts them.
-    verified_by: harness
-    requires: []
-    enforced: true
-    violated_once: ["#354"]
 
   - id: manager.drain.bounded
     family: lifecycle

@@ -4,6 +4,33 @@
 
 ### Changed
 
+- **The window's manager no longer polls, and lateness is decided when a
+  record arrives.** The engine tells the manager when a window's watermark
+  moved; the manager publishes what closed, republishes what a late row
+  landed in, and deletes what is past its lateness. It has no clock.
+  `poll_interval_seconds` is gone: nothing is left for it to pace, and a
+  config that sets it fails validation naming the change.
+
+  `late_rows` is gone too, replaced by `allowed_lateness_seconds` (default 0):
+  Flink's `allowedLateness`. With 0, a record for a bucket that closed is
+  refused before the handler and counted in
+  `window_late_rows_total{outcome="refused"}` -- it never reaches the window
+  table, which is what `drop` did after the fact. With a positive value a
+  closed bucket's rows are kept that long, a late record within it is written,
+  and the bucket is republished as a **whole value** -- `emit_sql` over every
+  row it has -- so the sink must replace by key; validate refuses an
+  append-only sink. This replaces `reemit`, which published the late rows
+  alone as a delta that only an additive sink could use and that a replacing
+  sink turned into loss. The sink now always receives the exact value, and
+  `window_recomputes_total` counts each republication.
+
+  `time_column` must be `time_bucket(INTERVAL '<size>', event_time)`, which
+  validate now refuses rather than warns: the engine decides lateness from
+  that bucket, and the six shipped windowed examples and the Render template
+  are updated to it. The wire bundle's `late_rows_reemitted` is gone and
+  `late_rows_recomputed` is new; `late_rows_dropped` now counts refusals.
+  See `docs/superpowers/specs/2026-09-26-watermark-driven-close-design.md`.
+
 - **Windowing is now decided by a watermark the engine asserts.** A window
   manager needs one thing, how far the stream has got, and nothing used to
   tell it: it inferred the answer from the newest bucket in its own table and
