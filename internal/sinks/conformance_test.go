@@ -95,9 +95,9 @@ func TestIntegrationSinkClickhouse_Conformance(t *testing.T) {
 	// timestamp does not rescue it: now64() can resolve to the same value for
 	// every row of one insert block, and the sink flushes a batch as one block.
 	//
-	// Log appends and reads sequentially, so insertion order survives. The sink
-	// builds INSERT INTO <table> (<columns>) from the Arrow schema and does not
-	// care which engine backs the table.
+	// Log appends each insert after the last, so its files hold insertion
+	// order. The sink builds INSERT INTO <table> (<columns>) from the Arrow
+	// schema and does not care which engine backs the table.
 	assert.NoError(t, direct.conn.Exec(ctx,
 		"CREATE TABLE "+table+" (id Int64) ENGINE = Log"))
 
@@ -117,10 +117,14 @@ func TestIntegrationSinkClickhouse_Conformance(t *testing.T) {
 		Heal:  proxy.Heal,
 
 		ReadBack: func(t *testing.T) []conformance.Row {
-			// No ORDER BY: the Log engine returns rows in the order they were
-			// inserted, which is the order this read-back has to report.
+			// No ORDER BY: the read-back has to report the order the rows were
+			// inserted in, and the Log engine's files hold it. One thread,
+			// because Log splits a read across threads by insert and returns
+			// rows as each thread finishes. On a loaded host, 66 of 300
+			// default reads of three inserts came back out of order; on one
+			// thread, none of 300.
 			rows, err := direct.conn.Query(context.Background(),
-				"SELECT id FROM "+table)
+				"SELECT id FROM "+table+" SETTINGS max_threads = 1")
 			assert.NoError(t, err)
 			defer rows.Close()
 
@@ -148,8 +152,9 @@ func TestIntegrationSinkClickhouse_Conformance(t *testing.T) {
 			return array.NewTableFromRecords(schema, []arrow.Record{rec})
 		},
 
-		// The conformance table uses the Log engine, which appends and reads
-		// sequentially, so a select with no ORDER BY returns insertion order.
+		// The conformance table uses the Log engine, which appends in order,
+		// and the read-back reads it on one thread, so it returns insertion
+		// order.
 		OrderedReadBack: true,
 	})
 }
