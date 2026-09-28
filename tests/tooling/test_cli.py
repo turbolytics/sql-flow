@@ -14,11 +14,11 @@ from coverage_matrix.registries import REPO
 from samples import *  # noqa: F401,F403
 
 
-def run_check(go):
+def run_check(go, *extra):
     """The generator, invoked the way the Makefile invokes it."""
     env = dict(os.environ, PYTHONPATH=os.path.join(REPO, "scripts"))
     return subprocess.run(
-        [sys.executable, "-m", "coverage_matrix", "--go", go, "--check"],
+        [sys.executable, "-m", "coverage_matrix", "--go", go, *extra, "--check"],
         capture_output=True, text=True, env=env, cwd=REPO)
 
 
@@ -42,6 +42,25 @@ def test_the_check_exits_non_zero_on_a_gap(tmp_path):
 
     assert proc.returncode == 1, proc.stdout
     assert "coverage gap" in proc.stderr
+
+
+def test_the_check_reads_the_growth_report(tmp_path):
+    """The coverage job passes the growth pass's report with --go-growth. A
+    growth check counts there, at the growth level, and at no other."""
+    name = "TestGrowthInferredInvoke_DoesNotLeakNativeMemory"
+    marker = json.dumps({"Action": "output", "Test": name,
+                         "Output": "    x.go:1: COVERS handler.inferred_mem\n"})
+    unit = write(tmp_path, "go.json", "\n".join([
+        marker, json.dumps({"Action": "skip", "Test": name})]))
+    growth = write(tmp_path, "go-growth.json", "\n".join([
+        marker, json.dumps({"Action": "pass", "Test": name})]))
+
+    alone = run_check(unit)
+    assert "handler.inferred_mem: growth is missing" in alone.stderr
+
+    both = run_check(unit, "--go-growth", growth)
+    assert "handler.inferred_mem: growth" not in both.stderr
+    assert "handler.inferred_mem: unit is skipped" in both.stderr
 
 
 def test_the_check_exits_non_zero_on_an_unknown_marker(tmp_path):

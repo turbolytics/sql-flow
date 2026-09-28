@@ -8,6 +8,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/growth"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
 )
 
@@ -28,20 +29,28 @@ func settle() {
 	debug.FreeOSMemory()
 }
 
-// TestInferredInvoke_DoesNotLeakNativeMemory drives batches through the
+// TestGrowthInferredInvoke_DoesNotLeakNativeMemory drives batches through the
 // handler the way the pipeline does, Invoke then Release then Init, and
 // asserts the process does not grow.
 //
 // Before the fix every Invoke retained its result table once more than the
 // caller released it. The table was never freed, and with it the Arrow
 // buffers DuckDB handed back for every row. Measured on v1.0.6 that cost
-// about 44 bytes per message and grew for as long as the process lived. This
-// loop pushes half a million messages, which leaked over 20 MiB then, against
-// a threshold of 8 MiB now. It runs in under a second, so it belongs in the
-// -short pass: a leak linear in messages needs message volume to show, not
-// wall clock, and this is the pass CI runs on every change.
-func TestInferredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
+// about 44 bytes per message and grew for as long as the process lived. A
+// bounded growth run pushes half a million messages, which leaked over 20 MiB
+// then, against a threshold of 8 MiB now. A full run pushes two and a half
+// million; see package growth.
+//
+// The measured run follows a million-message warm-up. Under -race the
+// detector's own memory ramps for the first thousand batches or so, then
+// plateaus near 9 MiB. A 50-batch warm-up ended mid-ramp and read the
+// detector's growth as the handler's: after the arrow-adbc v1.12.0 bump it
+// failed 7 runs in 10 under -race on macOS. The growth pass runs without
+// -race, where the same build grew 4 MiB over 16 million messages, and the
+// warm-up keeps a run with -race honest too.
+func TestGrowthInferredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
 	coverage.Covers(t, "handler.inferred_mem")
+	growth.Check(t)
 	conn, closeConn := newADBCConn(t)
 	defer closeConn()
 
@@ -55,7 +64,8 @@ func TestInferredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
 	}
 
 	msg := []byte(`{"sensor_id":3,"ts":"2026-09-11T00:00:00","value":12.5}`)
-	const batchSize, warmup, iters = 1000, 50, 500
+	const batchSize, warmup = 1000, 1000
+	iters := growth.Budget(t, 500, 2500)
 
 	run := func(n int) {
 		for i := 0; i < n; i++ {
@@ -87,11 +97,11 @@ func TestInferredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
 	after := residentAnonBytes(t)
 
 	const limit = 8 << 20
-	growth := after - before
+	grew := after - before
 	t.Logf("resident anon memory: before %d MiB, after %d MiB, growth %d MiB over %d messages",
-		before>>20, after>>20, growth>>20, iters*batchSize)
-	if growth > limit {
-		t.Fatalf("process grew %d MiB over %d messages; the handler is retaining native buffers", growth>>20, iters*batchSize)
+		before>>20, after>>20, grew>>20, iters*batchSize)
+	if grew > limit {
+		t.Fatalf("process grew %d MiB over %d messages; the handler is retaining native buffers", grew>>20, iters*batchSize)
 	}
 }
 

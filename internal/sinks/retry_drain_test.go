@@ -40,8 +40,12 @@ func mismatchedTable(t *testing.T) arrow.Table {
 	return array.NewTableFromRecords(schema, []arrow.Record{rec})
 }
 
-func TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
+func TestIntegrationSinkClickhouse_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (id UInt64) ENGINE = MergeTree() ORDER BY id`)
 
 	ctx := context.Background()
@@ -61,8 +65,12 @@ func TestSinkClickhouse_FailedFlushKeepsTheBatchBuffered(t *testing.T) {
 	assert.Equal(t, 1, len(s.tables))
 }
 
-func TestSinkClickhouse_SuccessfulFlushClearsTheBuffer(t *testing.T) {
+func TestIntegrationSinkClickhouse_SuccessfulFlushClearsTheBuffer(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		timestamp DateTime,
 		user_id   Int64,

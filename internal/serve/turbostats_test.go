@@ -13,6 +13,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/growth"
 	"github.com/turbolytics/sql-flow/internal/turbostats"
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"github.com/zeebo/assert"
@@ -61,7 +62,7 @@ func TestServeTurbostats_ServesAServeSection(t *testing.T) {
 	assert.That(t, b.Serve.Cache == nil)
 }
 
-// TestServeTurbostats_DoesNotLeakNativeMemory drives dataset requests and
+// TestGrowthServeTurbostats_DoesNotLeakNativeMemory drives dataset requests and
 // bundle collections through the handler and asserts the process does not
 // grow.
 //
@@ -77,8 +78,14 @@ func TestServeTurbostats_ServesAServeSection(t *testing.T) {
 // and reads duckdb_memory() through the debug endpoint, and `serve` has
 // neither. The threshold and the warmup are the dataset leak test's, for the
 // reasons given there.
-func TestServeTurbostats_DoesNotLeakNativeMemory(t *testing.T) {
+//
+// The length is not. A bundle retained per collection is about 600 bytes:
+// 5,000 bundles grew the process 3 MiB and passed, and 25,000 grew it 19 MiB
+// and failed. So even a bounded growth run makes 2,500 requests and 25,000
+// bundles, and a full run twice that; see package growth.
+func TestGrowthServeTurbostats_DoesNotLeakNativeMemory(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats.serve")
+	growth.Check(t)
 	ex, _ := newExec(t, 1, `CREATE TABLE posts AS
 		SELECT TIMESTAMPTZ '2026-09-10 00:00:00+00' + INTERVAL (range) MINUTE AS bucket,
 		       'lang_' || (range % 33) AS lang,
@@ -126,7 +133,8 @@ serve:
 		return n
 	}
 
-	const warmup, iters = 500, 500
+	const warmup = 500
+	iters := growth.Budget(t, 2500, 5000)
 	run(warmup)
 	settle()
 	before := resident()
@@ -136,12 +144,12 @@ serve:
 	after := resident()
 
 	const limit = 8 << 20
-	growth := after - before
+	grew := after - before
 	t.Logf("resident anon memory: before %d MiB, after %d MiB, growth %d MiB over %d requests and %d bundles",
-		before>>20, after>>20, growth>>20, iters, iters*bundlesPerRequest)
-	if growth > limit {
+		before>>20, after>>20, grew>>20, iters, iters*bundlesPerRequest)
+	if grew > limit {
 		t.Fatalf("process grew %d MiB over %d requests and %d bundles; serve is retaining per request or per bundle",
-			growth>>20, iters, iters*bundlesPerRequest)
+			grew>>20, iters, iters*bundlesPerRequest)
 	}
 
 	// The run above is only evidence if the bundles counted it.

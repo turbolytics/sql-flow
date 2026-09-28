@@ -2,7 +2,8 @@ name: CI
 on: [push]
 jobs:
   # The Go engine (sqlflow), unit pass only. Fast feedback with no Docker: the
-  # integration tests start containers, and the job below runs those.
+  # integration tests start containers, and the job below runs those. -short
+  # also skips the growth tests, which the Growth job runs.
   go:
     name: Go
     runs-on: ubuntu-latest
@@ -105,6 +106,54 @@ jobs:
           path: .coverage/go-integration.json
           overwrite: true
 
+  # The growth tier: Go tests that drive a component for many iterations and
+  # fail if memory grows with them.
+  #
+  # The tiers run in order. Unit is near instant. Integration proves the
+  # function against a real service. Growth proves a non-functional property,
+  # that memory does not grow with the work, so it needs both before it: a
+  # leak check is worth reading only once the function it drives is proven.
+  # Image does not wait for it. Image is the long pole, and chaining it after
+  # Growth would roughly double a push's wall time.
+  #
+  # The length follows the ref. CI runs on push, so a pull request arrives as
+  # pushes to its branch, and a branch runs bounded: about ten seconds a test.
+  # Main runs full, where a slow leak has the time to show. A release waits
+  # for main's CI run on the tagged commit, so full growth gates every
+  # release. That puts this job on the release path: at full length it must
+  # finish within about three minutes.
+  #
+  # No -race; the Makefile's test-growth says why.
+  growth:
+    name: Growth
+    needs: [go, integration]
+    runs-on: ubuntu-latest
+    env:
+      SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
+      GOTOOLCHAIN: local
+      GROWTH: ${{ github.ref == 'refs/heads/main' && 'full' || 'bounded' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go 1.26
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install libduckdb
+        run: ./scripts/install-libduckdb.sh bin
+
+      - name: Test Growth (${{ env.GROWTH }})
+        run: make test-growth GROWTH="$GROWTH"
+
+      - name: Upload the growth report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-growth
+          path: .coverage/go-growth.json
+          overwrite: true
+
   # The coverage matrix generator. It gates every merge, so a wrong generator
   # is a wrong gate. Pure Python: no Docker, no image, seconds to run.
   tooling:
@@ -178,7 +227,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    needs: [go, integration, image]
+    needs: [go, integration, growth, image]
     if: always()
     steps:
       - uses: actions/checkout@v4

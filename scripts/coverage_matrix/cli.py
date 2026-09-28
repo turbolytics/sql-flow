@@ -24,6 +24,8 @@ def main():
     ap.add_argument("--go", help="go test -short -json output")
     ap.add_argument("--go-integration",
                     help="go test -json output from the integration pass")
+    ap.add_argument("--go-growth",
+                    help="go test -json output from the growth pass")
     ap.add_argument("--pytest", help="pytest result json from the conftest hook")
     ap.add_argument("--write", action="store_true",
                     help="write the status directory, the page, and the report")
@@ -61,20 +63,25 @@ def main():
         parse_go(args.go_integration)
         if args.go_integration and os.path.exists(args.go_integration)
         else ({}, {}, {}))
+    gr_results, gr_covers, gr_invariants = (
+        parse_go(args.go_growth)
+        if args.go_growth and os.path.exists(args.go_growth)
+        else ({}, {}, {}))
     py_results, py_covers, py_invariants = (
         parse_pytest(args.pytest)
         if args.pytest and os.path.exists(args.pytest) else ({}, {}, {}))
 
     coverage, secondary, unmatched, unknown = build(
         features, go_results, py_results, go_covers, py_covers,
-        it_results, it_covers)
+        it_results, it_covers, gr_results, gr_covers)
     snap = snapshot(features, coverage, secondary, unmatched, unknown)
 
     built = build_invariants(
         invariants, integrations,
-        {"unit": go_results, "integration": it_results, "release": py_results},
+        {"unit": go_results, "integration": it_results,
+         "growth": gr_results, "release": py_results},
         {"unit": go_invariants, "integration": it_invariants,
-         "release": py_invariants})
+         "growth": gr_invariants, "release": py_invariants})
     snap.update(snapshot_invariants(invariants, integrations, built))
 
     status = status_from_snapshot(snap)

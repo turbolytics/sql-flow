@@ -81,10 +81,13 @@ func (s shape) decl() Declaration {
 // admitted to it -- produced less refused -- and never refuses a row that
 // was in order for a partition still in the minimum. Once the run quiesces,
 // nothing that can close stays open.
+//
+// The shapes share nothing, so they run in parallel.
 func TestManagerWindow_EverySequenceCountsEveryRowOnce(t *testing.T) {
 	coverage.Covers(t, "manager.window")
 	for _, s := range shapes {
 		t.Run(s.name, func(t *testing.T) {
+			t.Parallel()
 			alphabet := modelAlphabet(s.idle)
 			fired := map[string]int{}
 			idleCloses := 0
@@ -137,12 +140,19 @@ func checkSequence(t *testing.T, s shape, seq []Event, fired map[string]int) int
 	m := NewModel(s.decl(), 0, 1)
 	published := 0
 	seen := map[time.Time]bool{}
-	take := func(what string, pubs []Publication) {
+	// step is the index of the event being applied, or -1 while quiescing.
+	// The label is built only on failure: formatting it for every step of
+	// every sequence was a third of a million Sprintf calls a run.
+	take := func(step int, pubs []Publication) {
 		for _, p := range pubs {
 			// A bucket is published once: a second publication of the same
 			// bucket is the split-bucket defect, counted here so a sequence
 			// that produces one fails rather than balancing out.
 			if seen[p.Bucket] {
+				what := "quiescing"
+				if step >= 0 {
+					what = fmt.Sprintf("step %d of", step)
+				}
 				t.Fatalf("%s %v: bucket %s published twice", what, kinds(seq), p.Bucket)
 			}
 			seen[p.Bucket] = true
@@ -151,7 +161,7 @@ func checkSequence(t *testing.T, s shape, seq []Event, fired map[string]int) int
 	}
 
 	for i, e := range seq {
-		take(fmt.Sprintf("step %d of", i), m.Apply(e))
+		take(i, m.Apply(e))
 		// The minimum's promise: a partition that holds and was not idle at
 		// the last poll can still deliver an in-order row for any bucket at
 		// or after its own newest less the grace, so no such bucket may have
@@ -191,7 +201,7 @@ func checkSequence(t *testing.T, s shape, seq []Event, fired map[string]int) int
 			Event{Kind: Produce, Partition: 1, Rows: 1, Ahead: true})
 	}
 	for _, e := range tail {
-		take("quiescing", m.Apply(e))
+		take(-1, m.Apply(e))
 	}
 
 	open, newestEnd := m.Open()

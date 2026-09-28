@@ -15,6 +15,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/internal/handlers"
 	"github.com/turbolytics/sql-flow/internal/sinks"
 	"go.uber.org/zap"
@@ -119,9 +120,17 @@ func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
 	// with the SQLFLOW_ prefix, which is the only form an environment can
 	// reach -- these are passed as overrides here only because this test never
 	// runs a process.
+	//
+	// The Postgres DSNs point at a refused loopback port. The defaults sent
+	// one probe to DNS for sqlflow-postgres, and a unit test touches no
+	// network beyond loopback. The other probed localhost:5432, so a Postgres
+	// a developer happened to run there turned a skip into a two-second wait.
+	unreachablePostgres := "postgresql://postgres:postgres@127.0.0.1:1/postgres"
 	overrides := map[string]string{
-		"SQLFLOW_CATALOG_NAME": "test_catalog",
-		"SQLFLOW_TABLE_NAME":   "default.test_table",
+		"SQLFLOW_CATALOG_NAME":       "test_catalog",
+		"SQLFLOW_TABLE_NAME":         "default.test_table",
+		"SQLFLOW_POSTGRES_URI":       unreachablePostgres,
+		"SQLFLOW_POSTGRES_USERS_URI": unreachablePostgres,
 	}
 
 	for _, path := range exampleConfigs(t) {
@@ -206,6 +215,14 @@ func checkBuildError(t *testing.T, what string, err error) {
 	msg := err.Error()
 	if strings.Contains(msg, "not supported") || strings.Contains(msg, "requires a") {
 		t.Fatalf("build %s: %v", what, err)
+	}
+	// The sink was built, and its probe found no destination: every network
+	// sink in a unit test. Skipping here also skipped the handler below it,
+	// so on CI, with no broker on localhost:9092, no example with a Kafka
+	// sink ever had its handler built.
+	if errs.HasCode(err, errs.CodeSinkUnreachable) {
+		t.Logf("built %s; its destination is not reachable here: %v", what, err)
+		return
 	}
 	t.Skipf("build %s needs a resource this test cannot provide: %v", what, err)
 }

@@ -71,15 +71,19 @@ test-image: sqlflow-image
 # dependency every release test errors in collection, and the `-` prefixes
 # swallow it: the matrix regenerates with every release row marked failing.
 #
-# Three passes, one per level. -short is the unit pass and runs anywhere; the
-# integration pass runs the tests that provision a real service; the release
-# pass runs against the built image.
+# Four passes, one per level, in the order the tiers run; see test-growth.
+# -short is the unit pass and runs anywhere; the integration pass runs the
+# tests that provision a real service; the growth pass runs the tests that
+# measure memory over many iterations; the release pass runs against the
+# built image.
 .PHONY: coverage-matrix
 coverage-matrix: sqlflow-image
 	@mkdir -p .coverage
 	-CGO_ENABLED=1 go test -short -race -json ./... > .coverage/go.json 2>&1
 	-CGO_ENABLED=1 go test -json -run '^TestIntegration' ./... \
 		> .coverage/go-integration.json 2>&1
+	-SQLFLOW_GROWTH=$(GROWTH) CGO_ENABLED=1 go test -json -run '^TestGrowth' ./... \
+		> .coverage/go-growth.json 2>&1
 	-SQLFLOW_PYTEST_JSON=$(shell pwd)/.coverage/pytest.json \
 		SQLFLOW_IMAGE=$(SQLFLOW_IMAGE) \
 		TC_KAFKA_LIMIT_BROKER_TO_FIRST_HOST=true \
@@ -110,6 +114,7 @@ coverage-write:
 	$(GENERATOR) \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
+		--go-growth .coverage/go-growth.json \
 		--pytest .coverage/pytest.json --write
 
 # Renders the page from the committed status files and registries. Reads no
@@ -143,12 +148,14 @@ coverage-check: coverage-write
 	$(GENERATOR) \
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
+		--go-growth .coverage/go-growth.json \
 		--pytest .coverage/pytest.json --check
-	@! grep -hq '"Action":"fail"' .coverage/go.json .coverage/go-integration.json || { \
+	@# The Package field sits between Action and Test in go test -json, so
+	@# the pattern spans it. Without it the list below printed nothing.
+	@! grep -sq '"Action":"fail"' $(GO_REPORTS) || { \
 		echo "" >&2; \
 		echo "A Go test failed:" >&2; \
-		grep -ho '"Action":"fail","Test":"[^"]*"' \
-			.coverage/go.json .coverage/go-integration.json \
+		grep -sho '"Action":"fail","Package":"[^"]*","Test":"[^"]*"' $(GO_REPORTS) \
 			| sed 's/.*"Test":"/  /; s/"$$//' | sort -u >&2; \
 		exit 1; \
 	}
@@ -398,6 +405,57 @@ test-go:
 	@# pass runs without it, because there the cost is the containers.
 	go test -short -race ./...
 	go test ./...
+
+# The test tiers, in the order CI runs them:
+#
+#   1. unit         go test -short -race ./...    near instant
+#   2. integration  go test -run '^TestIntegration' ./...
+#                                                 the function, against a
+#                                                 real service
+#   3. growth       make test-growth              non-functional: memory does
+#                                                 not grow with the work
+#   4. release      make test-release             the shipped image
+#
+# Growth follows unit and integration, because a leak check is worth reading
+# only once the function it drives is proven.
+#
+# A growth test is named TestGrowth<Feature>_<Behaviour> and skips under
+# -short. SQLFLOW_GROWTH sets its length. Bounded, the default, keeps each
+# test to seconds and runs on a branch. Full runs longer, on main and before a
+# release, where a slow leak has the time to show.
+#
+# No -race. A growth check measures process memory, and the race detector's
+# shadow memory grows on its own: under it, the inferred handler's check read
+# the detector's warm-up as a leak. The unit pass runs the same code under
+# -race.
+#
+# bash, for pipefail: tee keeps the events in the CI log and must not hide go
+# test's exit status.
+GROWTH ?= bounded
+GROWTH_REPORT ?= .coverage/go-growth.json
+
+# Only the packages that declare a growth test. ./... compiled every test
+# binary in the module to run tests in four, on a runner with no build cache.
+# The list comes from the source, so a growth test in a new package joins it
+# by its name alone. --untracked finds one not yet added to git.
+GROWTH_PKGS = $(shell git grep --untracked -l '^func TestGrowth' -- '*_test.go' \
+	| xargs -n1 dirname | sort -u | sed 's|^|./|')
+
+.PHONY: test-growth
+test-growth: SHELL := /bin/bash
+test-growth:
+	@mkdir -p $(dir $(GROWTH_REPORT))
+	@# An empty list would run go test in this directory and pass on nothing.
+	@test -n "$(GROWTH_PKGS)" || { echo "no package declares a TestGrowth test" >&2; exit 1; }
+	set -o pipefail; SQLFLOW_GROWTH=$(GROWTH) CGO_ENABLED=1 \
+		go test -json -run '^TestGrowth' $(GROWTH_PKGS) | tee $(GROWTH_REPORT)
+
+.PHONY: test-growth-full
+test-growth-full:
+	@$(MAKE) --no-print-directory test-growth GROWTH=full
+
+# Every Go report the coverage gate reads for failures.
+GO_REPORTS := .coverage/go.json .coverage/go-integration.json .coverage/go-growth.json
 
 # The Python engine's image targets are gone with the engine. Published
 # python-* tags are still on Docker Hub; reproducing one means checking out a

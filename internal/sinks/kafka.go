@@ -14,8 +14,8 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// recordDeliveryTimeout bounds how long franz-go may hold a record the broker
-// has not acknowledged.
+// defaultRecordDeliveryTimeout bounds how long franz-go may hold a record the
+// broker has not acknowledged.
 //
 // franz-go retries a produce indefinitely by default, and no caller bounds the
 // wait: the tumbling manager's context is cancellable but carries no deadline,
@@ -27,7 +27,12 @@ import (
 // Shorter than a supervisor's usual 30s termination grace period, so the drain
 // fails and reports rather than being killed mid-flush. Kafka's own
 // delivery.timeout.ms default of two minutes is far past that.
-const recordDeliveryTimeout = 20 * time.Second
+const defaultRecordDeliveryTimeout = 20 * time.Second
+
+// recordDeliveryTimeout is the bound NewKafkaSink applies. It is a variable
+// so a test can prove the default reaches a flush at franz-go's one-second
+// floor, rather than wait twenty seconds for it.
+var recordDeliveryTimeout = defaultRecordDeliveryTimeout
 
 // kafkaSinkError codes a flush failure, teaching sinkError the two franz-go
 // errors it cannot recognise.

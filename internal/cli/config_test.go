@@ -79,10 +79,14 @@ func TestCliServe_ConfigExamplePrintsTheServeSkeleton(t *testing.T) {
 // lets the schema drift away from the configs it is supposed to describe --
 // that is how `type: webhook` came to be rejected by `config validate` while
 // `run` accepted it.
+//
+// The examples are independent, so they validate in parallel: forty of them
+// one after another took over a second under -race.
 func TestConfigValidation_Examples(t *testing.T) {
 	coverage.Covers(t, "config.validation")
 	for _, path := range exampleConfigs(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
+			t.Parallel()
 			assert.NoError(t, validateConfig(path))
 		})
 	}

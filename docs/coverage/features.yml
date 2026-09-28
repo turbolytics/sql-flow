@@ -11,16 +11,29 @@
 # not in the image".
 #
 # `requires` lists the levels the feature must be covered at. A missing level
-# fails `make coverage-matrix`.
+# fails `make coverage-matrix`. Four levels, in the order CI runs them:
 #
-#   unit         go test -short ./...              the logic is right
-#   integration  go test -run '^TestIntegration'   it works against the real
-#                                                  service, not a stand-in
+#   unit         go test -short ./...              near instant: the logic is
+#                                                  right
+#   integration  go test -run '^TestIntegration'   the function works against
+#                                                  the real service, not a
+#                                                  stand-in
+#   growth       go test -run '^TestGrowth'        non-functional: memory does
+#                                                  not grow with the work
 #   release      pytest tests/release              the shipped image does it
 #
-# An integration test is named TestIntegration<Feature>_<Behaviour>. The prefix
-# selects the pass; the rest of the name still says which feature it covers, so
-# level and feature stay independent.
+# Growth follows unit and integration because a leak check is worth reading
+# only once the function it drives is proven.
+#
+# An integration test is named TestIntegration<Feature>_<Behaviour>, and a
+# growth test TestGrowth<Feature>_<Behaviour>. The prefix selects the pass; the
+# rest of the name still says which feature it covers, so level and feature
+# stay independent.
+#
+# A growth test drives a component for many iterations and fails if memory
+# grows with them. It skips under -short, so the unit pass never runs it. Its
+# length comes from growth.Budget: bounded on a branch, full on main and
+# before a release.
 #
 # An integration test starts what it needs, in a container, and fails if it
 # cannot. It must never skip: for months the Kafka source's only real tests
@@ -96,7 +109,7 @@ features:
   # --- Handlers -----------------------------------------------------------
   - id: handler.inferred_mem
     description: Infers a schema per batch and runs the query in memory.
-    requires: [unit, release]
+    requires: [unit, growth, release]
 
   - id: handler.inferred_disk
     description: Infers a schema per batch, staging the batch on disk.
@@ -104,7 +117,7 @@ features:
 
   - id: handler.structured
     description: Binds a declared schema, ingesting through Arrow.
-    requires: [unit, release]
+    requires: [unit, growth, release]
 
   # --- Durable state ------------------------------------------------------
   - id: state.durability
@@ -157,7 +170,7 @@ features:
   # --- Table managers -----------------------------------------------------
   - id: manager.window
     description: A declared window is closed by the engine against a persisted event-time watermark, with a late-row policy.
-    requires: [unit, release]
+    requires: [unit, growth, release]
 
   # --- Config -------------------------------------------------------------
   - id: config.templating
@@ -183,11 +196,11 @@ features:
 
   - id: observability.turbostats
     description: Reports the process's own state as one versioned document, served at /turbostats/v1.
-    requires: [unit, release]
+    requires: [unit, growth, release]
 
   - id: observability.turbostats.serve
     description: Reports `sqlflow serve`'s totals as the bundle's serve section, served at /turbostats/v1.
-    requires: [unit, release]
+    requires: [unit, growth, release]
 
   - id: observability.turbostats.reporter
     description: Posts the process's own state to a control plane on an interval, signed.
@@ -208,7 +221,7 @@ features:
 
   - id: cli.serve
     description: Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits.
-    requires: [unit, integration, release]
+    requires: [unit, integration, growth, release]
 
   - id: cli.turbostats_keygen
     description: Generates a TurboStats keypair on the instance, writes the private half to a file only, and prints the public half to register.

@@ -99,14 +99,14 @@ def test_the_report_counts_the_tests_rather_than_sampling_them():
     row = next(line for line in render_report(s).splitlines()
                if line.startswith("| `sink.clickhouse`"))
 
-    assert row == "| `sink.clickhouse` | 4 | — | — | 4 |"
+    assert row == "| `sink.clickhouse` | 4 | — | — | — | 4 |"
     assert "TestSinkClickhouse_0" not in row
 
 
 def test_the_report_leaves_the_count_blank_when_nothing_covers_the_feature():
     row = next(line for line in render_report(snap()).splitlines()
                if line.startswith("| `sink.console`"))
-    assert row == "| `sink.console` | — | — | — | — |"
+    assert row == "| `sink.console` | — | — | — | — | — |"
 
 
 def test_the_report_names_a_feature_covered_only_by_a_marker():

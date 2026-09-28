@@ -64,14 +64,18 @@ TYPES_PAGE = os.path.join(REPO, "docs", "coverage", "clickhouse-types.mdx")
 PASS, SKIP, FAIL = "pass", "skip", "fail"
 
 
-# Ordered cheapest to most real, which is the order they run in and the order
-# the matrix reads left to right.
-LEVELS = ("unit", "integration", "release")
+# The order they run in, and the order the matrix reads left to right. Unit
+# runs near instantly. Integration proves the function against the real
+# service. Growth proves a non-functional property, that memory does not grow
+# with the work, once the function is proven. Release proves the shipped image.
+LEVELS = ("unit", "integration", "growth", "release")
 
 
-# Go's integration pass selects its tests by name, because `go test -run` is
-# the only selector that needs no build tag and no second package.
+# Go's integration and growth passes select their tests by name, because
+# `go test -run` is the only selector that needs no build tag and no second
+# package.
 INTEGRATION_PREFIX = "TestIntegration"
+GROWTH_PREFIX = "TestGrowth"
 
 
 # The closed vocabularies invariants.yml may use. A value outside one of them

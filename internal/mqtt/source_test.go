@@ -113,10 +113,14 @@ func TestSourceMqtt_SeekToIsANoOp(t *testing.T) {
 	assert.NoError(t, (&Source{}).SeekTo(marks))
 }
 
+// The connect timeout is 100ms rather than the default 30s. Nothing listens
+// on port 1, so every attempt fails at once, and Start ends when the timeout
+// does. The bound below is the claim: Start reports, rather than retrying
+// until someone kills it.
 func TestSourceMqtt_StartReportsAnUnreachableBroker(t *testing.T) {
 	coverage.Covers(t, "source.mqtt")
 	u, _ := url.Parse("tcp://127.0.0.1:1")
-	s := newTestSource(t, u, uniq("unreachable"), []string{"x/#"}, WithConnectTimeout(2*time.Second))
+	s := newTestSource(t, u, uniq("unreachable"), []string{"x/#"}, WithConnectTimeout(100*time.Millisecond))
 	start := time.Now()
 	err := s.Start()
 	assert.Error(t, err)

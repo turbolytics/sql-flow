@@ -59,11 +59,18 @@ func windowSpecs(conf *config.Conf) []core.WindowSpec {
 // direction it fails silently, so it is one function with a test of both
 // shapes rather than a line in root.go.
 func windowOptions(conf *config.Conf, conn adbc.Connection) (*core.Watermarks, []core.TurbineOption) {
+	return windowOptionsAt(conf, conn, time.Now)
+}
+
+// windowOptionsAt is windowOptions on a given clock. The idle-close tests
+// step it by hand, so the idle bound is crossed by what the stream did
+// rather than by how long the scheduler took.
+func windowOptionsAt(conf *config.Conf, conn adbc.Connection, now func() time.Time) (*core.Watermarks, []core.TurbineOption) {
 	specs := windowSpecs(conf)
 	if len(specs) == 0 {
 		return nil, nil
 	}
-	w := core.NewWatermarks(specs, time.Now)
+	w := core.NewWatermarks(specs, now)
 	return w, []core.TurbineOption{core.WithWindows(w, core.NewWatermarkStore(conn))}
 }
 

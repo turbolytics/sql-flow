@@ -9,7 +9,8 @@ from .invariants import cell_state
 from .registries import CLASSES, FAMILIES, LEVELS, PIPELINE
 
 
-# Level initials, so a cell fits: u = unit, i = integration, r = release.
+# Level initials, so a cell fits: u = unit, i = integration, g = growth,
+# r = release.
 LEVEL_INITIALS = {lvl: lvl[0] for lvl in LEVELS}
 
 

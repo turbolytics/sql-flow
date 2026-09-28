@@ -12,7 +12,7 @@ import (
 // The StructuredBatch leak loop, in the shape of the Bluesky demo: its nested
 // post schema and its handler's SELECT, with nothing downstream. The window
 // the demo writes into is internal/managers' loop.
-// TestStructuredInvoke_DoesNotLeakNativeMemory bounds a flat three-column
+// TestGrowthStructuredInvoke_DoesNotLeakNativeMemory bounds a flat three-column
 // schema at 8 MiB over half a million messages, about 17 bytes a message;
 // this reports the rate itself. Run it with dev/bench/leakloops.sh.
 

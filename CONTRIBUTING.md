@@ -20,15 +20,32 @@ reviewer could re-run.
 Five checks. The first four run on every PR. The fifth runs when the change
 could touch memory, and the rule for that is below.
 
-### 1. The Go suite, with the race detector
+### 1. The Go suite: unit with the race detector, then growth
 
 ```bash
 go test -short -race ./...
+make test-growth
 ```
 
-Race detection is not optional. Two races in the conformance harness reached
-`main`, one of which panicked a CI run outright, and neither reproduced by
-re-running.
+Race detection is not optional in the unit pass. Two races in the conformance
+harness reached `main`, one of which panicked a CI run outright, and neither
+reproduced by re-running.
+
+The tests run in four tiers, in this order:
+
+1. Unit, `go test -short`: near instant.
+2. Integration, `go test -run '^TestIntegration'`: the function, against a
+   real service.
+3. Growth, `make test-growth`: non-functional. Memory does not grow with the
+   work.
+4. Release, `tests/release`: the shipped image.
+
+Growth follows the functional tiers, because a leak check is worth reading
+only once the function it drives is proven. `-short` skips the growth tests.
+`make test-growth` runs them bounded, as CI does on a branch.
+`make test-growth-full` runs them at the length main and a release use. A
+growth test is named `TestGrowth<Feature>_<Behaviour>`, calls
+`growth.Check(t)`, and reads its length from `growth.Budget`.
 
 ### 2. The tooling suite
 

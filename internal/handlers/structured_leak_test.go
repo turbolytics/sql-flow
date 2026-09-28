@@ -8,6 +8,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/growth"
 )
 
 // duckdbTableBytes is what DuckDB itself says it is holding for tables on
@@ -85,40 +86,53 @@ func driveStructured(t *testing.T, h *StructuredBatchHandler, n, batchSize int) 
 	}
 }
 
-// TestStructuredInit_ReleasesTruncatedStorage: Init empties the declared
+// TestGrowthStructuredInit_ReleasesTruncatedStorage: Init empties the declared
 // table with TRUNCATE, and TRUNCATE leaves the dead row groups in place. On
 // a 60-minute soak at 1,000 messages a second that was about 53 bytes
 // retained per message, reported by duckdb_memory() as IN_MEMORY_TABLE for a
 // table holding zero rows, and it grew for as long as the process lived.
 // A CHECKPOINT after the truncate reclaims all of it. This asserts the
-// storage DuckDB holds for the table does not grow across batches.
-func TestStructuredInit_ReleasesTruncatedStorage(t *testing.T) {
+// storage DuckDB holds for the table does not grow across batches: 200 of
+// them on a bounded growth run, 1,000 on a full one; see package growth.
+func TestGrowthStructuredInit_ReleasesTruncatedStorage(t *testing.T) {
 	coverage.Covers(t, "handler.structured")
+	growth.Check(t)
 	h, tableBytes := newSoakStructuredHandler(t)
 
-	const batchSize, warmup, iters = 1000, 20, 200
+	const batchSize, warmup = 1000, 20
+	iters := growth.Budget(t, 200, 1000)
 	driveStructured(t, h, warmup, batchSize)
 	before := tableBytes()
 	driveStructured(t, h, iters, batchSize)
 	after := tableBytes()
 
 	const limit = 4 << 20
-	growth := after - before
+	grew := after - before
 	t.Logf("duckdb table storage: before %d KiB, after %d KiB, growth %d KiB over %d rows through an emptied table",
-		before>>10, after>>10, growth>>10, iters*batchSize)
-	if growth > limit {
-		t.Fatalf("DuckDB kept %d KiB of storage for a table Init had emptied; TRUNCATE without a checkpoint retains dead row groups", growth>>10)
+		before>>10, after>>10, grew>>10, iters*batchSize)
+	if grew > limit {
+		t.Fatalf("DuckDB kept %d KiB of storage for a table Init had emptied; TRUNCATE without a checkpoint retains dead row groups", grew>>10)
 	}
 }
 
-// TestStructuredInvoke_DoesNotLeakNativeMemory is the process-level view of
+// TestGrowthStructuredInvoke_DoesNotLeakNativeMemory is the process-level view of
 // the same path, the instrument that catches whatever DuckDB's own accounting
-// does not: half a million messages, and the process must not grow.
-func TestStructuredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
+// does not: five million messages on a bounded growth run, ten million on a
+// full one, and the process must not grow.
+//
+// The length is what the defect needs. Invoke retaining its result table once
+// more than the caller releases, the inferred handler's old leak, costs about
+// 4 KiB a batch here, because the query aggregates each batch to a few rows.
+// 1,000 batches grew the process 6 MiB and passed the 8 MiB threshold; 5,000
+// grew it 20 MiB and failed. Half a million messages, the length before the
+// growth tier, could not have caught it.
+func TestGrowthStructuredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
 	coverage.Covers(t, "handler.structured")
+	growth.Check(t)
 	h, _ := newSoakStructuredHandler(t)
 
-	const batchSize, warmup, iters = 1000, 50, 500
+	const batchSize, warmup = 1000, 50
+	iters := growth.Budget(t, 5000, 10000)
 	driveStructured(t, h, warmup, batchSize)
 	settle()
 	before := residentAnonBytes(t)
@@ -127,10 +141,10 @@ func TestStructuredInvoke_DoesNotLeakNativeMemory(t *testing.T) {
 	after := residentAnonBytes(t)
 
 	const limit = 8 << 20
-	growth := after - before
+	grew := after - before
 	t.Logf("resident anon memory: before %d MiB, after %d MiB, growth %d MiB over %d messages",
-		before>>20, after>>20, growth>>20, iters*batchSize)
-	if growth > limit {
-		t.Fatalf("process grew %d MiB over %d messages; the structured handler is retaining memory", growth>>20, iters*batchSize)
+		before>>20, after>>20, grew>>20, iters*batchSize)
+	if grew > limit {
+		t.Fatalf("process grew %d MiB over %d messages; the structured handler is retaining memory", grew>>20, iters*batchSize)
 	}
 }

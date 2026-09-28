@@ -9,7 +9,9 @@ from samples import *  # noqa: F401,F403
 
 
 def test_levels_run_from_cheapest_to_most_real():
-    assert LEVELS == ("unit", "integration", "release")
+    """Growth follows integration: it proves a non-functional property once
+    the function is proven."""
+    assert LEVELS == ("unit", "integration", "growth", "release")
 
 
 def test_parse_go_lets_a_pass_outrank_a_skipped_subtest():

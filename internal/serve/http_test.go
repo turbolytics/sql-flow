@@ -737,9 +737,13 @@ serve:
       sql: SELECT count(*) AS n FROM posts
 `
 
+// The health check waits its timeout for a session before it answers busy.
+// The config's floor is a second, so the test sets the field to 50ms: the
+// claim is the answer, not the length of the wait.
 func TestCliServe_HealthzIsBusyNotDownWhenThePoolIsFull(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	ts := newTestServer(t, busyServe)
+	ts.srv.healthTimeout = 50 * time.Millisecond
 
 	held, err := ts.srv.exec.Acquire(context.Background())
 	assert.NoError(t, err)
@@ -760,6 +764,8 @@ func TestCliServe_HealthzIsBusyNotDownWhenThePoolIsFull(t *testing.T) {
 func TestCliServe_HealthzAnswersHead(t *testing.T) {
 	coverage.Covers(t, "cli.serve")
 	ts := newTestServer(t, busyServe)
+	// See HealthzIsBusyNotDownWhenThePoolIsFull.
+	ts.srv.healthTimeout = 50 * time.Millisecond
 
 	assert.Equal(t, http.StatusOK, ts.do(t, http.MethodHead, "/healthz", nil).status)
 
