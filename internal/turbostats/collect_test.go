@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -201,6 +202,8 @@ func TestCollect_AStatsFailureFailsTheBundle(t *testing.T) {
 func TestCollect_CarriesTheStaticFactsAndTheRuntime(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	reader, _, _ := provider(t)
+	// The live heap is unknown until the first collection has run.
+	runtime.GC()
 
 	b, err := Collect(context.Background(), runSource(reader, nil))
 	assert.NoError(t, err)
@@ -214,6 +217,9 @@ func TestCollect_CarriesTheStaticFactsAndTheRuntime(t *testing.T) {
 	assert.Equal(t, static.StartedAt, b.Process.StartedAt)
 	assert.That(t, b.Process.Goroutines > 0)
 	assert.That(t, b.Process.RSSBytes > 0)
+	assert.That(t, b.Process.GoHeapBytes > 0)
+	// The live heap is part of what the runtime holds, never more than it.
+	assert.That(t, b.Process.GoRetainedBytes >= b.Process.GoHeapBytes)
 	assert.That(t, b.Exit == nil)
 	assert.That(t, !b.SentAt.IsZero())
 	assert.Equal(t, 0, b.SentAt.Nanosecond())

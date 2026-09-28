@@ -244,3 +244,20 @@ func TestProcess_IDIsAbsentUntilSet(t *testing.T) {
 		t.Fatalf("an unset process.id is present: %v", without.Process)
 	}
 }
+
+// The Go memory fields are omitempty: an engine that predates them sends no
+// key, and a receiver must not chart that as a process holding no Go memory.
+func TestProcess_GoMemoryIsAbsentUntilSet(t *testing.T) {
+	with := mustMarshal(t, Bundle{V: Version, Process: Process{GoRetainedBytes: 3 << 20, GoHeapBytes: 1 << 20}})
+	for _, want := range []string{`"go_retained_bytes":3145728`, `"go_heap_bytes":1048576`} {
+		if !strings.Contains(with, want) {
+			t.Errorf("want %s in %s", want, with)
+		}
+	}
+	without := mustMarshal(t, Bundle{V: Version})
+	for _, absent := range []string{"go_retained_bytes", "go_heap_bytes"} {
+		if strings.Contains(without, absent) {
+			t.Errorf("an unset %s is present: %s", absent, without)
+		}
+	}
+}
