@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -202,37 +202,25 @@ func TestSinkClickhouse_NewRequiresTable(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// clickhouseTestDSN points the live tests at the dev-stack ClickHouse.
-func clickhouseTestDSN() string {
-	if dsn := os.Getenv("SQLFLOW_CLICKHOUSE_DSN"); dsn != "" {
-		return dsn
-	}
-	return "clickhouse://localhost:8123/default"
-}
+// liveTables numbers the live tests' tables, so two parallel tests that read
+// the same clock still get two tables.
+var liveTables atomic.Int64
 
-// newLiveClickhouseSink builds a sink against the dev-stack ClickHouse and
-// creates its target table from ddl (a format string taking the table name;
-// empty to skip). It skips the test when no server is reachable rather than
-// failing a local `go test`.
+// newLiveClickhouseSink builds a sink against the package's shared ClickHouse
+// and creates its target table from ddl (a format string taking the table
+// name; empty to skip).
+//
+// The tests that call it dialled a dev-stack ClickHouse on localhost:8123 and
+// skipped where none answered. No CI job has one, so they ran on laptops and
+// nowhere else. They are integration tests now, on the container the
+// conformance tests start.
 func newLiveClickhouseSink(t *testing.T, ddl string) *ClickhouseSink {
 	t.Helper()
 
-	table := fmt.Sprintf("turbine_sink_test_%d", time.Now().UnixNano())
-
-	s, err := NewClickhouseSink(config.ClickhouseSink{
-		DSN:   clickhouseTestDSN(),
-		Table: table,
-	})
-	if err != nil {
-		t.Skipf("clickhouse unavailable: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
+	table := fmt.Sprintf("turbine_sink_test_%d_%d", time.Now().UnixNano(), liveTables.Add(1))
+	s := mustDirectSink(t, sharedClickhouse(t), table)
 
 	ctx := context.Background()
-	if err := s.conn.Ping(ctx); err != nil {
-		t.Skipf("clickhouse unavailable at %s: %v", clickhouseTestDSN(), err)
-	}
-
 	if ddl != "" {
 		assert.NoError(t, s.conn.Exec(ctx, fmt.Sprintf(ddl, table)))
 		t.Cleanup(func() {
@@ -252,8 +240,12 @@ func clickhouseRowCount(t *testing.T, s *ClickhouseSink) uint64 {
 	return count
 }
 
-func TestSinkClickhouse_InsertsRows(t *testing.T) {
+func TestIntegrationSinkClickhouse_InsertsRows(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		timestamp DateTime,
 		user_id UInt64,
@@ -280,8 +272,12 @@ func TestSinkClickhouse_InsertsRows(t *testing.T) {
 // A handler whose query matched no rows yields an empty, column-less table.
 // Flushing it must be a no-op: the column list would otherwise be empty and
 // the INSERT malformed.
-func TestSinkClickhouse_EmptyTableIsNoop(t *testing.T) {
+func TestIntegrationSinkClickhouse_EmptyTableIsNoop(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
 	s := newLiveClickhouseSink(t, "")
 
 	table := array.NewTable(arrow.NewSchema(nil, nil), nil, 0)
@@ -291,8 +287,12 @@ func TestSinkClickhouse_EmptyTableIsNoop(t *testing.T) {
 	assert.NoError(t, s.Flush(context.Background()))
 }
 
-func TestSinkClickhouse_NullsBecomeDefaults(t *testing.T) {
+func TestIntegrationSinkClickhouse_NullsBecomeDefaults(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		user_id UInt64,
 		action Nullable(String)
@@ -365,8 +365,12 @@ func clickhouseFixtureTable(t *testing.T) arrow.Table {
 // handler turns any JSON array into a list, so this is reachable from an
 // ordinary config -- a Bluesky pipeline selecting commit.record.langs
 // produces exactly this shape.
-func TestSinkClickhouse_InsertsArrays(t *testing.T) {
+func TestIntegrationSinkClickhouse_InsertsArrays(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		id UInt64,
 		langs Array(String),
@@ -437,8 +441,12 @@ func TestSinkClickhouse_InsertsArrays(t *testing.T) {
 
 // A list of lists must reach Array(Array(T)), since the handler infers
 // nested lists from nested JSON arrays.
-func TestSinkClickhouse_InsertsNestedArrays(t *testing.T) {
+func TestIntegrationSinkClickhouse_InsertsNestedArrays(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
 	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
 		id UInt64,
 		matrix Array(Array(Int64))
@@ -484,8 +492,11 @@ func TestSinkClickhouse_InsertsNestedArrays(t *testing.T) {
 // not shifted by whatever zone the SQLFlow host happens to run in. The zone is
 // pinned to one far from UTC so the test means the same thing on a UTC CI
 // runner as on a laptop.
-func TestSinkClickhouse_StringTemporalsAreNotShiftedByHostZone(t *testing.T) {
+func TestIntegrationSinkClickhouse_StringTemporalsAreNotShiftedByHostZone(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
 	tokyo, err := time.LoadLocation("Asia/Tokyo") // UTC+9, no DST
 	assert.NoError(t, err)
 	prev := time.Local
