@@ -76,11 +76,32 @@ type SinkSubject struct {
 	// destination accepts. The subject owns the schema because a ClickHouse
 	// table has the columns its DDL declared, and the harness has no DDL.
 	Table func(t *testing.T, id int64) arrow.Table
+
+	// testFlushTimeout and testProbeTimeout replace flushTimeout and
+	// probeTimeout when set. The harness's own tests set them: a sink that
+	// ignores its deadline is caught only once the grace runs out, and at the
+	// defaults that is five and six seconds a test. Unexported, so a real
+	// integration is always judged at the defaults.
+	testFlushTimeout, testProbeTimeout time.Duration
 }
 
 // flushTimeout bounds a Flush against a broken destination. A sink that hangs
 // must fail this test rather than the suite.
 const flushTimeout = 10 * time.Second
+
+func (s SinkSubject) flushBound() time.Duration {
+	if s.testFlushTimeout > 0 {
+		return s.testFlushTimeout
+	}
+	return flushTimeout
+}
+
+func (s SinkSubject) probeBound() time.Duration {
+	if s.testProbeTimeout > 0 {
+		return s.testProbeTimeout
+	}
+	return probeTimeout
+}
 
 // Sinks proves every sink invariant the subject can exercise.
 func Sinks(t *testing.T, s SinkSubject) {
@@ -345,7 +366,7 @@ func sinkVerdicts(t *testing.T, s SinkSubject) []verdict {
 
 	// Bounded well inside flushTimeout, so a sink that ignores its deadline is
 	// caught by the gap between the two rather than by hanging the suite.
-	deadline := flushTimeout / 4
+	deadline := s.flushBound() / 4
 	broken, cancel := context.WithTimeout(ctx, deadline)
 
 	// Run off this goroutine, so a sink that ignores its context fails this
@@ -624,11 +645,12 @@ func startAndStop(t *testing.T, s SinkSubject) []verdict {
 		// the wait. What the claim rules out is a probe that ladders past its
 		// deadline, so the verdict measures against a grace well beyond it and
 		// runs off this goroutine to catch one that never returns at all.
-		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		bound := s.probeBound()
+		ctx, cancel := context.WithTimeout(context.Background(), bound)
 		done := make(chan error, 1)
 		go func() { done <- p.Probe(ctx) }()
 
-		grace := 2 * probeTimeout
+		grace := 2 * bound
 		select {
 		case err := <-done:
 			if err == nil {
@@ -638,7 +660,7 @@ func startAndStop(t *testing.T, s SinkSubject) []verdict {
 			}
 		case <-time.After(grace):
 			probes.failure = "Probe had not returned " + grace.String() +
-				" after being given a " + probeTimeout.String() + " deadline; " +
+				" after being given a " + bound.String() + " deadline; " +
 				"it dials once and does not retry, because the supervisor's " +
 				"restart is already the retry"
 		}

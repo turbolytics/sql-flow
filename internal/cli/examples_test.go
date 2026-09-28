@@ -119,9 +119,17 @@ func TestConfigValidation_ExampleConfigsBuildRealComponents(t *testing.T) {
 	// with the SQLFLOW_ prefix, which is the only form an environment can
 	// reach -- these are passed as overrides here only because this test never
 	// runs a process.
+	//
+	// The Postgres DSNs point at a refused loopback port. The defaults sent
+	// one probe to DNS for sqlflow-postgres, and a unit test touches no
+	// network beyond loopback. The other probed localhost:5432, so a Postgres
+	// a developer happened to run there turned a skip into a two-second wait.
+	unreachablePostgres := "postgresql://postgres:postgres@127.0.0.1:1/postgres"
 	overrides := map[string]string{
-		"SQLFLOW_CATALOG_NAME": "test_catalog",
-		"SQLFLOW_TABLE_NAME":   "default.test_table",
+		"SQLFLOW_CATALOG_NAME":       "test_catalog",
+		"SQLFLOW_TABLE_NAME":         "default.test_table",
+		"SQLFLOW_POSTGRES_URI":       unreachablePostgres,
+		"SQLFLOW_POSTGRES_USERS_URI": unreachablePostgres,
 	}
 
 	for _, path := range exampleConfigs(t) {

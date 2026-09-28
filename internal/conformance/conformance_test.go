@@ -93,7 +93,9 @@ func TestToolingConformanceSinks_ASinkThatCannotRecoverIsCaught(t *testing.T) {
 
 func TestToolingConformanceSinks_ASlowProbeIsCaught(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
-	v := verdicts(t, subject(&slowProbeSink{memSink: newMemSink()}))[probeFailsStart]
+	s := subject(&slowProbeSink{memSink: newMemSink()})
+	s.testProbeTimeout = fastProbeTimeout
+	v := verdicts(t, s)[probeFailsStart]
 
 	assert.True(t, strings.Contains(v.failure, "had not returned"))
 }
@@ -156,7 +158,9 @@ func TestToolingConformanceSinks_AnUnorderedReadBackSkipsOrder(t *testing.T) {
 // every other caller reach it only through that context.
 func TestToolingConformanceSinks_ASinkThatIgnoresItsContextIsCaught(t *testing.T) {
 	coverage.Covers(t, "tooling.conformance")
-	v := verdicts(t, subject(&deafSink{memSink: newMemSink()}))[honoursContext]
+	s := subject(&deafSink{memSink: newMemSink()})
+	s.testFlushTimeout = fastFlushTimeout
+	v := verdicts(t, s)[honoursContext]
 
 	assert.True(t, strings.Contains(v.failure, "did not return"))
 }
@@ -554,6 +558,15 @@ func (d *duplicatingSink) Flush(context.Context) error {
 	return nil
 }
 
+// The harness bounds for the two tests whose fixtures ignore their deadline.
+// Each fixture overruns its grace tenfold, so a timer that fires late on a
+// loaded runner still fires first.
+const (
+	fastProbeTimeout = 50 * time.Millisecond  // grace 100ms
+	fastFlushTimeout = 200 * time.Millisecond // deadline 50ms, grace 100ms
+	fixtureOverrun   = time.Second
+)
+
 // slowProbeSink ladders its probe. probe() dials once and does not retry,
 // because the supervisor's restart is already the retry, so a ladder here only
 // delays the report.
@@ -562,7 +575,7 @@ type slowProbeSink struct{ *memSink }
 func (s *slowProbeSink) Probe(context.Context) error {
 	// Past the grace the harness allows, so it is judged for laddering rather
 	// than for using the deadline it was given.
-	time.Sleep(3 * probeTimeout)
+	time.Sleep(fixtureOverrun)
 	return errors.New("destination unreachable")
 }
 
@@ -625,7 +638,7 @@ type deafSink struct{ *memSink }
 func (d *deafSink) Flush(ctx context.Context) error {
 	err := d.memSink.Flush(ctx)
 	if err != nil {
-		time.Sleep(2 * flushTimeout)
+		time.Sleep(fixtureOverrun)
 	}
 	return err
 }

@@ -141,8 +141,14 @@ func TestSinkKafka_WriteTableBuffersWhateverItsContextSays(t *testing.T) {
 // If only the context could stop a flush, an outage would stop a windowed
 // pipeline publishing with nothing logged, and shutdown would wait for the
 // supervisor to kill the process.
-func TestSinkKafka_FlushReturnsWithoutADeadline(t *testing.T) {
+//
+// An integration test because it waits on franz-go's record timer, whose
+// floor is a second. A unit test waits on no real timer.
+func TestIntegrationSinkKafka_FlushReturnsWithoutADeadline(t *testing.T) {
 	coverage.Covers(t, "sink.kafka")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
 
 	// franz-go rejects a record timeout below a second, so this is the floor
 	// rather than a round number.
@@ -164,8 +170,27 @@ func TestSinkKafka_FlushReturnsWithoutADeadline(t *testing.T) {
 }
 
 // The default has to be set, or the test above only proves the option exists.
+// The client a sink builds carries the production value. The default ending a
+// flush is TestIntegrationSinkKafka_TheDefaultEndsAFlushWithoutADeadline,
+// because that waits on franz-go's timer.
 func TestSinkKafka_HasADeliveryTimeoutByDefault(t *testing.T) {
 	coverage.Covers(t, "sink.kafka")
+	assert.Equal(t, 20*time.Second,
+		newUnreachableKafkaSink(t).client.OptValue(kgo.RecordDeliveryTimeout))
+}
+
+// A sink built with no options ends a flush that has no deadline, so the
+// default reaches the client rather than existing beside it. The default is
+// shortened to franz-go's one-second floor: the unit test pins the real
+// twenty seconds, and waiting them out proves nothing more.
+func TestIntegrationSinkKafka_TheDefaultEndsAFlushWithoutADeadline(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	restore := recordDeliveryTimeout
+	recordDeliveryTimeout = time.Second
+	t.Cleanup(func() { recordDeliveryTimeout = restore })
 	s := newUnreachableKafkaSink(t)
 
 	table := newTestTable(t, []string{"nyc"}, []int64{1})

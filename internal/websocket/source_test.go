@@ -154,12 +154,19 @@ func TestSourceWebsocket_ReadsLargeMessages(t *testing.T) {
 	assert.Equal(t, len(large), len(recv(t, s.Stream())))
 }
 
-// A server that accepts and then says nothing for ten seconds is a quiet
-// stream, not a dead one. The source must still be listening when the frame
-// finally comes, and must deliver it on the same connection rather than
-// having torn it down and reconnected in the meantime.
+// A server that accepts and then says nothing is a quiet stream, not a dead
+// one. The source must still be listening when the frame finally comes, and
+// must deliver it on the same connection rather than having torn it down and
+// reconnected in the meantime.
+//
+// Reads carry no deadline. The durations the source does carry, the dial
+// timeout and the reconnect backoff, are cut to 50ms here, and the quiet
+// lasts five times that, so a read deadline derived from any of them fires
+// inside it. The quiet was ten seconds against 30-second defaults, which
+// caught less: a deadline taken from the dial timeout outlasted it.
 func TestSourceWebsocket_SurvivesAQuietServer(t *testing.T) {
 	coverage.Covers(t, "source.websocket")
+	const bound = 50 * time.Millisecond
 	var conns atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conns.Add(1)
@@ -169,8 +176,8 @@ func TestSourceWebsocket_SurvivesAQuietServer(t *testing.T) {
 		}
 		defer c.CloseNow()
 
-		// The quiet: longer than any read deadline the source might carry.
-		time.Sleep(10 * time.Second)
+		// The quiet: longer than any duration the source carries.
+		time.Sleep(5 * bound)
 
 		if err := c.Write(r.Context(), ws.MessageText, []byte("late")); err != nil {
 			return
@@ -183,7 +190,8 @@ func TestSourceWebsocket_SurvivesAQuietServer(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	s, err := NewSource(wsURL(srv))
+	s, err := NewSource(wsURL(srv), WithDialTimeout(bound),
+		WithReconnectDelay(bound), WithMaxReconnectDelay(bound))
 	assert.NoError(t, err)
 	assert.NoError(t, s.Start())
 	defer s.Close()
