@@ -434,12 +434,21 @@ test-go:
 GROWTH ?= bounded
 GROWTH_REPORT ?= .coverage/go-growth.json
 
+# Only the packages that declare a growth test. ./... compiled every test
+# binary in the module to run tests in four, on a runner with no build cache.
+# The list comes from the source, so a growth test in a new package joins it
+# by its name alone. --untracked finds one not yet added to git.
+GROWTH_PKGS = $(shell git grep --untracked -l '^func TestGrowth' -- '*_test.go' \
+	| xargs -n1 dirname | sort -u | sed 's|^|./|')
+
 .PHONY: test-growth
 test-growth: SHELL := /bin/bash
 test-growth:
 	@mkdir -p $(dir $(GROWTH_REPORT))
+	@# An empty list would run go test in this directory and pass on nothing.
+	@test -n "$(GROWTH_PKGS)" || { echo "no package declares a TestGrowth test" >&2; exit 1; }
 	set -o pipefail; SQLFLOW_GROWTH=$(GROWTH) CGO_ENABLED=1 \
-		go test -json -run '^TestGrowth' ./... | tee $(GROWTH_REPORT)
+		go test -json -run '^TestGrowth' $(GROWTH_PKGS) | tee $(GROWTH_REPORT)
 
 .PHONY: test-growth-full
 test-growth-full:
