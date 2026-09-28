@@ -136,9 +136,15 @@ type idleCloseRig struct {
 	stop      func()
 }
 
+// A nil clock runs the rig as run does: the wall clock, and the watermark and
+// progress writes at their production pace of once a second.
 func newIdleCloseRig(t *testing.T, src *tickingSource, clock *stepClock, wrap func(core.ProgressSaver) core.ProgressSaver) *idleCloseRig {
 	t.Helper()
 	ctx := context.Background()
+	now := time.Now
+	if clock != nil {
+		now = clock.Now
+	}
 
 	db, conn := rowsTestDB(t)
 	rowsTestExec(t, conn, "CREATE TABLE win (bucket TIMESTAMPTZ, n BIGINT)")
@@ -170,7 +176,7 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, clock *stepClock, wrap fu
 	// makes when the stream stops is measured from what the table holds. The
 	// manager gets the tracker's signal, as run wires it; the rig drives Pass
 	// by hand.
-	watermarks, windowOpts := windowOptionsAt(conf, conn, clock.Now)
+	watermarks, windowOpts := windowOptionsAt(conf, conn, now)
 	managed, closeConns, err := buildManagedTables(ctx, conf, db, watermarks, zap.NewNop(),
 		sdkmetric.NewMeterProvider(), nil, sinks.RetryEvents{})
 	assert.NoError(t, err)
@@ -181,27 +187,27 @@ func newIdleCloseRig(t *testing.T, src *tickingSource, clock *stepClock, wrap fu
 		recorder = wrap(store)
 	}
 	// The lock every party on this connection holds, the way run wires it.
-	// The turbine writes sqlflow_progress on it on every commit here;
-	// published() reads from it every 25ms. An anonymous mutex here made the
-	// turbine the only holder, so the two raced, DuckDB closed whichever
-	// result was pending, and the read came back with no rows at all --
-	// #280's failure mode, manufactured by the rig rather than by the engine.
+	// The turbine writes sqlflow_progress on it; published() reads from it
+	// every 25ms. An anonymous mutex here made the turbine the only holder, so
+	// the two raced, DuckDB closed whichever result was pending, and the read
+	// came back with no rows at all -- #280's failure mode, manufactured by
+	// the rig rather than by the engine.
 	lock := &sync.Mutex{}
 
 	lock.Lock()
 	assert.NoError(t, restoreWindows(ctx, conf, conn, watermarks))
 	lock.Unlock()
 
-	// A 20ms flush interval, so a quiet stream ticks often. The watermark and
-	// the progress row are written on every commit rather than once a second:
-	// that pace runs on the wall clock, so it would hold the next write for up
-	// to a second whatever the step clock says. The store is wired the one
-	// way run wires it.
-	opts := append([]core.TurbineOption{
-		core.WithProgressStore(recorder),
-		core.WithProgressWriteInterval(0),
-	}, windowOpts...)
-	opts = append(opts, core.WithWatermarkWriteInterval(0))
+	// A 20ms flush interval, so a quiet stream ticks often. The store is wired
+	// the one way run wires it.
+	opts := append([]core.TurbineOption{core.WithProgressStore(recorder)}, windowOpts...)
+	if clock != nil {
+		// On the step clock the watermark and the progress row are written on
+		// every commit. Their pace runs on the wall clock, so it would hold the
+		// next write for up to a second whatever the step clock says. The
+		// TestIntegration twins below run at the production pace.
+		opts = append(opts, core.WithProgressWriteInterval(0), core.WithWatermarkWriteInterval(0))
+	}
 	tb := core.NewTurbine(src, nilHandler{}, noopSink{}, 1, 20*time.Millisecond,
 		lock, core.PipelineErrorPolicies{}, opts...)
 
@@ -295,6 +301,60 @@ func TestManagerWindow_ALiveStreamNeverClosesOnIdleness(t *testing.T) {
 				"a partition that keeps delivering must never leave the minimum", n)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The stream really was live and the store really was failing; otherwise
+	// the loop above proved nothing.
+	p := rig.turbine.Progress()
+	assert.That(t, p.Messages > 50)
+	assert.That(t, p.Errors > 0)
+}
+
+// The two tests above on the wall clock, with the watermark and the progress
+// row written at their production pace of once a second. The step clock
+// cannot reach that pace, because it runs on the wall clock: a skipped write
+// that restarted the interval would stop every idle tick from asserting, and
+// the stream would never close. Nothing in the unit pass sees that. These
+// wait on real time, so they run in the Integration job, in parallel.
+func TestIntegrationManagerWindow_AQuietStreamClosesOnTheEnginesAssertion(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	rig := newIdleCloseRig(t, &tickingSource{every: time.Millisecond, limit: 1, release: make(chan struct{})}, nil, nil)
+
+	deadline := time.Now().Add(15 * time.Second)
+	for rig.published() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the stream has been quiet for far longer than idle_close_seconds and the bucket " +
+				"never closed: the engine's idle ticks are not confirming the quiet")
+		}
+		assert.NoError(t, rig.pass())
+		time.Sleep(25 * time.Millisecond)
+	}
+	assert.Equal(t, int64(1), rig.published())
+}
+
+func TestIntegrationManagerWindow_ALiveStreamNeverClosesOnIdleness(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	src := &tickingSource{every: 10 * time.Millisecond, release: make(chan struct{})}
+	rig := newIdleCloseRig(t, src, nil, func(inner core.ProgressSaver) core.ProgressSaver {
+		return &failingAfter{inner: inner, ok: 1}
+	})
+
+	// Three times the idle bound, polling all the way through.
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); {
+		assert.NoError(t, rig.pass())
+		if n := rig.published(); n != 0 {
+			t.Fatalf("a live stream had its open bucket closed on idleness (%d rows published): "+
+				"a partition that keeps delivering must never leave the minimum", n)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	// The stream really was live and the store really was failing; otherwise

@@ -27,7 +27,7 @@ added, and this page changes only when a status does.
 | --- | --- | --- | --- | --- | --- |
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | — | ✅ |
 | `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | — |
-| `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | — | — | ✅ |
+| `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | ✅ | — | ✅ |
 | `source.mqtt` | Consumes MQTT 5 at QoS 1 on a persistent session, acknowledging on commit. | ✅ | ✅ | — | — |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | — | ✅ |
 | `sink.clickhouse` | Inserts result batches into a ClickHouse table. | ✅ | ✅ | — | ✅ |
@@ -52,7 +52,7 @@ added, and this page changes only when a status does.
 | `error.raise` | Policy RAISE stops the pipeline on a bad record. | ✅ | — | — | — |
 | `error.ignore` | Policy IGNORE drops a bad record and keeps the pipeline running. | ✅ | — | — | ✅ |
 | `error.dlq` | Policy DLQ diverts a bad record to a sink instead of dropping it. | ✅ | — | — | ✅ |
-| `manager.window` | A declared window is closed by the engine against a persisted event-time watermark, with a late-row policy. | ✅ | — | ✅ | ✅ |
+| `manager.window` | A declared window is closed by the engine against a persisted event-time watermark, with a late-row policy. | ✅ | ✅ | ✅ | ✅ |
 | `config.templating` | Renders a config through Jinja2 against SQLFLOW_ environment variables. | ✅ | — | — | ✅ |
 | `config.validation` | Validates a config against the schema and reports where it is wrong. | ✅ | — | — | ✅ |
 | `validate.template` | Reports referenced, provided, missing, and unused template variables. | ✅ | — | — | — |

@@ -21,7 +21,7 @@ handler.structured: {unit: covered, integration: not_required, growth: covered, 
 lifecycle.drain: {unit: covered, integration: not_required, growth: not_required, release: covered}
 lifecycle.exit_codes: {unit: covered, integration: not_required, growth: not_required, release: covered}
 lifecycle.health: {unit: covered, integration: not_required, growth: not_required, release: covered}
-manager.window: {unit: covered, integration: not_required, growth: covered, release: covered}
+manager.window: {unit: covered, integration: covered, growth: covered, release: covered}
 observability.debug_api: {unit: covered, integration: not_required, growth: not_required, release: not_required}
 observability.metrics: {unit: covered, integration: not_required, growth: not_required, release: not_required}
 observability.turbostats: {unit: covered, integration: not_required, growth: covered, release: covered}
@@ -39,7 +39,7 @@ sink.sqlcommand: {unit: covered, integration: not_required, growth: not_required
 source.kafka: {unit: covered, integration: covered, growth: not_required, release: covered}
 source.mqtt: {unit: covered, integration: covered, growth: not_required, release: not_required}
 source.webhook: {unit: covered, integration: not_required, growth: not_required, release: not_required}
-source.websocket: {unit: covered, integration: not_required, growth: not_required, release: covered}
+source.websocket: {unit: covered, integration: covered, growth: not_required, release: covered}
 state.corruption: {unit: covered, integration: not_required, growth: not_required, release: covered}
 state.durability: {unit: covered, integration: not_required, growth: not_required, release: covered}
 state.offsets: {unit: covered, integration: not_required, growth: not_required, release: covered}
