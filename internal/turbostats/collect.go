@@ -36,6 +36,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	if err != nil {
 		rss = 0
 	}
+	goRetained, goHeap := GoMemory()
 
 	s := src.Static
 	b := Bundle{
@@ -55,9 +56,11 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 			Labels:      copyLabels(s.Labels),
 		},
 		Process: Process{
-			StartedAt:  s.StartedAt.UTC().Truncate(time.Second),
-			RSSBytes:   rss,
-			Goroutines: runtime.NumGoroutine(),
+			StartedAt:       s.StartedAt.UTC().Truncate(time.Second),
+			RSSBytes:        rss,
+			Goroutines:      runtime.NumGoroutine(),
+			GoRetainedBytes: goRetained,
+			GoHeapBytes:     goHeap,
 		},
 	}
 

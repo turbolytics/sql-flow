@@ -130,6 +130,27 @@ type Process struct {
 	// as a dead instance. Losing one number beats losing the heartbeat.
 	RSSBytes   int64 `json:"rss_bytes,omitempty"`
 	Goroutines int   `json:"goroutines"`
+	// GoRetainedBytes is the memory the Go runtime holds from the operating
+	// system: everything it has mapped, less the heap pages it has released.
+	// It splits RSSBytes in two. RSSBytes less GoRetainedBytes is native
+	// memory: DuckDB, the ADBC driver, and the Arrow buffers DuckDB
+	// allocated, none of which the Go runtime can see. A leak on one side of
+	// that line needs a heap profile and a leak on the other needs a soak, so
+	// the split is the first question about any growth.
+	//
+	// The two come from different sources and are not exact complements:
+	// retained memory the kernel has not paged in counts here and not in
+	// RSSBytes. The difference is an estimate of native memory, and its
+	// trend is the signal.
+	//
+	// Absent from engines that predate the field.
+	GoRetainedBytes int64 `json:"go_retained_bytes,omitempty"`
+	// GoHeapBytes is the heap the last garbage collection found live. It is
+	// the part of GoRetainedBytes that the program's own objects hold, so
+	// growth here with a flat remainder is a Go leak, and growth in the
+	// remainder alone is the runtime keeping freed pages. Absent before the
+	// first collection and from engines that predate the field.
+	GoHeapBytes int64 `json:"go_heap_bytes,omitempty"`
 }
 
 // Pipeline carries the consume loop's totals since Process.StartedAt.
