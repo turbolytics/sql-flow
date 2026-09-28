@@ -34,6 +34,12 @@ func testBodies(t *testing.T) (files map[string]string, checks map[string]bool) 
 				return err
 			}
 			text := string(src)
+			// A file with neither mark has nothing to agree or disagree, and
+			// the regexes over every test file cost most of a second under
+			// -race on a loaded runner.
+			if !strings.Contains(text, "func TestGrowth") && !strings.Contains(text, "growth.Check(t)") {
+				return nil
+			}
 			for _, m := range testFunc.FindAllStringSubmatchIndex(text, -1) {
 				body := text[m[1]:]
 				if end := funcEnd.FindStringIndex(body); end != nil {
