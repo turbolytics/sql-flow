@@ -17,8 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/testcontainers/testcontainers-go"
-	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 	"github.com/turbolytics/sql-flow/internal/conformance"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
@@ -31,18 +29,10 @@ func TestIntegrationSinkClickhouse_Types(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
-	ctx := context.Background()
-
-	ch, err := tcclickhouse.Run(ctx, clickhouseImage,
-		testcontainers.WithExposedPorts("8123/tcp"),
-		tcclickhouse.WithUsername(clickhouseUser),
-		tcclickhouse.WithPassword(clickhousePassword),
-		tcclickhouse.WithDatabase(clickhouseDatabase),
-	)
-	if err != nil {
-		t.Fatalf("start clickhouse: %v", err)
-	}
-	t.Cleanup(func() { _ = ch.Terminate(context.Background()) })
+	// Serial: the type runner moves time.Local, which every test in the
+	// process reads. Go starts parallel tests only after every serial test
+	// ends, so none runs while it is moved.
+	ch := sharedClickhouse(t)
 
 	declared, err := coverage.TypesFor("sink.clickhouse")
 	assert.NoError(t, err)

@@ -84,6 +84,7 @@ func (c *consumer) partitions(topic string) []int32 {
 func TestIntegrationSourceKafka_AMovedPartitionLeavesTheFirstConsumersLag(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-rebalance-%d", time.Now().UnixNano())
 	createTopic(t, broker, topic, 4)
 
@@ -152,6 +153,7 @@ func waitUntil(t *testing.T, limit time.Duration, what string, cond func() bool)
 func TestIntegrationSourceKafka_ClosingKeepsTheLastLag(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-close-%d", time.Now().UnixNano())
 	createTopic(t, broker, topic, 2)
 
@@ -190,6 +192,9 @@ func TestIntegrationSourceKafka_ClosingKeepsTheLastLag(t *testing.T) {
 func TestIntegrationSourceKafka_ABrokerOutageKeepsTheLastLag(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	// Serial: it pauses the package's one broker for 20s, and every other
+	// test's consumer would lose it too. Go starts parallel tests only after
+	// every serial test ends.
 	if brokerCtr == nil {
 		t.Skip("needs the package's own broker container to pause; SQLFLOW_KAFKA_BROKERS names an external one")
 	}

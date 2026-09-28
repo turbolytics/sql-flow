@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/conformance"
 	"github.com/turbolytics/sql-flow/internal/core"
@@ -33,41 +32,30 @@ const (
 	postgresDatabase = "sqlflow"
 )
 
-// postgresServer is one container on a network, with a direct connection
-// for DDL and read-back that never crosses the fault proxy.
+// postgresServer is one database on the package's Postgres, with a direct
+// connection for DDL and read-back that never crosses the fault proxy.
 type postgresServer struct {
 	container *tcpostgres.PostgresContainer
 	network   *testcontainers.DockerNetwork
+	database  string
 	direct    *pgx.Conn
 }
 
+// startPostgres gives the test a database of its own on the package's
+// Postgres. The database is the test's whole world: a redial kills only its
+// sessions, and a table it names collides with no other test's.
 func startPostgres(t *testing.T) *postgresServer {
 	t.Helper()
 	ctx := context.Background()
 
-	nw, err := network.New(ctx)
-	if err != nil {
-		t.Fatalf("docker network: %v", err)
-	}
-	t.Cleanup(func() { _ = nw.Remove(context.Background()) })
+	pg := sharedPostgres(t)
+	database := newDatabase(t, pg)
 
-	pg, err := tcpostgres.Run(ctx, postgresImage,
-		network.WithNetwork([]string{"postgres"}, nw),
-		tcpostgres.WithDatabase(postgresDatabase),
-		tcpostgres.WithUsername(postgresUser),
-		tcpostgres.WithPassword(postgresPassword),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	t.Cleanup(func() { _ = pg.Terminate(context.Background()) })
-
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
+	admin, err := pg.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	direct, err := pgx.Connect(ctx, dsn)
+	direct, err := pgx.Connect(ctx, withDatabase(t, admin, database))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -77,22 +65,24 @@ func startPostgres(t *testing.T) *postgresServer {
 	_, err = direct.Exec(ctx, "SET TIME ZONE 'UTC'")
 	assert.NoError(t, err)
 
-	return &postgresServer{container: pg, network: nw, direct: direct}
+	return &postgresServer{container: pg, network: sharedNetwork(t), database: database, direct: direct}
 }
 
-// directDSN addresses the server on its host port, past the proxy.
+// directDSN addresses the test's database on the server's host port, past
+// the proxy.
 func (s *postgresServer) directDSN(t *testing.T) string {
 	t.Helper()
 	dsn, err := s.container.ConnectionString(context.Background(), "sslmode=disable")
 	assert.NoError(t, err)
-	return dsn
+	return withDatabase(t, dsn, s.database)
 }
 
-// proxyDSN addresses the server through the fault proxy.
+// proxyDSN addresses the test's database through a fault proxy of the
+// test's own, so Break hangs this test's connections and no other test's.
 func (s *postgresServer) proxyDSN(t *testing.T) (string, *conformance.Proxy) {
 	proxy := conformance.NewProxy(t, s.network, "postgres:5432")
 	return fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable",
-		postgresUser, postgresPassword, proxy.Addr, postgresDatabase), proxy
+		postgresUser, postgresPassword, proxy.Addr, s.database), proxy
 }
 
 func idTable(t *testing.T, id int64) arrow.Table {
@@ -110,6 +100,7 @@ func TestIntegrationSinkPostgres_Conformance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	ctx := context.Background()
 	srv := startPostgres(t)
 	dsn, proxy := srv.proxyDSN(t)
@@ -157,6 +148,9 @@ func TestIntegrationSinkPostgres_Types(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	// Serial: the type runner moves time.Local, which every test in the
+	// process reads. Go starts parallel tests only after every serial test
+	// ends, so none runs while it is moved.
 	srv := startPostgres(t)
 	dsn := srv.directDSN(t)
 

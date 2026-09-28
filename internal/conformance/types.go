@@ -433,8 +433,9 @@ func judgeNull(rule coverage.NullRule, key, columnType string, got any) string {
 // process ran, and every test on a UTC machine agreed with the bug.
 //
 // Moving time.Local is process-wide, so this restores it before returning. It
-// is safe because nothing under internal/ runs in parallel; a t.Parallel()
-// anywhere in a package that reaches this code invalidates it.
+// is safe because every test that reaches this code runs serially, and Go
+// starts parallel tests only after every serial test has ended. A
+// t.Parallel() in a test that reaches this code invalidates it.
 func judgeTimestampInstant(t *testing.T, s TypeSubject) verdict {
 	t.Helper()
 	v := verdict{invariant: typeInstant}

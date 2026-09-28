@@ -49,6 +49,7 @@ func produce(t *testing.T, client *kgo.Client, topic string, n int) {
 func TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-commit-marks-%d", time.Now().UnixNano())
 	client := newTestClient(t, broker, topic, topic)
 	defer client.Close()
@@ -95,6 +96,7 @@ func TestIntegrationSourceKafka_CommitMarksCommitsOnlyTheProcessedPosition(t *te
 func TestIntegrationSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-hwm-%d", time.Now().UnixNano())
 
 	// A plain producer, not the group-consumer client newTestClient builds:
@@ -131,6 +133,7 @@ func TestIntegrationSourceKafka_MessagesCarryHighWatermark(t *testing.T) {
 func TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-seek-%d", time.Now().UnixNano())
 
 	// Produced with a plain client, before the group consumer exists: a
@@ -174,6 +177,7 @@ func TestIntegrationSourceKafka_SeekToResumesFromStoredOffsets(t *testing.T) {
 func TestIntegrationSourceKafka_SeekToEmptyIsANoop(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-seek-empty-%d", time.Now().UnixNano())
 
 	producer, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.AllowAutoTopicCreation())
@@ -238,6 +242,7 @@ func produceSized(t *testing.T, client *kgo.Client, topic string, n, size int) {
 func TestIntegrationSourceKafka_ReadAheadIsBoundedByPrefetch(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-prefetch-%d", time.Now().UnixNano())
 
 	producer, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.AllowAutoTopicCreation())
@@ -287,6 +292,7 @@ func TestIntegrationSourceKafka_ReadAheadIsBoundedByPrefetch(t *testing.T) {
 func TestIntegrationSourceKafka_SurvivesIdleLongerThanTheSessionTimeout(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	broker := brokerOrFail(t)
+	t.Parallel()
 	topic := fmt.Sprintf("turbine-idle-%d", time.Now().UnixNano())
 
 	producer, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.AllowAutoTopicCreation())

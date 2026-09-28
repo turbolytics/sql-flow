@@ -90,6 +90,7 @@ func TestIntegrationSinkPostgres_LastRowInABatchWins(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	table := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint PRIMARY KEY, v bigint NOT NULL)")
 	s := newKeyedSink(t, srv.directDSN(t), table, "k")
@@ -107,6 +108,7 @@ func TestIntegrationSinkPostgres_RetryAppliesBufferedBatchesInOrder(t *testing.T
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	dsn, proxy := srv.proxyDSN(t)
 	table := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint PRIMARY KEY, v bigint NOT NULL)")
@@ -143,6 +145,7 @@ func TestIntegrationSinkPostgres_OmittedColumnsTakeDefaultsAndKeepValues(t *test
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	ctx := context.Background()
 	table := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint PRIMARY KEY, v bigint NOT NULL, stamp timestamptz NOT NULL DEFAULT clock_timestamp())")
@@ -170,6 +173,7 @@ func TestIntegrationSinkPostgres_ProbeChecksTheTarget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	ctx := context.Background()
 	dsn := srv.directDSN(t)
@@ -227,6 +231,7 @@ func TestIntegrationSinkPostgres_ARefusedValueIsAUserError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	dsn := srv.directDSN(t)
 
@@ -255,6 +260,7 @@ func TestIntegrationSinkPostgres_ARedialRecreatesTheStagingTable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
 	}
+	t.Parallel()
 	srv := startPostgres(t)
 	ctx := context.Background()
 	table := newKVTable(t, srv, "CREATE TABLE %[1]s (k bigint PRIMARY KEY, v bigint NOT NULL)")
