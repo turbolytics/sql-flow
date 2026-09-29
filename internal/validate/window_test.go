@@ -29,6 +29,9 @@ pipeline:
       group_id: g
       auto_offset_reset: earliest
       topics: ["t"]
+      event_time:
+        path: ts
+        format: rfc3339
   handler:
     type: handlers.InferredMemBatch
     sql: SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, city, count(*) FROM batch GROUP BY ALL
@@ -243,6 +246,9 @@ pipeline:
       group_id: g
       auto_offset_reset: earliest
       topics: ["t"]
+      event_time:
+        path: ts
+        format: rfc3339
   handler:
     type: handlers.InferredMemBatch
     sql: SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, city, count(*) FROM batch GROUP BY ALL
@@ -301,6 +307,9 @@ const plainConfig = `pipeline:
       group_id: g
       auto_offset_reset: earliest
       topics: ["t"]
+      event_time:
+        path: ts
+        format: rfc3339
   handler:
     type: handlers.InferredMemBatch
     sql: SELECT time_bucket(INTERVAL '1 minute', to_timestamp(time_us / 1000000)) AS bucket FROM batch
@@ -391,4 +400,77 @@ func TestValidateSchema_AStructuredWindowingHandlerMustDeclareEventTime(t *testi
 	assert.Equal(t, 0, len(windowDiagnostics(rep)))
 	assert.That(t, strings.Contains(diags[0].Message, `table "posts" does not declare event_time TIMESTAMPTZ`))
 	assert.That(t, diags[0].Position != nil)
+}
+
+// A window is cut on event_time, and a source that declares none still has
+// one: Kafka's record timestamp, or arrival. Both belong to the transport
+// rather than to the event, so the pipeline runs and buckets on the wrong
+// clock. dev/config/examples/logs.rollup.clickhouse.yml did exactly that after
+// the window rewrite, and a two-month replay landed in a single bucket.
+func TestValidateSchema_WindowWarnsWhenTheSourceDeclaresNoEventTime(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	noEventTime := strings.Replace(windowedConfig, `
+      event_time:
+        path: ts
+        format: rfc3339`, "", 1)
+	rep, err := Validate(context.Background(), Request{
+		Path:   "w.yml",
+		Config: strings.Replace(strings.Replace(noEventTime, "%s", "bucket TIMESTAMPTZ", 1), "%s", "", 1)})
+	assert.NoError(t, err)
+
+	var found *Diagnostic
+	for i, d := range rep.Diagnostics {
+		if strings.Contains(d.Message, "declares no event_time") {
+			found = &rep.Diagnostics[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no diagnostic about an undeclared event_time; got %v", rep.Diagnostics)
+	}
+	// A warning, not a failure: a producer that stamps a record at the moment
+	// of the event makes the Kafka timestamp the event's own time, and there
+	// is no way to declare that intent, so refusing it would be unsatisfiable.
+	assert.Equal(t, SeverityWarning, found.Severity)
+	assert.That(t, strings.Contains(found.Message, "Kafka record timestamp"))
+	assert.That(t, strings.Contains(found.Message, "event_time: {path, format}"))
+}
+
+// Declaring one silences it. This is the shape every shipped windowed example
+// uses.
+func TestValidateSchema_WindowAcceptsADeclaredEventTime(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep := validateWindowed(t, "bucket TIMESTAMPTZ", "")
+	for _, d := range rep.Diagnostics {
+		if strings.Contains(d.Message, "declares no event_time") {
+			t.Fatalf("warned about a source that declares one: %s", d.Message)
+		}
+	}
+}
+
+// Only a windowing pipeline is warned. Without a window nothing is cut on
+// event time, and arrival is a perfectly ordinary thing to carry.
+func TestValidateSchema_NoWindowNoEventTimeWarning(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	const unwindowed = `pipeline:
+  batch_size: 1
+  source:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: ["t"]
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT city FROM batch
+  sink:
+    type: noop
+`
+	rep, err := Validate(context.Background(), Request{Path: "u.yml", Config: unwindowed})
+	assert.NoError(t, err)
+	for _, d := range rep.Diagnostics {
+		if strings.Contains(d.Message, "declares no event_time") {
+			t.Fatalf("warned about a pipeline with no window: %s", d.Message)
+		}
+	}
 }
