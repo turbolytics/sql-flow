@@ -269,3 +269,67 @@ func TestLoadRendered_ReturnsTheTextTheConfWasParsedFrom(t *testing.T) {
 	assert.That(t, strings.Contains(string(rendered), "name: x"))
 	assert.That(t, !strings.Contains(string(rendered), "{{"))
 }
+
+// A windowed example must say where its event time comes from. A source that
+// declares none still has one -- Kafka's record timestamp, or arrival -- and
+// the pipeline runs and buckets on the transport's clock instead of the
+// event's, silently. logs.rollup.clickhouse.yml shipped that way after the
+// window rewrite: a two-month replay landed in the single hour it ran in.
+func TestConfigTemplating_WindowedExamplesDeclareAnEventTime(t *testing.T) {
+	coverage.Covers(t, "config.templating")
+	var examples []string
+	err := filepath.WalkDir("../../dev/config/examples", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && filepath.Ext(path) == ".yml" {
+			examples = append(examples, path)
+		}
+		return nil
+	})
+	assert.NoError(t, err)
+
+	var windowed int
+	for _, path := range examples {
+		conf, err := Load(path, map[string]string{
+			"catalog_name": "test_catalog",
+			"table_name":   "default.test_table",
+		})
+		if err != nil || conf.Tables == nil {
+			continue
+		}
+		var hasWindow bool
+		for _, tbl := range conf.Tables.SQL {
+			if tbl.Window != nil {
+				hasWindow = true
+			}
+		}
+		if !hasWindow {
+			continue
+		}
+		windowed++
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			s := conf.Pipeline.Source
+			var declared bool
+			switch {
+			case s.Kafka != nil:
+				declared = s.Kafka.EventTime != nil
+			case s.Websocket != nil:
+				declared = s.Websocket.EventTime != nil
+			case s.Webhook != nil:
+				declared = s.Webhook.EventTime != nil
+			case s.Mqtt != nil:
+				declared = s.Mqtt.EventTime != nil
+			default:
+				// A source type that cannot declare one has nothing to check.
+				return
+			}
+			if !declared {
+				t.Fatalf("%s windows but its %s source declares no event_time, so the window "+
+					"is cut on the transport's clock rather than the event's", path, s.Type)
+			}
+		})
+	}
+	// Guards the guard: a walk that matched nothing would pass silently.
+	assert.That(t, windowed > 0)
+}
