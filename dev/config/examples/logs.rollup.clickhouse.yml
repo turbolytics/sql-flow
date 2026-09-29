@@ -90,6 +90,20 @@ pipeline:
         # at the default depth, with byte-identical output. A single-partition
         # log stream gains little from the extra fetch in flight.
         prefetch: 1
+      # The request's own time, which publish-logs forwards under `ts` as a
+      # shipper that has already read the line would. Without this the engine
+      # falls back to the Kafka record timestamp, which is when the replay ran
+      # rather than when the request happened, and every bucket in the trace
+      # collapses into the hour the corpus was published.
+      #
+      # Publish with -event-time-field ts -shift-to-now. The shift is not
+      # cosmetic: the engine refuses an event time before EventTimeFloor, and
+      # a corpus older than that publishes nothing at all. Shifting preserves
+      # every interval between records, so the buckets, their counts and the
+      # reduction ratio are the trace's; only the labels move.
+      event_time:
+        path: ts
+        format: rfc3339
       topics:
         - {{ SQLFLOW_INPUT_TOPIC|default('nasa-http') }}
 
@@ -107,9 +121,15 @@ pipeline:
     # segment has no directory left once the filename is dropped, which would
     # otherwise render as //*.html.
     #
-    # The bucket is cut on event_time, which the source fills from the log
-    # line's own timestamp; a line whose timestamp does not parse is refused
-    # by the source and kept in full by the archive pipeline.
+    # The bucket is cut on event_time, which the source reads from the `ts`
+    # field publish-logs writes beside the raw line. A line whose timestamp
+    # does not parse carries no `ts`, so the source has nothing to read and
+    # the record is refused; the archive pipeline keeps it in full either way.
+    #
+    # The regex still extracts `ts` from the line and the rollup ignores it.
+    # That is deliberate: the handler must bucket on the time the engine
+    # assigned, not on one it parses for itself, or the engine decides a
+    # record's lateness against a bucket the row is not in.
     sql: |
       WITH m AS (
         SELECT regexp_extract(message,
