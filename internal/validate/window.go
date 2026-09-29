@@ -118,6 +118,25 @@ func checkWindows(rendered []byte, rep *Report) {
 						position(handlerNode(&root)))
 				}
 			}
+
+			// Where event_time comes from is the window's whole basis, and a
+			// source that declares nothing still has one: Kafka's record
+			// timestamp, or arrival. Both are clocks belonging to the
+			// transport rather than to the event, so a window cut on them is
+			// a wall-clock window wearing an event-time name -- the thing the
+			// watermark exists to avoid. It runs, which is the problem: a
+			// replay of an archived trace buckets into the hour the replay
+			// ran, and nothing says so. Declaring is the fix; where a
+			// transport's own clock really is the event's, as it is for a
+			// producer that stamps at the moment of the event, this warns and
+			// gets out of the way.
+			if fallback, declared, known := sourceEventTime(conf.Pipeline.Source); known && !declared {
+				rep.Add(diagnostic(errs.CodeConfigInvalid, SeverityWarning, fmt.Sprintf(
+					"pipeline.source.%s: a windowing pipeline whose source declares no event_time "+
+						"buckets on %s. Declare event_time: {path, format} to cut the window on the "+
+						"time the event carries rather than the time it arrived",
+					conf.Pipeline.Source.Type, fallback), position(sourceNode(&root))))
+			}
 		}
 		for i, table := range conf.Tables.SQL {
 			if table.Window == nil {
@@ -314,6 +333,36 @@ var createTable = regexp.MustCompile(`(?is)\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TEM
 
 // handlerNode is the mapping node of pipeline.handler, for a diagnostic's
 // position; nil, and so no position, if the document has no such node.
+// sourceEventTime reports the clock a source falls back to when it declares
+// no event_time, whether one is declared, and whether this source type can
+// declare one at all. A type that cannot is not warned about, because there
+// is nothing the author could write instead.
+func sourceEventTime(s config.Source) (fallback string, declared, known bool) {
+	switch {
+	case s.Kafka != nil:
+		return "the Kafka record timestamp, which is when the record was produced rather than when the event happened", s.Kafka.EventTime != nil, true
+	case s.Websocket != nil:
+		return "arrival, the moment the frame reached this process", s.Websocket.EventTime != nil, true
+	case s.Webhook != nil:
+		return "arrival, the moment the request reached this process", s.Webhook.EventTime != nil, true
+	case s.Mqtt != nil:
+		return "arrival, the moment the publish reached this process", s.Mqtt.EventTime != nil, true
+	}
+	return "", false, false
+}
+
+func sourceNode(root *yaml.Node) *yaml.Node {
+	doc := root
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		doc = doc.Content[0]
+	}
+	pipeline := mappingValue(doc, "pipeline")
+	if pipeline == nil {
+		return nil
+	}
+	return mappingValue(pipeline, "source")
+}
+
 func handlerNode(root *yaml.Node) *yaml.Node {
 	doc := root
 	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
