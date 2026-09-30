@@ -12,12 +12,13 @@ the one failure a metering customer cannot accept.
 ## The stack this has to hold for
 
 ```
-app ─SDK─▶ ingest (webhook → Kafka, keyed by event id)
+app ─SDK─▶ ingest (webhook → Kafka, keyed by customer)
                        │
             Kafka topic usage.events, N partitions
                        │
      count × W workers, one consumer group
-     window: 1 minute, count(DISTINCT id) per (minute, customer, meter, partition)
+     window: 1 minute, sum(quantity) over distinct md5_number(id)
+             per (minute, customer, meter, partition)
                        │
      Postgres minute table, upsert keyed (minute, customer, meter, kafka_partition)
 ```
@@ -44,7 +45,10 @@ catch it.
    `&kgo.Record{Topic, Value}` (`internal/sinks/kafka.go:148`), and
    `config.KafkaSink` has no key field. A retried event lands on whatever
    partition the partitioner picks. Per-partition dedupe in a downstream
-   window then misses the duplicate whenever the retry lands elsewhere.
+   window then misses the duplicate whenever the retry lands elsewhere. The
+   metering stack keys by customer: a retry has the same customer, so it
+   lands on its original's partition, and each customer writes one row per
+   meter per minute rather than one per partition.
 
 3. **The committed offset passes rows that live only in an open window.**
    `commitSource` commits the positions the pipeline has processed
@@ -92,7 +96,7 @@ sink:
   type: kafka
   kafka:
     topic: usage.events
-    key: id            # a column of the handler's output
+    key: customer      # a column of the handler's output
 ```
 
 - The record key is the column's value, as UTF-8 bytes of its text form. The
@@ -130,7 +134,9 @@ bucket whole.
 
 Cost: after a lost disk or a rebalance, the new owner re-reads at most window
 + grace + allowed lateness of each partition it picks up. For the metering
-demo's 60 + 60 + 300 seconds, that is seven minutes of events.
+stack's 60 + 60 + 60 seconds, that is three minutes of events. At the sizing
+scenario's 50,000 events a second over 6 partitions, that is about 1.5
+million events per partition picked up.
 
 ### 4. A revoked partition's rows are dropped, not emitted
 
@@ -177,6 +183,7 @@ window above with `partition_owned: true`, and the Postgres sink keyed by
 | 7 | Late events within `allowed_lateness_seconds` | passes |
 | 8 | Webhook `after_flush`: kill between receive and flush | fails: an event answered 200 is missing from Kafka |
 | 9 | Webhook `after_flush`: a failed flush answers 503 | new |
+| 10 | Rebalance under load, one hot partition at a high rate: exact totals, and the replay time recorded | fails with 2 on `main`; the time is new |
 
 The "expected on `main`" column is a prediction. The first commit after this
 spec adds the tests, and the PR records what each actually did before the
@@ -202,19 +209,24 @@ Out, each for its own issue:
   at-least-once, and the event id carries the rest.
 - Dedupe across a horizon longer than the window's retention. A retry after
   window + grace + lateness counts twice. The SDK's retry budget stays inside
-  it.
+  it. OpenMeter dedupes for 32 days in Redis; a long-horizon store is its own
+  design.
+- Probabilistic dedupe. A Bloom filter silently drops real events and depends
+  on insertion order, so a replay can disagree with the original. Billing
+  totals must be exact and reproducible. The metering stack hashes ids with
+  `md5_number` in SQL instead, which needs nothing from the engine.
 - A remote state store. Kafka replay is the recovery path.
 - `after_flush` for sinks other than Kafka. The flush contract is the same,
   but only the Kafka sink is tested here.
 
 ## Risks
 
-- **Replay cost on a busy partition.** Seven minutes of a hot partition is
-  re-read on every rebalance. Measure it in scenario 2 and state the number in
-  the PR.
+- **Replay cost on a busy partition.** Three minutes of a hot partition is
+  re-read on every rebalance. Scenario 10 measures it and the PR states the
+  number.
 - **Offset records grow with buckets × partitions.** One row per bucket per
-  partition, dropped at retention: 420 seconds of one-minute buckets across 6
-  partitions is about 42 rows per window table. Small, and bounded.
+  partition, dropped at retention: 180 seconds of one-minute buckets across 6
+  partitions is about 18 rows per window table. Small, and bounded.
 - **`after_flush` latency.** A request waits up to one flush interval. The SDK
   sends batches, so this is paid per batch, not per event. Measure p50 and p99
   at the demo's rate.
