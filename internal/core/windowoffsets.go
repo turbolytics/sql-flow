@@ -308,6 +308,11 @@ func (s *WindowOffsetStore) Save(ctx context.Context, d WindowOffsetsDelta) erro
 	return s.exec(ctx, b.String())
 }
 
+// Clear removes every record. It does not commit.
+func (s *WindowOffsetStore) Clear(ctx context.Context) error {
+	return s.exec(ctx, `DELETE FROM `+WindowOffsetsTable)
+}
+
 func joinInt32(ps []int32) string {
 	out := make([]string, len(ps))
 	for i, p := range ps {

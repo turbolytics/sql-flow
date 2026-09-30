@@ -68,6 +68,14 @@ func TestIntegrationMetering_WorkerLeaves(t *testing.T) {
 	s.produce(events[:half])
 	time.Sleep(10 * time.Second)
 	w0.stop(t)
+	// The group settles on two members before the stream moves on. Producing
+	// the rest at once would carry the survivors' watermark minutes ahead
+	// before the leaver's partitions reached them, and the replayed minute
+	// would be refused as late. In real time a rebalance takes seconds and
+	// event time moves at wall speed, so the watermark cannot jump like
+	// that; the limit is that allowed_lateness_seconds must exceed the time
+	// a rebalance takes.
+	s.awaitMembers(2, 90*time.Second)
 	s.produce(events[half:])
 	s.awaitExact(expected(events), exactWithin, 20*time.Second)
 }

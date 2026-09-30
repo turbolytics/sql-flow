@@ -255,6 +255,13 @@ func (w *Watermark) StartPass(ctx context.Context) error {
 // this manager has always made; with lateness they stay until the watermark
 // passes their end plus it.
 func (w *Watermark) Pass(ctx context.Context) (err error) {
+	// Held for the whole pass: a partition the group revokes has its rows
+	// deleted under this lock, so a pass either publishes before the delete
+	// or never sees them.
+	if w.signal != nil {
+		w.signal.LockPass()
+		defer w.signal.UnlockPass()
+	}
 	committed := false
 	// What the close lag needs, filled in as the pass learns it. Recorded in
 	// the defer so a pass that fails after reading the assertion still

@@ -1259,6 +1259,10 @@
                       "type"
                     ],
                     "description": "Where closed windows go."
+                  },
+                  "partition_owned": {
+                    "type": "boolean",
+                    "description": "Every row of this window belongs to one Kafka partition, carried in a\nkafka_partition column. When the group revokes a partition, its rows\nare deleted without being published, and the new owner recounts them\nfrom the committed offset, so one process writes each (bucket,\npartition) key. This is what makes a count exact across several\nworkers in one consumer group. Requires a Kafka source with one topic,\nkafka_partition in the window table and written by the handler, and a\npostgres upsert sink with kafka_partition in its key. Every window in\nthe pipeline must set it. A restart recounts the open buckets from\nKafka rather than resuming from the state file."
                   }
                 },
                 "additionalProperties": false,

@@ -44,7 +44,7 @@ type Features struct {
 	PartitionOwned bool // count: window partition_owned: true
 }
 
-var current = Features{Key: true, Ack: true}
+var current = Features{Key: true, Ack: true, PartitionOwned: true}
 
 var sharedPostgres = pgtest.New(pgtest.Options{User: "metering", Password: "metering"})
 
@@ -171,7 +171,7 @@ func newStack(t *testing.T, f Features) *stack {
 		group:      fmt.Sprintf("count-%s-%d", name, time.Now().UnixNano()),
 		dsn:        dsn,
 		pg:         pg,
-		dir:        t.TempDir(),
+		dir:        scenarioDir(t),
 		features:   f,
 		partitions: 6,
 		idleClose:  5,
@@ -308,8 +308,8 @@ func (s *stack) awaitExact(want map[totalKey]int64, timeout, settle time.Duratio
 			}
 			return
 		} else if time.Now().After(deadline) {
-			s.t.Fatalf("totals not exact after %s: %d keys differ, first: %s\nworker logs: %s",
-				timeout, len(diff), strings.Join(first(diff, 10), "; "), s.dir)
+			s.t.Fatalf("totals not exact after %s: %d keys differ\nby minute: %s\nfirst: %s\nworker logs: %s",
+				timeout, len(diff), strings.Join(byMinute(want, got), "; "), strings.Join(first(diff, 10), "; "), s.dir)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -406,6 +406,45 @@ func diffTotals(want, got map[totalKey]int64) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// byMinute summarizes a mismatch per minute: keys that differ and the sums
+// wanted and got, so a loss reads as which minutes and how much.
+func byMinute(want, got map[totalKey]int64) []string {
+	type agg struct{ keys, want, got int64 }
+	m := map[time.Time]*agg{}
+	at := func(t time.Time) *agg {
+		if m[t] == nil {
+			m[t] = &agg{}
+		}
+		return m[t]
+	}
+	for k, w := range want {
+		a := at(k.Minute)
+		a.want += w
+		a.got += got[k]
+		if got[k] != w {
+			a.keys++
+		}
+	}
+	for k, g := range got {
+		if _, ok := want[k]; !ok {
+			a := at(k.Minute)
+			a.got += g
+			a.keys++
+		}
+	}
+	var minutes []time.Time
+	for t := range m {
+		minutes = append(minutes, t)
+	}
+	sort.Slice(minutes, func(i, j int) bool { return minutes[i].Before(minutes[j]) })
+	var out []string
+	for _, t := range minutes {
+		a := m[t]
+		out = append(out, fmt.Sprintf("%s keys_differ=%d want=%d got=%d", t.Format("15:04"), a.keys, a.want, a.got))
+	}
 	return out
 }
 
@@ -612,6 +651,20 @@ func waitHTTP(t *testing.T, url string, timeout time.Duration) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatalf("%s did not answer 200 within %s", url, timeout)
+}
+
+// scenarioDir holds a scenario's configs, state and worker logs. Set
+// SQLFLOW_METERING_KEEP to keep it after the test, for reading the logs of
+// a failure.
+func scenarioDir(t *testing.T) string {
+	t.Helper()
+	if os.Getenv("SQLFLOW_METERING_KEEP") == "" {
+		return t.TempDir()
+	}
+	dir, err := os.MkdirTemp("", "metering-"+strings.ReplaceAll(t.Name(), "/", "-"))
+	assert.NoError(t, err)
+	t.Logf("keeping %s", dir)
+	return dir
 }
 
 // recent is the start of a workload: whole minutes in the past, inside the

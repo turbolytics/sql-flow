@@ -194,6 +194,22 @@ func checkWindows(rendered []byte, rep *Report) {
 					"time is with event_time: {path, format} if it is in the payload",
 					i, w.TimeColumn, w.SizeSeconds), position(node))
 			}
+			// A partition_owned window deletes by kafka_partition and relies
+			// on the sink replacing (bucket, partition); each piece missing
+			// is a count that is silently wrong after a rebalance.
+			if w.PartitionOwned {
+				if err := conf.CheckPartitionOwned(); err != nil {
+					fail(err.Error(), position(mappingKey(node, "partition_owned")))
+				}
+				if !mentionsIdentifier(table.SQL, "kafka_partition") {
+					fail(fmt.Sprintf("tables.sql[%d] window: partition_owned needs a kafka_partition "+
+						"column in the table's CREATE", i), position(node))
+				}
+				if !mentionsIdentifier(conf.Pipeline.Handler.SQL, "kafka_partition") {
+					fail(fmt.Sprintf("tables.sql[%d] window: partition_owned needs the handler's SQL to "+
+						"write kafka_partition", i), position(handlerNode(&root)))
+				}
+			}
 			// A late row within lateness republishes its bucket whole, which
 			// a sink that appends then holds twice. Flink's contract is the
 			// same: a downstream of a window with allowed lateness must

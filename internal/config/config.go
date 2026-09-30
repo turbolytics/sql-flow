@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -198,6 +199,64 @@ type Window struct {
 	EmitSQL string `yaml:"emit_sql,omitempty"`
 	// Where closed windows go.
 	Sink Sink `yaml:"sink"`
+	// Every row of this window belongs to one Kafka partition, carried in a
+	// kafka_partition column. When the group revokes a partition, its rows
+	// are deleted without being published, and the new owner recounts them
+	// from the committed offset, so one process writes each (bucket,
+	// partition) key. This is what makes a count exact across several
+	// workers in one consumer group. Requires a Kafka source with one topic,
+	// kafka_partition in the window table and written by the handler, and a
+	// postgres upsert sink with kafka_partition in its key. Every window in
+	// the pipeline must set it. A restart recounts the open buckets from
+	// Kafka rather than resuming from the state file.
+	PartitionOwned bool `yaml:"partition_owned,omitempty"`
+}
+
+// PartitionOwnedTables names the window tables that are partition_owned.
+func (c *Conf) PartitionOwnedTables() []string {
+	if c.Tables == nil {
+		return nil
+	}
+	var out []string
+	for _, table := range c.Tables.SQL {
+		if table.Window != nil && table.Window.PartitionOwned {
+			out = append(out, table.Name)
+		}
+	}
+	return out
+}
+
+// CheckPartitionOwned refuses a partition_owned window whose pipeline cannot
+// honor it. validate and run both call it; validate also checks the SQL.
+func (c *Conf) CheckPartitionOwned() error {
+	if len(c.PartitionOwnedTables()) == 0 {
+		return nil
+	}
+	for _, table := range c.Tables.SQL {
+		w := table.Window
+		if w == nil {
+			continue
+		}
+		if !w.PartitionOwned {
+			return errs.New(errs.CodeConfigInvalid,
+				"table %q window: another window in this pipeline is partition_owned, so every window "+
+					"must be. A partition_owned pipeline recounts from Kafka at every start, and a window "+
+					"that kept its rows would be fed them twice", table.Name)
+		}
+		src := c.Pipeline.Source
+		if src.Type != "kafka" || src.Kafka == nil || len(src.Kafka.Topics) != 1 {
+			return errs.New(errs.CodeConfigInvalid,
+				"table %q window: partition_owned needs a kafka source with exactly one topic; "+
+					"a row is identified by kafka_partition alone", table.Name)
+		}
+		if w.Sink.Type != "postgres" || w.Sink.Postgres == nil || w.Sink.Postgres.Mode != "upsert" ||
+			!slices.Contains(w.Sink.Postgres.Key, "kafka_partition") {
+			return errs.New(errs.CodeConfigInvalid,
+				"table %q window: partition_owned needs a postgres upsert sink with kafka_partition in "+
+					"its key, so the new owner's recount replaces the row the old owner wrote", table.Name)
+		}
+	}
+	return nil
 }
 
 // Lateness is allowed_lateness_seconds as a duration; zero means late rows

@@ -119,6 +119,11 @@ type WindowSpec struct {
 	// bucket ended more than this before the watermark is refused; one whose
 	// bucket ended within it is written and the bucket republished whole.
 	Lateness time.Duration
+	// PartitionOwned says every row of the window belongs to one Kafka
+	// partition, named in its kafka_partition column. A revoked partition's
+	// rows are then deleted rather than published, and its next owner
+	// recounts them from the committed position.
+	PartitionOwned bool
 }
 
 // WatermarksTable holds the engine's assertion per window. Written by the
@@ -542,7 +547,15 @@ type WindowSignal struct {
 	// never on its own asserted watermark, which runs ahead of what has been
 	// published.
 	closed atomic.Int64
+	// pass is held by the manager for the length of a pass. A partition drop
+	// takes it too, so no pass is publishing a revoked partition's rows while
+	// they are deleted.
+	pass sync.Mutex
 }
+
+// LockPass and UnlockPass bracket a manager's pass, and a partition drop.
+func (s *WindowSignal) LockPass()   { s.pass.Lock() }
+func (s *WindowSignal) UnlockPass() { s.pass.Unlock() }
 
 // SetClosed records the manager's committed closed watermark. Monotonic.
 func (s *WindowSignal) SetClosed(t time.Time) {

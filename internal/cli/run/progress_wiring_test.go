@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"sync"
 	"testing"
 	"time"
@@ -153,4 +154,74 @@ func TestStateDurability_OnlyAWindowedKafkaPipelineTracksWindowOffsets(t *testin
 	assert.Equal(t, 1, len(opts))
 	_, err = core.NewWindowOffsetStore(conn, nil).Load(ctx)
 	assert.NoError(t, err)
+}
+
+// A partition_owned pipeline starts with nothing it held before: its window
+// rows, stored positions and offset records all go, so each partition it is
+// assigned is recounted from the group's committed position. Kept, they
+// would be stale for any partition another member consumed while this
+// process was down, and the start pass would publish them.
+func TestStateDurability_APartitionOwnedPipelineStartsEmpty(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	ctx := context.Background()
+	db, err := duckdb.OpenPath(ctx, "")
+	assert.NoError(t, err)
+	defer db.Close()
+	conn, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	defer conn.Close()
+	exec := func(q string) {
+		t.Helper()
+		stmt, err := conn.NewStatement()
+		assert.NoError(t, err)
+		defer stmt.Close()
+		assert.NoError(t, stmt.SetSqlQuery(q))
+		_, err = stmt.ExecuteUpdate(ctx)
+		assert.NoError(t, err)
+	}
+
+	// No owned window: nothing is wired and nothing is touched.
+	opts, err := partitionOwnedOptions(ctx, windowedConf(10), conn, true)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(opts))
+
+	conf := windowedConf(10)
+	conf.Pipeline.Source = config.Source{Type: "kafka", Kafka: &config.KafkaSource{Topics: []string{"topic"}}}
+	conf.Tables.SQL[0].Window.PartitionOwned = true
+	conf.Tables.SQL[0].Window.Sink = config.Sink{Type: "postgres", Postgres: &config.PostgresSink{
+		Mode: "upsert", Key: []string{"bucket", "kafka_partition"}}}
+	specs := windowSpecs(conf)
+	assert.That(t, specs[0].PartitionOwned)
+
+	exec(`CREATE TABLE t (bucket TIMESTAMPTZ, kafka_partition INTEGER)`)
+	exec(`INSERT INTO t VALUES (now(), 0)`)
+	offsets := core.NewOffsetStore(conn)
+	assert.NoError(t, offsets.Init(ctx))
+	marks := core.NewMarks()
+	marks.Advance("topic", 0, core.Mark{Offset: 9})
+	assert.NoError(t, offsets.Save(ctx, marks))
+	wo := core.NewWindowOffsetStore(conn, specs)
+	assert.NoError(t, wo.Init(ctx))
+	assert.NoError(t, wo.Save(ctx, core.WindowOffsetsDelta{Added: []core.OffsetRecord{{
+		Window: "t", Bucket: time.Now(), Topic: "topic", Partition: 0, Mark: core.Mark{Offset: 3}}}}))
+
+	opts, err = partitionOwnedOptions(ctx, conf, conn, true)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(opts))
+
+	loaded, err := offsets.Load(ctx)
+	assert.NoError(t, err)
+	assert.That(t, loaded.Empty())
+	recs, err := wo.Load(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(recs))
+	stmt, err := conn.NewStatement()
+	assert.NoError(t, err)
+	defer stmt.Close()
+	assert.NoError(t, stmt.SetSqlQuery(`SELECT count(*)::BIGINT FROM t`))
+	rdr, _, err := stmt.ExecuteQuery(ctx)
+	assert.NoError(t, err)
+	defer rdr.Release()
+	assert.That(t, rdr.Next())
+	assert.Equal(t, int64(0), rdr.Record().Column(0).(*array.Int64).Value(0))
 }

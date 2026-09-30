@@ -304,6 +304,13 @@ func NewCommand() *cobra.Command {
 			// cannot place, because a window is what such a record damages;
 			// see core.WithEventTimePlacement.
 			turbineOpts = append(turbineOpts, core.WithEventTimePlacement(conf.HasWindow()))
+			// Before anything reads what a previous run stored: a
+			// partition_owned pipeline starts from the group's positions.
+			ownedOpts, err := partitionOwnedOptions(context.Background(), conf, conn, statePath != "")
+			if err != nil {
+				return err
+			}
+			turbineOpts = append(turbineOpts, ownedOpts...)
 			// Before the state branch turns autocommit off: this creates and
 			// reads its table.
 			windowOffsetOpts, err := windowOffsetOptions(context.Background(), conf, conn, statePath != "")
@@ -520,6 +527,9 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 			if err := conf.CheckWebhookAck(); err != nil {
+				return err
+			}
+			if err := conf.CheckPartitionOwned(); err != nil {
 				return err
 			}
 

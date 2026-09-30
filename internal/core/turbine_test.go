@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -1218,4 +1219,119 @@ func (h *recordingHandler) values() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]string(nil), h.vals...)
+}
+
+// recordingDropper records drops, in order.
+type recordingDropper struct {
+	mu    sync.Mutex
+	drops []string
+}
+
+func (d *recordingDropper) DropPartitions(_ context.Context, topic string, ps []int32) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.drops = append(d.drops, fmt.Sprintf("%s%v", topic, ps))
+	return nil
+}
+
+func (d *recordingDropper) DropAll(context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.drops = append(d.drops, "all")
+	return nil
+}
+
+// ownerSource is a markingSource that reports partitions, lets the test
+// revoke them, and delivers what the test puts on its stream.
+type ownerSource struct {
+	markingSource
+	stream                   chan []Message
+	assigned, released, lost func(map[string][]int32)
+}
+
+func newOwnerSource() *ownerSource { return &ownerSource{stream: make(chan []Message, 1)} }
+
+func (s *ownerSource) Stream() <-chan []Message { return s.stream }
+
+func (s *ownerSource) OnPartitions(a, r, l func(map[string][]int32)) {
+	s.assigned, s.released, s.lost = a, r, l
+}
+
+var ownedSpec = WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute, PartitionOwned: true}
+
+// A revocation deletes the partition's rows before the tracker releases it,
+// and the callback returns only after the delete.
+func TestTurbine_RevocationDropsBeforeRelease(t *testing.T) {
+	src := newOwnerSource()
+	d := &recordingDropper{}
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 100, w, WithPartitionDropper(d))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0) }()
+
+	src.assigned(map[string][]int32{"t": {0, 1}})
+	src.released(map[string][]int32{"t": {1}}) // blocks until dropped
+	d.mu.Lock()
+	assert.Equal(t, []string{"t[1]"}, d.drops)
+	d.mu.Unlock()
+}
+
+// A record prefetched from a partition before its revocation is skipped
+// when it arrives: its rows would otherwise re-enter the window.
+func TestTurbine_SkipsRecordsFromADroppedPartition(t *testing.T) {
+	src := newOwnerSource()
+	h := &recordingHandler{}
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, h, &fakeSink{}, 1, w, WithPartitionDropper(&recordingDropper{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+
+	src.assigned(map[string][]int32{"t": {0, 1}})
+	src.released(map[string][]int32{"t": {1}})
+	src.stream <- []Message{
+		{Topic: "t", Partition: 1, Offset: 5, EventAtNanos: woT0.UnixNano(), Value: []byte("stale")},
+		{Topic: "t", Partition: 0, Offset: 9, EventAtNanos: woT0.UnixNano(), Value: []byte("ours")},
+	}
+	waitFor(t, "the handler to take the owned record", time.Second, func() bool { return len(h.values()) == 1 })
+	assert.Equal(t, []string{"ours"}, h.values())
+	cancel()
+	<-done
+}
+
+// A worker that stops must publish nothing more for partitions another
+// member is about to recount: its rows go before the source leaves the group.
+func TestTurbine_LeavingDropsEveryOwnedRowBeforeTheSourceCloses(t *testing.T) {
+	src := newOwnerSource()
+	d := &recordingDropper{}
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 100, w, WithPartitionDropper(d))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+	src.assigned(map[string][]int32{"t": {0}})
+	cancel()
+	<-done
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	assert.Equal(t, []string{"all"}, d.drops)
+}
+
+// A revocation that arrives after the loop has gone does not wait for it.
+func TestTurbine_RevocationAfterTheLoopReturnsDoesNotBlock(t *testing.T) {
+	src := newOwnerSource()
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 100, w, WithPartitionDropper(&recordingDropper{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = tb.ConsumeLoop(ctx, 0)
+	returned := make(chan struct{})
+	go func() { src.released(map[string][]int32{"t": {0}}); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a revocation blocked on a consume loop that had returned")
+	}
 }

@@ -2,6 +2,7 @@ package validate
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -472,5 +473,97 @@ func TestValidateSchema_NoWindowNoEventTimeWarning(t *testing.T) {
 		if strings.Contains(d.Message, "declares no event_time") {
 			t.Fatalf("warned about a pipeline with no window: %s", d.Message)
 		}
+	}
+}
+
+// ownedConfig is a partition_owned window that passes. Its holes, in order:
+// the source block, the window table's partition column, the handler's
+// partition expression, and the sink's key.
+const ownedConfig = `tables:
+  sql:
+    - name: agg
+      sql: |
+        CREATE TABLE agg (bucket TIMESTAMPTZ, city VARCHAR, %[2]s n BIGINT)
+      window:
+        time_column: bucket
+        size_seconds: 60
+        allowed_lateness_seconds: 60
+        partition_owned: true
+        sink:
+          type: postgres
+          postgres:
+            dsn: "postgresql://u:p@localhost:5432/db"
+            table: agg
+            mode: upsert
+            key: [%[4]s]
+pipeline:
+  batch_size: 1
+  source:
+%[1]s
+  handler:
+    type: handlers.InferredMemBatch
+    sql: INSERT INTO agg SELECT time_bucket(INTERVAL '60 seconds', event_time) AS bucket, city, %[3]s 1 FROM batch
+  sink:
+    type: noop
+`
+
+const ownedKafkaSource = `    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      group_id: g
+      auto_offset_reset: earliest
+      topics: [%s]
+      event_time:
+        path: ts
+        format: rfc3339`
+
+func validateOwned(t *testing.T, source, column, expr, key string) Report {
+	t.Helper()
+	rep, err := Validate(context.Background(), Request{Path: "o.yml",
+		Config: fmt.Sprintf(ownedConfig, source, column, expr, key)})
+	assert.NoError(t, err)
+	return rep
+}
+
+func TestValidateSchema_PartitionOwnedPasses(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep := validateOwned(t, fmt.Sprintf(ownedKafkaSource, `"t"`), "kafka_partition INTEGER,", "kafka_partition,",
+		"bucket, city, kafka_partition")
+	assert.That(t, rep.OK)
+	assert.Equal(t, StatusPass, checkStatus(t, rep, "tables.window"))
+}
+
+// Each requirement, broken alone, fails the window check and says which.
+func TestValidateSchema_PartitionOwnedRefusesWhatItCannotHonor(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	kafka := fmt.Sprintf(ownedKafkaSource, `"t"`)
+	for _, tc := range []struct {
+		name, source, column, expr, key, want string
+	}{
+		{"a webhook source", "    type: webhook\n    webhook:\n      event_time:\n        path: ts\n        format: rfc3339",
+			"kafka_partition INTEGER,", "kafka_partition,", "bucket, city, kafka_partition", "kafka source with exactly one topic"},
+		{"two topics", fmt.Sprintf(ownedKafkaSource, `"t", "u"`),
+			"kafka_partition INTEGER,", "kafka_partition,", "bucket, city, kafka_partition", "kafka source with exactly one topic"},
+		{"a sink key without the partition", kafka,
+			"kafka_partition INTEGER,", "kafka_partition,", "bucket, city", "kafka_partition in its key"},
+		{"a table without the column", kafka,
+			"", "kafka_partition,", "bucket, city, kafka_partition", "column in the table's CREATE"},
+		{"a handler that does not write it", kafka,
+			"kafka_partition INTEGER,", "", "bucket, city, kafka_partition", "handler's SQL to write kafka_partition"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := validateOwned(t, tc.source, tc.column, tc.expr, tc.key)
+			assert.That(t, !rep.OK)
+			assert.Equal(t, StatusFail, checkStatus(t, rep, "tables.window"))
+			found := false
+			for _, d := range rep.Diagnostics {
+				if strings.Contains(d.Message, tc.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("no diagnostic containing %q in %+v", tc.want, rep.Diagnostics)
+			}
+		})
 	}
 }

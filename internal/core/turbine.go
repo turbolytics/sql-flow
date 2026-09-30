@@ -448,6 +448,22 @@ type Turbine struct {
 	// window over a source with positions.
 	windowOffsets     *WindowOffsets
 	windowOffsetStore *WindowOffsetStore
+	// dropper deletes a revoked partition's rows from every partition-owned
+	// window; drops carries requests from the source's rebalance callback to
+	// the consume loop, which owns the connection. loopDone is closed when
+	// ConsumeLoop returns, so a callback never waits on a loop that is gone.
+	dropper      PartitionDropper
+	drops        chan dropRequest
+	loopDone     chan struct{}
+	loopDoneOnce sync.Once
+	// revoked holds partitions dropped since their revocation; records the
+	// consumer prefetched from them are skipped. Copy-on-write behind an
+	// atomic pointer, so the per-record check takes no lock: after a
+	// scale-out the set stays non-empty for the life of the process.
+	// revokedMu serializes the writers only.
+	revokedMu sync.Mutex
+	revoked   atomic.Pointer[map[partitionKey]bool]
+
 	// floorInbox receives replay floors from the source's goroutine;
 	// floorsWaiting says it holds any, so the loop checks with one atomic
 	// load. replayFloors is the loop's own copy, closed nanos per spec index.
@@ -584,6 +600,29 @@ const (
 // pipeline and a busy one. A windowing pipeline's idle tick writes only
 // when a watermark moved, which on a quiet stream is once, when the last
 // partition goes idle.
+type dropRequest struct {
+	parts map[string][]int32
+	done  chan error
+}
+
+// offsetDeleter is an offset store that can forget partitions.
+type offsetDeleter interface {
+	Delete(ctx context.Context, topic string, partitions []int32) error
+}
+
+// dropWait bounds how long a rebalance callback waits for the consume loop
+// to drop a partition. Under the group's rebalance timeout, and past a sink
+// flush's own bound, so the only thing it cuts short is a loop that will
+// never come: a revocation before the loop has started on a run that then
+// fails would otherwise hold the client's close forever.
+const dropWait = 45 * time.Second
+
+// WithPartitionDropper makes a revocation drop the partition's rows rather
+// than let them close.
+func WithPartitionDropper(d PartitionDropper) TurbineOption {
+	return func(t *Turbine) { t.dropper = d }
+}
+
 // WithWindowOffsets commits each partition's low watermark rather than its
 // processed position. store is nil without a state path: the tracker still
 // holds the commit back, and a restart replays from Kafka.
@@ -772,7 +811,7 @@ func (t *Turbine) watchSource() {
 	switch s := t.source.(type) {
 	case PartitionOwner:
 		t.partitionsRelayed = true
-		s.OnPartitions(t.windows.Assigned, t.windows.Released, t.windows.Lost)
+		s.OnPartitions(t.assigned, t.released, t.lost)
 	case Deliverer:
 		_, ok := s.Delivering()
 		t.windows.SetDelivering(ok)
@@ -786,6 +825,177 @@ func (t *Turbine) watchSource() {
 // the tracker holds its one partition as lost through a reconnect. The
 // transitions are logged once each, so a source that never resumes shows
 // up as a stop with no resumption after it.
+func (t *Turbine) assigned(parts map[string][]int32) {
+	t.updateRevoked(parts, false)
+	t.windows.Assigned(parts)
+}
+
+// released and lost drop the partitions' rows before the tracker lets them
+// go. Without a dropper they are the tracker's own calls.
+func (t *Turbine) released(parts map[string][]int32) {
+	t.requestDrop(parts)
+	t.windows.Released(parts)
+}
+
+func (t *Turbine) lost(parts map[string][]int32) {
+	t.requestDrop(parts)
+	t.windows.Lost(parts)
+}
+
+// updateRevoked adds or removes partitions from the revoked set, copying it,
+// so a reader holding the old map never sees it change.
+func (t *Turbine) updateRevoked(parts map[string][]int32, revoked bool) {
+	if t.dropper == nil {
+		return
+	}
+	t.revokedMu.Lock()
+	defer t.revokedMu.Unlock()
+	next := map[partitionKey]bool{}
+	if cur := t.revoked.Load(); cur != nil {
+		for k := range *cur {
+			next[k] = true
+		}
+	}
+	for topic, ps := range parts {
+		for _, p := range ps {
+			if revoked {
+				next[partitionKey{topic, p}] = true
+			} else {
+				delete(next, partitionKey{topic, p})
+			}
+		}
+	}
+	t.revoked.Store(&next)
+}
+
+// requestDrop runs on the source's rebalance goroutine. It blocks until the
+// consume loop has dropped the partitions, which holds the rebalance until
+// no process but the new owner can write their rows.
+func (t *Turbine) requestDrop(parts map[string][]int32) {
+	if t.dropper == nil {
+		return
+	}
+	req := dropRequest{parts: parts, done: make(chan error, 1)}
+	timeout := time.NewTimer(dropWait)
+	defer timeout.Stop()
+	select {
+	case t.drops <- req:
+	case <-t.loopDone:
+		return
+	case <-timeout.C:
+		t.logger.Error("the consume loop did not take a partition drop; the revoked partitions' rows are still in the window",
+			zap.Any("partitions", parts), zap.Duration("waited", dropWait))
+		return
+	}
+	select {
+	case err := <-req.done:
+		if err != nil {
+			t.logger.Error("dropping revoked partitions failed; the pipeline is stopping", zap.Error(err))
+		}
+	case <-t.loopDone:
+	}
+}
+
+// dropPartitions deletes revoked partitions' rows, offset records and stored
+// positions, and commits, holding every owned window's pass lock so no pass
+// publishes those rows meanwhile.
+func (t *Turbine) dropPartitions(ctx context.Context, parts map[string][]int32) error {
+	unlock := t.lockOwnedPasses()
+	defer unlock()
+
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	fail := func(err error) error {
+		if t.stateTx != nil {
+			if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
+				t.logger.Error("rollback after a failed partition drop", zap.Error(rbErr))
+			}
+		}
+		return err
+	}
+	for topic, ps := range parts {
+		if err := t.dropper.DropPartitions(ctx, topic, ps); err != nil {
+			return fail(err)
+		}
+		if del, ok := t.offsets.(offsetDeleter); ok {
+			if err := del.Delete(ctx, topic, ps); err != nil {
+				return fail(err)
+			}
+		}
+		if t.windowOffsets != nil {
+			t.windowOffsets.Drop(topic, ps)
+		}
+		t.marks.Forget(topic, ps)
+		t.committed.Forget(topic, ps)
+		for _, p := range ps {
+			delete(t.replayFloors, partitionKey{topic, p})
+		}
+	}
+	if t.windowOffsetStore != nil {
+		if err := t.windowOffsetStore.Save(ctx, t.windowOffsets.Pending()); err != nil {
+			return fail(err)
+		}
+	}
+	if t.stateTx != nil {
+		if err := t.stateTx.Commit(ctx); err != nil {
+			return fail(errs.Wrap(errs.CodeStateCommitFailed, err, "committing the partition drop"))
+		}
+	}
+	if t.windowOffsets != nil {
+		t.windowOffsets.Saved()
+	}
+	t.updateRevoked(parts, true)
+	return nil
+}
+
+// dropAllOwned deletes every partition-owned row as the loop ends, before
+// the source leaves its group. What this worker held unpublished is the next
+// owner's to recount, and a final pass that published it here could land
+// after the next owner's whole count.
+func (t *Turbine) dropAllOwned(ctx context.Context) {
+	if t.dropper == nil || t.windows == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dropWait)
+	defer cancel()
+	unlock := t.lockOwnedPasses()
+	defer unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	if err := t.dropper.DropAll(ctx); err != nil {
+		t.logger.Error("dropping partition-owned rows on the way out", zap.Error(err))
+		if t.stateTx != nil {
+			_ = t.stateTx.Rollback(ctx)
+		}
+		return
+	}
+	if t.stateTx != nil {
+		if err := t.stateTx.Commit(ctx); err != nil {
+			t.logger.Error("committing the drop of partition-owned rows on the way out", zap.Error(err))
+			_ = t.stateTx.Rollback(ctx)
+		}
+	}
+}
+
+// lockOwnedPasses takes every partition-owned window's pass lock, in spec
+// order, and returns the unlock.
+func (t *Turbine) lockOwnedPasses() func() {
+	var owned []*WindowSignal
+	for _, spec := range t.windows.Specs() {
+		if spec.PartitionOwned {
+			owned = append(owned, t.windows.Signal(spec.Name))
+		}
+	}
+	for _, s := range owned {
+		s.LockPass()
+	}
+	return func() {
+		for _, s := range owned {
+			s.UnlockPass()
+		}
+	}
+}
+
 func (t *Turbine) noteDelivering() {
 	if t.windows == nil || t.partitionsRelayed {
 		return
@@ -992,6 +1202,8 @@ func NewTurbine(
 		running:        true,
 		stats:          &Stats{},
 		errorPolicy:    policy,
+		drops:          make(chan dropRequest),
+		loopDone:       make(chan struct{}),
 
 		logger: zap.NewNop(),
 	}
@@ -1087,6 +1299,7 @@ func (t *Turbine) recordStateGauges(ctx context.Context) {
 
 func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, err error) {
 	t.logger.Info("consumer loop starting")
+	defer t.loopDoneOnce.Do(func() { close(t.loopDone) })
 
 	// Whatever made the loop fail, the batch in flight was not delivered, and
 	// the positions it advanced must not outlive it. The caller commits again
@@ -1125,6 +1338,9 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		}
 		t.settle(ErrStoppedBeforeFlush)
 	}()
+	// And before either: the rows this worker still holds for partitions it
+	// is about to give up.
+	defer t.dropAllOwned(ctx)
 
 	t.stats.StartTime = t.now().UTC()
 	t.stats.SetNumMessagesConsumed(0)
@@ -1213,6 +1429,25 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 					t.logger.Warn("failed to commit the low watermark on an idle tick", zap.Error(err))
 				}
 			}
+			continue
+		case req := <-t.drops:
+			// The group is taking partitions away, and its rebalance waits
+			// on this. Whatever is buffered is processed first, so every
+			// position this worker reached is committed with its low
+			// watermark before the rows behind it go.
+			if numBatchMessages > 0 {
+				if err := t.processBatch(batchCtx, numBatchMessages); err != nil {
+					req.done <- err
+					return nil, t.drainError(err, numBatchMessages)
+				}
+				numBatchMessages = 0
+			}
+			if err := t.dropPartitions(batchCtx, req.parts); err != nil {
+				req.done <- err
+				t.recordError(ctx, err, phaseStateCommit, "error dropping revoked partitions")
+				return nil, err
+			}
+			req.done <- nil
 			continue
 		case <-ctx.Done():
 			t.logger.Info("context done, draining the consumer loop")
@@ -1331,6 +1566,13 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		t.takeFloors()
 
 		for _, raw := range msgBatch {
+			// Fetched before its partition was revoked, arriving after the
+			// rows were dropped. It is the new owner's now; neither written
+			// nor marked here.
+			if rv := t.revoked.Load(); rv != nil && len(*rv) > 0 &&
+				(*rv)[partitionKey{raw.Topic, raw.Partition}] {
+				continue
+			}
 			// A record whose event time this engine cannot place never
 			// reaches the handler, so it can never reach a window table and
 			// never move a watermark. One stamped in the future otherwise
