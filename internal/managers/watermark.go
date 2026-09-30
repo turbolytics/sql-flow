@@ -292,6 +292,11 @@ func (w *Watermark) Pass(ctx context.Context) (err error) {
 	}
 	if hadClosed {
 		settled, settledKnown = closed, true
+		// Said on every pass, so an engine that started after the last
+		// close still learns it.
+		if w.signal != nil {
+			w.signal.SetClosed(closed)
+		}
 	}
 
 	// The one fact: what the engine has asserted.
@@ -417,6 +422,12 @@ func (w *Watermark) Pass(ctx context.Context) (err error) {
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing the pass")
 	}
 	committed = true
+	// Only now: the engine lets its source commit pass a bucket's rows once
+	// it hears the bucket is closed past its lateness, and that must not
+	// happen before the publish and the purge are durable.
+	if w.signal != nil {
+		w.signal.SetClosed(watermark)
+	}
 	w.republishRetained = false
 	settled, settledKnown = watermark, true
 	w.metrics.Watermark.Record(ctx, watermark.Unix(), w.attrs)

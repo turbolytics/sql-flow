@@ -694,3 +694,22 @@ func gaugeValue(t *testing.T, reader *sdkmetric.ManualReader, name string) int64
 	assert.That(t, ok)
 	return v
 }
+
+// The engine expires offset records on the manager's closed watermark, and
+// learns it from the signal after each committed pass.
+func TestManagerWindow_PassPublishesClosedOnTheSignal(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	ctx := context.Background()
+	d := newTestDB(t, "")
+	createWindowTable(t, d.pipeline)
+	w, sig := newTestWatermark(t, d, testDecl(), &recordingSink{})
+	insertBucket(t, d.pipeline, 0, "NYC", 3)
+	_, ok := sig.Closed()
+	assert.That(t, !ok)
+
+	assertAt(t, d.pipeline, bucket(1))
+	assert.NoError(t, w.Pass(ctx))
+	got, ok := sig.Closed()
+	assert.That(t, ok)
+	assert.That(t, got.Equal(bucket(1)))
+}

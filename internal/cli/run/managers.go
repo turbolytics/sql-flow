@@ -51,6 +51,37 @@ func windowSpecs(conf *config.Conf) []core.WindowSpec {
 	return specs
 }
 
+// windowOffsetOptions is run's wiring of the low-watermark commit: a
+// pipeline that windows over Kafka commits, per partition, the position
+// before the lowest offset still feeding a retained bucket, so a worker that
+// starts without the window's rows replays them from the log. Nothing for
+// any other pipeline.
+//
+// durable is whether there is a state path. With one, the records are kept
+// in the state file beside the rows they describe and read back here; call
+// this under autocommit, before the state branch turns it off. Without one
+// the tracker still holds the commit back, and every start replays.
+func windowOffsetOptions(ctx context.Context, conf *config.Conf, conn adbc.Connection, durable bool) ([]core.TurbineOption, error) {
+	if !conf.HasWindow() || conf.Pipeline.Source.Type != "kafka" {
+		return nil, nil
+	}
+	specs := windowSpecs(conf)
+	tracker := core.NewWindowOffsets(specs)
+	var store *core.WindowOffsetStore
+	if durable {
+		store = core.NewWindowOffsetStore(conn, specs)
+		if err := store.Init(ctx); err != nil {
+			return nil, err
+		}
+		stored, err := store.Load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		tracker.Load(stored)
+	}
+	return []core.TurbineOption{core.WithWindowOffsets(tracker, store)}, nil
+}
+
 // windowOptions is run's wiring of the watermark: the tracker the engine
 // observes records into and asserts from, and the store it writes through
 // on the pipeline's connection, so the assertion rides each batch's

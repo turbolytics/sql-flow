@@ -434,6 +434,17 @@ type Turbine struct {
 	// database.
 	stateStats func(context.Context) (*StateStats, error)
 
+	// windowOffsets tracks the lowest offset feeding each retained bucket, so
+	// the source commit stays below every row a window still holds;
+	// windowOffsetStore persists it in the state transaction. Nil without a
+	// window over a source with positions.
+	windowOffsets     *WindowOffsets
+	windowOffsetStore *WindowOffsetStore
+	// lowMoved is set when a bucket's offset record expired since the last
+	// source commit: the position to commit may have moved with no batch
+	// to carry it, and the next idle tick commits it.
+	lowMoved bool
+
 	// unsettled is how many messages the loop took from the stream since the
 	// last settle; a Settler source hears it after the batch commits.
 	unsettled int
@@ -558,6 +569,16 @@ const (
 // pipeline and a busy one. A windowing pipeline's idle tick writes only
 // when a watermark moved, which on a quiet stream is once, when the last
 // partition goes idle.
+// WithWindowOffsets commits each partition's low watermark rather than its
+// processed position. store is nil without a state path: the tracker still
+// holds the commit back, and a restart replays from Kafka.
+func WithWindowOffsets(o *WindowOffsets, store *WindowOffsetStore) TurbineOption {
+	return func(t *Turbine) {
+		t.windowOffsets = o
+		t.windowOffsetStore = store
+	}
+}
+
 func WithWindows(w *Watermarks, s WatermarkSaver) TurbineOption {
 	return func(t *Turbine) {
 		t.windows = w
@@ -1103,6 +1124,14 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// Messages consumed with no batch after them, dropped by an
 			// error policy or refused by a window, are finished with too.
 			t.settle(nil)
+			// A bucket the manager closed past its lateness since the last
+			// batch releases the rows it held the commit behind. With no
+			// batch coming, this tick is what moves the group's offset.
+			if t.lowMoved {
+				if err := t.commitSource(); err != nil {
+					t.logger.Warn("failed to commit the low watermark on an idle tick", zap.Error(err))
+				}
+			}
 			continue
 		case <-ctx.Done():
 			t.logger.Info("context done, draining the consumer loop")
@@ -1281,6 +1310,9 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				// entry, and a fetch spans few, so the scan is a comparison
 				// or two.
 				t.notePlaced(raw.Topic, raw.Partition, raw.EventAtNanos)
+				if t.windowOffsets != nil {
+					t.windowOffsets.Note(raw)
+				}
 			}
 			if err := t.writeMessage(raw); err != nil {
 				t.recordError(ctx, err, phaseHandlerWrite, "error writing message")
@@ -1615,14 +1647,41 @@ func (t *Turbine) settle(err error) {
 // fetched: after one 20,000-message batch it had committed offset 70,086.
 // Whatever sat in that buffer when the process died was gone for good, with
 // the consumer group showing no lag.
+//
+// A pipeline that windows commits each partition's low watermark instead:
+// the position before the lowest offset still feeding a bucket the window
+// retains. The processed position passes rows that exist only in the window's
+// table, and a worker that starts without that table -- a new disk, or a
+// partition it was just assigned -- would begin after them and never count
+// them. Held at the low watermark, the log is the durable copy of the
+// window: whoever starts there rebuilds every retained bucket whole.
 func (t *Turbine) commitSource() error {
 	if mc, ok := t.source.(MarkCommitter); ok {
 		if t.marks.Empty() {
 			return nil
 		}
+		t.lowMoved = false
+		if t.windowOffsets != nil {
+			return mc.CommitMarks(t.windowOffsets.Low(t.marks))
+		}
 		return mc.CommitMarks(t.marks)
 	}
 	return t.source.Commit()
+}
+
+// expireWindowOffsets drops the records of buckets the manager has closed
+// past their lateness.
+func (t *Turbine) expireWindowOffsets() {
+	if t.windowOffsets == nil || t.windows == nil {
+		return
+	}
+	for _, spec := range t.windows.Specs() {
+		if closed, ok := t.windows.Signal(spec.Name).Closed(); ok {
+			if t.windowOffsets.Expire(spec.Name, closed) {
+				t.lowMoved = true
+			}
+		}
+	}
 }
 
 // initHandler resets the handler under the lock. Init drops or truncates the
@@ -1696,6 +1755,7 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 // unwritten, and a poll that ran in between read the older watermark.
 func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 	t.noteDelivering()
+	t.expireWindowOffsets()
 	moved, watermarkErr := t.assertWatermarks(ctx, write)
 	progressErr := t.recordProgress(ctx, write)
 
@@ -1719,6 +1779,10 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		case t.windows != nil:
 			t.windows.Commit(moved)
 			t.signalWindows(ctx, moved)
+		}
+		// Nothing persists the offset records without a state path.
+		if t.windowOffsets != nil {
+			t.windowOffsets.Saved()
 		}
 		t.lock.Lock()
 		t.commits++
@@ -1769,6 +1833,18 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offsets")
 	}
 
+	// The offset records ride the same transaction as the rows they
+	// describe, so a restart on this state file holds both or neither.
+	if t.windowOffsetStore != nil {
+		if err := t.windowOffsetStore.Save(ctx, t.windowOffsets.Pending()); err != nil {
+			if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
+				t.logger.Error("rollback after failed offset-record save", zap.Error(rbErr))
+			}
+			t.dropPendingLate()
+			return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offset records")
+		}
+	}
+
 	if err := t.stateTx.Commit(ctx); err != nil {
 		// The commit itself failed, so the transaction is still open and
 		// still holds this batch's writes; roll it back explicitly rather
@@ -1782,6 +1858,9 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 	if t.windows != nil {
 		t.windows.Commit(moved)
 		t.signalWindows(ctx, moved)
+	}
+	if t.windowOffsets != nil {
+		t.windowOffsets.Saved()
 	}
 
 	t.commits++
@@ -1828,6 +1907,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	// in the message loop above, so a batch the loop abandoned -- max-msgs
 	// reached, a fatal error -- reports only the records it actually reached.
 	t.flushObservations()
+	if t.windowOffsets != nil {
+		t.windowOffsets.Merge()
+	}
 
 	t.lock.Lock()
 	batch, err := t.handler.Invoke(ctx)

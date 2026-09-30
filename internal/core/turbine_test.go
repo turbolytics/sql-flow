@@ -1035,3 +1035,119 @@ func TestTurbine_DoesNotSettleWhatItNeverTook(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []settleCall{{2, nil}}, src.calls())
 }
+
+// With windows over a Kafka-like source, the committed position is the low
+// watermark, not the processed one.
+func TestTurbine_CommitsTheLowWatermark(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	src := &markingSource{fakeSource: fakeSource{batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.UnixNano()},
+		{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.Add(70 * time.Second).UnixNano()},
+	}}}}
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 2, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	_, err := tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+	last := src.marks[len(src.marks)-1]
+	m, _ := last.Get("t", 0)
+	assert.Equal(t, int64(9), m.Offset)
+}
+
+// Once the manager reports a closed watermark past a bucket's lateness, the
+// next commit moves past that bucket's rows.
+func TestTurbine_CommitMovesWhenTheManagerCloses(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	w.Signal("w").SetClosed(woT0.Add(2 * time.Minute))
+	src := &markingSource{fakeSource: fakeSource{batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.UnixNano()},
+		{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.Add(150 * time.Second).UnixNano()},
+	}}}}
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 2, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	_, err := tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+	m, _ := src.marks[len(src.marks)-1].Get("t", 0)
+	assert.Equal(t, int64(10), m.Offset)
+}
+
+// newWindowedTurbine builds a turbine over windows, with every option applied
+// at construction so watchSource and the subscriptions see them.
+func newWindowedTurbine(src Source, h Handler, sink Sink, batch int, w *Watermarks, opts ...TurbineOption) *Turbine {
+	opts = append([]TurbineOption{WithWindows(w, &benchSaver{})}, opts...)
+	return NewTurbine(src, h, sink, batch, time.Second, &sync.Mutex{}, PipelineErrorPolicies{}, opts...)
+}
+
+// heldSource delivers its batches and then stays open until released, and
+// records each commit, so a test can drive idle ticks after a batch.
+type heldSource struct {
+	batches [][]Message
+	release chan struct{}
+	mu      sync.Mutex
+	marks   []*Marks
+}
+
+func (h *heldSource) Start() error { return nil }
+func (h *heldSource) Stream() <-chan []Message {
+	ch := make(chan []Message, len(h.batches))
+	for _, b := range h.batches {
+		ch <- b
+	}
+	go func() { <-h.release; close(ch) }()
+	return ch
+}
+func (h *heldSource) Commit() error { return nil }
+func (h *heldSource) Close() error  { return nil }
+func (h *heldSource) CommitMarks(marks *Marks) error {
+	copied := NewMarks()
+	copied.Reset(marks)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.marks = append(h.marks, copied)
+	return nil
+}
+func (h *heldSource) last(topic string, partition int32) (int64, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.marks) == 0 {
+		return -1, 0
+	}
+	m, _ := h.marks[len(h.marks)-1].Get(topic, partition)
+	return m.Offset, len(h.marks)
+}
+
+// A stream that goes quiet still closes its windows, and the commit must
+// follow them: otherwise the group's offset stays behind rows that were
+// published and purged long ago, and a restart replays them for nothing.
+func TestTurbine_AnIdleTickCommitsWhenTheLowWatermarkMoved(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	src := &heldSource{release: make(chan struct{}), batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.UnixNano()},
+		{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.Add(70 * time.Second).UnixNano()},
+	}}}
+	tick := make(chan time.Time)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 2, w,
+		WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil), WithFlushTrigger(tick))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+
+	waitFor(t, "the batch's commit", time.Second, func() bool { _, n := src.last("t", 0); return n == 1 })
+	off, _ := src.last("t", 0)
+	assert.Equal(t, int64(9), off)
+
+	// A tick with nothing closed commits nothing.
+	tick <- time.Now()
+	tick <- time.Now()
+	_, n := src.last("t", 0)
+	assert.Equal(t, 1, n)
+
+	// The manager closes the first bucket past its lateness.
+	w.Signal("w").SetClosed(woT0.Add(2 * time.Minute))
+	tick <- time.Now()
+	waitFor(t, "the idle commit", time.Second, func() bool { _, n := src.last("t", 0); return n == 2 })
+	off, _ = src.last("t", 0)
+	assert.Equal(t, int64(10), off)
+
+	close(src.release)
+	<-done
+}

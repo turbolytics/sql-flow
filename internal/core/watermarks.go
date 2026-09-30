@@ -537,6 +537,31 @@ type WindowSignal struct {
 	kick      chan struct{}
 	mu        sync.Mutex
 	recompute map[time.Time]struct{}
+	// closed is the manager's committed closed watermark, in nanoseconds;
+	// zero before its first pass. The engine expires offset records on it,
+	// never on its own asserted watermark, which runs ahead of what has been
+	// published.
+	closed atomic.Int64
+}
+
+// SetClosed records the manager's committed closed watermark. Monotonic.
+func (s *WindowSignal) SetClosed(t time.Time) {
+	n := t.UnixNano()
+	for {
+		cur := s.closed.Load()
+		if n <= cur || s.closed.CompareAndSwap(cur, n) {
+			return
+		}
+	}
+}
+
+// Closed is the manager's committed closed watermark, if it has one.
+func (s *WindowSignal) Closed() (time.Time, bool) {
+	n := s.closed.Load()
+	if n == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, n).UTC(), true
 }
 
 func newWindowSignal() *WindowSignal {

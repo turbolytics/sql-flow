@@ -304,6 +304,13 @@ func NewCommand() *cobra.Command {
 			// cannot place, because a window is what such a record damages;
 			// see core.WithEventTimePlacement.
 			turbineOpts = append(turbineOpts, core.WithEventTimePlacement(conf.HasWindow()))
+			// Before the state branch turns autocommit off: this creates and
+			// reads its table.
+			windowOffsetOpts, err := windowOffsetOptions(context.Background(), conf, conn, statePath != "")
+			if err != nil {
+				return err
+			}
+			turbineOpts = append(turbineOpts, windowOffsetOpts...)
 			if statePath != "" {
 				// Both calls are returned as-is. They already carry a code, and
 				// the outermost code wins: re-wrapping either as

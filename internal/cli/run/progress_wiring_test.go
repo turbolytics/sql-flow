@@ -113,3 +113,44 @@ func TestManagerWindow_IdleTicksWriteNoProgressRow(t *testing.T) {
 		})
 	}
 }
+
+// Only a pipeline that windows over Kafka holds its commit at the low
+// watermark. Wired onto a pipeline with no window it would do nothing;
+// left off a windowed Kafka pipeline, a worker that lost its disk would
+// start past rows only its window held. The store exists only with a state
+// path, and is created here, under autocommit.
+func TestStateDurability_OnlyAWindowedKafkaPipelineTracksWindowOffsets(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	ctx := context.Background()
+	db, err := duckdb.OpenPath(ctx, "")
+	assert.NoError(t, err)
+	defer db.Close()
+	conn, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	defer conn.Close()
+
+	kafkaWindowed := windowedConf(10)
+	kafkaWindowed.Pipeline.Source.Type = "kafka"
+	webhookWindowed := windowedConf(10)
+	webhookWindowed.Pipeline.Source.Type = "webhook"
+	kafkaFlat := &config.Conf{}
+	kafkaFlat.Pipeline.Source.Type = "kafka"
+
+	for _, conf := range []*config.Conf{webhookWindowed, kafkaFlat} {
+		opts, err := windowOffsetOptions(ctx, conf, conn, true)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(opts))
+	}
+
+	opts, err := windowOffsetOptions(ctx, kafkaWindowed, conn, false)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(opts))
+	_, err = core.NewWindowOffsetStore(conn, nil).Load(ctx)
+	assert.Error(t, err) // no state path, no table
+
+	opts, err = windowOffsetOptions(ctx, kafkaWindowed, conn, true)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(opts))
+	_, err = core.NewWindowOffsetStore(conn, nil).Load(ctx)
+	assert.NoError(t, err)
+}
