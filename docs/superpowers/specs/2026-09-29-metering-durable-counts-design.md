@@ -184,6 +184,7 @@ window above with `partition_owned: true`, and the Postgres sink keyed by
 | 8 | Webhook `after_flush`: kill between receive and flush | fails: an event answered 200 is missing from Kafka |
 | 9 | Webhook `after_flush`: a failed flush answers 503 | new |
 | 10 | Rebalance under load, one hot partition at a high rate: exact totals, and the replay time recorded | fails with 2 on `main`; the time is new |
+| 11 | A late event refused, then the worker's disk lost with a later minute open: the fresh worker replays past it | fails on `main`: the open minute undercounts; fails with decision 3 alone: the late event's minute is overwritten; passes with decision 5 |
 
 The "expected on `main`" column is a prediction. The first commit after this
 spec adds the tests, and the PR records what each actually did before the
@@ -200,7 +201,7 @@ In:
 
 - The four decisions above, with their config, validation, docs and schema
   entries.
-- The nine integration scenarios, and a coverage matrix entry for each new
+- The eleven scenarios above, and a coverage matrix entry for each new
   invariant.
 
 Out, each for its own issue:
@@ -218,6 +219,63 @@ Out, each for its own issue:
 - A remote state store. Kafka replay is the recovery path.
 - `after_flush` for sinks other than Kafka. The flush contract is the same,
   but only the Kafka sink is tested here.
+
+## Revisions from planning (2026-09-30)
+
+Reading the code for the plan changed six things. Each is stated here so the
+plan and the spec agree.
+
+1. **Attribution is per record, and always exact.** The engine already
+   computes each record's bucket from its event time, with the same function
+   the handler's `time_bucket` uses (`core.BucketStart`). The offset record is
+   keyed by that bucket and the record's own partition. The rule that
+   attributed every partition to every bucket when the output lacked
+   `kafka_partition` is gone.
+2. **Offset records expire on the manager's closed watermark, not the
+   engine's.** The engine's watermark runs ahead of what the manager has
+   published. With lateness 0, a bucket is due and unpublished at the moment
+   the engine's watermark passes it. Expiring its record then would commit
+   past a bucket no sink has seen. The manager reports its closed watermark
+   on the window's signal after each commit.
+3. **Decision 5: the commit carries each window's closed watermark as Kafka
+   commit metadata.** A worker that replays from the low watermark with no
+   state of its own has no watermark. A late event the original worker
+   refused, sitting after the low watermark, would be admitted into an
+   expired minute and published alone, replacing the full count. The new
+   owner reads the metadata when it is assigned the partition and refuses a
+   record whose bucket ended at or before `closed - lateness`. franz-go
+   supports both halves: `kgo.PreCommitFnContext` and `kgo.OnOffsetsFetched`.
+   Scenario 11 tests it.
+4. **Revoked partitions are forgotten.** The offset seeker kept the marks it
+   loaded at startup and reapplied them whenever a partition came back, so a
+   partition revoked and later reassigned rewound to a stale position. The
+   seeker now forgets a released or lost partition. A windowed pipeline also
+   drops the partition's marks, so it stops committing a partition another
+   member owns.
+5. **A drop waits for the window manager.** A manager pass in flight when
+   the partition is revoked could publish the partition's partial rows after
+   the callback returned. The drop takes the window's pass lock, so no pass
+   runs while the rows are deleted. Records the consumer had prefetched from
+   the partition are skipped when they arrive.
+6. **A null key stops the pipeline.** A sink write error is fatal whatever
+   the error policy says, so a row with a null key fails with
+   `user.sink.encode_failed` and the pipeline stops. The ingest handler
+   filters rows with no customer before the sink.
+
+The scenario table changes too:
+
+- Scenarios 4 and 5 run one worker. With three, the killed worker's
+  partitions move to the others after the 45-second session timeout, and the
+  scenario becomes scenario 3.
+- Scenario 9 runs in process: a real webhook source and turbine with a sink
+  whose flush fails. A failed flush against a real broker needs a fault
+  proxy.
+- Scenario 11 is new: a worker refuses a late event and loses its disk
+  while a later minute is still open, and a fresh worker replays past the
+  late event. Expected on `main`: fails, because the open minute's rows are
+  lost, as in scenario 5. With decision 3 alone it fails differently: the
+  late event's minute is published with that event alone. With decision 5
+  it passes.
 
 ## Risks
 
