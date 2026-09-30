@@ -82,6 +82,15 @@ type Source struct {
 	mu     sync.RWMutex
 	closed bool
 
+	// afterFlush answers a delivery once the pipeline has flushed it rather
+	// than once it is queued. pending holds one channel per queued delivery,
+	// in channel order; sendMu makes the append and the send one step, so
+	// that order holds under concurrent handlers.
+	afterFlush bool
+	sendMu     sync.Mutex
+	pendingMu  sync.Mutex
+	pending    []chan error
+
 	logger        *zap.Logger
 	meterProvider metric.MeterProvider
 	metrics       *Metrics
@@ -94,6 +103,14 @@ type Option func(*Source)
 // core.EventTimeMissing, which a windowing pipeline refuses.
 func WithEventTime(ex *eventtime.Extractor) Option {
 	return func(s *Source) { s.eventTime = ex }
+}
+
+// WithAckAfterFlush answers a delivery after the batch holding it has
+// flushed: a 200 then means the body is in the sink. Without it the source
+// answers when the body is queued, which a crash before the flush turns into
+// a lost event the sender was told it had delivered.
+func WithAckAfterFlush() Option {
+	return func(s *Source) { s.afterFlush = true }
 }
 
 func WithLogger(logger *zap.Logger) Option {
@@ -354,21 +371,103 @@ func (s *Source) receiveEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	msgs := []core.Message{{Value: body, EventAtNanos: s.stamp(body)}}
+
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if s.closed {
+		s.mu.RUnlock()
 		writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
+		return
+	}
+	if !s.afterFlush {
+		defer s.mu.RUnlock()
+		select {
+		case s.streamChan <- msgs:
+			writeJSON(w, http.StatusOK, `{"status":"received"}`)
+		case <-s.done:
+			writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
+		case <-r.Context().Done():
+			// The client hung up while waiting on the pipeline; the event is
+			// dropped and there is nobody left to answer.
+		}
+		return
+	}
+
+	settled := make(chan error, 1)
+	s.sendMu.Lock()
+	s.pendingMu.Lock()
+	s.pending = append(s.pending, settled)
+	s.pendingMu.Unlock()
+	var sent bool
+	select {
+	case s.streamChan <- msgs:
+		sent = true
+	case <-s.done:
+	case <-r.Context().Done():
+	}
+	if !sent {
+		s.unqueue(settled)
+	}
+	s.sendMu.Unlock()
+	// Released before the wait: Close takes the write lock, and it must not
+	// wait on a flush that may never come.
+	s.mu.RUnlock()
+	if !sent {
+		if r.Context().Err() == nil {
+			writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
+		}
 		return
 	}
 
 	select {
-	case s.streamChan <- []core.Message{{Value: body, EventAtNanos: s.stamp(body)}}:
-		writeJSON(w, http.StatusOK, `{"status":"received"}`)
+	case err := <-settled:
+		s.answerSettled(w, err)
 	case <-s.done:
-		writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
+		// Settled and closing can both be ready; a body that was flushed
+		// says so rather than asking for a retry.
+		select {
+		case err := <-settled:
+			s.answerSettled(w, err)
+		default:
+			writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Source is closed"}`)
+		}
 	case <-r.Context().Done():
-		// The client hung up while waiting on the pipeline; the event is
-		// dropped and there is nobody left to answer.
+		// The sender hung up. Its body may still flush; its channel stays in
+		// the queue so the settle that counts it answers nobody, not the
+		// next sender.
+	}
+}
+
+func (s *Source) answerSettled(w http.ResponseWriter, err error) {
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, `{"detail":"Not flushed"}`)
+		return
+	}
+	writeJSON(w, http.StatusOK, `{"status":"flushed"}`)
+}
+
+// Settle resolves the oldest n deliveries. The channels are buffered, so a
+// sender that has hung up never blocks the pipeline.
+func (s *Source) Settle(n int, err error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if n > len(s.pending) {
+		n = len(s.pending)
+	}
+	for _, ch := range s.pending[:n] {
+		ch <- err
+	}
+	s.pending = s.pending[n:]
+}
+
+// unqueue removes ch, which the caller appended last and never sent. A
+// failed send is always the newest entry, because sendMu is held from the
+// append to the send.
+func (s *Source) unqueue(ch chan error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if n := len(s.pending); n > 0 && s.pending[n-1] == ch {
+		s.pending = s.pending[:n-1]
 	}
 }
 

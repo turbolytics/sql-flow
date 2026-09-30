@@ -93,6 +93,12 @@ pipeline:
         # Format is the value's encoding. The unix_* forms take an integer,
         # or a string holding one; rfc3339 takes a string.
         format: unix_s | unix_ms | unix_us | unix_ns | rfc3339
+      # When a delivery is answered. on_receive, the default, answers once the
+      # body is queued. after_flush answers once the batch holding it has
+      # flushed to the sink, so a 200 means the body is in the sink; a failed
+      # flush answers 503. after_flush is refused on a pipeline that windows:
+      # a window holds a row for minutes, and a request cannot wait that long.
+      ack: on_receive | after_flush
     mqtt:
       # The broker URL, tcp:// or mqtt://. TLS is not supported yet.
       broker: <string>

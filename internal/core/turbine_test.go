@@ -969,3 +969,69 @@ func BenchmarkMark(b *testing.B) {
 		tb.mark(msg)
 	}
 }
+
+// settlingSource records every Settle call.
+type settlingSource struct {
+	fakeSource
+	mu      sync.Mutex
+	settles []settleCall
+}
+
+type settleCall struct {
+	n   int
+	err error
+}
+
+func (s *settlingSource) Settle(n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settles = append(s.settles, settleCall{n, err})
+}
+
+func (s *settlingSource) calls() []settleCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]settleCall(nil), s.settles...)
+}
+
+// A batch is settled after its flush and its commits, once, with the number
+// of messages it took from the stream.
+func TestTurbine_SettlesAfterTheFlush(t *testing.T) {
+	src := &settlingSource{fakeSource: fakeSource{batches: [][]Message{
+		{{Value: []byte("a")}}, {{Value: []byte("b")}}, {{Value: []byte("c")}},
+	}}}
+	events := []string{}
+	sink := &orderingSink{events: &events}
+	tb := newTestTurbine(src, &fakeHandler{}, sink, 3)
+	_, err := tb.ConsumeLoop(context.Background(), 3)
+	assert.NoError(t, err)
+	assert.Equal(t, []settleCall{{3, nil}}, src.calls())
+	assert.Equal(t, "flush", events[len(events)-1])
+}
+
+// A flush that fails settles the batch with the error, so the sender
+// hears 503 and retries.
+func TestTurbine_SettlesAFailedFlushWithItsError(t *testing.T) {
+	src := &settlingSource{fakeSource: fakeSource{batches: [][]Message{{{Value: []byte("a")}}}}}
+	events := []string{}
+	sink := &orderingSink{events: &events, fail: true}
+	tb := newTestTurbine(src, &fakeHandler{}, sink, 1)
+	_, err := tb.ConsumeLoop(context.Background(), 1)
+	assert.Error(t, err)
+	calls := src.calls()
+	assert.Equal(t, 1, len(calls))
+	assert.Equal(t, 1, calls[0].n)
+	assert.Error(t, calls[0].err)
+}
+
+// Messages the loop never reached are never settled. Close answers them.
+func TestTurbine_DoesNotSettleWhatItNeverTook(t *testing.T) {
+	src := &settlingSource{fakeSource: fakeSource{batches: [][]Message{
+		{{Value: []byte("a")}, {Value: []byte("b")}, {Value: []byte("c")}},
+	}}}
+	events := []string{}
+	tb := newTestTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 10)
+	_, err := tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+	assert.Equal(t, []settleCall{{2, nil}}, src.calls())
+}

@@ -511,6 +511,45 @@ type WebhookSource struct {
 	// it, and the record's time is the body's. On a windowing pipeline a
 	// body without a usable value at the path is refused.
 	EventTime *EventTimeField `yaml:"event_time,omitempty"`
+	// When a delivery is answered. on_receive, the default, answers once the
+	// body is queued. after_flush answers once the batch holding it has
+	// flushed to the sink, so a 200 means the body is in the sink; a failed
+	// flush answers 503. after_flush is refused on a pipeline that windows:
+	// a window holds a row for minutes, and a request cannot wait that long.
+	Ack string `yaml:"ack,omitempty" jsonschema:"enum=on_receive,enum=after_flush"`
+}
+
+const (
+	WebhookAckOnReceive  = "on_receive"
+	WebhookAckAfterFlush = "after_flush"
+)
+
+// AfterFlush reports whether deliveries are answered after the flush. A nil
+// receiver is the absent block.
+func (w *WebhookSource) AfterFlush() (bool, error) {
+	if w == nil || w.Ack == "" || w.Ack == WebhookAckOnReceive {
+		return false, nil
+	}
+	if w.Ack == WebhookAckAfterFlush {
+		return true, nil
+	}
+	return false, errs.New(errs.CodeSourceInvalid, "webhook source: ack must be on_receive or after_flush, got %q", w.Ack)
+}
+
+// CheckWebhookAck refuses after_flush on a pipeline that windows. validate
+// and run both call it.
+func (c *Conf) CheckWebhookAck() error {
+	if c.Pipeline.Source.Type != "webhook" {
+		return nil
+	}
+	after, err := c.Pipeline.Source.Webhook.AfterFlush()
+	if err != nil || !after || !c.HasWindow() {
+		return err
+	}
+	return errs.New(errs.CodeConfigInvalid,
+		"webhook source: ack after_flush on a pipeline that windows. A window holds a row until its "+
+			"bucket closes, which is minutes, and the request waits for the flush. Ingest into Kafka "+
+			"with after_flush and window in a second pipeline that reads the topic")
 }
 
 // ResolvedMaxConnections is the connection bound in effect, defaulted. A nil

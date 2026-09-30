@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -149,6 +150,18 @@ type Mark struct {
 type MarkCommitter interface {
 	CommitMarks(marks *Marks) error
 }
+
+// Settler is a source that answers its sender once the pipeline is
+// finished with what it delivered.
+type Settler interface {
+	// Settle resolves the oldest n messages the source delivered: err nil
+	// when their batch flushed and committed, non-nil when it did not.
+	Settle(n int, err error)
+}
+
+// ErrStoppedBeforeFlush settles a message the loop took and then stopped
+// without flushing.
+var ErrStoppedBeforeFlush = errors.New("the pipeline stopped before this message was flushed")
 
 // HasMetadata reports whether the source supplied provenance for this message.
 // Topic is the discriminator: a Kafka record always has one, and a source that
@@ -420,6 +433,10 @@ type Turbine struct {
 	// so a scrape cannot stall the pipeline. Nil when there is no state
 	// database.
 	stateStats func(context.Context) (*StateStats, error)
+
+	// unsettled is how many messages the loop took from the stream since the
+	// last settle; a Settler source hears it after the batch commits.
+	unsettled int
 
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
@@ -997,6 +1014,15 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			panic(err)
 		}
 	}()
+	// Before the source closes: a sender still waiting on its flush hears
+	// why it will not come.
+	defer func() {
+		if err != nil {
+			t.settle(err)
+			return
+		}
+		t.settle(ErrStoppedBeforeFlush)
+	}()
 
 	t.stats.StartTime = t.now().UTC()
 	t.stats.SetNumMessagesConsumed(0)
@@ -1074,6 +1100,9 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				t.recordError(ctx, err, phaseStateCommit, "error committing state on idle tick")
 				return nil, err
 			}
+			// Messages consumed with no batch after them, dropped by an
+			// error policy or refused by a window, are finished with too.
+			t.settle(nil)
 			continue
 		case <-ctx.Done():
 			t.logger.Info("context done, draining the consumer loop")
@@ -1205,6 +1234,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				t.noteUnplaceable(raw.EventAtNanos, now)
 				t.mark(raw)
 				totalConsumed++
+				t.unsettled++
 				t.stats.SetNumMessagesConsumed(totalConsumed)
 				if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
 					t.logger.Info("max messages consumed, stopping consumer loop")
@@ -1227,6 +1257,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 					t.noteRefusedLate(ctx, raw)
 					t.mark(raw)
 					totalConsumed++
+					t.unsettled++
 					t.stats.SetNumMessagesConsumed(totalConsumed)
 					if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
 						t.logger.Info("max messages consumed, stopping consumer loop")
@@ -1263,6 +1294,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				// its position is finished with, so it is safe to commit past.
 				t.mark(raw)
 				totalConsumed++
+				t.unsettled++
 				t.stats.SetNumMessagesConsumed(totalConsumed)
 				if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
 					t.logger.Info("max messages consumed, stopping consumer loop")
@@ -1275,6 +1307,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			t.mark(raw)
 			numBatchMessages++
 			totalConsumed++
+			t.unsettled++
 			t.stats.SetNumMessagesConsumed(totalConsumed)
 
 			if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
@@ -1559,6 +1592,18 @@ func (t *Turbine) recordLag(ctx context.Context) {
 		t.metrics.Lag.Set(key.topic, key.partition, lag)
 		delete(t.lagPending, key)
 	}
+}
+
+// settle tells a Settler source the loop is finished with what it took:
+// flushed and committed when err is nil.
+func (t *Turbine) settle(err error) {
+	if t.unsettled == 0 {
+		return
+	}
+	if s, ok := t.source.(Settler); ok {
+		s.Settle(t.unsettled, err)
+	}
+	t.unsettled = 0
 }
 
 // commitSource commits what the pipeline has processed. A source that can
@@ -1927,6 +1972,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 		// Without a state database the source's commit is the durable one.
 		t.committed.Reset(t.marks)
 	}
+
+	// Flushed and committed: a sender waiting on this batch can be told.
+	t.settle(nil)
 
 	b3 := time.Now()
 

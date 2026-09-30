@@ -512,6 +512,9 @@ func NewCommand() *cobra.Command {
 			if err := conf.Pipeline.CheckMQTT(); err != nil {
 				return err
 			}
+			if err := conf.CheckWebhookAck(); err != nil {
+				return err
+			}
 
 			src, err := sources.New(
 				conf.Pipeline.Source,

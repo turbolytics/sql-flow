@@ -116,12 +116,20 @@ func TestIntegrationMetering_RetriedDuplicates(t *testing.T) {
 		s.startCount(name("count", i), name("state", i))
 	}
 	s.awaitMembers(3, 90*time.Second)
+	var took []time.Duration
 	for _, b := range batches(events, 25) {
 		for attempt := 0; attempt < 2; attempt++ {
+			t0 := time.Now()
 			code := postEvents(t, url, b)
+			took = append(took, time.Since(t0))
 			assert.Equal(t, http.StatusOK, code)
 		}
 	}
+	// What a lone sender waits for a 200. With after_flush it is the wait
+	// for the batch to flush, bounded by flush_interval_seconds.
+	sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
+	t.Logf("ingest_200_latency ack=%v requests=%d p50=%s p99=%s", current.Ack, len(took),
+		took[len(took)/2], took[len(took)*99/100])
 	s.awaitExact(expected(events), exactWithin, 10*time.Second)
 }
 

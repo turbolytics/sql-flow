@@ -142,8 +142,17 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		if eventTime != nil {
 			basis = eventTime.Basis()
 		}
+		afterFlush, err := c.Webhook.AfterFlush()
+		if err != nil {
+			return nil, err
+		}
+		ack := config.WebhookAckOnReceive
+		if afterFlush {
+			ack = config.WebhookAckAfterFlush
+		}
 		l.Info("initializing webhook source",
 			zap.String("addr", addr),
+			zap.String("ack", ack),
 			zap.Int64("max_body_bytes", maxBody),
 			zap.Int("max_connections", maxConns),
 			zap.String("event_time", basis),
@@ -155,6 +164,9 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			webhook.WithMaxBodyBytes(maxBody),
 			webhook.WithMaxConnections(maxConns),
 			webhook.WithEventTime(eventTime),
+		}
+		if afterFlush {
+			opts = append(opts, webhook.WithAckAfterFlush())
 		}
 		// Only a configured signature type turns validation on, so a webhook
 		// block that carries an hmac stanza but no signature_type accepts

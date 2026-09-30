@@ -2,9 +2,11 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -618,4 +620,141 @@ func TestSourceWebhook_StampsArrival(t *testing.T) {
 		t.Fatal("timed out waiting for the message")
 	}
 	assert.Equal(t, core.EventBasisArrival, s.EventTimeBasis())
+}
+
+// With after_flush, a 200 means the pipeline flushed the body. It is not
+// sent when the body reaches the queue.
+func TestSourceWebhook_AfterFlushAnswersOnSettle(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAckAfterFlush())
+	assert.NoError(t, err)
+	defer s.Close()
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	answered := make(chan *http.Response, 1)
+	go func() { answered <- post(t, srv.URL+"/events", []byte(`{"a":1}`), "", "") }()
+
+	<-s.Stream()
+	select {
+	case <-answered:
+		t.Fatal("answered before the pipeline settled the message")
+	case <-time.After(250 * time.Millisecond):
+	}
+	s.Settle(1, nil)
+	resp := <-answered
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, `{"status":"flushed"}`, readBody(t, resp))
+}
+
+// A flush that failed answers 503, so the sender retries.
+func TestSourceWebhook_AfterFlushFailedSettleIs503(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAckAfterFlush())
+	assert.NoError(t, err)
+	defer s.Close()
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	answered := make(chan *http.Response, 1)
+	go func() { answered <- post(t, srv.URL+"/events", []byte(`{"a":1}`), "", "") }()
+	<-s.Stream()
+	s.Settle(1, errors.New("broker down"))
+	resp := <-answered
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, `{"detail":"Not flushed"}`, readBody(t, resp))
+}
+
+// Settle resolves in delivery order: the first body the pipeline took is
+// the first answered.
+func TestSourceWebhook_AfterFlushSettlesInDeliveryOrder(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAckAfterFlush())
+	assert.NoError(t, err)
+	defer s.Close()
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	codes := make(map[string]chan int)
+	for _, body := range []string{"first", "second"} {
+		ch := make(chan int, 1)
+		codes[body] = ch
+		go func(b string) {
+			resp := post(t, srv.URL+"/events", []byte(b), "", "")
+			resp.Body.Close()
+			ch <- resp.StatusCode
+		}(body)
+		got := <-s.Stream()
+		assert.Equal(t, body, string(got[0].Value))
+	}
+	s.Settle(1, nil)
+	assert.Equal(t, http.StatusOK, <-codes["first"])
+	select {
+	case <-codes["second"]:
+		t.Fatal("the second body was answered by the first settle")
+	case <-time.After(250 * time.Millisecond):
+	}
+	s.Settle(1, errors.New("x"))
+	assert.Equal(t, http.StatusServiceUnavailable, <-codes["second"])
+}
+
+// A sender that hangs up after its body is queued leaves its place in the
+// FIFO. The next sender gets its own answer, not the departed one's.
+func TestSourceWebhook_AfterFlushHangupDoesNotShiftAnswers(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAckAfterFlush())
+	assert.NoError(t, err)
+	defer s.Close()
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/events", strings.NewReader("gone"))
+	go func() { _, _ = http.DefaultClient.Do(req) }()
+	<-s.Stream()
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	second := make(chan int, 1)
+	go func() {
+		resp := post(t, srv.URL+"/events", []byte("stays"), "", "")
+		resp.Body.Close()
+		second <- resp.StatusCode
+	}()
+	<-s.Stream()
+	s.Settle(1, errors.New("the departed sender's batch failed"))
+	s.Settle(1, nil)
+	assert.Equal(t, http.StatusOK, <-second)
+}
+
+// Close answers every waiting sender 503: nothing will settle them.
+func TestSourceWebhook_AfterFlushCloseReleasesWaiters(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource(WithAckAfterFlush())
+	assert.NoError(t, err)
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	answered := make(chan int, 1)
+	go func() {
+		resp := post(t, srv.URL+"/events", []byte("x"), "", "")
+		resp.Body.Close()
+		answered <- resp.StatusCode
+	}()
+	<-s.Stream()
+	assert.NoError(t, s.Close())
+	assert.Equal(t, http.StatusServiceUnavailable, <-answered)
+}
+
+// on_receive stays the default and answers as the body is queued.
+func TestSourceWebhook_OnReceiveIsTheDefault(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	s, err := NewSource()
+	assert.NoError(t, err)
+	defer s.Close()
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	resp := post(t, srv.URL+"/events", []byte("x"), "", "")
+	assert.Equal(t, `{"status":"received"}`, readBody(t, resp))
+	s.Settle(5, nil) // nothing waits; must not panic
 }
