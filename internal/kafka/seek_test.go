@@ -164,3 +164,55 @@ func TestIntegrationSourceKafka_SeekToResumesFromDurableOffsets(t *testing.T) {
 		t.Fatal("no records after seeking to the stored offsets")
 	}
 }
+
+// A partition revoked and later reassigned must not rewind to the position
+// this process loaded at startup: another member has moved it since.
+func TestOffsetSeeker_ForgetsARevokedPartition(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	marks := core.NewMarks()
+	marks.Advance("t", 0, core.Mark{Offset: 10})
+	marks.Advance("t", 1, core.Mark{Offset: 20})
+	s := NewOffsetSeeker()
+	s.SetMarks(marks)
+
+	s.Forget(map[string][]int32{"t": {1}})
+
+	fetched := map[string]map[int32]kgo.Offset{"t": {0: kgo.NewOffset().At(99), 1: kgo.NewOffset().At(500)}}
+	adjusted, err := s.Adjust(context.Background(), fetched)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(11), adjusted["t"][0].EpochOffset().Offset)
+	assert.Equal(t, int64(500), adjusted["t"][1].EpochOffset().Offset)
+	// The caller's marks are untouched: SetMarks copied them.
+	_, still := marks.Get("t", 1)
+	assert.That(t, still)
+}
+
+// The source wires the seeker to the group's events, so a revocation and a
+// loss both reach it without the pipeline doing anything.
+func TestOffsetSeeker_TheSourceForgetsOnRevokeAndLoss(t *testing.T) {
+	coverage.Covers(t, "source.kafka")
+	for _, event := range []string{"revoked", "lost"} {
+		t.Run(event, func(t *testing.T) {
+			marks := core.NewMarks()
+			marks.Advance("t", 0, core.Mark{Offset: 10})
+			seeker := NewOffsetSeeker()
+			events := NewPartitionEvents()
+			_, err := NewSource(nil, WithSeeker(seeker), WithPartitionEvents(events))
+			assert.NoError(t, err)
+			seeker.SetMarks(marks)
+
+			parts := map[string][]int32{"t": {0}}
+			events.onAssigned(context.Background(), nil, parts)
+			if event == "revoked" {
+				events.onRevoked(context.Background(), nil, parts)
+			} else {
+				events.onLost(context.Background(), nil, parts)
+			}
+
+			fetched := map[string]map[int32]kgo.Offset{"t": {0: kgo.NewOffset().At(500)}}
+			adjusted, err := seeker.Adjust(context.Background(), fetched)
+			assert.NoError(t, err)
+			assert.Equal(t, int64(500), adjusted["t"][0].EpochOffset().Offset)
+		})
+	}
+}

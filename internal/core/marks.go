@@ -47,6 +47,18 @@ func (m *Marks) Get(topic string, partition int32) (Mark, bool) {
 	return mark, ok
 }
 
+// Forget drops partitions this process no longer holds, so nothing commits a
+// position for a partition another member now owns.
+func (m *Marks) Forget(topic string, partitions []int32) {
+	parts, ok := m.m[topic]
+	if !ok {
+		return
+	}
+	for _, p := range partitions {
+		delete(parts, p)
+	}
+}
+
 // Len is the number of partitions held, across all topics.
 func (m *Marks) Len() int {
 	n := 0

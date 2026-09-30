@@ -35,11 +35,31 @@ func NewOffsetSeeker() *OffsetSeeker {
 }
 
 // SetMarks records the positions to resume from. Call it before the first
-// poll; the join has not happened yet at that point.
+// poll; the join has not happened yet at that point. The marks are copied, so
+// Forget never reaches into the caller's.
 func (s *OffsetSeeker) SetMarks(marks *core.Marks) {
+	cp := core.NewMarks()
+	if marks != nil {
+		cp.Reset(marks)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.marks = marks
+	s.marks = cp
+}
+
+// Forget drops the stored positions of partitions this consumer no longer
+// holds. Its state for them is no longer the latest: another member has
+// consumed and committed since, and reapplying the startup position on a
+// later reassignment would rewind the partition.
+func (s *OffsetSeeker) Forget(parts map[string][]int32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.marks == nil {
+		return
+	}
+	for topic, ps := range parts {
+		s.marks.Forget(topic, ps)
+	}
 }
 
 // Adjust replaces the group's committed offset with the durable one, for every

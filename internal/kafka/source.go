@@ -97,6 +97,12 @@ func NewSource(client *kgo.Client, opts ...Option) (*Source, error) {
 		opt(s)
 	}
 
+	// The seeker's positions describe partitions as this process last held
+	// them; once one leaves, the group's committed offset is the truth.
+	if s.seeker != nil && s.partitions != nil {
+		s.partitions.Subscribe(nil, s.seeker.Forget, s.seeker.Forget)
+	}
+
 	s.streamChan = make(chan []core.Message, s.channelBuffer)
 	s.done = make(chan struct{})
 
