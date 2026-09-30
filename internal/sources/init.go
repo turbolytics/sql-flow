@@ -67,6 +67,10 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		// are how the pipeline stops reporting lag for a partition that moved
 		// to another instance.
 		partitions := tkafka.NewPartitionEvents()
+		// And a third: what the group last committed beside each offset,
+		// which a windowing pipeline reads to learn what a partition's last
+		// owner had already closed.
+		committed := tkafka.NewCommittedMetadata()
 
 		opts := []kgo.Opt{
 			kgo.SeedBrokers(brokers...),
@@ -89,6 +93,7 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 		}
 		opts = append(opts, securityOpts...)
 		opts = append(opts, partitions.ClientOptions()...)
+		opts = append(opts, committed.ClientOptions()...)
 
 		client, err := kgo.NewClient(opts...)
 		if err != nil {
@@ -99,6 +104,7 @@ var builders = map[string]func(c config.Source, l *zap.Logger, mp metric.MeterPr
 			tkafka.WithLogger(l),
 			tkafka.WithSeeker(seeker),
 			tkafka.WithPartitionEvents(partitions),
+			tkafka.WithCommittedMetadata(committed),
 			tkafka.WithChannelBuffer(fetch.Prefetch),
 			tkafka.WithEventTime(eventTime),
 		)

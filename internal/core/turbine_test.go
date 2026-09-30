@@ -1151,3 +1151,71 @@ func TestTurbine_AnIdleTickCommitsWhenTheLowWatermarkMoved(t *testing.T) {
 	close(src.release)
 	<-done
 }
+
+// metadataSource reports committed metadata for a partition on assignment,
+// as the Kafka source does from the offset fetch.
+type metadataSource struct {
+	markingSource
+	fn   func(string, int32, string)
+	meta string
+}
+
+func (s *metadataSource) CommitMarksWithMetadata(m *Marks, meta string) error {
+	s.meta = meta
+	return s.CommitMarks(m)
+}
+func (s *metadataSource) OnCommittedMetadata(fn func(string, int32, string)) { s.fn = fn }
+
+// A worker replaying a partition it has no state for refuses a record the
+// previous owner had finalized: its bucket ended at or before closed minus
+// lateness.
+func TestTurbine_RefusesBelowTheReplayFloor(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	src := &metadataSource{markingSource: markingSource{fakeSource: fakeSource{batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.Add(10 * time.Second).UnixNano(), Value: []byte("old")},
+		{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.Add(5 * time.Minute).UnixNano(), Value: []byte("new")},
+	}}}}}
+	h := &recordingHandler{}
+	tb := newWindowedTurbine(src, h, &fakeSink{}, 2, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	// The previous owner had closed through 12:03; bucket 12:00 expired at 12:02.
+	src.fn("t", 0, EncodeReplayFloor(map[string]time.Time{"w": woT0.Add(3 * time.Minute)}))
+	_, err := tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"new"}, h.values())
+}
+
+// The commit carries this worker's closed watermarks.
+func TestTurbine_CommitCarriesTheClosedWatermarks(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	w.Signal("w").SetClosed(woT0)
+	src := &metadataSource{markingSource: markingSource{fakeSource: fakeSource{batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.Add(5 * time.Minute).UnixNano()},
+	}}}}}
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 1, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	_, err := tb.ConsumeLoop(context.Background(), 1)
+	assert.NoError(t, err)
+	got, ok := DecodeReplayFloor(src.meta)
+	assert.That(t, ok)
+	assert.That(t, got["w"].Equal(woT0))
+}
+
+type recordingHandler struct {
+	fakeHandler
+	mu   sync.Mutex
+	vals []string
+}
+
+func (h *recordingHandler) Write(b []byte) error {
+	h.mu.Lock()
+	h.vals = append(h.vals, string(b))
+	h.mu.Unlock()
+	return h.fakeHandler.Write(b)
+}
+
+func (h *recordingHandler) values() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.vals...)
+}

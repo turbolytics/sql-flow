@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -326,4 +327,36 @@ func (s *WindowOffsetStore) exec(ctx context.Context, q string) error {
 	}
 	_, err = stmt.ExecuteUpdate(ctx)
 	return err
+}
+
+// replayFloorPrefix marks commit metadata this engine wrote.
+const replayFloorPrefix = "sqlflow1 "
+
+// EncodeReplayFloor is the commit metadata for a windowed pipeline: each
+// window's closed watermark. A worker that replays a partition from the low
+// watermark has no watermark of its own. Without this, a late event the
+// previous owner refused would land in an expired bucket and be published
+// alone over the full count.
+func EncodeReplayFloor(closed map[string]time.Time) string {
+	type body struct {
+		Closed map[string]time.Time `json:"closed"`
+	}
+	b, _ := json.Marshal(body{Closed: closed})
+	return replayFloorPrefix + string(b)
+}
+
+// DecodeReplayFloor reads EncodeReplayFloor's output. Anything else, such as
+// metadata another tool committed, is not a floor.
+func DecodeReplayFloor(s string) (map[string]time.Time, bool) {
+	rest, ok := strings.CutPrefix(s, replayFloorPrefix)
+	if !ok {
+		return nil, false
+	}
+	var body struct {
+		Closed map[string]time.Time `json:"closed"`
+	}
+	if json.Unmarshal([]byte(rest), &body) != nil || body.Closed == nil {
+		return nil, false
+	}
+	return body.Closed, true
 }

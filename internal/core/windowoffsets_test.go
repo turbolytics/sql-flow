@@ -169,3 +169,15 @@ func TestWindowOffsetStore_RoundTrip(t *testing.T) {
 	assert.Equal(t, int32(0), got[0].Partition)
 	assert.That(t, got[0].Bucket.Equal(woT0.Add(time.Minute)))
 }
+
+func TestReplayFloor_RoundTrip(t *testing.T) {
+	in := map[string]time.Time{"w": woT0, "v": woT0.Add(time.Minute)}
+	out, ok := DecodeReplayFloor(EncodeReplayFloor(in))
+	assert.That(t, ok)
+	assert.That(t, out["w"].Equal(woT0))
+	assert.That(t, out["v"].Equal(woT0.Add(time.Minute)))
+	_, ok = DecodeReplayFloor("")
+	assert.That(t, !ok)
+	_, ok = DecodeReplayFloor(`{"closed":{}}`) // someone else's metadata
+	assert.That(t, !ok)
+}

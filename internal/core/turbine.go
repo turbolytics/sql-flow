@@ -163,6 +163,14 @@ type Settler interface {
 // without flushing.
 var ErrStoppedBeforeFlush = errors.New("the pipeline stopped before this message was flushed")
 
+// MetadataCommitter is a MarkCommitter that commits a string with each
+// position and reports what the group last committed for a partition when
+// this consumer is assigned it.
+type MetadataCommitter interface {
+	CommitMarksWithMetadata(marks *Marks, metadata string) error
+	OnCommittedMetadata(fn func(topic string, partition int32, metadata string))
+}
+
 // HasMetadata reports whether the source supplied provenance for this message.
 // Topic is the discriminator: a Kafka record always has one, and a source that
 // has none leaves it empty.
@@ -440,6 +448,13 @@ type Turbine struct {
 	// window over a source with positions.
 	windowOffsets     *WindowOffsets
 	windowOffsetStore *WindowOffsetStore
+	// floorInbox receives replay floors from the source's goroutine;
+	// floorsWaiting says it holds any, so the loop checks with one atomic
+	// load. replayFloors is the loop's own copy, closed nanos per spec index.
+	floorMu       sync.Mutex
+	floorInbox    map[partitionKey][]int64
+	floorsWaiting atomic.Bool
+	replayFloors  map[partitionKey][]int64
 	// lowMoved is set when a bucket's offset record expired since the last
 	// source commit: the position to commit may have moved with no batch
 	// to carry it, and the next idle tick commits it.
@@ -576,7 +591,73 @@ func WithWindowOffsets(o *WindowOffsets, store *WindowOffsetStore) TurbineOption
 	return func(t *Turbine) {
 		t.windowOffsets = o
 		t.windowOffsetStore = store
+		// A partition this worker replays from the low watermark comes with
+		// no watermark of its own; the commit's metadata carries the last
+		// owner's.
+		if mc, ok := t.source.(MetadataCommitter); ok {
+			mc.OnCommittedMetadata(t.noteCommittedMetadata)
+		}
 	}
+}
+
+// noteCommittedMetadata runs on the source's goroutine when this consumer is
+// assigned a partition. The loop picks the floor up before its next record.
+func (t *Turbine) noteCommittedMetadata(topic string, partition int32, metadata string) {
+	closed, ok := DecodeReplayFloor(metadata)
+	if !ok || t.windows == nil {
+		return
+	}
+	specs := t.windows.Specs()
+	floor := make([]int64, len(specs))
+	for i, spec := range specs {
+		if c, ok := closed[spec.Name]; ok {
+			floor[i] = c.UnixNano()
+		}
+	}
+	t.floorMu.Lock()
+	if t.floorInbox == nil {
+		t.floorInbox = map[partitionKey][]int64{}
+	}
+	t.floorInbox[partitionKey{topic, partition}] = floor
+	t.floorMu.Unlock()
+	t.floorsWaiting.Store(true)
+}
+
+// takeFloors moves the floors the source reported into the loop's own map.
+// One atomic load when there are none, which is every batch but the first
+// after an assignment.
+func (t *Turbine) takeFloors() {
+	if !t.floorsWaiting.Load() {
+		return
+	}
+	t.floorMu.Lock()
+	inbox := t.floorInbox
+	t.floorInbox = nil
+	t.floorsWaiting.Store(false)
+	t.floorMu.Unlock()
+	if t.replayFloors == nil {
+		t.replayFloors = map[partitionKey][]int64{}
+	}
+	for k, v := range inbox {
+		t.replayFloors[k] = v
+	}
+}
+
+// belowReplayFloor is true when every window would refuse the record under
+// the previous owner's closed watermark: its bucket ended at or before
+// closed minus lateness. The same all-windows rule as Classify.
+func (t *Turbine) belowReplayFloor(m Message) bool {
+	floor, ok := t.replayFloors[partitionKey{m.Topic, m.Partition}]
+	if !ok || m.EventAtNanos <= 0 {
+		return false
+	}
+	at := time.Unix(0, m.EventAtNanos).UTC()
+	for i, spec := range t.windows.Specs() {
+		if floor[i] == 0 || BucketEnd(at, spec.Size).UnixNano()+int64(spec.Lateness) > floor[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func WithWindows(w *Watermarks, s WatermarkSaver) TurbineOption {
@@ -1247,6 +1328,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// phase it lands in.
 		loopStart := time.Now()
 		var batchTook time.Duration
+		t.takeFloors()
 
 		for _, raw := range msgBatch {
 			// A record whose event time this engine cannot place never
@@ -1281,6 +1363,22 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// whole. Decided here, at arrival, as Flink's window operator
 			// decides it; nothing sweeps the table for late rows afterwards.
 			if t.windows != nil {
+				// A partition replayed from the low watermark: what its last
+				// owner had closed past lateness stays closed, whatever this
+				// worker's own watermark has reached.
+				if len(t.replayFloors) > 0 && t.belowReplayFloor(raw) {
+					t.noteRefusedLate(ctx, raw)
+					t.mark(raw)
+					totalConsumed++
+					t.unsettled++
+					t.stats.SetNumMessagesConsumed(totalConsumed)
+					if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
+						t.logger.Info("max messages consumed, stopping consumer loop")
+						hitMax = true
+						break
+					}
+					continue
+				}
 				refused, late := t.windows.Classify(raw.EventAtNanos)
 				if refused {
 					t.noteRefusedLate(ctx, raw)
@@ -1662,7 +1760,13 @@ func (t *Turbine) commitSource() error {
 		}
 		t.lowMoved = false
 		if t.windowOffsets != nil {
-			return mc.CommitMarks(t.windowOffsets.Low(t.marks))
+			low := t.windowOffsets.Low(t.marks)
+			// The closed watermarks ride the commit, so whoever starts from
+			// this position next refuses what this worker had finalized.
+			if mc2, ok := t.source.(MetadataCommitter); ok {
+				return mc2.CommitMarksWithMetadata(low, EncodeReplayFloor(t.windowOffsets.Closed()))
+			}
+			return mc.CommitMarks(low)
 		}
 		return mc.CommitMarks(t.marks)
 	}
