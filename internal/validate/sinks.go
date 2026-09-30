@@ -51,7 +51,7 @@ func checkSinks(rendered []byte, rep *Report) {
 	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
 		doc = doc.Content[0]
 	}
-	checkSink("pipeline.sink", conf.Pipeline.Sink, mappingValue(mappingValue(doc, "pipeline"), "sink"), attached, fail, warn)
+	checkSink("pipeline.sink", conf.Pipeline.Sink, conf.Pipeline.Handler.SQL, mappingValue(mappingValue(doc, "pipeline"), "sink"), attached, fail, warn)
 
 	if conf.Tables != nil {
 		for i, table := range conf.Tables.SQL {
@@ -59,15 +59,22 @@ func checkSinks(rendered []byte, rep *Report) {
 				continue
 			}
 			node := windowNode(&root, i)
-			checkSink(fmt.Sprintf("tables.sql[%d] window sink", i), table.Window.Sink, mappingValue(node, "sink"), attached, fail, warn)
+			// A window sink is fed by emit_sql, or by every column of the
+			// window's table when there is none.
+			feed := table.Window.EmitSQL
+			if feed == "" {
+				feed = table.SQL
+			}
+			checkSink(fmt.Sprintf("tables.sql[%d] window sink", i), table.Window.Sink, feed, mappingValue(node, "sink"), attached, fail, warn)
 		}
 	}
 
 	rep.SetCheck("sinks.postgres", status, "")
 }
 
-// checkSink holds one sink block to the rules that need no window.
-func checkSink(where string, s config.Sink, node *yaml.Node, attached attachments, fail, warn func(string, *Position)) {
+// checkSink holds one sink block to the rules that need no window. feedSQL is
+// the SQL whose output reaches the sink.
+func checkSink(where string, s config.Sink, feedSQL string, node *yaml.Node, attached attachments, fail, warn func(string, *Position)) {
 	switch s.Type {
 	case "postgres":
 		if s.Postgres == nil {
@@ -85,6 +92,12 @@ func checkSink(where string, s config.Sink, node *yaml.Node, attached attachment
 				fail(where+": postgres mode append takes no key; every row is inserted as it is", pos)
 			}
 		}
+	case "kafka":
+		if s.Kafka != nil && s.Kafka.Key != "" && !mentionsIdentifier(feedSQL, s.Kafka.Key) {
+			warn(fmt.Sprintf("%s: key %q is not named in the SQL that feeds this sink. Every row is keyed by that "+
+				"column, and a batch without it fails at the sink", where, s.Kafka.Key),
+				position(mappingValue(node, "kafka")))
+		}
 	case "sqlcommand":
 		if s.SQLCommand != nil && attached.upsertsInto(s.SQLCommand.SQL) {
 			warn(where+": an upsert through the DuckDB postgres extension copies every row's key "+
@@ -93,6 +106,12 @@ func checkSink(where string, s config.Sink, node *yaml.Node, attached attachment
 				"type: postgres with table, mode: upsert and key", position(mappingValue(node, "sqlcommand")))
 		}
 	}
+}
+
+// mentionsIdentifier reports whether sql names ident as a whole word. A
+// SELECT * names nothing, which is why callers warn rather than fail.
+func mentionsIdentifier(sql, ident string) bool {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(ident) + `\b`).MatchString(sql)
 }
 
 var (

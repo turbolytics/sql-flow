@@ -31,6 +31,7 @@ func TestIntegrationMetering_SteadyState(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		s.startCount(name("count", i), name("state", i))
 	}
+	s.awaitMembers(3, 90*time.Second)
 	s.produce(events)
 	s.awaitExact(expected(events), exactWithin, 10*time.Second)
 }
@@ -43,6 +44,7 @@ func TestIntegrationMetering_WorkerJoins(t *testing.T) {
 	half := len(events) / 2
 	s.startCount("count-0", "state-0")
 	s.startCount("count-1", "state-1")
+	s.awaitMembers(2, 90*time.Second)
 	s.produce(events[:half])
 	time.Sleep(10 * time.Second) // rows are in open windows now
 	s.startCount("count-2", "state-2")
@@ -62,6 +64,7 @@ func TestIntegrationMetering_WorkerLeaves(t *testing.T) {
 	w0 := s.startCount("count-0", "state-0")
 	s.startCount("count-1", "state-1")
 	s.startCount("count-2", "state-2")
+	s.awaitMembers(3, 90*time.Second)
 	s.produce(events[:half])
 	time.Sleep(10 * time.Second)
 	w0.stop(t)
@@ -112,6 +115,7 @@ func TestIntegrationMetering_RetriedDuplicates(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		s.startCount(name("count", i), name("state", i))
 	}
+	s.awaitMembers(3, 90*time.Second)
 	for _, b := range batches(events, 25) {
 		for attempt := 0; attempt < 2; attempt++ {
 			code := postEvents(t, url, b)
@@ -130,6 +134,7 @@ func TestIntegrationMetering_LateWithinLateness(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		s.startCount(name("count", i), name("state", i))
 	}
+	s.awaitMembers(3, 90*time.Second)
 	s.produce(events)
 	// 30 s late for minute 3: its end is 90 s before the newest event, and
 	// the watermark is newest - grace, so it closed and is within 60 s of
@@ -214,6 +219,7 @@ func TestIntegrationMetering_RebalanceUnderLoad(t *testing.T) {
 			sort.SliceStable(events, func(i, j int) bool { return events[i].TSMillis < events[j].TSMillis })
 			s.startCount("count-0", "state-0")
 			s.startCount("count-1", "state-1")
+			s.awaitMembers(2, 90*time.Second)
 			t0 := time.Now()
 			s.produce(events[:len(events)/2])
 			if join {

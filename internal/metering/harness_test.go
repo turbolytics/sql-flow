@@ -44,7 +44,7 @@ type Features struct {
 	PartitionOwned bool // count: window partition_owned: true
 }
 
-var current = Features{}
+var current = Features{Key: true}
 
 var sharedPostgres = pgtest.New(pgtest.Options{User: "metering", Password: "metering"})
 

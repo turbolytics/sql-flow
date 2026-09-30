@@ -62,6 +62,12 @@ type KafkaSink struct {
 	SecurityProtocol string     `yaml:"security_protocol,omitempty"`
 	SSL              *KafkaSSL  `yaml:"ssl,omitempty"`
 	SASL             *KafkaSASL `yaml:"sasl,omitempty"`
+	// A column of the handler's output. Its value, as text, becomes each
+	// record's key, so rows with the same value land on one partition: a
+	// retried event lands beside its original, where a window can
+	// deduplicate it. Absent, records carry no key. A row whose value is
+	// null fails the batch.
+	Key string `yaml:"key,omitempty"`
 }
 
 type ConsoleSink struct{}

@@ -475,6 +475,10 @@
                     "username",
                     "password"
                   ]
+                },
+                "key": {
+                  "type": "string",
+                  "description": "A column of the handler's output. Its value, as text, becomes each\nrecord's key, so rows with the same value land on one partition: a\nretried event lands beside its original, where a window can\ndeduplicate it. Absent, records carry no key. A row whose value is\nnull fails the batch."
                 }
               },
               "additionalProperties": false,
@@ -756,6 +760,10 @@
                         "username",
                         "password"
                       ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "A column of the handler's output. Its value, as text, becomes each\nrecord's key, so rows with the same value land on one partition: a\nretried event lands beside its original, where a window can\ndeduplicate it. Absent, records carry no key. A row whose value is\nnull fails the batch."
                     }
                   },
                   "additionalProperties": false,
@@ -1089,6 +1097,10 @@
                               "username",
                               "password"
                             ]
+                          },
+                          "key": {
+                            "type": "string",
+                            "description": "A column of the handler's output. Its value, as text, becomes each\nrecord's key, so rows with the same value land on one partition: a\nretried event lands beside its original, where a window can\ndeduplicate it. Absent, records carry no key. A row whose value is\nnull fails the batch."
                           }
                         },
                         "additionalProperties": false,

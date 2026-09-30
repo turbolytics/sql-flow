@@ -151,6 +151,12 @@ pipeline:
         mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
         username: <string>
         password: <string>
+      # A column of the handler's output. Its value, as text, becomes each
+      # record's key, so rows with the same value land on one partition: a
+      # retried event lands beside its original, where a window can
+      # deduplicate it. Absent, records carry no key. A row whose value is
+      # null fails the batch.
+      key: <string>
     # Console output sink configuration.
     console:
     # SQL-command sink configuration.
@@ -249,6 +255,12 @@ pipeline:
           mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
           username: <string>
           password: <string>
+        # A column of the handler's output. Its value, as text, becomes each
+        # record's key, so rows with the same value land on one partition: a
+        # retried event lands beside its original, where a window can
+        # deduplicate it. Absent, records carry no key. A row whose value is
+        # null fails the batch.
+        key: <string>
       # Console output sink configuration.
       console:
       # SQL-command sink configuration.
@@ -387,6 +399,12 @@ tables:
               mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
               username: <string>
               password: <string>
+            # A column of the handler's output. Its value, as text, becomes each
+            # record's key, so rows with the same value land on one partition: a
+            # retried event lands beside its original, where a window can
+            # deduplicate it. Absent, records carry no key. A row whose value is
+            # null fails the batch.
+            key: <string>
           # Console output sink configuration.
           console:
           # SQL-command sink configuration.
