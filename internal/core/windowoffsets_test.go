@@ -181,3 +181,22 @@ func TestReplayFloor_RoundTrip(t *testing.T) {
 	_, ok = DecodeReplayFloor(`{"closed":{}}`) // someone else's metadata
 	assert.That(t, !ok)
 }
+
+// Note runs per record on the consume loop. A fetch's records share a
+// partition and mostly a bucket, so the common case is one comparison.
+func BenchmarkWindowOffsetsNote(b *testing.B) {
+	o := NewWindowOffsets([]WindowSpec{minuteSpec})
+	msgs := make([]Message, 500)
+	for i := range msgs {
+		msgs[i] = msgAt(int32(i/100), int64(i), woT0.Add(time.Duration(i)*100*time.Millisecond))
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		o.Note(msgs[i%len(msgs)])
+		if i%len(msgs) == len(msgs)-1 {
+			o.Merge()
+			o.Saved()
+		}
+	}
+}

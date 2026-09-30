@@ -53,11 +53,25 @@ type WindowOffsetsDelta struct {
 // batch. Everything else runs on the consume loop too, between batches, so
 // nothing here takes a lock.
 type WindowOffsets struct {
-	specs  []WindowSpec
-	recs   map[offsetKey]Mark
-	batch  []OffsetRecord
+	specs []WindowSpec
+	recs  map[offsetKey]Mark
+	// batch is this batch's first sightings; last is the index of the one
+	// Note matched most recently. A fetch's records share a partition and
+	// mostly a bucket, so the last hit is usually the next one.
+	batch  []sighting
+	last   int
 	delta  WindowOffsetsDelta
 	closed map[string]time.Time
+}
+
+// sighting is a batch entry, with the bucket as nanoseconds so the per-record
+// comparison is an integer's.
+type sighting struct {
+	spec      int
+	bucket    int64
+	topic     string
+	partition int32
+	mark      Mark
 }
 
 func NewWindowOffsets(specs []WindowSpec) *WindowOffsets {
@@ -77,37 +91,48 @@ func (o *WindowOffsets) Note(m Message) {
 		return
 	}
 	at := time.Unix(0, m.EventAtNanos).UTC()
-	for _, spec := range o.specs {
-		bucket := BucketStart(at, spec.Size)
+	for si, spec := range o.specs {
+		bucket := BucketStart(at, spec.Size).UnixNano()
+		if o.last < len(o.batch) && o.batch[o.last].matches(si, bucket, m) {
+			continue
+		}
 		seen := false
 		for i := range o.batch {
-			r := &o.batch[i]
-			if r.Partition == m.Partition && r.Bucket.Equal(bucket) && r.Window == spec.Name && r.Topic == m.Topic {
+			if o.batch[i].matches(si, bucket, m) {
+				o.last = i
 				seen = true
 				break
 			}
 		}
 		if !seen {
-			o.batch = append(o.batch, OffsetRecord{
-				Window: spec.Name, Bucket: bucket, Topic: m.Topic, Partition: m.Partition,
-				Mark: Mark{Offset: m.Offset, LeaderEpoch: m.LeaderEpoch},
+			o.last = len(o.batch)
+			o.batch = append(o.batch, sighting{
+				spec: si, bucket: bucket, topic: m.Topic, partition: m.Partition,
+				mark: Mark{Offset: m.Offset, LeaderEpoch: m.LeaderEpoch},
 			})
 		}
 	}
 }
 
+func (s *sighting) matches(spec int, bucket int64, m Message) bool {
+	return s.partition == m.Partition && s.bucket == bucket && s.spec == spec && s.topic == m.Topic
+}
+
 // Merge folds the batch's sightings in. A key already held keeps its lower
 // offset. A new key is pending for the store until Saved.
 func (o *WindowOffsets) Merge() {
-	for _, r := range o.batch {
-		k := offsetKey{r.Window, r.Bucket.UnixNano(), r.Topic, r.Partition}
-		if cur, ok := o.recs[k]; ok && cur.Offset <= r.Mark.Offset {
+	for _, s := range o.batch {
+		k := offsetKey{o.specs[s.spec].Name, s.bucket, s.topic, s.partition}
+		if cur, ok := o.recs[k]; ok && cur.Offset <= s.mark.Offset {
 			continue
 		}
-		o.recs[k] = r.Mark
-		o.delta.Added = append(o.delta.Added, r)
+		o.recs[k] = s.mark
+		o.delta.Added = append(o.delta.Added, OffsetRecord{
+			Window: k.window, Bucket: time.Unix(0, s.bucket).UTC(), Topic: s.topic, Partition: s.partition, Mark: s.mark,
+		})
 	}
 	o.batch = o.batch[:0]
+	o.last = 0
 }
 
 // Expire drops the records of window's buckets past their lateness against

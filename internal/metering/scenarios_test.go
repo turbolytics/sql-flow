@@ -40,6 +40,10 @@ func TestIntegrationMetering_SteadyState(t *testing.T) {
 func TestIntegrationMetering_WorkerJoins(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	s := newStack(t, current)
+	// A reassigned partition must not be declared idle before its replay is
+	// placed, or the other partitions advance the watermark past its open
+	// minute and the replay is refused as late. See stack.idleClose.
+	s.idleClose = 20
 	events := workload(2, 200, 20, recent(8), 5*time.Minute)
 	half := len(events) / 2
 	s.startCount("count-0", "state-0")
@@ -59,6 +63,8 @@ func TestIntegrationMetering_WorkerJoins(t *testing.T) {
 func TestIntegrationMetering_WorkerLeaves(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
 	s := newStack(t, current)
+	// See scenario 2 and stack.idleClose.
+	s.idleClose = 20
 	events := workload(3, 200, 20, recent(8), 5*time.Minute)
 	half := len(events) / 2
 	w0 := s.startCount("count-0", "state-0")

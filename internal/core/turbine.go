@@ -1563,14 +1563,20 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// phase it lands in.
 		loopStart := time.Now()
 		var batchTook time.Duration
+		// Once per source batch, not per record: a drop is serviced between
+		// batches and the floors are taken here, so neither changes while
+		// this batch is walked, and an assignment that clears a revocation
+		// happens before the partition's records are polled.
 		t.takeFloors()
+		floors := len(t.replayFloors) > 0
+		revoked := t.revoked.Load()
+		skipRevoked := revoked != nil && len(*revoked) > 0
 
 		for _, raw := range msgBatch {
 			// Fetched before its partition was revoked, arriving after the
 			// rows were dropped. It is the new owner's now; neither written
 			// nor marked here.
-			if rv := t.revoked.Load(); rv != nil && len(*rv) > 0 &&
-				(*rv)[partitionKey{raw.Topic, raw.Partition}] {
+			if skipRevoked && (*revoked)[partitionKey{raw.Topic, raw.Partition}] {
 				continue
 			}
 			// A record whose event time this engine cannot place never
@@ -1608,7 +1614,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				// A partition replayed from the low watermark: what its last
 				// owner had closed past lateness stays closed, whatever this
 				// worker's own watermark has reached.
-				if len(t.replayFloors) > 0 && t.belowReplayFloor(raw) {
+				if floors && t.belowReplayFloor(raw) {
 					t.noteRefusedLate(ctx, raw)
 					t.mark(raw)
 					totalConsumed++

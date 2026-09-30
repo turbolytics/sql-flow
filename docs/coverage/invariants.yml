@@ -299,6 +299,43 @@ invariants:
     requires: []
     tracked_by: "#183"
 
+  # The three below hold on this branch and are verified by internal/metering,
+  # which runs real sqlflow processes against Kafka and Postgres, outside the
+  # conformance harness. They are declared and unenforced until a subject
+  # exists there.
+  - id: source.webhook.ack_after_flush
+    family: checkpoint
+    class: safety
+    applies_to: source
+    claim: >
+      With ack after_flush, a delivery answered 200 is in the sink: the answer
+      is sent after the batch holding it flushed and committed, and a failed
+      flush answers 503.
+    verified_by: harness
+    requires: []
+
+  - id: pipeline.window.replays_lost_state
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      A windowed Kafka pipeline commits no position past a row a retained
+      bucket holds, so a worker that starts without the rows rebuilds each
+      bucket whole from Kafka, and refuses what the previous owner finalized.
+    verified_by: harness
+    requires: []
+
+  - id: pipeline.window.partition_owned_single_writer
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      With partition_owned, a revoked partition's rows are deleted without
+      being published before the rebalance completes, so one process writes
+      each (bucket, partition) key.
+    verified_by: harness
+    requires: []
+
   # --- Types: per integration, from its declared table ---------------------
   - id: type.roundtrip
     family: types

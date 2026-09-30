@@ -141,6 +141,8 @@ type stack struct {
 	partitions int32
 	// idleClose is the count window's idle_close_seconds.
 	idleClose int
+	// lateness is the count window's allowed_lateness_seconds.
+	lateness int
 }
 
 func newStack(t *testing.T, f Features) *stack {
@@ -175,6 +177,7 @@ func newStack(t *testing.T, f Features) *stack {
 		features:   f,
 		partitions: 6,
 		idleClose:  5,
+		lateness:   60,
 	}
 	s.createTopic()
 	return s
@@ -308,8 +311,9 @@ func (s *stack) awaitExact(want map[totalKey]int64, timeout, settle time.Duratio
 			}
 			return
 		} else if time.Now().After(deadline) {
-			s.t.Fatalf("totals not exact after %s: %d keys differ\nby minute: %s\nfirst: %s\nworker logs: %s",
-				timeout, len(diff), strings.Join(byMinute(want, got), "; "), strings.Join(first(diff, 10), "; "), s.dir)
+			s.t.Fatalf("totals not exact after %s: %d keys differ\nby minute: %s\nby partition: %s\nfirst: %s\nworker logs: %s",
+				timeout, len(diff), strings.Join(byMinute(want, got), "; "), strings.Join(s.byPartition(), "; "),
+				strings.Join(first(diff, 10), "; "), s.dir)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -409,6 +413,34 @@ func diffTotals(want, got map[totalKey]int64) []string {
 	return out
 }
 
+// byPartition reads what each partition holds per minute in Postgres: rows
+// and the sum of the requests meter, which is one per event.
+func (s *stack) byPartition() []string {
+	s.t.Helper()
+	rows, err := s.pg.Query(context.Background(),
+		`SELECT minute, kafka_partition, count(*)::BIGINT, sum(quantity) FILTER (WHERE meter = 'requests')::BIGINT
+		 FROM usage_per_minute GROUP BY 1, 2 ORDER BY 1, 2`)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var minute time.Time
+		var part int32
+		var n, req *int64
+		if err := rows.Scan(&minute, &part, &n, &req); err != nil {
+			return append(out, err.Error())
+		}
+		r := int64(0)
+		if req != nil {
+			r = *req
+		}
+		out = append(out, fmt.Sprintf("%s p%d rows=%d requests=%d", minute.UTC().Format("15:04"), part, *n, r))
+	}
+	return out
+}
+
 // byMinute summarizes a mismatch per minute: keys that differ and the sums
 // wanted and got, so a loss reads as which minutes and how much.
 func byMinute(want, got map[totalKey]int64) []string {
@@ -473,7 +505,7 @@ tables:
         size_seconds: 60
         grace_seconds: 5
         idle_close_seconds: {{ .IdleClose }}
-        allowed_lateness_seconds: 60
+        allowed_lateness_seconds: {{ .Lateness }}
 {{- if .Features.PartitionOwned }}
         partition_owned: true
 {{- end }}
@@ -578,7 +610,7 @@ func (s *stack) startCount(name, state string) *worker {
 	s.t.Helper()
 	cfg := s.render(name, countConfig, map[string]any{
 		"DSN": s.dsn, "Group": s.group, "StatePath": filepath.Join(s.dir, state+".duckdb"),
-		"IdleClose": s.idleClose,
+		"IdleClose": s.idleClose, "Lateness": s.lateness,
 	})
 	return s.start(name, cfg)
 }
