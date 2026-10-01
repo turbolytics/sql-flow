@@ -232,6 +232,19 @@ func (c *Conf) CheckPartitionOwned() error {
 	if len(c.PartitionOwnedTables()) == 0 {
 		return nil
 	}
+	// Exact counts need every batch to land or the pipeline to stop. A
+	// continue-on-error policy drops a failed batch non-deterministically and
+	// leaves its offset records behind the rows it rolled back, so a fresh
+	// owner replaying them counts what the original dropped -- the count then
+	// depends on which worker saw the transient failure. RAISE (the default)
+	// stops instead.
+	if c.Pipeline.OnError != nil && c.Pipeline.OnError.Policy != "" &&
+		c.Pipeline.OnError.Policy != string(PolicyRaise) {
+		return errs.New(errs.CodeConfigInvalid,
+			"partition_owned needs on_error.policy RAISE (the default): an exact count cannot silently "+
+				"drop a failed batch, and a continue-on-error policy leaves its offset records behind the "+
+				"rows it rolled back, so the count stops being reproducible across workers")
+	}
 	for _, table := range c.Tables.SQL {
 		w := table.Window
 		if w == nil {
@@ -254,6 +267,12 @@ func (c *Conf) CheckPartitionOwned() error {
 			return errs.New(errs.CodeConfigInvalid,
 				"table %q window: partition_owned needs a postgres upsert sink with kafka_partition in "+
 					"its key, so the new owner's recount replaces the row the old owner wrote", table.Name)
+		}
+		if w.TimeColumn != "" && !slices.Contains(w.Sink.Postgres.Key, w.TimeColumn) {
+			return errs.New(errs.CodeConfigInvalid,
+				"table %q window: the upsert key must include the window's time_column %q. Without it the "+
+					"target's primary key collapses every bucket for a key into one row, so only the newest "+
+					"bucket survives -- a silent undercount", table.Name, w.TimeColumn)
 		}
 	}
 	return nil

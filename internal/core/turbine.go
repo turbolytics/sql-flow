@@ -872,7 +872,11 @@ func (t *Turbine) updateRevoked(parts map[string][]int32, revoked bool) {
 // consume loop has dropped the partitions, which holds the rebalance until
 // no process but the new owner can write their rows.
 func (t *Turbine) requestDrop(parts map[string][]int32) {
-	if t.dropper == nil {
+	// A plain windowed Kafka pipeline has no dropper but still commits the
+	// low watermark, so it must forget a revoked partition's marks; only a
+	// pipeline that neither owns partitions nor tracks window offsets has
+	// nothing to do here.
+	if t.dropper == nil && t.windowOffsets == nil {
 		return
 	}
 	req := dropRequest{parts: parts, done: make(chan error, 1)}
@@ -896,9 +900,16 @@ func (t *Turbine) requestDrop(parts map[string][]int32) {
 	}
 }
 
-// dropPartitions deletes revoked partitions' rows, offset records and stored
-// positions, and commits, holding every owned window's pass lock so no pass
-// publishes those rows meanwhile.
+// dropPartitions handles a revoked partition in two parts. For every windowed
+// Kafka pipeline it forgets the partition's marks, committed position, offset
+// records and replay floor, so the pipeline stops committing -- at the low
+// watermark, which is behind the processed position -- a partition the group
+// now gives to another member; without this a plain windowed pipeline rewinds
+// that member's offset and it double counts. Only a partition_owned pipeline
+// (dropper set) also deletes the window rows and stored offsets and commits
+// the deletion, under every owned window's pass lock so no pass publishes
+// those rows meanwhile; a plain pipeline leaves its rows for the manager to
+// publish and relies on the keyed upsert, as it did before this feature.
 func (t *Turbine) dropPartitions(ctx context.Context, parts map[string][]int32) error {
 	unlock := t.lockOwnedPasses()
 	defer unlock()
@@ -914,12 +925,14 @@ func (t *Turbine) dropPartitions(ctx context.Context, parts map[string][]int32) 
 		return err
 	}
 	for topic, ps := range parts {
-		if err := t.dropper.DropPartitions(ctx, topic, ps); err != nil {
-			return fail(err)
-		}
-		if del, ok := t.offsets.(offsetDeleter); ok {
-			if err := del.Delete(ctx, topic, ps); err != nil {
+		if t.dropper != nil {
+			if err := t.dropper.DropPartitions(ctx, topic, ps); err != nil {
 				return fail(err)
+			}
+			if del, ok := t.offsets.(offsetDeleter); ok {
+				if err := del.Delete(ctx, topic, ps); err != nil {
+					return fail(err)
+				}
 			}
 		}
 		if t.windowOffsets != nil {
@@ -930,6 +943,12 @@ func (t *Turbine) dropPartitions(ctx context.Context, parts map[string][]int32) 
 		for _, p := range ps {
 			delete(t.replayFloors, partitionKey{topic, p})
 		}
+	}
+	// Persist the deletion and commit it only when rows were deleted. A plain
+	// pipeline deleted nothing here; its forgotten offset records ride the
+	// next ordinary state commit, and forgetting marks is in memory.
+	if t.dropper == nil {
+		return nil
 	}
 	if t.windowOffsetStore != nil {
 		if err := t.windowOffsetStore.Save(ctx, t.windowOffsets.Pending()); err != nil {

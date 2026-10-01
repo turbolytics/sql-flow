@@ -1252,6 +1252,9 @@ type ownerSource struct {
 	// such a callback to return, so a callback that blocks on the consume
 	// loop stalls the whole shutdown.
 	revokeOnClose map[string][]int32
+
+	ownMu      sync.Mutex
+	ownCommits []*Marks
 }
 
 func newOwnerSource() *ownerSource { return &ownerSource{stream: make(chan []Message, 1)} }
@@ -1267,6 +1270,34 @@ func (s *ownerSource) Close() error {
 
 func (s *ownerSource) OnPartitions(a, r, l func(map[string][]int32)) {
 	s.assigned, s.released, s.lost = a, r, l
+}
+
+// CommitMarks records each commit under a lock, so a test can read the
+// commit history while the loop is still running. It shadows markingSource's
+// so ownerSource stays a plain MarkCommitter (not a MetadataCommitter).
+func (s *ownerSource) CommitMarks(m *Marks) error {
+	copied := NewMarks()
+	copied.Reset(m)
+	s.ownMu.Lock()
+	s.ownCommits = append(s.ownCommits, copied)
+	s.ownMu.Unlock()
+	return nil
+}
+
+func (s *ownerSource) commits() []*Marks {
+	s.ownMu.Lock()
+	defer s.ownMu.Unlock()
+	return append([]*Marks(nil), s.ownCommits...)
+}
+
+func (s *ownerSource) last(topic string, partition int32) (int64, int) {
+	s.ownMu.Lock()
+	defer s.ownMu.Unlock()
+	if len(s.ownCommits) == 0 {
+		return -1, 0
+	}
+	mk, _ := s.ownCommits[len(s.ownCommits)-1].Get(topic, partition)
+	return mk.Offset, len(s.ownCommits)
 }
 
 var ownedSpec = WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute, PartitionOwned: true}
@@ -1367,4 +1398,46 @@ func TestTurbine_RevocationDuringCloseDoesNotStallShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown stalled on a revocation delivered during Close")
 	}
+}
+
+// A windowed Kafka pipeline without partition_owned still commits the low
+// watermark, so it must stop committing a revoked partition the moment the
+// group takes it -- otherwise it rewinds, to a position behind the new
+// owner, a partition it no longer holds. No dropper here: nothing deletes
+// rows, but the marks must still be forgotten.
+func TestTurbine_WindowedCommitStopsForARevokedPartitionWithoutOwnership(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	src := newOwnerSource()
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	// WithWindowOffsets but no WithPartitionDropper: a plain windowed Kafka
+	// pipeline, which Task 5 gave the low-watermark commit.
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 1, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+
+	src.assigned(map[string][]int32{"t": {0, 1}})
+	src.stream <- []Message{{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.UnixNano()}}
+	src.stream <- []Message{{Topic: "t", Partition: 1, Offset: 20, EventAtNanos: woT0.UnixNano()}}
+	waitFor(t, "both partitions committed", 2*time.Second, func() bool {
+		if _, n := src.last("t", 1); n == 0 {
+			return false
+		}
+		off, _ := src.last("t", 1)
+		return off >= 0
+	})
+
+	src.released(map[string][]int32{"t": {1}}) // blocks until the loop forgets it
+	before := len(src.commits())
+	src.stream <- []Message{{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.UnixNano()}}
+	waitFor(t, "a commit after the release", 2*time.Second, func() bool { return len(src.commits()) > before })
+
+	last := src.commits()[len(src.commits())-1]
+	_, has1 := last.Get("t", 1)
+	_, has0 := last.Get("t", 0)
+	assert.That(t, !has1) // the revoked partition is no longer committed
+	assert.That(t, has0)  // the held one still is
+	cancel()
+	<-done
 }
