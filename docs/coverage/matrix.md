@@ -26,7 +26,7 @@ added, and this page changes only when a status does.
 | Feature | What it does | unit | integration | growth | release |
 | --- | --- | --- | --- | --- | --- |
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | — | ✅ |
-| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | — |
+| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | ✅ | — | — |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | ✅ | — | ✅ |
 | `source.mqtt` | Consumes MQTT 5 at QoS 1 on a persistent session, acknowledging on commit. | ✅ | ✅ | — | — |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | — | ✅ |

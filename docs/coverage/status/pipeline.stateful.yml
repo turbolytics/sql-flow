@@ -14,4 +14,6 @@ pipeline.shutdown.commits_only_delivered: {unit: covered, integration: missing, 
 pipeline.state.with_offsets: {unit: covered, integration: missing, growth: missing, release: missing}
 pipeline.window.counts_every_row: {unit: missing, integration: missing, growth: missing, release: missing}
 pipeline.window.lateness_decided_at_arrival: {unit: missing, integration: missing, growth: missing, release: missing}
+pipeline.window.partition_owned_single_writer: {unit: missing, integration: missing, growth: missing, release: missing}
+pipeline.window.replays_lost_state: {unit: missing, integration: missing, growth: missing, release: missing}
 pipeline.writers.merge_exactly: {unit: missing, integration: missing, growth: missing, release: missing}
