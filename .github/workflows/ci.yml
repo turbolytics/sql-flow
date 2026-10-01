@@ -81,6 +81,12 @@ jobs:
     env:
       SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
       GOTOOLCHAIN: local
+      # The metering scenarios (internal/metering) run real sqlflow processes
+      # against Kafka and Postgres; the full set is ~15 minutes, past the
+      # default 600s per-package timeout. Like the growth tier, the length
+      # follows the ref: a branch runs the core subset (~5 minutes), main and
+      # every release run the full suite. -timeout below covers the full run.
+      SQLFLOW_METERING: ${{ github.ref == 'refs/heads/main' && 'full' || 'bounded' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +102,7 @@ jobs:
         run: |
           mkdir -p .coverage
           set -o pipefail
-          go test -json -run '^TestIntegration' ./... | tee .coverage/go-integration.json
+          go test -json -timeout 30m -run '^TestIntegration' ./... | tee .coverage/go-integration.json
 
       - name: Upload the integration report
         if: always()

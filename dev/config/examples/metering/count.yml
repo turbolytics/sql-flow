@@ -1,0 +1,102 @@
+# Usage metering, step two: exact per-minute totals per customer and meter in
+# Postgres, from the topic ingest.yml fills. Run as many copies as the topic
+# has partitions; they share the consumer group, and partition_owned keeps
+# each (minute, customer, meter, kafka_partition) row to one writer.
+tables:
+  sql:
+    - name: usage_window
+      # No index, on purpose: DuckDB never frees rows deleted from an indexed
+      # table, and every published bucket is deleted (#268). Each event is
+      # one row; emit_sql sums per key over distinct ids.
+      #
+      # id_hash is md5_number(id), a fixed 16 bytes per row whatever the id's
+      # length, and deterministic, so a replay counts the same. Two ids
+      # colliding in one minute is a chance of about 1e-25.
+      sql: |
+        CREATE TABLE IF NOT EXISTS usage_window (
+          minute TIMESTAMPTZ,
+          customer TEXT,
+          meter TEXT,
+          kafka_partition INTEGER,
+          id_hash UHUGEINT,
+          quantity BIGINT
+        );
+      window:
+        time_column: minute
+        size_seconds: 60
+        # A minute closes 5s after the stream's clock passes its end, and
+        # after 5s of quiet on every partition.
+        grace_seconds: 5
+        idle_close_seconds: 5
+        # A closed minute's rows are kept 60s more. An event for it that
+        # arrives in that time is counted and the minute republished whole,
+        # so a retry is deduplicated within size + grace + lateness: 125s.
+        # A retry later than that counts twice; keep the client's retry
+        # budget inside it.
+        allowed_lateness_seconds: 60
+        # Every row belongs to the Kafka partition in kafka_partition. When
+        # the group moves a partition to another worker, this one deletes
+        # the partition's rows before the rebalance completes rather than
+        # publishing its partial count, and the new owner recounts them from
+        # the committed position. Without it, both would write the same key.
+        # A restart recounts the open minutes from Kafka the same way.
+        partition_owned: true
+        # Sum each meter over distinct events. A duplicate id in the minute
+        # contributes its quantity once.
+        emit_sql: |
+          SELECT minute, customer, meter, kafka_partition, sum(quantity)::BIGINT AS quantity
+          FROM (
+            SELECT minute, customer, meter, kafka_partition, id_hash, any_value(quantity) AS quantity
+            FROM closed
+            GROUP BY ALL
+          )
+          GROUP BY ALL
+        sink:
+          # Replaces the row for the key, so a republished minute lands as its
+          # whole value. The table needs PRIMARY KEY (minute, customer, meter,
+          # kafka_partition). Readers sum over kafka_partition.
+          type: postgres
+          postgres:
+            dsn: "{{ SQLFLOW_POSTGRES_URI|default('postgresql://postgres:postgres@sqlflow-postgres:5432/postgres') }}"
+            table: usage_per_minute
+            mode: upsert
+            key: [minute, customer, meter, kafka_partition]
+
+pipeline:
+  name: metering-count
+  batch_size: 500
+  flush_interval_seconds: 1
+  # Kafka is the durable copy of the open minutes: the pipeline commits each
+  # partition's position before the oldest row a retained minute holds, so
+  # a worker that starts without this file rebuilds them from the log. The
+  # file keeps the closed watermark and the progress row.
+  state:
+    path: /var/lib/sqlflow/count.duckdb
+
+  source:
+    type: kafka
+    kafka:
+      brokers: ["{{ SQLFLOW_KAFKA_BROKERS|default('kafka:9092') }}"]
+      group_id: metering-count
+      auto_offset_reset: earliest
+      topics: ["usage.events"]
+      # The event's own time, from the SDK's clock, is what buckets it.
+      event_time:
+        path: ts_ms
+        format: unix_ms
+
+  handler:
+    type: handlers.InferredMemBatch
+    sql: |
+      INSERT INTO usage_window
+      SELECT
+        time_bucket(INTERVAL '60 seconds', event_time) AS minute,
+        customer,
+        meter,
+        kafka_partition,
+        md5_number(id) AS id_hash,
+        quantity
+      FROM batch
+
+  sink:
+    type: noop

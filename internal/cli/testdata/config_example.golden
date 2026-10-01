@@ -93,6 +93,12 @@ pipeline:
         # Format is the value's encoding. The unix_* forms take an integer,
         # or a string holding one; rfc3339 takes a string.
         format: unix_s | unix_ms | unix_us | unix_ns | rfc3339
+      # When a delivery is answered. on_receive, the default, answers once the
+      # body is queued. after_flush answers once the batch holding it has
+      # flushed to the sink, so a 200 means the body is in the sink; a failed
+      # flush answers 503. after_flush is refused on a pipeline that windows:
+      # a window holds a row for minutes, and a request cannot wait that long.
+      ack: on_receive | after_flush
     mqtt:
       # The broker URL, tcp:// or mqtt://. TLS is not supported yet.
       broker: <string>
@@ -151,6 +157,12 @@ pipeline:
         mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
         username: <string>
         password: <string>
+      # A column of the handler's output. Its value, as text, becomes each
+      # record's key, so rows with the same value land on one partition: a
+      # retried event lands beside its original, where a window can
+      # deduplicate it. Absent, records carry no key. A row whose value is
+      # null fails the batch.
+      key: <string>
     # Console output sink configuration.
     console:
     # SQL-command sink configuration.
@@ -249,6 +261,12 @@ pipeline:
           mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
           username: <string>
           password: <string>
+        # A column of the handler's output. Its value, as text, becomes each
+        # record's key, so rows with the same value land on one partition: a
+        # retried event lands beside its original, where a window can
+        # deduplicate it. Absent, records carry no key. A row whose value is
+        # null fails the batch.
+        key: <string>
       # Console output sink configuration.
       console:
       # SQL-command sink configuration.
@@ -387,6 +405,12 @@ tables:
               mechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI
               username: <string>
               password: <string>
+            # A column of the handler's output. Its value, as text, becomes each
+            # record's key, so rows with the same value land on one partition: a
+            # retried event lands beside its original, where a window can
+            # deduplicate it. Absent, records carry no key. A row whose value is
+            # null fails the batch.
+            key: <string>
           # Console output sink configuration.
           console:
           # SQL-command sink configuration.
@@ -437,6 +461,17 @@ tables:
             # pipeline.flush_interval_seconds: the retry runs inside the open state
             # transaction, whose clock the window depends on.
             deadline_seconds: <integer>
+        # Every row of this window belongs to one Kafka partition, carried in a
+        # kafka_partition column. When the group revokes a partition, its rows
+        # are deleted without being published, and the new owner recounts them
+        # from the committed offset, so one process writes each (bucket,
+        # partition) key. This is what makes a count exact across several
+        # workers in one consumer group. Requires a Kafka source with one topic,
+        # kafka_partition in the window table and written by the handler, and a
+        # postgres upsert sink with kafka_partition in its key. Every window in
+        # the pipeline must set it. A restart recounts the open buckets from
+        # Kafka rather than resuming from the state file.
+        partition_owned: <boolean>
 # List of User-Defined Functions (UDFs) to be used in SQL queries.
 udfs:
   -

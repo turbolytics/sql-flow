@@ -46,9 +46,103 @@ func windowSpecs(conf *config.Conf) []core.WindowSpec {
 		d := windowDeclaration(table)
 		specs = append(specs, core.WindowSpec{
 			Name: d.Table, Size: d.Size, Grace: d.Grace, IdleClose: d.IdleClose, Lateness: d.Lateness,
+			PartitionOwned: table.Window.PartitionOwned,
 		})
 	}
 	return specs
+}
+
+// partitionOwnedOptions is run's wiring of partition_owned windows: a
+// dropper over the owned tables, so a revoked partition's rows are deleted
+// rather than published. Nothing for a pipeline with no owned window.
+//
+// It also empties what a previous run left: the owned rows and, with a
+// state path, the stored positions and the offset records. A partition_owned
+// pipeline recounts each partition it is assigned from the group's committed
+// position. What the state file holds may describe partitions another member
+// has consumed since, and the start pass would publish it. Call this under
+// autocommit, after the window tables exist and before anything loads the
+// stored positions.
+func partitionOwnedOptions(ctx context.Context, conf *config.Conf, conn adbc.Connection, durable bool) ([]core.TurbineOption, error) {
+	owned := conf.PartitionOwnedTables()
+	if len(owned) == 0 {
+		return nil, nil
+	}
+	// Checked before anything is deleted: a config this refuses has lost
+	// nothing.
+	if err := conf.CheckPartitionOwned(); err != nil {
+		return nil, err
+	}
+	dropper := core.NewDuckDBPartitionDropper(conn, owned)
+	if err := dropper.DropAll(ctx); err != nil {
+		return nil, errs.Wrap(errs.CodeStateInternal, err, "emptying partition_owned windows at start")
+	}
+	if durable {
+		offsets := core.NewOffsetStore(conn)
+		if err := offsets.Init(ctx); err != nil {
+			return nil, err
+		}
+		if err := offsets.Clear(ctx); err != nil {
+			return nil, errs.Wrap(errs.CodeStateInternal, err, "clearing stored positions at start")
+		}
+		records := core.NewWindowOffsetStore(conn, windowSpecs(conf))
+		if err := records.Init(ctx); err != nil {
+			return nil, err
+		}
+		if err := records.Clear(ctx); err != nil {
+			return nil, errs.Wrap(errs.CodeStateInternal, err, "clearing offset records at start")
+		}
+		// And the window watermarks: the asserted one would refuse the
+		// recount's replayed records as late, and the closed one would tell
+		// the manager those buckets were already published. Init first, as
+		// the stores above do, so this holds whatever ran before it.
+		watermarks := core.NewWatermarkStore(conn)
+		if err := watermarks.Init(ctx); err != nil {
+			return nil, err
+		}
+		if err := watermarks.Clear(ctx); err != nil {
+			return nil, errs.Wrap(errs.CodeStateInternal, err, "clearing window watermarks at start")
+		}
+		closed := managers.NewStore(conn)
+		if err := closed.Init(ctx); err != nil {
+			return nil, err
+		}
+		if err := closed.Clear(ctx); err != nil {
+			return nil, errs.Wrap(errs.CodeStateInternal, err, "clearing closed watermarks at start")
+		}
+	}
+	return []core.TurbineOption{core.WithPartitionDropper(dropper)}, nil
+}
+
+// windowOffsetOptions is run's wiring of the low-watermark commit: a
+// pipeline that windows over Kafka commits, per partition, the position
+// before the lowest offset still feeding a retained bucket, so a worker that
+// starts without the window's rows replays them from the log. Nothing for
+// any other pipeline.
+//
+// durable is whether there is a state path. With one, the records are kept
+// in the state file beside the rows they describe and read back here; call
+// this under autocommit, before the state branch turns it off. Without one
+// the tracker still holds the commit back, and every start replays.
+func windowOffsetOptions(ctx context.Context, conf *config.Conf, conn adbc.Connection, durable bool) ([]core.TurbineOption, error) {
+	if !conf.HasWindow() || conf.Pipeline.Source.Type != "kafka" {
+		return nil, nil
+	}
+	specs := windowSpecs(conf)
+	tracker := core.NewWindowOffsets(specs)
+	var store *core.WindowOffsetStore
+	if durable {
+		store = core.NewWindowOffsetStore(conn, specs)
+		if err := store.Init(ctx); err != nil {
+			return nil, err
+		}
+		stored, err := store.Load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		tracker.Load(stored)
+	}
+	return []core.TurbineOption{core.WithWindowOffsets(tracker, store)}, nil
 }
 
 // windowOptions is run's wiring of the watermark: the tracker the engine

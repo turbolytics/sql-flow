@@ -255,6 +255,13 @@ func (w *Watermark) StartPass(ctx context.Context) error {
 // this manager has always made; with lateness they stay until the watermark
 // passes their end plus it.
 func (w *Watermark) Pass(ctx context.Context) (err error) {
+	// Held for the whole pass: a partition the group revokes has its rows
+	// deleted under this lock, so a pass either publishes before the delete
+	// or never sees them.
+	if w.signal != nil {
+		w.signal.LockPass()
+		defer w.signal.UnlockPass()
+	}
 	committed := false
 	// What the close lag needs, filled in as the pass learns it. Recorded in
 	// the defer so a pass that fails after reading the assertion still
@@ -292,6 +299,11 @@ func (w *Watermark) Pass(ctx context.Context) (err error) {
 	}
 	if hadClosed {
 		settled, settledKnown = closed, true
+		// Said on every pass, so an engine that started after the last
+		// close still learns it.
+		if w.signal != nil {
+			w.signal.SetClosed(closed)
+		}
 	}
 
 	// The one fact: what the engine has asserted.
@@ -417,6 +429,12 @@ func (w *Watermark) Pass(ctx context.Context) (err error) {
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "committing the pass")
 	}
 	committed = true
+	// Only now: the engine lets its source commit pass a bucket's rows once
+	// it hears the bucket is closed past its lateness, and that must not
+	// happen before the publish and the purge are durable.
+	if w.signal != nil {
+		w.signal.SetClosed(watermark)
+	}
 	w.republishRetained = false
 	settled, settledKnown = watermark, true
 	w.metrics.Watermark.Record(ctx, watermark.Unix(), w.attrs)

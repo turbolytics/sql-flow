@@ -136,3 +136,14 @@ func TestStateOffsets_MarksResetCopiesExactlyAndMayRewind(t *testing.T) {
 	live.Reset(NewMarks())
 	assert.That(t, live.Empty())
 }
+
+func TestMarks_Forget(t *testing.T) {
+	m := NewMarks()
+	m.Advance("t", 0, Mark{Offset: 1})
+	m.Advance("t", 1, Mark{Offset: 2})
+	m.Forget("t", []int32{1, 7})
+	_, ok := m.Get("t", 1)
+	assert.That(t, !ok)
+	_, ok = m.Get("t", 0)
+	assert.That(t, ok)
+}

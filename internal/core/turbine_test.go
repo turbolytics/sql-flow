@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -968,4 +969,475 @@ func BenchmarkMark(b *testing.B) {
 		msg.Offset = int64(i)
 		tb.mark(msg)
 	}
+}
+
+// settlingSource records every Settle call.
+type settlingSource struct {
+	fakeSource
+	mu      sync.Mutex
+	settles []settleCall
+}
+
+type settleCall struct {
+	n   int
+	err error
+}
+
+func (s *settlingSource) Settle(n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settles = append(s.settles, settleCall{n, err})
+}
+
+func (s *settlingSource) calls() []settleCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]settleCall(nil), s.settles...)
+}
+
+// A batch is settled after its flush and its commits, once, with the number
+// of messages it took from the stream.
+func TestTurbine_SettlesAfterTheFlush(t *testing.T) {
+	src := &settlingSource{fakeSource: fakeSource{batches: [][]Message{
+		{{Value: []byte("a")}}, {{Value: []byte("b")}}, {{Value: []byte("c")}},
+	}}}
+	events := []string{}
+	sink := &orderingSink{events: &events}
+	tb := newTestTurbine(src, &fakeHandler{}, sink, 3)
+	_, err := tb.ConsumeLoop(context.Background(), 3)
+	assert.NoError(t, err)
+	assert.Equal(t, []settleCall{{3, nil}}, src.calls())
+	assert.Equal(t, "flush", events[len(events)-1])
+}
+
+// A flush that fails settles the batch with the error, so the sender
+// hears 503 and retries.
+func TestTurbine_SettlesAFailedFlushWithItsError(t *testing.T) {
+	src := &settlingSource{fakeSource: fakeSource{batches: [][]Message{{{Value: []byte("a")}}}}}
+	events := []string{}
+	sink := &orderingSink{events: &events, fail: true}
+	tb := newTestTurbine(src, &fakeHandler{}, sink, 1)
+	_, err := tb.ConsumeLoop(context.Background(), 1)
+	assert.Error(t, err)
+	calls := src.calls()
+	assert.Equal(t, 1, len(calls))
+	assert.Equal(t, 1, calls[0].n)
+	assert.Error(t, calls[0].err)
+}
+
+// Messages the loop never reached are never settled. Close answers them.
+func TestTurbine_DoesNotSettleWhatItNeverTook(t *testing.T) {
+	src := &settlingSource{fakeSource: fakeSource{batches: [][]Message{
+		{{Value: []byte("a")}, {Value: []byte("b")}, {Value: []byte("c")}},
+	}}}
+	events := []string{}
+	tb := newTestTurbine(src, &fakeHandler{}, &orderingSink{events: &events}, 10)
+	_, err := tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+	assert.Equal(t, []settleCall{{2, nil}}, src.calls())
+}
+
+// With windows over a Kafka-like source, the committed position is the low
+// watermark, not the processed one.
+func TestTurbine_CommitsTheLowWatermark(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	src := &markingSource{fakeSource: fakeSource{batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.UnixNano()},
+		{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.Add(70 * time.Second).UnixNano()},
+	}}}}
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 2, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	_, err := tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+	last := src.marks[len(src.marks)-1]
+	m, _ := last.Get("t", 0)
+	assert.Equal(t, int64(9), m.Offset)
+}
+
+// Once the manager reports a closed watermark past a bucket's lateness, the
+// next commit moves past that bucket's rows.
+func TestTurbine_CommitMovesWhenTheManagerCloses(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	w.Signal("w").SetClosed(woT0.Add(2 * time.Minute))
+	src := &markingSource{fakeSource: fakeSource{batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.UnixNano()},
+		{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.Add(150 * time.Second).UnixNano()},
+	}}}}
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 2, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	_, err := tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+	m, _ := src.marks[len(src.marks)-1].Get("t", 0)
+	assert.Equal(t, int64(10), m.Offset)
+}
+
+// newWindowedTurbine builds a turbine over windows, with every option applied
+// at construction so watchSource and the subscriptions see them.
+func newWindowedTurbine(src Source, h Handler, sink Sink, batch int, w *Watermarks, opts ...TurbineOption) *Turbine {
+	opts = append([]TurbineOption{WithWindows(w, &benchSaver{})}, opts...)
+	return NewTurbine(src, h, sink, batch, time.Second, &sync.Mutex{}, PipelineErrorPolicies{}, opts...)
+}
+
+// heldSource delivers its batches and then stays open until released, and
+// records each commit, so a test can drive idle ticks after a batch.
+type heldSource struct {
+	batches [][]Message
+	release chan struct{}
+	mu      sync.Mutex
+	marks   []*Marks
+}
+
+func (h *heldSource) Start() error { return nil }
+func (h *heldSource) Stream() <-chan []Message {
+	ch := make(chan []Message, len(h.batches))
+	for _, b := range h.batches {
+		ch <- b
+	}
+	go func() { <-h.release; close(ch) }()
+	return ch
+}
+func (h *heldSource) Commit() error { return nil }
+func (h *heldSource) Close() error  { return nil }
+func (h *heldSource) CommitMarks(marks *Marks) error {
+	copied := NewMarks()
+	copied.Reset(marks)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.marks = append(h.marks, copied)
+	return nil
+}
+func (h *heldSource) last(topic string, partition int32) (int64, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.marks) == 0 {
+		return -1, 0
+	}
+	m, _ := h.marks[len(h.marks)-1].Get(topic, partition)
+	return m.Offset, len(h.marks)
+}
+
+// A stream that goes quiet still closes its windows, and the commit must
+// follow them: otherwise the group's offset stays behind rows that were
+// published and purged long ago, and a restart replays them for nothing.
+func TestTurbine_AnIdleTickCommitsWhenTheLowWatermarkMoved(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	src := &heldSource{release: make(chan struct{}), batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.UnixNano()},
+		{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.Add(70 * time.Second).UnixNano()},
+	}}}
+	tick := make(chan time.Time)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 2, w,
+		WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil), WithFlushTrigger(tick))
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(context.Background(), 0); close(done) }()
+
+	waitFor(t, "the batch's commit", time.Second, func() bool { _, n := src.last("t", 0); return n == 1 })
+	off, _ := src.last("t", 0)
+	assert.Equal(t, int64(9), off)
+
+	// A tick with nothing closed commits nothing.
+	tick <- time.Now()
+	tick <- time.Now()
+	_, n := src.last("t", 0)
+	assert.Equal(t, 1, n)
+
+	// The manager closes the first bucket past its lateness.
+	w.Signal("w").SetClosed(woT0.Add(2 * time.Minute))
+	tick <- time.Now()
+	waitFor(t, "the idle commit", time.Second, func() bool { _, n := src.last("t", 0); return n == 2 })
+	off, _ = src.last("t", 0)
+	assert.Equal(t, int64(10), off)
+
+	close(src.release)
+	<-done
+}
+
+// metadataSource reports committed metadata for a partition on assignment,
+// as the Kafka source does from the offset fetch.
+type metadataSource struct {
+	markingSource
+	fn   func(string, int32, string)
+	meta string
+}
+
+func (s *metadataSource) CommitMarksWithMetadata(m *Marks, meta string) error {
+	s.meta = meta
+	return s.CommitMarks(m)
+}
+func (s *metadataSource) OnCommittedMetadata(fn func(string, int32, string)) { s.fn = fn }
+
+// A worker replaying a partition it has no state for refuses a record the
+// previous owner had finalized: its bucket ended at or before closed minus
+// lateness.
+func TestTurbine_RefusesBelowTheReplayFloor(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	src := &metadataSource{markingSource: markingSource{fakeSource: fakeSource{batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.Add(10 * time.Second).UnixNano(), Value: []byte("old")},
+		{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.Add(5 * time.Minute).UnixNano(), Value: []byte("new")},
+	}}}}}
+	h := &recordingHandler{}
+	tb := newWindowedTurbine(src, h, &fakeSink{}, 2, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	// The previous owner had closed through 12:03; bucket 12:00 expired at 12:02.
+	src.fn("t", 0, EncodeReplayFloor(map[string]time.Time{"w": woT0.Add(3 * time.Minute)}))
+	_, err := tb.ConsumeLoop(context.Background(), 2)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"new"}, h.values())
+}
+
+// The commit carries this worker's closed watermarks.
+func TestTurbine_CommitCarriesTheClosedWatermarks(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	w.Signal("w").SetClosed(woT0)
+	src := &metadataSource{markingSource: markingSource{fakeSource: fakeSource{batches: [][]Message{{
+		{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.Add(5 * time.Minute).UnixNano()},
+	}}}}}
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 1, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	_, err := tb.ConsumeLoop(context.Background(), 1)
+	assert.NoError(t, err)
+	got, ok := DecodeReplayFloor(src.meta)
+	assert.That(t, ok)
+	assert.That(t, got["w"].Equal(woT0))
+}
+
+type recordingHandler struct {
+	fakeHandler
+	mu   sync.Mutex
+	vals []string
+}
+
+func (h *recordingHandler) Write(b []byte) error {
+	h.mu.Lock()
+	h.vals = append(h.vals, string(b))
+	h.mu.Unlock()
+	return h.fakeHandler.Write(b)
+}
+
+func (h *recordingHandler) values() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.vals...)
+}
+
+// recordingDropper records drops, in order.
+type recordingDropper struct {
+	mu    sync.Mutex
+	drops []string
+}
+
+func (d *recordingDropper) DropPartitions(_ context.Context, topic string, ps []int32) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.drops = append(d.drops, fmt.Sprintf("%s%v", topic, ps))
+	return nil
+}
+
+func (d *recordingDropper) DropAll(context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.drops = append(d.drops, "all")
+	return nil
+}
+
+// ownerSource is a markingSource that reports partitions, lets the test
+// revoke them, and delivers what the test puts on its stream.
+type ownerSource struct {
+	markingSource
+	stream                   chan []Message
+	assigned, released, lost func(map[string][]int32)
+	// revokeOnClose makes Close deliver a revocation, as the group does when
+	// this worker leaves while another joins. franz-go's Close waits for
+	// such a callback to return, so a callback that blocks on the consume
+	// loop stalls the whole shutdown.
+	revokeOnClose map[string][]int32
+
+	ownMu      sync.Mutex
+	ownCommits []*Marks
+}
+
+func newOwnerSource() *ownerSource { return &ownerSource{stream: make(chan []Message, 1)} }
+
+func (s *ownerSource) Stream() <-chan []Message { return s.stream }
+
+func (s *ownerSource) Close() error {
+	if s.revokeOnClose != nil && s.released != nil {
+		s.released(s.revokeOnClose)
+	}
+	return s.markingSource.Close()
+}
+
+func (s *ownerSource) OnPartitions(a, r, l func(map[string][]int32)) {
+	s.assigned, s.released, s.lost = a, r, l
+}
+
+// CommitMarks records each commit under a lock, so a test can read the
+// commit history while the loop is still running. It shadows markingSource's
+// so ownerSource stays a plain MarkCommitter (not a MetadataCommitter).
+func (s *ownerSource) CommitMarks(m *Marks) error {
+	copied := NewMarks()
+	copied.Reset(m)
+	s.ownMu.Lock()
+	s.ownCommits = append(s.ownCommits, copied)
+	s.ownMu.Unlock()
+	return nil
+}
+
+func (s *ownerSource) commits() []*Marks {
+	s.ownMu.Lock()
+	defer s.ownMu.Unlock()
+	return append([]*Marks(nil), s.ownCommits...)
+}
+
+func (s *ownerSource) last(topic string, partition int32) (int64, int) {
+	s.ownMu.Lock()
+	defer s.ownMu.Unlock()
+	if len(s.ownCommits) == 0 {
+		return -1, 0
+	}
+	mk, _ := s.ownCommits[len(s.ownCommits)-1].Get(topic, partition)
+	return mk.Offset, len(s.ownCommits)
+}
+
+var ownedSpec = WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute, PartitionOwned: true}
+
+// A revocation deletes the partition's rows before the tracker releases it,
+// and the callback returns only after the delete.
+func TestTurbine_RevocationDropsBeforeRelease(t *testing.T) {
+	src := newOwnerSource()
+	d := &recordingDropper{}
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 100, w, WithPartitionDropper(d))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0) }()
+
+	src.assigned(map[string][]int32{"t": {0, 1}})
+	src.released(map[string][]int32{"t": {1}}) // blocks until dropped
+	d.mu.Lock()
+	assert.Equal(t, []string{"t[1]"}, d.drops)
+	d.mu.Unlock()
+}
+
+// A record prefetched from a partition before its revocation is skipped
+// when it arrives: its rows would otherwise re-enter the window.
+func TestTurbine_SkipsRecordsFromADroppedPartition(t *testing.T) {
+	src := newOwnerSource()
+	h := &recordingHandler{}
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, h, &fakeSink{}, 1, w, WithPartitionDropper(&recordingDropper{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+
+	src.assigned(map[string][]int32{"t": {0, 1}})
+	src.released(map[string][]int32{"t": {1}})
+	src.stream <- []Message{
+		{Topic: "t", Partition: 1, Offset: 5, EventAtNanos: woT0.UnixNano(), Value: []byte("stale")},
+		{Topic: "t", Partition: 0, Offset: 9, EventAtNanos: woT0.UnixNano(), Value: []byte("ours")},
+	}
+	waitFor(t, "the handler to take the owned record", time.Second, func() bool { return len(h.values()) == 1 })
+	assert.Equal(t, []string{"ours"}, h.values())
+	cancel()
+	<-done
+}
+
+// A worker that stops must publish nothing more for partitions another
+// member is about to recount: its rows go before the source leaves the group.
+func TestTurbine_LeavingDropsEveryOwnedRowBeforeTheSourceCloses(t *testing.T) {
+	src := newOwnerSource()
+	d := &recordingDropper{}
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 100, w, WithPartitionDropper(d))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+	src.assigned(map[string][]int32{"t": {0}})
+	cancel()
+	<-done
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	assert.Equal(t, []string{"all"}, d.drops)
+}
+
+// A revocation that arrives after the loop has gone does not wait for it.
+func TestTurbine_RevocationAfterTheLoopReturnsDoesNotBlock(t *testing.T) {
+	src := newOwnerSource()
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 100, w, WithPartitionDropper(&recordingDropper{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = tb.ConsumeLoop(ctx, 0)
+	returned := make(chan struct{})
+	go func() { src.released(map[string][]int32{"t": {0}}); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a revocation blocked on a consume loop that had returned")
+	}
+}
+
+// A revocation delivered as the source leaves its group -- another member
+// joining during the drain -- must not wait on the consume loop, which has
+// already returned. dropAllOwned has deleted the rows, so the late request
+// is answered at once rather than stalling the shutdown for dropWait.
+func TestTurbine_RevocationDuringCloseDoesNotStallShutdown(t *testing.T) {
+	src := newOwnerSource()
+	src.revokeOnClose = map[string][]int32{"t": {0}}
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 100, w, WithPartitionDropper(&recordingDropper{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	src.assigned(map[string][]int32{"t": {0}})
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown stalled on a revocation delivered during Close")
+	}
+}
+
+// A windowed Kafka pipeline without partition_owned still commits the low
+// watermark, so it must stop committing a revoked partition the moment the
+// group takes it -- otherwise it rewinds, to a position behind the new
+// owner, a partition it no longer holds. No dropper here: nothing deletes
+// rows, but the marks must still be forgotten.
+func TestTurbine_WindowedCommitStopsForARevokedPartitionWithoutOwnership(t *testing.T) {
+	spec := WindowSpec{Name: "w", Size: time.Minute, Lateness: time.Minute}
+	src := newOwnerSource()
+	w := NewWatermarks([]WindowSpec{spec}, nil)
+	// WithWindowOffsets but no WithPartitionDropper: a plain windowed Kafka
+	// pipeline, which Task 5 gave the low-watermark commit.
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 1, w, WithWindowOffsets(NewWindowOffsets([]WindowSpec{spec}), nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+
+	src.assigned(map[string][]int32{"t": {0, 1}})
+	src.stream <- []Message{{Topic: "t", Partition: 0, Offset: 10, EventAtNanos: woT0.UnixNano()}}
+	src.stream <- []Message{{Topic: "t", Partition: 1, Offset: 20, EventAtNanos: woT0.UnixNano()}}
+	waitFor(t, "both partitions committed", 2*time.Second, func() bool {
+		if _, n := src.last("t", 1); n == 0 {
+			return false
+		}
+		off, _ := src.last("t", 1)
+		return off >= 0
+	})
+
+	src.released(map[string][]int32{"t": {1}}) // blocks until the loop forgets it
+	before := len(src.commits())
+	src.stream <- []Message{{Topic: "t", Partition: 0, Offset: 11, EventAtNanos: woT0.UnixNano()}}
+	waitFor(t, "a commit after the release", 2*time.Second, func() bool { return len(src.commits()) > before })
+
+	last := src.commits()[len(src.commits())-1]
+	_, has1 := last.Get("t", 1)
+	_, has0 := last.Get("t", 0)
+	assert.That(t, !has1) // the revoked partition is no longer committed
+	assert.That(t, has0)  // the held one still is
+	cancel()
+	<-done
 }

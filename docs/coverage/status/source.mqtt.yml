@@ -4,3 +4,4 @@ source.commit.on_revoke: {unit: exempt, integration: exempt, growth: exempt, rel
 source.commit.only_processed: {unit: covered, integration: covered, growth: missing, release: missing}
 source.marks.never_regress: {unit: covered, integration: missing, growth: missing, release: missing}
 source.resume.from_committed: {unit: skipped, integration: covered, growth: missing, release: missing}
+source.webhook.ack_after_flush: {unit: missing, integration: missing, growth: missing, release: missing}

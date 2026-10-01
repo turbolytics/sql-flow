@@ -119,6 +119,11 @@ type WindowSpec struct {
 	// bucket ended more than this before the watermark is refused; one whose
 	// bucket ended within it is written and the bucket republished whole.
 	Lateness time.Duration
+	// PartitionOwned says every row of the window belongs to one Kafka
+	// partition, named in its kafka_partition column. A revoked partition's
+	// rows are then deleted rather than published, and its next owner
+	// recounts them from the committed position.
+	PartitionOwned bool
 }
 
 // WatermarksTable holds the engine's assertion per window. Written by the
@@ -537,6 +542,39 @@ type WindowSignal struct {
 	kick      chan struct{}
 	mu        sync.Mutex
 	recompute map[time.Time]struct{}
+	// closed is the manager's committed closed watermark, in nanoseconds;
+	// zero before its first pass. The engine expires offset records on it,
+	// never on its own asserted watermark, which runs ahead of what has been
+	// published.
+	closed atomic.Int64
+	// pass is held by the manager for the length of a pass. A partition drop
+	// takes it too, so no pass is publishing a revoked partition's rows while
+	// they are deleted.
+	pass sync.Mutex
+}
+
+// LockPass and UnlockPass bracket a manager's pass, and a partition drop.
+func (s *WindowSignal) LockPass()   { s.pass.Lock() }
+func (s *WindowSignal) UnlockPass() { s.pass.Unlock() }
+
+// SetClosed records the manager's committed closed watermark. Monotonic.
+func (s *WindowSignal) SetClosed(t time.Time) {
+	n := t.UnixNano()
+	for {
+		cur := s.closed.Load()
+		if n <= cur || s.closed.CompareAndSwap(cur, n) {
+			return
+		}
+	}
+}
+
+// Closed is the manager's committed closed watermark, if it has one.
+func (s *WindowSignal) Closed() (time.Time, bool) {
+	n := s.closed.Load()
+	if n == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, n).UTC(), true
 }
 
 func newWindowSignal() *WindowSignal {
@@ -734,6 +772,13 @@ func quoteIdent(name string) string {
 		out = append(out, name[i])
 	}
 	return string(append(out, '"'))
+}
+
+// Clear removes every window's asserted watermark. A partition_owned pipeline
+// recounts from Kafka at start, so a restored watermark would refuse the
+// replayed records as late. It does not commit.
+func (s *WatermarkStore) Clear(ctx context.Context) error {
+	return s.exec(ctx, `DELETE FROM `+WatermarksTable)
 }
 
 func (s *WatermarkStore) exec(ctx context.Context, q string) error {

@@ -55,6 +55,7 @@ func Validate(ctx context.Context, req Request) (Report, error) {
 		checkSinks(rendered, &rep)
 		checkTurboStats(rendered, &rep)
 		checkMqtt(rendered, &rep)
+		checkWebhookAck(rendered, &rep)
 	}
 
 	demoteUnsuppliedVariableErrors(&rep)

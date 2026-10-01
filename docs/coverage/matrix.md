@@ -26,7 +26,7 @@ added, and this page changes only when a status does.
 | Feature | What it does | unit | integration | growth | release |
 | --- | --- | --- | --- | --- | --- |
 | `source.kafka` | Consumes a Kafka topic, tracking offsets and leader epochs. | ✅ | ✅ | — | ✅ |
-| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | — | — | — |
+| `source.webhook` | Accepts records over HTTP, with optional HMAC signature checks. | ✅ | ✅ | — | — |
 | `source.websocket` | Consumes a websocket stream, reconnecting on drop. | ✅ | ✅ | — | ✅ |
 | `source.mqtt` | Consumes MQTT 5 at QoS 1 on a persistent session, acknowledging on commit. | ✅ | ✅ | — | — |
 | `sink.kafka` | Publishes result rows to a Kafka topic. | ✅ | ✅ | — | ✅ |
@@ -82,7 +82,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**52 invariants declared: 44 safety and 8 liveness. Of 187 (invariant, integration) cells: 97 proven, 55 missing, 0 skipped, 0 failing, 35 exempt. 0 gap(s).**
+**55 invariants declared: 47 safety and 8 liveness. Of 195 (invariant, integration) cells: 97 proven, 63 missing, 0 skipped, 0 failing, 35 exempt. 0 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -145,6 +145,7 @@ drains. An invariant holds only if it holds on all four.
 | `source.resume.from_committed` | Restart resumes at the committed position. No gap, and no replay before it. | ❌ missing | ✅ i | — exempt | — exempt | · |
 | `source.marks.never_regress` | A committed position never moves backwards. | ❌ missing | ✅ u | — exempt | — exempt | · |
 | `source.commit.on_revoke` | Marks commit when a partition is revoked, before the rebalance completes. *(declared, tracked by #183)* | ❌ missing | — exempt | — exempt | — exempt | · |
+| `source.webhook.ack_after_flush` | With ack after_flush, a delivery answered 200 is in the sink: the answer is sent after the batch holding it flushed and committed, and a failed flush answers 503. | ❌ missing | ❌ missing | ❌ missing | ❌ missing | · |
 | `manager.delete.after_flush` | Closed windows leave the state table only after the sink acknowledged them. The table still holds every one of them when Flush runs. | · | · | · | · | ✅ u |
 | `manager.delete.nothing_on_failure` | A failed flush deletes nothing. Every closed window stays in the state table for the next attempt. | · | · | · | · | ✅ u |
 | `manager.watermark.never_regresses` | The persisted watermark never moves backwards, across polls and across a restart. A manager built over the state another one saved publishes nothing that one published. | · | · | · | · | ✅ u |
@@ -166,6 +167,8 @@ drains. An invariant holds only if it holds on all four.
 | `pipeline.state.with_offsets` | Window state and the offsets that produced it commit atomically. | ✅ u | — exempt |
 | `pipeline.window.counts_every_row` | A bucket's published value counts exactly the rows produced for it, once. Rows the engine refused as late are excluded and counted in window_late_rows_total; a row admitted within allowed_lateness_seconds is in the bucket's republished value. *(declared, tracked by #183)* | ❌ missing | ❌ missing |
 | `pipeline.window.lateness_decided_at_arrival` | A record whose bucket ended at or before the watermark less allowed_lateness_seconds is refused before the handler and counted; one within lateness is written and its bucket is republished as a whole value; the window table never holds a row the engine did not admit. *(declared, tracked by the conformance harness has no windowed pipeline subject yet; internal/core, internal/managers/model.go and internal/simulate verify it)* | ❌ missing | ❌ missing |
+| `pipeline.window.replays_lost_state` | A windowed Kafka pipeline commits no position past a row a retained bucket holds, so a worker that starts without the rows rebuilds each bucket whole from Kafka, and refuses what the previous owner finalized. | ❌ missing | ❌ missing |
+| `pipeline.window.partition_owned_single_writer` | With partition_owned, a revoked partition's rows are deleted without being published before the rebalance completes, so one process writes each (bucket, partition) key. | ❌ missing | ❌ missing |
 
 ## Safety invariants: types
 

@@ -2,6 +2,7 @@ package validate
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -209,4 +210,38 @@ sqlcommand:
 	rep, err := Validate(context.Background(), Request{Path: "p.yml", Config: cfg})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(sinkDiagnostics(rep)))
+}
+
+const keyedKafkaPipeline = `
+pipeline:
+  batch_size: 1
+  source:
+    type: webhook
+  handler:
+    type: handlers.InferredMemBatch
+    sql: SELECT id, customer FROM batch
+  sink:
+    type: kafka
+    kafka:
+      brokers: ["localhost:9092"]
+      topic: t
+      key: %s
+`
+
+func TestValidateSchema_KafkaKeyTheHandlerNeverNamesWarns(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, err := Validate(context.Background(), Request{Path: "k.yml", Config: fmt.Sprintf(keyedKafkaPipeline, "tenant")})
+	assert.NoError(t, err)
+	assert.That(t, rep.OK)
+	diags := sinkDiagnostics(rep)
+	assert.Equal(t, 1, len(diags))
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.That(t, strings.Contains(diags[0].Message, `key "tenant"`))
+}
+
+func TestValidateSchema_KafkaKeyTheHandlerNamesPasses(t *testing.T) {
+	coverage.Covers(t, "validate.schema")
+	rep, err := Validate(context.Background(), Request{Path: "k.yml", Config: fmt.Sprintf(keyedKafkaPipeline, "customer")})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(sinkDiagnostics(rep)))
 }

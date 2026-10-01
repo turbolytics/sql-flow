@@ -165,3 +165,4 @@ func (e *PartitionEvents) current() map[string][]int32 {
 
 var _ core.PartitionOwner = (*Source)(nil)
 var _ core.Deliverer = (*Source)(nil)
+var _ core.MetadataCommitter = (*Source)(nil)

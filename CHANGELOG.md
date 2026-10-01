@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- **Webhook source `ack: after_flush`.** A 200 means the body reached the
+  sink: the answer waits for the batch holding it to flush and commit, and a
+  failed flush answers 503. The default, `on_receive`, is unchanged. Refused
+  on a pipeline that windows.
+- **Kafka sink `key: <column>`.** Records are keyed by the column's text, so
+  a retried event lands on its original's partition. A null key fails the
+  batch.
+- **Window `partition_owned: true`.** A revoked partition's rows are deleted
+  before the rebalance completes rather than published, and the new owner
+  recounts them from the committed position, so one process writes each
+  (bucket, partition) key. A partition_owned pipeline starts empty and
+  recounts from Kafka. `dev/config/examples/metering/` is the two-pipeline
+  usage-metering stack that uses all three.
+
+### Fixed
+
+- A windowed Kafka pipeline committed offsets past rows held only in an open
+  window. A worker that lost its disk, or took a partition over in a
+  rebalance, started after them and undercounted. It now commits each
+  partition's low watermark, the position before the lowest offset still
+  feeding a retained bucket, and carries each window's closed watermark as
+  commit metadata so the next owner refuses what the last one finalized.
+- A partition revoked and later reassigned rewound to the position the
+  process loaded at startup.
+
 ### Changed
 
 - **A rollup can no longer read another rollup's table.** `sqlflow

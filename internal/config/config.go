@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -62,6 +63,12 @@ type KafkaSink struct {
 	SecurityProtocol string     `yaml:"security_protocol,omitempty"`
 	SSL              *KafkaSSL  `yaml:"ssl,omitempty"`
 	SASL             *KafkaSASL `yaml:"sasl,omitempty"`
+	// A column of the handler's output. Its value, as text, becomes each
+	// record's key, so rows with the same value land on one partition: a
+	// retried event lands beside its original, where a window can
+	// deduplicate it. Absent, records carry no key. A row whose value is
+	// null fails the batch.
+	Key string `yaml:"key,omitempty"`
 }
 
 type ConsoleSink struct{}
@@ -192,6 +199,83 @@ type Window struct {
 	EmitSQL string `yaml:"emit_sql,omitempty"`
 	// Where closed windows go.
 	Sink Sink `yaml:"sink"`
+	// Every row of this window belongs to one Kafka partition, carried in a
+	// kafka_partition column. When the group revokes a partition, its rows
+	// are deleted without being published, and the new owner recounts them
+	// from the committed offset, so one process writes each (bucket,
+	// partition) key. This is what makes a count exact across several
+	// workers in one consumer group. Requires a Kafka source with one topic,
+	// kafka_partition in the window table and written by the handler, and a
+	// postgres upsert sink with kafka_partition in its key. Every window in
+	// the pipeline must set it. A restart recounts the open buckets from
+	// Kafka rather than resuming from the state file.
+	PartitionOwned bool `yaml:"partition_owned,omitempty"`
+}
+
+// PartitionOwnedTables names the window tables that are partition_owned.
+func (c *Conf) PartitionOwnedTables() []string {
+	if c.Tables == nil {
+		return nil
+	}
+	var out []string
+	for _, table := range c.Tables.SQL {
+		if table.Window != nil && table.Window.PartitionOwned {
+			out = append(out, table.Name)
+		}
+	}
+	return out
+}
+
+// CheckPartitionOwned refuses a partition_owned window whose pipeline cannot
+// honor it. validate and run both call it; validate also checks the SQL.
+func (c *Conf) CheckPartitionOwned() error {
+	if len(c.PartitionOwnedTables()) == 0 {
+		return nil
+	}
+	// Exact counts need every batch to land or the pipeline to stop. A
+	// continue-on-error policy drops a failed batch non-deterministically and
+	// leaves its offset records behind the rows it rolled back, so a fresh
+	// owner replaying them counts what the original dropped -- the count then
+	// depends on which worker saw the transient failure. RAISE (the default)
+	// stops instead.
+	if c.Pipeline.OnError != nil && c.Pipeline.OnError.Policy != "" &&
+		c.Pipeline.OnError.Policy != string(PolicyRaise) {
+		return errs.New(errs.CodeConfigInvalid,
+			"partition_owned needs on_error.policy RAISE (the default): an exact count cannot silently "+
+				"drop a failed batch, and a continue-on-error policy leaves its offset records behind the "+
+				"rows it rolled back, so the count stops being reproducible across workers")
+	}
+	for _, table := range c.Tables.SQL {
+		w := table.Window
+		if w == nil {
+			continue
+		}
+		if !w.PartitionOwned {
+			return errs.New(errs.CodeConfigInvalid,
+				"table %q window: another window in this pipeline is partition_owned, so every window "+
+					"must be. A partition_owned pipeline recounts from Kafka at every start, and a window "+
+					"that kept its rows would be fed them twice", table.Name)
+		}
+		src := c.Pipeline.Source
+		if src.Type != "kafka" || src.Kafka == nil || len(src.Kafka.Topics) != 1 {
+			return errs.New(errs.CodeConfigInvalid,
+				"table %q window: partition_owned needs a kafka source with exactly one topic; "+
+					"a row is identified by kafka_partition alone", table.Name)
+		}
+		if w.Sink.Type != "postgres" || w.Sink.Postgres == nil || w.Sink.Postgres.Mode != "upsert" ||
+			!slices.Contains(w.Sink.Postgres.Key, "kafka_partition") {
+			return errs.New(errs.CodeConfigInvalid,
+				"table %q window: partition_owned needs a postgres upsert sink with kafka_partition in "+
+					"its key, so the new owner's recount replaces the row the old owner wrote", table.Name)
+		}
+		if w.TimeColumn != "" && !slices.Contains(w.Sink.Postgres.Key, w.TimeColumn) {
+			return errs.New(errs.CodeConfigInvalid,
+				"table %q window: the upsert key must include the window's time_column %q. Without it the "+
+					"target's primary key collapses every bucket for a key into one row, so only the newest "+
+					"bucket survives -- a silent undercount", table.Name, w.TimeColumn)
+		}
+	}
+	return nil
 }
 
 // Lateness is allowed_lateness_seconds as a duration; zero means late rows
@@ -505,6 +589,45 @@ type WebhookSource struct {
 	// it, and the record's time is the body's. On a windowing pipeline a
 	// body without a usable value at the path is refused.
 	EventTime *EventTimeField `yaml:"event_time,omitempty"`
+	// When a delivery is answered. on_receive, the default, answers once the
+	// body is queued. after_flush answers once the batch holding it has
+	// flushed to the sink, so a 200 means the body is in the sink; a failed
+	// flush answers 503. after_flush is refused on a pipeline that windows:
+	// a window holds a row for minutes, and a request cannot wait that long.
+	Ack string `yaml:"ack,omitempty" jsonschema:"enum=on_receive,enum=after_flush"`
+}
+
+const (
+	WebhookAckOnReceive  = "on_receive"
+	WebhookAckAfterFlush = "after_flush"
+)
+
+// AfterFlush reports whether deliveries are answered after the flush. A nil
+// receiver is the absent block.
+func (w *WebhookSource) AfterFlush() (bool, error) {
+	if w == nil || w.Ack == "" || w.Ack == WebhookAckOnReceive {
+		return false, nil
+	}
+	if w.Ack == WebhookAckAfterFlush {
+		return true, nil
+	}
+	return false, errs.New(errs.CodeSourceInvalid, "webhook source: ack must be on_receive or after_flush, got %q", w.Ack)
+}
+
+// CheckWebhookAck refuses after_flush on a pipeline that windows. validate
+// and run both call it.
+func (c *Conf) CheckWebhookAck() error {
+	if c.Pipeline.Source.Type != "webhook" {
+		return nil
+	}
+	after, err := c.Pipeline.Source.Webhook.AfterFlush()
+	if err != nil || !after || !c.HasWindow() {
+		return err
+	}
+	return errs.New(errs.CodeConfigInvalid,
+		"webhook source: ack after_flush on a pipeline that windows. A window holds a row until its "+
+			"bucket closes, which is minutes, and the request waits for the flush. Ingest into Kafka "+
+			"with after_flush and window in a second pipeline that reads the topic")
 }
 
 // ResolvedMaxConnections is the connection bound in effect, defaulted. A nil

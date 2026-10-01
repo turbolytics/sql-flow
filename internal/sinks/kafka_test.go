@@ -8,9 +8,16 @@ package sinks
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/testcontainers/testcontainers-go"
+	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 	"github.com/turbolytics/sql-flow/internal/config"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
@@ -280,4 +287,127 @@ func TestSinkKafka_FlushReportsProduceErrors(t *testing.T) {
 
 	assert.NoError(t, s.WriteTable(context.Background(), table))
 	assert.Error(t, flushWithin(t, s, ctx, 10*time.Second))
+}
+
+// customerTable is a two-row batch: customer "a" then "b", with n 7 and 8.
+func customerTable(t *testing.T, customers []*string) arrow.Table {
+	t.Helper()
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "customer", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "n", Type: arrow.PrimitiveTypes.Int64},
+	}, nil)
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	defer b.Release()
+	for i, c := range customers {
+		if c == nil {
+			b.Field(0).AppendNull()
+		} else {
+			b.Field(0).(*array.StringBuilder).Append(*c)
+		}
+		b.Field(1).(*array.Int64Builder).Append(int64(7 + i))
+	}
+	rec := b.NewRecord()
+	t.Cleanup(rec.Release)
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	t.Cleanup(tbl.Release)
+	return tbl
+}
+
+func strp(s string) *string { return &s }
+
+// A retry has the same customer as its original, and the key is what
+// sends both to one partition, where a window can deduplicate them.
+func TestSinkKafka_KeyIsTheColumnsText(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	s, err := NewKafkaSink(config.KafkaSink{Brokers: []string{unreachableBroker}, Topic: "t", Key: "customer"})
+	assert.NoError(t, err)
+	defer s.Close()
+
+	assert.NoError(t, s.WriteTable(context.Background(), customerTable(t, []*string{strp("a"), strp("b")})))
+	assert.Equal(t, 2, len(s.pending))
+	assert.Equal(t, "a", string(s.pending[0].key))
+	assert.Equal(t, "b", string(s.pending[1].key))
+	assert.That(t, strings.Contains(string(s.pending[0].value), `"customer":"a"`))
+}
+
+func TestSinkKafka_KeyOnANumberIsItsDecimalText(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	s, err := NewKafkaSink(config.KafkaSink{Brokers: []string{unreachableBroker}, Topic: "t", Key: "n"})
+	assert.NoError(t, err)
+	defer s.Close()
+	assert.NoError(t, s.WriteTable(context.Background(), customerTable(t, []*string{strp("a")})))
+	assert.Equal(t, "7", string(s.pending[0].key))
+}
+
+// A null key has no partition, and an unkeyed record defeats the key.
+func TestSinkKafka_NullKeyFailsTheBatch(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	s, err := NewKafkaSink(config.KafkaSink{Brokers: []string{unreachableBroker}, Topic: "t", Key: "customer"})
+	assert.NoError(t, err)
+	defer s.Close()
+	err = s.WriteTable(context.Background(), customerTable(t, []*string{strp("a"), nil}))
+	assert.Error(t, err)
+	assert.Equal(t, errs.CodeSinkEncodeFailed, errs.CodeOf(err))
+	assert.Equal(t, 0, len(s.pending))
+}
+
+func TestSinkKafka_MissingKeyColumnFailsTheBatch(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	s, err := NewKafkaSink(config.KafkaSink{Brokers: []string{unreachableBroker}, Topic: "t", Key: "tenant"})
+	assert.NoError(t, err)
+	defer s.Close()
+	err = s.WriteTable(context.Background(), customerTable(t, []*string{strp("a")}))
+	assert.Equal(t, errs.CodeSinkEncodeFailed, errs.CodeOf(err))
+}
+
+func TestSinkKafka_NoKeyLeavesRecordsUnkeyed(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	s := newUnreachableKafkaSink(t)
+	assert.NoError(t, s.WriteTable(context.Background(), customerTable(t, []*string{strp("a")})))
+	assert.Nil(t, s.pending[0].key)
+}
+
+func TestIntegrationSinkKafka_KeyedRecordsShareAPartition(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	ctx := context.Background()
+	broker, err := tckafka.Run(ctx, sinkBrokerImage,
+		testcontainers.WithEnv(map[string]string{"KAFKA_NUM_PARTITIONS": "6"}))
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = broker.Terminate(context.Background()) })
+	brokers, err := broker.Brokers(ctx)
+	assert.NoError(t, err)
+
+	topic := fmt.Sprintf("keyed-%d", time.Now().UnixNano())
+	s, err := NewKafkaSink(config.KafkaSink{Brokers: brokers, Topic: topic, Key: "customer"})
+	assert.NoError(t, err)
+	defer s.Close()
+	for i := 0; i < 20; i++ {
+		assert.NoError(t, s.WriteTable(ctx, customerTable(t, []*string{strp("a"), strp("b")})))
+	}
+	assert.NoError(t, s.Flush(ctx))
+
+	cl, err := kgo.NewClient(kgo.SeedBrokers(brokers...), kgo.ConsumeTopics(topic),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
+	assert.NoError(t, err)
+	defer cl.Close()
+	partitionOf := map[string]map[int32]bool{}
+	for n := 0; n < 40; {
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		f := cl.PollFetches(pctx)
+		pollErr := pctx.Err()
+		cancel()
+		assert.NoError(t, pollErr)
+		f.EachRecord(func(r *kgo.Record) {
+			n++
+			if partitionOf[string(r.Key)] == nil {
+				partitionOf[string(r.Key)] = map[int32]bool{}
+			}
+			partitionOf[string(r.Key)][r.Partition] = true
+		})
+	}
+	assert.Equal(t, 1, len(partitionOf["a"]))
+	assert.Equal(t, 1, len(partitionOf["b"]))
 }

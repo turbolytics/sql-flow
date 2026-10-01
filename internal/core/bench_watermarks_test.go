@@ -255,13 +255,20 @@ func (s *benchWindowedSource) Close() error  { return nil }
 func BenchmarkConsumeLoopWindowedWritePath(b *testing.B) {
 	at := time.Now().Add(-time.Hour).UnixNano()
 
-	run := func(b *testing.B, batchSize int, windowed bool) {
+	// durable adds the low-watermark tracker a windowed Kafka pipeline runs:
+	// Note per record, Merge and Expire per batch. The store is nil, so this
+	// is the tracker's CPU cost on the write path; the per-commit INSERT into
+	// sqlflow_window_offsets is separate, bounded and amortised over a batch.
+	run := func(b *testing.B, batchSize int, windowed, durable bool) {
 		src := &benchWindowedSource{n: b.N, size: 1000, at: at}
 		opts := []TurbineOption{}
 		if windowed {
 			w := NewWatermarks(benchSpecs(1), time.Now)
 			w.Assigned(map[string][]int32{"t": {0}})
 			opts = append(opts, WithWindows(w, &benchSaver{}), WithEventTimePlacement(true))
+			if durable {
+				opts = append(opts, WithWindowOffsets(NewWindowOffsets(benchSpecs(1)), nil))
+			}
 		}
 		tb := NewTurbine(src, &fakeHandler{}, &fakeSink{}, batchSize, time.Hour,
 			&sync.Mutex{}, PipelineErrorPolicies{}, opts...)
@@ -273,8 +280,10 @@ func BenchmarkConsumeLoopWindowedWritePath(b *testing.B) {
 		}
 	}
 
-	b.Run("windows_off/batch_100000", func(b *testing.B) { run(b, 100000, false) })
-	b.Run("windows_on/batch_100000", func(b *testing.B) { run(b, 100000, true) })
-	b.Run("windows_off/batch_500", func(b *testing.B) { run(b, 500, false) })
-	b.Run("windows_on/batch_500", func(b *testing.B) { run(b, 500, true) })
+	b.Run("windows_off/batch_100000", func(b *testing.B) { run(b, 100000, false, false) })
+	b.Run("windows_on/batch_100000", func(b *testing.B) { run(b, 100000, true, false) })
+	b.Run("windows_on_durable/batch_100000", func(b *testing.B) { run(b, 100000, true, true) })
+	b.Run("windows_off/batch_500", func(b *testing.B) { run(b, 500, false, false) })
+	b.Run("windows_on/batch_500", func(b *testing.B) { run(b, 500, true, false) })
+	b.Run("windows_on_durable/batch_500", func(b *testing.B) { run(b, 500, true, true) })
 }

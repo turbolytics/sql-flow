@@ -27,6 +27,7 @@ type Source struct {
 	closeOnce     sync.Once
 	seeker        *OffsetSeeker
 	partitions    *PartitionEvents
+	metadata      *CommittedMetadata
 	// timestampType is the record timestamp type last observed, as
 	// kgo.RecordAttrs.TimestampType reports it: 0 the producer's clock, 1
 	// the broker's, -1 a pre-0.10.0 record carrying none. It decides which
@@ -84,6 +85,13 @@ func WithSeeker(seeker *OffsetSeeker) Option {
 	}
 }
 
+// WithCommittedMetadata gives the source the metadata relay registered on its
+// client, so the pipeline hears what the group committed for a partition
+// when this consumer is assigned it.
+func WithCommittedMetadata(c *CommittedMetadata) Option {
+	return func(s *Source) { s.metadata = c }
+}
+
 func NewSource(client *kgo.Client, opts ...Option) (*Source, error) {
 	s := &Source{
 		client:        client,
@@ -95,6 +103,12 @@ func NewSource(client *kgo.Client, opts ...Option) (*Source, error) {
 
 	for _, opt := range opts {
 		opt(s)
+	}
+
+	// The seeker's positions describe partitions as this process last held
+	// them; once one leaves, the group's committed offset is the truth.
+	if s.seeker != nil && s.partitions != nil {
+		s.partitions.Subscribe(nil, s.seeker.Forget, s.seeker.Forget)
 	}
 
 	s.streamChan = make(chan []core.Message, s.channelBuffer)
@@ -193,6 +207,24 @@ func (k *Source) SeekTo(marks *core.Marks) error {
 // with the consumer group showing no lag. Kafka commits the next offset to
 // read, so a mark at offset N commits N+1.
 func (k *Source) CommitMarks(marks *core.Marks) error {
+	return k.commitMarks(marks, nil)
+}
+
+// OnCommittedMetadata implements core.MetadataCommitter.
+func (k *Source) OnCommittedMetadata(fn func(topic string, partition int32, metadata string)) {
+	if k.metadata != nil {
+		k.metadata.Subscribe(fn)
+	}
+}
+
+// CommitMarksWithMetadata is CommitMarks with a string on every partition.
+// The group keeps it beside the offset, and hands it to whichever member
+// fetches that offset next.
+func (k *Source) CommitMarksWithMetadata(marks *core.Marks, metadata string) error {
+	return k.commitMarks(marks, &metadata)
+}
+
+func (k *Source) commitMarks(marks *core.Marks, metadata *string) error {
 	if marks == nil || marks.Empty() {
 		return nil
 	}
@@ -206,6 +238,16 @@ func (k *Source) CommitMarks(marks *core.Marks) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), commitTimeout)
 	defer cancel()
+	if metadata != nil {
+		ctx = kgo.PreCommitFnContext(ctx, func(req *kmsg.OffsetCommitRequest) error {
+			for ti := range req.Topics {
+				for pi := range req.Topics[ti].Partitions {
+					req.Topics[ti].Partitions[pi].Metadata = metadata
+				}
+			}
+			return nil
+		})
+	}
 
 	var commitErr error
 	k.client.CommitOffsetsSync(ctx, offsets, func(_ *kgo.Client, _ *kmsg.OffsetCommitRequest, resp *kmsg.OffsetCommitResponse, err error) {

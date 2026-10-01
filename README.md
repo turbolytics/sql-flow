@@ -891,6 +891,21 @@ The signature covers the raw bytes, so the body sent must be the body signed:
 can alter whitespace or add a newline. GitHub signs the same way, so a
 repository webhook with the same secret is accepted as is.
 
+`ack` decides what the 200 means. The default, `on_receive`, answers once
+the body is queued for the pipeline; a crash before the batch flushes loses
+an event the sender was told it had delivered. `ack: after_flush` answers
+once the batch holding the body has flushed to the sink and its position is
+committed, with `{"status":"flushed"}`; a flush that fails answers 503
+`{"detail":"Not flushed"}`, and so does a pipeline that stops first, so the
+sender retries. The cost is the wait: a request waits for its batch to fill
+or for `flush_interval_seconds`, whichever comes first, so a lone sender
+waits the whole interval (measured p50 1.00s, p99 1.04s at 1s). A sender
+that hangs up keeps its place in the queue; nobody else is given its answer.
+`after_flush` is refused on a pipeline that windows, because a window holds
+a row for minutes; put the webhook in front of a Kafka topic and window in a
+second pipeline, as [`metering/ingest.yml`](dev/config/examples/metering/ingest.yml)
+does.
+
 Responds 200 on accept, 400 for a missing signature, 403 for an invalid one,
 413 for a body over `max_body_bytes`, and 408 for a body that stalls. The
 body bound applies before the body is read and before the signature is
@@ -994,6 +1009,8 @@ sink:
   kafka:
     brokers: [localhost:9092]
     topic: output-topic
+    # key: customer  — optional; each record is keyed by that column's text,
+    #   so rows with one value land on one partition. A null fails the batch.
     # security_protocol / ssl / sasl as per the Kafka source
 
 # clickhouse — the table must exist; columns are matched by name
@@ -1318,6 +1335,42 @@ The watermark is the minimum over the partitions, so a slow partition holds
 the buckets it shares open rather than arriving late; the grace is the
 allowance for reordering within a partition. Size it from
 `window_late_rows_total`.
+
+**Several workers, and a worker that loses its disk.** A windowed pipeline
+over Kafka commits, per partition, the position before the lowest offset
+still feeding a bucket it retains, not the position it has processed. Kafka
+is then the durable copy of the open buckets: a worker that starts without
+the window's rows, on a new disk or after a rebalance, replays from there
+and rebuilds each retained bucket whole. The consumer group's lag therefore
+reads as the retained span, size + grace + lateness of records, while the
+pipeline is up to date. Each commit also carries the window's closed
+watermark as commit metadata, and a worker that takes the partition over
+refuses what the previous owner had already finalized, so a late record the
+old worker refused is not published alone over the full count by the new
+one.
+
+With `partition_owned: true`, every row of the window belongs to the Kafka
+partition in its `kafka_partition` column, and one process writes each
+(bucket, partition) key. When the group revokes a partition, the worker
+deletes that partition's rows, offset records and stored position in one
+transaction before the rebalance completes, and the new owner recounts them
+from the committed position; without it, the old owner's partial count for
+the bucket races the new owner's whole one. A worker that stops deletes its
+rows before it leaves the group, and a worker that starts deletes what its
+state file holds, since another member may have consumed those partitions
+meanwhile: a restart recounts the open buckets from Kafka rather than
+resuming. It needs a Kafka source with one topic, `kafka_partition` in the
+table and written by the handler, a postgres upsert sink with
+`kafka_partition` in its key, and every window in the pipeline set the same
+way; `sqlflow validate` and `run` refuse anything else. One limit: a
+partition that reaches a worker whose watermark is more than
+`allowed_lateness_seconds` past the partition's open buckets has those rows
+refused as late, so set the lateness above the time a rebalance takes, which
+after a crash is the group's session timeout. See
+[`metering/count.yml`](dev/config/examples/metering/count.yml), and
+`internal/metering` for the scenarios that hold it: a worker joining,
+leaving, killed with its disk kept or lost, every request sent twice, and a
+rebalance under load.
 
 **emit_sql** shapes the rows before the sink. It reads one relation, `closed`,
 holding every row of every bucket that just closed. Cast a `sum` back to the

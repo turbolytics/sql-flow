@@ -266,6 +266,14 @@
                     "format"
                   ],
                   "description": "EventTime names the field of each body that carries the event's own\ntime. Absent, the event time is arrival: the moment the body reached\nthis process, which says nothing about when the event happened. Set\nit, and the record's time is the body's. On a windowing pipeline a\nbody without a usable value at the path is refused."
+                },
+                "ack": {
+                  "type": "string",
+                  "enum": [
+                    "on_receive",
+                    "after_flush"
+                  ],
+                  "description": "When a delivery is answered. on_receive, the default, answers once the\nbody is queued. after_flush answers once the batch holding it has\nflushed to the sink, so a 200 means the body is in the sink; a failed\nflush answers 503. after_flush is refused on a pipeline that windows:\na window holds a row for minutes, and a request cannot wait that long."
                 }
               },
               "additionalProperties": false,
@@ -475,6 +483,10 @@
                     "username",
                     "password"
                   ]
+                },
+                "key": {
+                  "type": "string",
+                  "description": "A column of the handler's output. Its value, as text, becomes each\nrecord's key, so rows with the same value land on one partition: a\nretried event lands beside its original, where a window can\ndeduplicate it. Absent, records carry no key. A row whose value is\nnull fails the batch."
                 }
               },
               "additionalProperties": false,
@@ -756,6 +768,10 @@
                         "username",
                         "password"
                       ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "A column of the handler's output. Its value, as text, becomes each\nrecord's key, so rows with the same value land on one partition: a\nretried event lands beside its original, where a window can\ndeduplicate it. Absent, records carry no key. A row whose value is\nnull fails the batch."
                     }
                   },
                   "additionalProperties": false,
@@ -1089,6 +1105,10 @@
                               "username",
                               "password"
                             ]
+                          },
+                          "key": {
+                            "type": "string",
+                            "description": "A column of the handler's output. Its value, as text, becomes each\nrecord's key, so rows with the same value land on one partition: a\nretried event lands beside its original, where a window can\ndeduplicate it. Absent, records carry no key. A row whose value is\nnull fails the batch."
                           }
                         },
                         "additionalProperties": false,
@@ -1239,6 +1259,10 @@
                       "type"
                     ],
                     "description": "Where closed windows go."
+                  },
+                  "partition_owned": {
+                    "type": "boolean",
+                    "description": "Every row of this window belongs to one Kafka partition, carried in a\nkafka_partition column. When the group revokes a partition, its rows\nare deleted without being published, and the new owner recounts them\nfrom the committed offset, so one process writes each (bucket,\npartition) key. This is what makes a count exact across several\nworkers in one consumer group. Requires a Kafka source with one topic,\nkafka_partition in the window table and written by the handler, and a\npostgres upsert sink with kafka_partition in its key. Every window in\nthe pipeline must set it. A restart recounts the open buckets from\nKafka rather than resuming from the state file."
                   }
                 },
                 "additionalProperties": false,

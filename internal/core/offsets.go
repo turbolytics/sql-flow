@@ -251,3 +251,36 @@ func escapeSQLString(s string) string {
 	}
 	return string(out)
 }
+
+// Delete removes the stored positions of partitions this process no longer
+// holds. It does not commit.
+func (s *OffsetStore) Delete(ctx context.Context, topic string, partitions []int32) error {
+	if len(partitions) == 0 {
+		return nil
+	}
+	stmt, err := s.conn.NewStatement()
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	if err := stmt.SetSqlQuery(fmt.Sprintf(`DELETE FROM %s WHERE topic = '%s' AND partition IN (%s)`,
+		offsetsTable, escapeSQLString(topic), joinInt32(partitions))); err != nil {
+		return err
+	}
+	_, err = stmt.ExecuteUpdate(ctx)
+	return err
+}
+
+// Clear removes every stored position. It does not commit.
+func (s *OffsetStore) Clear(ctx context.Context) error {
+	stmt, err := s.conn.NewStatement()
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	if err := stmt.SetSqlQuery(`DELETE FROM ` + offsetsTable); err != nil {
+		return err
+	}
+	_, err = stmt.ExecuteUpdate(ctx)
+	return err
+}

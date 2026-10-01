@@ -50,15 +50,22 @@ func kafkaSinkError(err error, format string, args ...any) error {
 	return sinkError(err, format, args...)
 }
 
+// kafkaRow is one encoded row and its key, nil when the sink has none.
+type kafkaRow struct {
+	key, value []byte
+}
+
 // KafkaSink produces one message per result row, JSON encoded, matching the
 // Python KafkaSink.
 type KafkaSink struct {
 	client *kgo.Client
 	topic  string
+	// key is the column each record is keyed by; empty for none.
+	key string
 
 	mu sync.Mutex
 	// pending holds the encoded rows that Flush has not yet had acknowledged.
-	pending [][]byte
+	pending []kafkaRow
 }
 
 // NewKafkaSink builds the sink. Extra client options are appended last, so a
@@ -94,7 +101,7 @@ func NewKafkaSink(conf config.KafkaSink, extra ...kgo.Opt) (*KafkaSink, error) {
 		return nil, fmt.Errorf("kafka sink client: %w", err)
 	}
 
-	return &KafkaSink{client: client, topic: conf.Topic}, nil
+	return &KafkaSink{client: client, topic: conf.Topic, key: conf.Key}, nil
 }
 
 // WriteTable buffers the encoded rows. Nothing is produced here.
@@ -108,10 +115,26 @@ func (s *KafkaSink) WriteTable(ctx context.Context, batch arrow.Table) error {
 	if err != nil {
 		return err
 	}
+	var keys [][]byte
+	if s.key != "" {
+		if keys, err = tableRowKeys(batch, s.key); err != nil {
+			return err
+		}
+		if len(keys) != len(rows) {
+			return errs.New(errs.CodeSinkInternal, "kafka sink: %d keys for %d rows", len(keys), len(rows))
+		}
+	}
+	add := make([]kafkaRow, len(rows))
+	for i := range rows {
+		add[i].value = rows[i]
+		if keys != nil {
+			add[i].key = keys[i]
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pending = append(s.pending, rows...)
+	s.pending = append(s.pending, add...)
 	return nil
 }
 
@@ -147,7 +170,7 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 		i := i
 		s.client.Produce(
 			ctx,
-			&kgo.Record{Topic: s.topic, Value: row},
+			&kgo.Record{Topic: s.topic, Key: row.key, Value: row.value},
 			func(_ *kgo.Record, err error) {
 				mu.Lock()
 				defer mu.Unlock()
@@ -173,7 +196,7 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 	// A record with no promise yet was still in flight when the context ended.
 	// It is not delivered, so it stays pending.
 	var (
-		keep     [][]byte
+		keep     []kafkaRow
 		firstErr error
 	)
 	for i, row := range pending {

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -148,6 +149,26 @@ type Mark struct {
 // commits those too.
 type MarkCommitter interface {
 	CommitMarks(marks *Marks) error
+}
+
+// Settler is a source that answers its sender once the pipeline is
+// finished with what it delivered.
+type Settler interface {
+	// Settle resolves the oldest n messages the source delivered: err nil
+	// when their batch flushed and committed, non-nil when it did not.
+	Settle(n int, err error)
+}
+
+// ErrStoppedBeforeFlush settles a message the loop took and then stopped
+// without flushing.
+var ErrStoppedBeforeFlush = errors.New("the pipeline stopped before this message was flushed")
+
+// MetadataCommitter is a MarkCommitter that commits a string with each
+// position and reports what the group last committed for a partition when
+// this consumer is assigned it.
+type MetadataCommitter interface {
+	CommitMarksWithMetadata(marks *Marks, metadata string) error
+	OnCommittedMetadata(fn func(topic string, partition int32, metadata string))
 }
 
 // HasMetadata reports whether the source supplied provenance for this message.
@@ -421,6 +442,44 @@ type Turbine struct {
 	// database.
 	stateStats func(context.Context) (*StateStats, error)
 
+	// windowOffsets tracks the lowest offset feeding each retained bucket, so
+	// the source commit stays below every row a window still holds;
+	// windowOffsetStore persists it in the state transaction. Nil without a
+	// window over a source with positions.
+	windowOffsets     *WindowOffsets
+	windowOffsetStore *WindowOffsetStore
+	// dropper deletes a revoked partition's rows from every partition-owned
+	// window; drops carries requests from the source's rebalance callback to
+	// the consume loop, which owns the connection. loopDone is closed when
+	// ConsumeLoop returns, so a callback never waits on a loop that is gone.
+	dropper      PartitionDropper
+	drops        chan dropRequest
+	loopDone     chan struct{}
+	loopDoneOnce sync.Once
+	// revoked holds partitions dropped since their revocation; records the
+	// consumer prefetched from them are skipped. Copy-on-write behind an
+	// atomic pointer, so the per-record check takes no lock: after a
+	// scale-out the set stays non-empty for the life of the process.
+	// revokedMu serializes the writers only.
+	revokedMu sync.Mutex
+	revoked   atomic.Pointer[map[partitionKey]bool]
+
+	// floorInbox receives replay floors from the source's goroutine;
+	// floorsWaiting says it holds any, so the loop checks with one atomic
+	// load. replayFloors is the loop's own copy, closed nanos per spec index.
+	floorMu       sync.Mutex
+	floorInbox    map[partitionKey][]int64
+	floorsWaiting atomic.Bool
+	replayFloors  map[partitionKey][]int64
+	// lowMoved is set when a bucket's offset record expired since the last
+	// source commit: the position to commit may have moved with no batch
+	// to carry it, and the next idle tick commits it.
+	lowMoved bool
+
+	// unsettled is how many messages the loop took from the stream since the
+	// last settle; a Settler source hears it after the batch commits.
+	unsettled int
+
 	// marks is the last position finished with, per topic and partition; what
 	// commitSource hands a MarkCommitter.
 	marks *Marks
@@ -541,6 +600,105 @@ const (
 // pipeline and a busy one. A windowing pipeline's idle tick writes only
 // when a watermark moved, which on a quiet stream is once, when the last
 // partition goes idle.
+type dropRequest struct {
+	parts map[string][]int32
+	done  chan error
+}
+
+// offsetDeleter is an offset store that can forget partitions.
+type offsetDeleter interface {
+	Delete(ctx context.Context, topic string, partitions []int32) error
+}
+
+// dropWait bounds how long a rebalance callback waits for the consume loop
+// to drop a partition. Under the group's rebalance timeout, and past a sink
+// flush's own bound, so the only thing it cuts short is a loop that will
+// never come: a revocation before the loop has started on a run that then
+// fails would otherwise hold the client's close forever.
+const dropWait = 45 * time.Second
+
+// WithPartitionDropper makes a revocation drop the partition's rows rather
+// than let them close.
+func WithPartitionDropper(d PartitionDropper) TurbineOption {
+	return func(t *Turbine) { t.dropper = d }
+}
+
+// WithWindowOffsets commits each partition's low watermark rather than its
+// processed position. store is nil without a state path: the tracker still
+// holds the commit back, and a restart replays from Kafka.
+func WithWindowOffsets(o *WindowOffsets, store *WindowOffsetStore) TurbineOption {
+	return func(t *Turbine) {
+		t.windowOffsets = o
+		t.windowOffsetStore = store
+		// A partition this worker replays from the low watermark comes with
+		// no watermark of its own; the commit's metadata carries the last
+		// owner's.
+		if mc, ok := t.source.(MetadataCommitter); ok {
+			mc.OnCommittedMetadata(t.noteCommittedMetadata)
+		}
+	}
+}
+
+// noteCommittedMetadata runs on the source's goroutine when this consumer is
+// assigned a partition. The loop picks the floor up before its next record.
+func (t *Turbine) noteCommittedMetadata(topic string, partition int32, metadata string) {
+	closed, ok := DecodeReplayFloor(metadata)
+	if !ok || t.windows == nil {
+		return
+	}
+	specs := t.windows.Specs()
+	floor := make([]int64, len(specs))
+	for i, spec := range specs {
+		if c, ok := closed[spec.Name]; ok {
+			floor[i] = c.UnixNano()
+		}
+	}
+	t.floorMu.Lock()
+	if t.floorInbox == nil {
+		t.floorInbox = map[partitionKey][]int64{}
+	}
+	t.floorInbox[partitionKey{topic, partition}] = floor
+	t.floorMu.Unlock()
+	t.floorsWaiting.Store(true)
+}
+
+// takeFloors moves the floors the source reported into the loop's own map.
+// One atomic load when there are none, which is every batch but the first
+// after an assignment.
+func (t *Turbine) takeFloors() {
+	if !t.floorsWaiting.Load() {
+		return
+	}
+	t.floorMu.Lock()
+	inbox := t.floorInbox
+	t.floorInbox = nil
+	t.floorsWaiting.Store(false)
+	t.floorMu.Unlock()
+	if t.replayFloors == nil {
+		t.replayFloors = map[partitionKey][]int64{}
+	}
+	for k, v := range inbox {
+		t.replayFloors[k] = v
+	}
+}
+
+// belowReplayFloor is true when every window would refuse the record under
+// the previous owner's closed watermark: its bucket ended at or before
+// closed minus lateness. The same all-windows rule as Classify.
+func (t *Turbine) belowReplayFloor(m Message) bool {
+	floor, ok := t.replayFloors[partitionKey{m.Topic, m.Partition}]
+	if !ok || m.EventAtNanos <= 0 {
+		return false
+	}
+	at := time.Unix(0, m.EventAtNanos).UTC()
+	for i, spec := range t.windows.Specs() {
+		if floor[i] == 0 || BucketEnd(at, spec.Size).UnixNano()+int64(spec.Lateness) > floor[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func WithWindows(w *Watermarks, s WatermarkSaver) TurbineOption {
 	return func(t *Turbine) {
 		t.windows = w
@@ -653,7 +811,7 @@ func (t *Turbine) watchSource() {
 	switch s := t.source.(type) {
 	case PartitionOwner:
 		t.partitionsRelayed = true
-		s.OnPartitions(t.windows.Assigned, t.windows.Released, t.windows.Lost)
+		s.OnPartitions(t.assigned, t.released, t.lost)
 	case Deliverer:
 		_, ok := s.Delivering()
 		t.windows.SetDelivering(ok)
@@ -667,6 +825,196 @@ func (t *Turbine) watchSource() {
 // the tracker holds its one partition as lost through a reconnect. The
 // transitions are logged once each, so a source that never resumes shows
 // up as a stop with no resumption after it.
+func (t *Turbine) assigned(parts map[string][]int32) {
+	t.updateRevoked(parts, false)
+	t.windows.Assigned(parts)
+}
+
+// released and lost drop the partitions' rows before the tracker lets them
+// go. Without a dropper they are the tracker's own calls.
+func (t *Turbine) released(parts map[string][]int32) {
+	t.requestDrop(parts)
+	t.windows.Released(parts)
+}
+
+func (t *Turbine) lost(parts map[string][]int32) {
+	t.requestDrop(parts)
+	t.windows.Lost(parts)
+}
+
+// updateRevoked adds or removes partitions from the revoked set, copying it,
+// so a reader holding the old map never sees it change.
+func (t *Turbine) updateRevoked(parts map[string][]int32, revoked bool) {
+	if t.dropper == nil {
+		return
+	}
+	t.revokedMu.Lock()
+	defer t.revokedMu.Unlock()
+	next := map[partitionKey]bool{}
+	if cur := t.revoked.Load(); cur != nil {
+		for k := range *cur {
+			next[k] = true
+		}
+	}
+	for topic, ps := range parts {
+		for _, p := range ps {
+			if revoked {
+				next[partitionKey{topic, p}] = true
+			} else {
+				delete(next, partitionKey{topic, p})
+			}
+		}
+	}
+	t.revoked.Store(&next)
+}
+
+// requestDrop runs on the source's rebalance goroutine. It blocks until the
+// consume loop has dropped the partitions, which holds the rebalance until
+// no process but the new owner can write their rows.
+func (t *Turbine) requestDrop(parts map[string][]int32) {
+	// A plain windowed Kafka pipeline has no dropper but still commits the
+	// low watermark, so it must forget a revoked partition's marks; only a
+	// pipeline that neither owns partitions nor tracks window offsets has
+	// nothing to do here.
+	if t.dropper == nil && t.windowOffsets == nil {
+		return
+	}
+	req := dropRequest{parts: parts, done: make(chan error, 1)}
+	timeout := time.NewTimer(dropWait)
+	defer timeout.Stop()
+	select {
+	case t.drops <- req:
+	case <-t.loopDone:
+		return
+	case <-timeout.C:
+		t.logger.Error("the consume loop did not take a partition drop; the revoked partitions' rows are still in the window",
+			zap.Any("partitions", parts), zap.Duration("waited", dropWait))
+		return
+	}
+	select {
+	case err := <-req.done:
+		if err != nil {
+			t.logger.Error("dropping revoked partitions failed; the pipeline is stopping", zap.Error(err))
+		}
+	case <-t.loopDone:
+	}
+}
+
+// dropPartitions handles a revoked partition in two parts. For every windowed
+// Kafka pipeline it forgets the partition's marks, committed position, offset
+// records and replay floor, so the pipeline stops committing -- at the low
+// watermark, which is behind the processed position -- a partition the group
+// now gives to another member; without this a plain windowed pipeline rewinds
+// that member's offset and it double counts. Only a partition_owned pipeline
+// (dropper set) also deletes the window rows and stored offsets and commits
+// the deletion, under every owned window's pass lock so no pass publishes
+// those rows meanwhile; a plain pipeline leaves its rows for the manager to
+// publish and relies on the keyed upsert, as it did before this feature.
+func (t *Turbine) dropPartitions(ctx context.Context, parts map[string][]int32) error {
+	unlock := t.lockOwnedPasses()
+	defer unlock()
+
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	fail := func(err error) error {
+		if t.stateTx != nil {
+			if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
+				t.logger.Error("rollback after a failed partition drop", zap.Error(rbErr))
+			}
+		}
+		return err
+	}
+	for topic, ps := range parts {
+		if t.dropper != nil {
+			if err := t.dropper.DropPartitions(ctx, topic, ps); err != nil {
+				return fail(err)
+			}
+			if del, ok := t.offsets.(offsetDeleter); ok {
+				if err := del.Delete(ctx, topic, ps); err != nil {
+					return fail(err)
+				}
+			}
+		}
+		if t.windowOffsets != nil {
+			t.windowOffsets.Drop(topic, ps)
+		}
+		t.marks.Forget(topic, ps)
+		t.committed.Forget(topic, ps)
+		for _, p := range ps {
+			delete(t.replayFloors, partitionKey{topic, p})
+		}
+	}
+	// Persist the deletion and commit it only when rows were deleted. A plain
+	// pipeline deleted nothing here; its forgotten offset records ride the
+	// next ordinary state commit, and forgetting marks is in memory.
+	if t.dropper == nil {
+		return nil
+	}
+	if t.windowOffsetStore != nil {
+		if err := t.windowOffsetStore.Save(ctx, t.windowOffsets.Pending()); err != nil {
+			return fail(err)
+		}
+	}
+	if t.stateTx != nil {
+		if err := t.stateTx.Commit(ctx); err != nil {
+			return fail(errs.Wrap(errs.CodeStateCommitFailed, err, "committing the partition drop"))
+		}
+	}
+	if t.windowOffsets != nil {
+		t.windowOffsets.Saved()
+	}
+	t.updateRevoked(parts, true)
+	return nil
+}
+
+// dropAllOwned deletes every partition-owned row as the loop ends, before
+// the source leaves its group. What this worker held unpublished is the next
+// owner's to recount, and a final pass that published it here could land
+// after the next owner's whole count.
+func (t *Turbine) dropAllOwned(ctx context.Context) {
+	if t.dropper == nil || t.windows == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dropWait)
+	defer cancel()
+	unlock := t.lockOwnedPasses()
+	defer unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	if err := t.dropper.DropAll(ctx); err != nil {
+		t.logger.Error("dropping partition-owned rows on the way out", zap.Error(err))
+		if t.stateTx != nil {
+			_ = t.stateTx.Rollback(ctx)
+		}
+		return
+	}
+	if t.stateTx != nil {
+		if err := t.stateTx.Commit(ctx); err != nil {
+			t.logger.Error("committing the drop of partition-owned rows on the way out", zap.Error(err))
+			_ = t.stateTx.Rollback(ctx)
+		}
+	}
+}
+
+// lockOwnedPasses takes every partition-owned window's pass lock, in spec
+// order, and returns the unlock.
+func (t *Turbine) lockOwnedPasses() func() {
+	var owned []*WindowSignal
+	for _, spec := range t.windows.Specs() {
+		if spec.PartitionOwned {
+			owned = append(owned, t.windows.Signal(spec.Name))
+		}
+	}
+	for _, s := range owned {
+		s.LockPass()
+	}
+	return func() {
+		for _, s := range owned {
+			s.UnlockPass()
+		}
+	}
+}
+
 func (t *Turbine) noteDelivering() {
 	if t.windows == nil || t.partitionsRelayed {
 		return
@@ -873,6 +1221,8 @@ func NewTurbine(
 		running:        true,
 		stats:          &Stats{},
 		errorPolicy:    policy,
+		drops:          make(chan dropRequest),
+		loopDone:       make(chan struct{}),
 
 		logger: zap.NewNop(),
 	}
@@ -968,6 +1318,7 @@ func (t *Turbine) recordStateGauges(ctx context.Context) {
 
 func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, err error) {
 	t.logger.Info("consumer loop starting")
+	defer t.loopDoneOnce.Do(func() { close(t.loopDone) })
 
 	// Whatever made the loop fail, the batch in flight was not delivered, and
 	// the positions it advanced must not outlive it. The caller commits again
@@ -987,6 +1338,15 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		return nil, err
 	}
 	defer func() {
+		// Before the source leaves its group: a revocation the group
+		// delivers during Close -- another member joining as this one drains
+		// -- reaches requestDrop, and the loop that services drops has
+		// already returned. With loopDone still open it would block there
+		// until dropWait, past the drain deadline, and the supervisor would
+		// kill the process mid-shutdown. dropAllOwned has run, so the rows
+		// are already gone; the late request returns at once.
+		t.loopDoneOnce.Do(func() { close(t.loopDone) })
+
 		t.logger.Info("closing source from ConsumeLoop",
 			zap.Bool("running", t.running),
 			zap.String("here", "here"),
@@ -997,6 +1357,18 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			panic(err)
 		}
 	}()
+	// Before the source closes: a sender still waiting on its flush hears
+	// why it will not come.
+	defer func() {
+		if err != nil {
+			t.settle(err)
+			return
+		}
+		t.settle(ErrStoppedBeforeFlush)
+	}()
+	// And before either: the rows this worker still holds for partitions it
+	// is about to give up.
+	defer t.dropAllOwned(ctx)
 
 	t.stats.StartTime = t.now().UTC()
 	t.stats.SetNumMessagesConsumed(0)
@@ -1074,6 +1446,36 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				t.recordError(ctx, err, phaseStateCommit, "error committing state on idle tick")
 				return nil, err
 			}
+			// Messages consumed with no batch after them, dropped by an
+			// error policy or refused by a window, are finished with too.
+			t.settle(nil)
+			// A bucket the manager closed past its lateness since the last
+			// batch releases the rows it held the commit behind. With no
+			// batch coming, this tick is what moves the group's offset.
+			if t.lowMoved {
+				if err := t.commitSource(); err != nil {
+					t.logger.Warn("failed to commit the low watermark on an idle tick", zap.Error(err))
+				}
+			}
+			continue
+		case req := <-t.drops:
+			// The group is taking partitions away, and its rebalance waits
+			// on this. Whatever is buffered is processed first, so every
+			// position this worker reached is committed with its low
+			// watermark before the rows behind it go.
+			if numBatchMessages > 0 {
+				if err := t.processBatch(batchCtx, numBatchMessages); err != nil {
+					req.done <- err
+					return nil, t.drainError(err, numBatchMessages)
+				}
+				numBatchMessages = 0
+			}
+			if err := t.dropPartitions(batchCtx, req.parts); err != nil {
+				req.done <- err
+				t.recordError(ctx, err, phaseStateCommit, "error dropping revoked partitions")
+				return nil, err
+			}
+			req.done <- nil
 			continue
 		case <-ctx.Done():
 			t.logger.Info("context done, draining the consumer loop")
@@ -1189,8 +1591,22 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		// phase it lands in.
 		loopStart := time.Now()
 		var batchTook time.Duration
+		// Once per source batch, not per record: a drop is serviced between
+		// batches and the floors are taken here, so neither changes while
+		// this batch is walked, and an assignment that clears a revocation
+		// happens before the partition's records are polled.
+		t.takeFloors()
+		floors := len(t.replayFloors) > 0
+		revoked := t.revoked.Load()
+		skipRevoked := revoked != nil && len(*revoked) > 0
 
 		for _, raw := range msgBatch {
+			// Fetched before its partition was revoked, arriving after the
+			// rows were dropped. It is the new owner's now; neither written
+			// nor marked here.
+			if skipRevoked && (*revoked)[partitionKey{raw.Topic, raw.Partition}] {
+				continue
+			}
 			// A record whose event time this engine cannot place never
 			// reaches the handler, so it can never reach a window table and
 			// never move a watermark. One stamped in the future otherwise
@@ -1205,6 +1621,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				t.noteUnplaceable(raw.EventAtNanos, now)
 				t.mark(raw)
 				totalConsumed++
+				t.unsettled++
 				t.stats.SetNumMessagesConsumed(totalConsumed)
 				if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
 					t.logger.Info("max messages consumed, stopping consumer loop")
@@ -1222,11 +1639,28 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			// whole. Decided here, at arrival, as Flink's window operator
 			// decides it; nothing sweeps the table for late rows afterwards.
 			if t.windows != nil {
+				// A partition replayed from the low watermark: what its last
+				// owner had closed past lateness stays closed, whatever this
+				// worker's own watermark has reached.
+				if floors && t.belowReplayFloor(raw) {
+					t.noteRefusedLate(ctx, raw)
+					t.mark(raw)
+					totalConsumed++
+					t.unsettled++
+					t.stats.SetNumMessagesConsumed(totalConsumed)
+					if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
+						t.logger.Info("max messages consumed, stopping consumer loop")
+						hitMax = true
+						break
+					}
+					continue
+				}
 				refused, late := t.windows.Classify(raw.EventAtNanos)
 				if refused {
 					t.noteRefusedLate(ctx, raw)
 					t.mark(raw)
 					totalConsumed++
+					t.unsettled++
 					t.stats.SetNumMessagesConsumed(totalConsumed)
 					if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
 						t.logger.Info("max messages consumed, stopping consumer loop")
@@ -1250,6 +1684,9 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				// entry, and a fetch spans few, so the scan is a comparison
 				// or two.
 				t.notePlaced(raw.Topic, raw.Partition, raw.EventAtNanos)
+				if t.windowOffsets != nil {
+					t.windowOffsets.Note(raw)
+				}
 			}
 			if err := t.writeMessage(raw); err != nil {
 				t.recordError(ctx, err, phaseHandlerWrite, "error writing message")
@@ -1263,6 +1700,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 				// its position is finished with, so it is safe to commit past.
 				t.mark(raw)
 				totalConsumed++
+				t.unsettled++
 				t.stats.SetNumMessagesConsumed(totalConsumed)
 				if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
 					t.logger.Info("max messages consumed, stopping consumer loop")
@@ -1275,6 +1713,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			t.mark(raw)
 			numBatchMessages++
 			totalConsumed++
+			t.unsettled++
 			t.stats.SetNumMessagesConsumed(totalConsumed)
 
 			if maxMsgs > 0 && totalConsumed >= int64(maxMsgs) {
@@ -1561,6 +2000,18 @@ func (t *Turbine) recordLag(ctx context.Context) {
 	}
 }
 
+// settle tells a Settler source the loop is finished with what it took:
+// flushed and committed when err is nil.
+func (t *Turbine) settle(err error) {
+	if t.unsettled == 0 {
+		return
+	}
+	if s, ok := t.source.(Settler); ok {
+		s.Settle(t.unsettled, err)
+	}
+	t.unsettled = 0
+}
+
 // commitSource commits what the pipeline has processed. A source that can
 // take explicit marks gets exactly the positions this pipeline has finished
 // with; anything else gets the plain Commit it always did.
@@ -1570,14 +2021,47 @@ func (t *Turbine) recordLag(ctx context.Context) {
 // fetched: after one 20,000-message batch it had committed offset 70,086.
 // Whatever sat in that buffer when the process died was gone for good, with
 // the consumer group showing no lag.
+//
+// A pipeline that windows commits each partition's low watermark instead:
+// the position before the lowest offset still feeding a bucket the window
+// retains. The processed position passes rows that exist only in the window's
+// table, and a worker that starts without that table -- a new disk, or a
+// partition it was just assigned -- would begin after them and never count
+// them. Held at the low watermark, the log is the durable copy of the
+// window: whoever starts there rebuilds every retained bucket whole.
 func (t *Turbine) commitSource() error {
 	if mc, ok := t.source.(MarkCommitter); ok {
 		if t.marks.Empty() {
 			return nil
 		}
+		t.lowMoved = false
+		if t.windowOffsets != nil {
+			low := t.windowOffsets.Low(t.marks)
+			// The closed watermarks ride the commit, so whoever starts from
+			// this position next refuses what this worker had finalized.
+			if mc2, ok := t.source.(MetadataCommitter); ok {
+				return mc2.CommitMarksWithMetadata(low, EncodeReplayFloor(t.windowOffsets.Closed()))
+			}
+			return mc.CommitMarks(low)
+		}
 		return mc.CommitMarks(t.marks)
 	}
 	return t.source.Commit()
+}
+
+// expireWindowOffsets drops the records of buckets the manager has closed
+// past their lateness.
+func (t *Turbine) expireWindowOffsets() {
+	if t.windowOffsets == nil || t.windows == nil {
+		return
+	}
+	for _, spec := range t.windows.Specs() {
+		if closed, ok := t.windows.Signal(spec.Name).Closed(); ok {
+			if t.windowOffsets.Expire(spec.Name, closed) {
+				t.lowMoved = true
+			}
+		}
+	}
 }
 
 // initHandler resets the handler under the lock. Init drops or truncates the
@@ -1651,6 +2135,7 @@ func (t *Turbine) rollbackState(ctx context.Context) {
 // unwritten, and a poll that ran in between read the older watermark.
 func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 	t.noteDelivering()
+	t.expireWindowOffsets()
 	moved, watermarkErr := t.assertWatermarks(ctx, write)
 	progressErr := t.recordProgress(ctx, write)
 
@@ -1674,6 +2159,10 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		case t.windows != nil:
 			t.windows.Commit(moved)
 			t.signalWindows(ctx, moved)
+		}
+		// Nothing persists the offset records without a state path.
+		if t.windowOffsets != nil {
+			t.windowOffsets.Saved()
 		}
 		t.lock.Lock()
 		t.commits++
@@ -1724,6 +2213,18 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 		return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offsets")
 	}
 
+	// The offset records ride the same transaction as the rows they
+	// describe, so a restart on this state file holds both or neither.
+	if t.windowOffsetStore != nil {
+		if err := t.windowOffsetStore.Save(ctx, t.windowOffsets.Pending()); err != nil {
+			if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
+				t.logger.Error("rollback after failed offset-record save", zap.Error(rbErr))
+			}
+			t.dropPendingLate()
+			return errs.Wrap(errs.CodeStateCommitFailed, err, "saving offset records")
+		}
+	}
+
 	if err := t.stateTx.Commit(ctx); err != nil {
 		// The commit itself failed, so the transaction is still open and
 		// still holds this batch's writes; roll it back explicitly rather
@@ -1737,6 +2238,9 @@ func (t *Turbine) commitState(ctx context.Context, write progressWrite) error {
 	if t.windows != nil {
 		t.windows.Commit(moved)
 		t.signalWindows(ctx, moved)
+	}
+	if t.windowOffsets != nil {
+		t.windowOffsets.Saved()
 	}
 
 	t.commits++
@@ -1783,6 +2287,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	// in the message loop above, so a batch the loop abandoned -- max-msgs
 	// reached, a fatal error -- reports only the records it actually reached.
 	t.flushObservations()
+	if t.windowOffsets != nil {
+		t.windowOffsets.Merge()
+	}
 
 	t.lock.Lock()
 	batch, err := t.handler.Invoke(ctx)
@@ -1927,6 +2434,9 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 		// Without a state database the source's commit is the durable one.
 		t.committed.Reset(t.marks)
 	}
+
+	// Flushed and committed: a sender waiting on this batch can be told.
+	t.settle(nil)
 
 	b3 := time.Now()
 

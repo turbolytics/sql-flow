@@ -38,7 +38,7 @@ sink.retry: {unit: covered, integration: not_required, growth: not_required, rel
 sink.sqlcommand: {unit: covered, integration: not_required, growth: not_required, release: not_required}
 source.kafka: {unit: covered, integration: covered, growth: not_required, release: covered}
 source.mqtt: {unit: covered, integration: covered, growth: not_required, release: not_required}
-source.webhook: {unit: covered, integration: not_required, growth: not_required, release: not_required}
+source.webhook: {unit: covered, integration: covered, growth: not_required, release: not_required}
 source.websocket: {unit: covered, integration: covered, growth: not_required, release: covered}
 state.corruption: {unit: covered, integration: not_required, growth: not_required, release: covered}
 state.durability: {unit: covered, integration: not_required, growth: not_required, release: covered}
