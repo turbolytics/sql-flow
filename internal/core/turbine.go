@@ -1319,6 +1319,15 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 		return nil, err
 	}
 	defer func() {
+		// Before the source leaves its group: a revocation the group
+		// delivers during Close -- another member joining as this one drains
+		// -- reaches requestDrop, and the loop that services drops has
+		// already returned. With loopDone still open it would block there
+		// until dropWait, past the drain deadline, and the supervisor would
+		// kill the process mid-shutdown. dropAllOwned has run, so the rows
+		// are already gone; the late request returns at once.
+		t.loopDoneOnce.Do(func() { close(t.loopDone) })
+
 		t.logger.Info("closing source from ConsumeLoop",
 			zap.Bool("running", t.running),
 			zap.String("here", "here"),

@@ -774,6 +774,13 @@ func quoteIdent(name string) string {
 	return string(append(out, '"'))
 }
 
+// Clear removes every window's asserted watermark. A partition_owned pipeline
+// recounts from Kafka at start, so a restored watermark would refuse the
+// replayed records as late. It does not commit.
+func (s *WatermarkStore) Clear(ctx context.Context) error {
+	return s.exec(ctx, `DELETE FROM `+WatermarksTable)
+}
+
 func (s *WatermarkStore) exec(ctx context.Context, q string) error {
 	_, err := s.execRows(ctx, q)
 	return err

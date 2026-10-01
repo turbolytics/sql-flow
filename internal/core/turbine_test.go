@@ -1247,11 +1247,23 @@ type ownerSource struct {
 	markingSource
 	stream                   chan []Message
 	assigned, released, lost func(map[string][]int32)
+	// revokeOnClose makes Close deliver a revocation, as the group does when
+	// this worker leaves while another joins. franz-go's Close waits for
+	// such a callback to return, so a callback that blocks on the consume
+	// loop stalls the whole shutdown.
+	revokeOnClose map[string][]int32
 }
 
 func newOwnerSource() *ownerSource { return &ownerSource{stream: make(chan []Message, 1)} }
 
 func (s *ownerSource) Stream() <-chan []Message { return s.stream }
+
+func (s *ownerSource) Close() error {
+	if s.revokeOnClose != nil && s.released != nil {
+		s.released(s.revokeOnClose)
+	}
+	return s.markingSource.Close()
+}
 
 func (s *ownerSource) OnPartitions(a, r, l func(map[string][]int32)) {
 	s.assigned, s.released, s.lost = a, r, l
@@ -1333,5 +1345,26 @@ func TestTurbine_RevocationAfterTheLoopReturnsDoesNotBlock(t *testing.T) {
 	case <-returned:
 	case <-time.After(2 * time.Second):
 		t.Fatal("a revocation blocked on a consume loop that had returned")
+	}
+}
+
+// A revocation delivered as the source leaves its group -- another member
+// joining during the drain -- must not wait on the consume loop, which has
+// already returned. dropAllOwned has deleted the rows, so the late request
+// is answered at once rather than stalling the shutdown for dropWait.
+func TestTurbine_RevocationDuringCloseDoesNotStallShutdown(t *testing.T) {
+	src := newOwnerSource()
+	src.revokeOnClose = map[string][]int32{"t": {0}}
+	w := NewWatermarks([]WindowSpec{ownedSpec}, nil)
+	tb := newWindowedTurbine(src, &fakeHandler{}, &fakeSink{}, 100, w, WithPartitionDropper(&recordingDropper{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	src.assigned(map[string][]int32{"t": {0}})
+	done := make(chan struct{})
+	go func() { _, _ = tb.ConsumeLoop(ctx, 0); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown stalled on a revocation delivered during Close")
 	}
 }

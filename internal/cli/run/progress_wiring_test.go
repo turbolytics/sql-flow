@@ -11,6 +11,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/duckdb"
+	"github.com/turbolytics/sql-flow/internal/managers"
 	"github.com/zeebo/assert"
 )
 
@@ -224,4 +225,51 @@ func TestStateDurability_APartitionOwnedPipelineStartsEmpty(t *testing.T) {
 	defer rdr.Release()
 	assert.That(t, rdr.Next())
 	assert.Equal(t, int64(0), rdr.Record().Column(0).(*array.Int64).Value(0))
+}
+
+// A partition_owned restart must not keep the previous run's window
+// watermarks. The engine recounts every assigned partition's open buckets
+// from Kafka, and a restored asserted watermark would refuse those replayed
+// records as late (bucket_end + lateness <= watermark) -- a silent
+// undercount in the exact-count feature. The manager's closed watermark in
+// sqlflow_windows would likewise tell it those buckets were already
+// published, so the recount would never reach the sink.
+func TestStateDurability_PartitionOwnedStartClearsWatermarks(t *testing.T) {
+	coverage.Covers(t, "state.durability")
+	ctx := context.Background()
+	db, err := duckdb.OpenPath(ctx, "")
+	assert.NoError(t, err)
+	defer db.Close()
+	conn, err := db.Connect(ctx)
+	assert.NoError(t, err)
+	defer conn.Close()
+
+	conf := windowedConf(10)
+	conf.Pipeline.Source = config.Source{Type: "kafka", Kafka: &config.KafkaSource{Topics: []string{"topic"}}}
+	conf.Tables.SQL[0].Window.PartitionOwned = true
+	conf.Tables.SQL[0].Window.Sink = config.Sink{Type: "postgres", Postgres: &config.PostgresSink{
+		Mode: "upsert", Key: []string{"bucket", "kafka_partition"}}}
+
+	stmt, err := conn.NewStatement()
+	assert.NoError(t, err)
+	assert.NoError(t, stmt.SetSqlQuery(`CREATE TABLE t (bucket TIMESTAMPTZ, kafka_partition INTEGER)`))
+	_, err = stmt.ExecuteUpdate(ctx)
+	assert.NoError(t, err)
+	assert.NoError(t, stmt.Close())
+
+	assert.NoError(t, initWindowStores(ctx, conf, conn))
+	ws := core.NewWatermarkStore(conn)
+	assert.NoError(t, ws.Save(ctx, "t", time.Now()))
+	ms := managers.NewStore(conn)
+	assert.NoError(t, ms.Save(ctx, "t", time.Now(), time.Now()))
+
+	_, err = partitionOwnedOptions(ctx, conf, conn, true)
+	assert.NoError(t, err)
+
+	_, ok, err := ws.Load(ctx, "t")
+	assert.NoError(t, err)
+	assert.That(t, !ok) // the asserted watermark is gone
+	_, ok, err = ms.Load(ctx, "t")
+	assert.NoError(t, err)
+	assert.That(t, !ok) // the closed watermark is gone
 }

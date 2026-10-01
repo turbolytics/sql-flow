@@ -92,6 +92,24 @@ func partitionOwnedOptions(ctx context.Context, conf *config.Conf, conn adbc.Con
 		if err := records.Clear(ctx); err != nil {
 			return nil, errs.Wrap(errs.CodeStateInternal, err, "clearing offset records at start")
 		}
+		// And the window watermarks: the asserted one would refuse the
+		// recount's replayed records as late, and the closed one would tell
+		// the manager those buckets were already published. Init first, as
+		// the stores above do, so this holds whatever ran before it.
+		watermarks := core.NewWatermarkStore(conn)
+		if err := watermarks.Init(ctx); err != nil {
+			return nil, err
+		}
+		if err := watermarks.Clear(ctx); err != nil {
+			return nil, errs.Wrap(errs.CodeStateInternal, err, "clearing window watermarks at start")
+		}
+		closed := managers.NewStore(conn)
+		if err := closed.Init(ctx); err != nil {
+			return nil, err
+		}
+		if err := closed.Clear(ctx); err != nil {
+			return nil, errs.Wrap(errs.CodeStateInternal, err, "clearing closed watermarks at start")
+		}
 	}
 	return []core.TurbineOption{core.WithPartitionDropper(dropper)}, nil
 }

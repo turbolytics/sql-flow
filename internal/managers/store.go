@@ -82,6 +82,14 @@ func (s *Store) Save(ctx context.Context, name string, watermark, closedAt time.
 	return nil
 }
 
+// Clear removes every window's closed watermark. A partition_owned pipeline
+// recounts from Kafka at start, so a kept closed watermark would tell the
+// manager those buckets were already published and the recount would never
+// reach the sink. It does not commit.
+func (s *Store) Clear(ctx context.Context) error {
+	return s.exec(ctx, `DELETE FROM `+windowsTable)
+}
+
 func (s *Store) exec(ctx context.Context, q string) error {
 	_, err := s.execRows(ctx, q)
 	return err
