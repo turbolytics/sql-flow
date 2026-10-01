@@ -26,6 +26,7 @@ const exactWithin = 3 * time.Minute
 // 1. Steady state: three workers up throughout.
 func TestIntegrationMetering_SteadyState(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
+	meteringTier(t, false)
 	s := newStack(t, current)
 	events := workload(1, 200, 20, recent(8), 5*time.Minute)
 	for i := 0; i < 3; i++ {
@@ -39,6 +40,7 @@ func TestIntegrationMetering_SteadyState(t *testing.T) {
 // 2. A worker joins mid-stream, forcing a rebalance while minutes are open.
 func TestIntegrationMetering_WorkerJoins(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
+	meteringTier(t, false)
 	s := newStack(t, current)
 	// A reassigned partition must not be declared idle before its replay is
 	// placed, or the other partitions advance the watermark past its open
@@ -62,6 +64,7 @@ func TestIntegrationMetering_WorkerJoins(t *testing.T) {
 // 3. A worker leaves gracefully mid-stream.
 func TestIntegrationMetering_WorkerLeaves(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
+	meteringTier(t, true)
 	s := newStack(t, current)
 	// See scenario 2 and stack.idleClose.
 	s.idleClose = 20
@@ -91,6 +94,7 @@ func TestIntegrationMetering_WorkerLeaves(t *testing.T) {
 // session timeout and this becomes scenario 3.
 func TestIntegrationMetering_CrashStateKept(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
+	meteringTier(t, false)
 	s := newStack(t, current)
 	events := workload(4, 200, 20, recent(8), 5*time.Minute)
 	half := len(events) / 2
@@ -106,6 +110,7 @@ func TestIntegrationMetering_CrashStateKept(t *testing.T) {
 // 5. kill -9, state lost: the restart has a new state path.
 func TestIntegrationMetering_CrashStateLost(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
+	meteringTier(t, false)
 	s := newStack(t, current)
 	events := workload(5, 200, 20, recent(8), 5*time.Minute)
 	half := len(events) / 2
@@ -123,6 +128,7 @@ func TestIntegrationMetering_CrashStateLost(t *testing.T) {
 // partition to be deduplicated there.
 func TestIntegrationMetering_RetriedDuplicates(t *testing.T) {
 	coverage.Covers(t, "source.webhook", "sink.kafka")
+	meteringTier(t, true)
 	s := newStack(t, current)
 	events := workload(6, 100, 10, recent(8), 5*time.Minute)
 	_, url := s.startIngest("ingest", 50, 1)
@@ -150,6 +156,7 @@ func TestIntegrationMetering_RetriedDuplicates(t *testing.T) {
 // 7. Late events within allowed_lateness_seconds republish their minute.
 func TestIntegrationMetering_LateWithinLateness(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
+	meteringTier(t, false)
 	s := newStack(t, current)
 	start := recent(8)
 	events := workload(7, 100, 10, start, 5*time.Minute)
@@ -171,6 +178,7 @@ func TestIntegrationMetering_LateWithinLateness(t *testing.T) {
 // must be in Kafka.
 func TestIntegrationMetering_IngestKilledBeforeFlush(t *testing.T) {
 	coverage.Covers(t, "source.webhook")
+	meteringTier(t, false)
 	s := newStack(t, current)
 	// A batch that only the interval flushes. Filled by size, a batch
 	// flushes every fraction of a second under this load, and whether the
@@ -226,6 +234,7 @@ func TestIntegrationMetering_IngestKilledBeforeFlush(t *testing.T) {
 // to reach them against the same load with no rebalance.
 func TestIntegrationMetering_RebalanceUnderLoad(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
+	meteringTier(t, true)
 	for _, join := range []bool{false, true} {
 		join := join
 		t.Run(map[bool]string{false: "control", true: "join"}[join], func(t *testing.T) {
@@ -261,6 +270,7 @@ func TestIntegrationMetering_RebalanceUnderLoad(t *testing.T) {
 // event again. The minute it was late for must keep its count.
 func TestIntegrationMetering_ReplayPastARefusedLateEvent(t *testing.T) {
 	coverage.Covers(t, "source.kafka")
+	meteringTier(t, true)
 	s := newStack(t, current)
 	// Long enough that minute 7 stays open through the waits below; a
 	// shorter idle close publishes it before the kill, and nothing is lost.

@@ -699,6 +699,25 @@ func scenarioDir(t *testing.T) string {
 	return dir
 }
 
+// meteringTier gates a scenario by SQLFLOW_METERING, the way the growth tier
+// follows the ref. Unset (a developer running the package) and "full" run
+// every scenario. "bounded" runs only the core and skips the slow rebalance,
+// replay and duplicate scenarios that push the package past CI's 600s
+// per-package budget. "off" skips all. CI sets bounded on a branch and full
+// on main, so the full proof gates main and every release while a branch
+// push stays fast.
+func meteringTier(t *testing.T, slow bool) {
+	t.Helper()
+	switch os.Getenv("SQLFLOW_METERING") {
+	case "off":
+		t.Skip("SQLFLOW_METERING=off")
+	case "bounded":
+		if slow {
+			t.Skip("SQLFLOW_METERING=bounded runs the core scenarios only; this one runs on main")
+		}
+	}
+}
+
 // recent is the start of a workload: whole minutes in the past, inside the
 // engine's placement window and far enough back that every minute can close.
 func recent(minutesAgo int) time.Time {
