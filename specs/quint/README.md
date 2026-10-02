@@ -52,6 +52,42 @@ process writing each `(bucket, partition)` key across a rebalance.
 | `FIX = false` | counterexample | **counterexample** |
 | `FIX = true` (partition_owned) | no violation, 50k samples | **NoError (proved)** |
 
+## commit_offsets.qnt — the durable offset commit (#414 Finding 1 + low watermark)
+
+Two invariants on the windowed-Kafka offset commit:
+
+- `commitsOnlyOwned` — a worker commits offsets only for a partition it
+  currently owns. `FIX = false` keeps a revoked partition's uncommitted work,
+  so the old owner commits a partition it lost (the adversarial review's
+  Finding 1); `FIX = true` forgets it on the handoff.
+- `committedBelowRetained` — the committed offset is at or below the lowest
+  offset a retained bucket still needs, so a restart replays what the open
+  windows hold. `FIX = false` commits the processed offset (ahead of the
+  retained rows); `FIX = true` commits the low watermark.
+
+| Invariant | design | `quint run` | `quint verify` (≤10 steps) |
+|---|---|---|---|
+| `commitsOnlyOwned` | `FIX = false` | counterexample | **counterexample** |
+| `commitsOnlyOwned` | `FIX = true` | no violation | **NoError — proved** |
+| `committedBelowRetained` | `FIX = false` | counterexample | **counterexample** |
+| `committedBelowRetained` | `FIX = true` | no violation | **NoError — proved** |
+
+## exactly_once.qnt — no double count under retry/replay
+
+Invariant `exactlyOnce`: the published count equals the number of distinct ids
+delivered, however many times a retry or a crash-replay redelivers an id. This
+is the no-double-count half of exactly-once; the no-loss half is
+`committedBelowRetained` above.
+
+- `FIX = false` — no dedup: the window counts every delivery, so a replayed id
+  is counted twice.
+- `FIX = true` — dedup by id (a set), idempotent under redelivery.
+
+| Design | `quint run` | `quint verify` (≤10 steps) |
+|---|---|---|
+| `FIX = false` | counterexample | **counterexample** |
+| `FIX = true` (dedup) | no violation | **NoError — proved** |
+
 ## Running
 
 ```
@@ -74,6 +110,6 @@ specs/quint/run.sh verify   # + exhaustive verify if java is on PATH
 - `quint verify` is exhaustive up to a **step bound**, not unbounded; it is a
   bounded proof, far stronger than sampling but not an inductive one. Raising
   `--max-steps` widens it.
-- Next properties to model (from #418): a worker commits offsets only for
-  partitions it owns; committed offset ≤ lowest retained offset; every event
-  counted exactly once.
+- The five core invariants from #418 are now modeled and verified. Next:
+  raise the step bounds, and pursue inductive (unbounded) invariants so the
+  proofs no longer depend on a bound.

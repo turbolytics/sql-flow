@@ -24,5 +24,8 @@ check() { # file invariant maxsteps
   fi
 }
 
-check window_watermark.qnt noOpenBucketRefused 12
-check single_writer.qnt    noNonOwnerPublish   10
+check window_watermark.qnt noOpenBucketRefused    12
+check single_writer.qnt    noNonOwnerPublish      10
+check commit_offsets.qnt   commitsOnlyOwned       10
+check commit_offsets.qnt   committedBelowRetained 10
+check exactly_once.qnt     exactlyOnce            10
