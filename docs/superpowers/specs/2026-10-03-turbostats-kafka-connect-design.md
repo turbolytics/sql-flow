@@ -385,6 +385,83 @@ A Debezium Postgres connector during an incremental snapshot:
 }
 ```
 
+## JSON Schema
+
+A reporter that isn't written in Go needs the contract in a form it can
+check. The Kafka Connect reporter is the first. The contract is therefore
+published as JSON Schema, reflected from the Go types in `turbostats/wire`.
+
+**The Go types are the contract, and the schema is an artifact of them.**
+Config schemas already work this way: `internal/schema` reflects them with
+`invopop/jsonschema`, a golden test fails when the committed file is stale,
+and `make schema` regenerates it. A hand-written schema would be a second
+statement of the contract with nothing holding the two together.
+
+- `internal/schema` gains a generator that reflects `wire.Bundle` and
+  `wire.Response`. Descriptions come from the doc comments in
+  `turbostats/wire`, so the schema carries the contract's prose.
+- The output is committed as `turbostats/wire/schema/bundle.json` and
+  `response.json`. The `turbostats/wire/schema` package embeds both with
+  `go:embed`, so `wire` and its subpackages still import only the standard
+  library.
+- `make schema` regenerates them, and a golden test fails when they are
+  stale.
+
+### Four rules the config schemas don't follow
+
+The contract's own rules make this schema differ from the config schemas:
+
+1. **Unknown fields are allowed everywhere.** Every reader ignores unknown
+   sections and fields, and a new field is additive. A test asserts that
+   `"additionalProperties": false` appears nowhere.
+2. **No enums.** A new value of `state` or `backfill.state` is an additive v1
+   change, and an enum would make an old validator reject a new engine. Each
+   field's description lists the values known today.
+3. **`required` follows the json tags.** A field without `omitempty` is
+   required. `goroutines` stops being required in this change.
+4. **`buckets` holds exactly `len(DurationBounds)+1` items.** The generator
+   reads the count from the code, the way the config generator reads its
+   enums from the registries.
+
+### Where it is published
+
+The control plane serves both documents:
+
+| Document | URL |
+|---|---|
+| Bundle | `https://control.turbolytics.io/v1/turbostats/bundle.schema.json` |
+| Response | `https://control.turbolytics.io/v1/turbostats/response.schema.json` |
+
+Each URL is the document's `$id`. The `v1` prefix matches the media type and
+the ingest route, `POST /v1/turbostats`. A v2 contract gets new URLs, and v1's
+stay as they are.
+
+The control plane embeds the files from the `wire` module it already builds
+against. It serves the schema of exactly the types it accepts, and no copy
+step can fall behind.
+
+### What validates against it
+
+- The contract's Go tests validate `testdata/vectors.json` and a freshly
+  collected bundle, with `santhosh-tekuri/jsonschema`, which is already a
+  dependency.
+- The Kafka Connect reporter's CI validates every bundle it builds against the
+  same file. This is the guard across languages: the Java reporter can't drift
+  from the Go types without failing CI. Whether it also generates its Java
+  types from the schema is the reporter plan's decision.
+
+### What the schema can't say
+
+The schema checks shape. The presence rules are about how a process's reports
+relate over time:
+
+- the window fields travel together;
+- `backfill` is present from the first report;
+- a process's field set never changes;
+- counters only rise within one `pipeline.started_at`.
+
+Those stay in this spec's prose and in the invariant tests.
+
 ## What a receiver does with these
 
 This section guides the control plane. It is not part of the contract.
@@ -418,6 +495,8 @@ The fields fall into the first two levels of data operational maturity:
 | Grouping tasks into a connector | `instance.name`, later, in the receiver | A `member` field: it names a Connect concept, and `name` already carries the grouping. |
 | Two document types, process and pipeline | Not now | The cleanest model, but a v2-sized change before any customer asked for it. |
 | Acknowledged rows on Connect | A producer interceptor | `source-record-write-total`: it counts on send. |
+| The schema's source | Reflected from the Go types | Hand-written: a second statement of the contract that drifts silently. |
+| Where the schema is published | The control plane, under `/v1/turbostats` | `turbolytics.io`: a copy step that can fall behind. Raw GitHub at a tag: the URL changes with every release, and `$id` must not. |
 | GC time | Out | One field meaning wall time on the JVM and CPU time on Go. |
 | Heap in use, garbage included | Out | It rises and falls every collection and says nothing `live_bytes` doesn't. |
 
@@ -435,6 +514,10 @@ The fields fall into the first two levels of data operational maturity:
   sends it.
 - `pytest tests/release`, because the bundle's shape has a Python guard as
   well as the Go type walk.
+- The schema's golden test, the test that no object forbids unknown fields,
+  and validation of `vectors.json` and a collected bundle against the schema.
+- A mutation check: adding `"additionalProperties": false` to one object, or
+  an enum to `state`, fails a test.
 
 ### SQLFlow
 
