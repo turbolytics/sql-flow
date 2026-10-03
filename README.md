@@ -907,10 +907,17 @@ second pipeline, as [`metering/ingest.yml`](dev/config/examples/metering/ingest.
 does.
 
 Responds 200 on accept, 400 for a missing signature, 403 for an invalid one,
-413 for a body over `max_body_bytes`, and 408 for a body that stalls. The
-body bound applies before the body is read and before the signature is
-checked, so an unsigned oversized request never holds memory past it. The
-default is 25 MiB, GitHub's payload ceiling.
+400 `{"detail":"Request body is not valid JSON"}` for a body that is not one
+JSON value, 413 for a body over `max_body_bytes`, and 408 for a body that
+stalls. The body bound applies before the body is read and before the
+signature is checked, so an unsigned oversized request never holds memory
+past it. The default is 25 MiB, GitHub's payload ceiling.
+
+A body that is not JSON is refused to its sender before it reaches the
+pipeline: every handler reads JSON, and one unreadable body in a batch would
+fail the batch for every other sender in it. An empty body and newline-
+delimited JSON (several values, one per line) are refused the same way; send
+several events as one array or object.
 
 `GET /healthz` on the same address answers `{"status":"ok"}` while the source
 admits deliveries, and 503 once it is closing. It needs no signature and reads

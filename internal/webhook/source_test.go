@@ -156,6 +156,58 @@ func TestSourceWebhook_DeliversBodyToStream(t *testing.T) {
 	}
 }
 
+// A body that is not JSON is refused before it is queued: every handler
+// reads JSON, and a body that reached a batch would fail the batch for every
+// other sender in it (#425). Valid JSON of any shape is delivered; what the
+// shape means is the handler's business.
+func TestSourceWebhook_RefusesBodyThatIsNotJSON(t *testing.T) {
+	coverage.Covers(t, "source.webhook")
+	for _, tc := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"plain text", "x", http.StatusBadRequest},
+		{"empty", "", http.StatusBadRequest},
+		{"truncated object", `{"a":`, http.StatusBadRequest},
+		{"two objects on two lines", "{\"a\":1}\n{\"a\":2}", http.StatusBadRequest},
+		{"object", `{}`, http.StatusOK},
+		{"array", `[1]`, http.StatusOK},
+		{"string", `"s"`, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := NewSource()
+			assert.NoError(t, err)
+			defer s.Close()
+			srv := httptest.NewServer(s.Handler())
+			defer srv.Close()
+
+			delivered := make(chan []core.Message, 1)
+			go func() {
+				select {
+				case m := <-s.Stream():
+					delivered <- m
+				case <-time.After(time.Second):
+					close(delivered)
+				}
+			}()
+
+			resp := post(t, srv.URL+"/events", []byte(tc.body), "", "")
+			assert.Equal(t, tc.want, resp.StatusCode)
+			got := readBody(t, resp)
+
+			m, ok := <-delivered
+			if tc.want == http.StatusBadRequest {
+				assert.Equal(t, `{"detail":"Request body is not valid JSON"}`, got)
+				assert.False(t, ok)
+				return
+			}
+			assert.True(t, ok)
+			assert.Equal(t, tc.body, string(m[0].Value))
+		})
+	}
+}
+
 // The Python source queues at most one message, so a second delivery waits
 // for the pipeline to consume the first.
 func TestSourceWebhook_BackpressureHoldsSecondRequest(t *testing.T) {
@@ -167,13 +219,13 @@ func TestSourceWebhook_BackpressureHoldsSecondRequest(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
-	resp := post(t, srv.URL+"/events", []byte("first"), "", "")
+	resp := post(t, srv.URL+"/events", []byte(`"first"`), "", "")
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
 	second := make(chan int, 1)
 	go func() {
-		resp := post(t, srv.URL+"/events", []byte("second"), "", "")
+		resp := post(t, srv.URL+"/events", []byte(`"second"`), "", "")
 		resp.Body.Close()
 		second <- resp.StatusCode
 	}()
@@ -185,7 +237,7 @@ func TestSourceWebhook_BackpressureHoldsSecondRequest(t *testing.T) {
 	}
 
 	batch := <-s.Stream()
-	assert.Equal(t, "first", string(batch[0].Value))
+	assert.Equal(t, `"first"`, string(batch[0].Value))
 
 	select {
 	case code := <-second:
@@ -195,7 +247,7 @@ func TestSourceWebhook_BackpressureHoldsSecondRequest(t *testing.T) {
 	}
 
 	batch = <-s.Stream()
-	assert.Equal(t, "second", string(batch[0].Value))
+	assert.Equal(t, `"second"`, string(batch[0].Value))
 }
 
 func TestSourceWebhook_CloseReleasesBlockedRequest(t *testing.T) {
@@ -206,12 +258,12 @@ func TestSourceWebhook_CloseReleasesBlockedRequest(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
-	resp := post(t, srv.URL+"/events", []byte("first"), "", "")
+	resp := post(t, srv.URL+"/events", []byte(`"first"`), "", "")
 	resp.Body.Close()
 
 	blocked := make(chan int, 1)
 	go func() {
-		resp := post(t, srv.URL+"/events", []byte("second"), "", "")
+		resp := post(t, srv.URL+"/events", []byte(`"second"`), "", "")
 		resp.Body.Close()
 		blocked <- resp.StatusCode
 	}()
@@ -360,7 +412,8 @@ func TestSourceWebhook_AcceptsBodyAtTheLimit(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
-	body := bytes.Repeat([]byte("x"), 16)
+	// 16 bytes, the limit, and valid JSON: a string of 14 x's in quotes.
+	body := []byte(`"` + strings.Repeat("x", 14) + `"`)
 	resp := post(t, srv.URL+"/events", body, "", "")
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
@@ -447,13 +500,13 @@ func TestSourceWebhook_BackpressureOutlastsBodyTimeout(t *testing.T) {
 	assert.NoError(t, s.Start())
 	defer s.Close()
 
-	resp := post(t, "http://"+s.Addr()+"/events", []byte("first"), "", "")
+	resp := post(t, "http://"+s.Addr()+"/events", []byte(`"first"`), "", "")
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
 	second := make(chan int, 1)
 	go func() {
-		resp := post(t, "http://"+s.Addr()+"/events", []byte("second"), "", "")
+		resp := post(t, "http://"+s.Addr()+"/events", []byte(`"second"`), "", "")
 		resp.Body.Close()
 		second <- resp.StatusCode
 	}()
@@ -462,9 +515,9 @@ func TestSourceWebhook_BackpressureOutlastsBodyTimeout(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 
 	batch := <-s.Stream()
-	assert.Equal(t, "first", string(batch[0].Value))
+	assert.Equal(t, `"first"`, string(batch[0].Value))
 	batch = <-s.Stream()
-	assert.Equal(t, "second", string(batch[0].Value))
+	assert.Equal(t, `"second"`, string(batch[0].Value))
 
 	select {
 	case code := <-second:
@@ -578,10 +631,10 @@ func TestSourceWebhook_HealthzAnswersWhileADeliveryWaits(t *testing.T) {
 	defer srv.Close()
 	defer s.Close()
 
-	resp := post(t, srv.URL+"/events", []byte("first"), "", "")
+	resp := post(t, srv.URL+"/events", []byte(`"first"`), "", "")
 	resp.Body.Close()
 	go func() {
-		if resp, err := http.Post(srv.URL+"/events", "application/json", strings.NewReader("second")); err == nil {
+		if resp, err := http.Post(srv.URL+"/events", "application/json", strings.NewReader(`"second"`)); err == nil {
 			resp.Body.Close()
 		}
 	}()
@@ -680,12 +733,12 @@ func TestSourceWebhook_AfterFlushSettlesInDeliveryOrder(t *testing.T) {
 		ch := make(chan int, 1)
 		codes[body] = ch
 		go func(b string) {
-			resp := post(t, srv.URL+"/events", []byte(b), "", "")
+			resp := post(t, srv.URL+"/events", []byte(`"`+b+`"`), "", "")
 			resp.Body.Close()
 			ch <- resp.StatusCode
 		}(body)
 		got := <-s.Stream()
-		assert.Equal(t, body, string(got[0].Value))
+		assert.Equal(t, `"`+body+`"`, string(got[0].Value))
 	}
 	s.Settle(1, nil)
 	assert.Equal(t, http.StatusOK, <-codes["first"])
@@ -709,7 +762,7 @@ func TestSourceWebhook_AfterFlushHangupDoesNotShiftAnswers(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/events", strings.NewReader("gone"))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/events", strings.NewReader(`"gone"`))
 	go func() { _, _ = http.DefaultClient.Do(req) }()
 	<-s.Stream()
 	cancel()
@@ -717,7 +770,7 @@ func TestSourceWebhook_AfterFlushHangupDoesNotShiftAnswers(t *testing.T) {
 
 	second := make(chan int, 1)
 	go func() {
-		resp := post(t, srv.URL+"/events", []byte("stays"), "", "")
+		resp := post(t, srv.URL+"/events", []byte(`"stays"`), "", "")
 		resp.Body.Close()
 		second <- resp.StatusCode
 	}()
@@ -737,7 +790,7 @@ func TestSourceWebhook_AfterFlushCloseReleasesWaiters(t *testing.T) {
 
 	answered := make(chan int, 1)
 	go func() {
-		resp := post(t, srv.URL+"/events", []byte("x"), "", "")
+		resp := post(t, srv.URL+"/events", []byte(`"x"`), "", "")
 		resp.Body.Close()
 		answered <- resp.StatusCode
 	}()
@@ -754,7 +807,7 @@ func TestSourceWebhook_OnReceiveIsTheDefault(t *testing.T) {
 	defer s.Close()
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
-	resp := post(t, srv.URL+"/events", []byte("x"), "", "")
+	resp := post(t, srv.URL+"/events", []byte(`"x"`), "", "")
 	assert.Equal(t, `{"status":"received"}`, readBody(t, resp))
 	s.Settle(5, nil) // nothing waits; must not panic
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/eventtime"
@@ -369,6 +370,17 @@ func (s *Source) receiveEvents(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, `{"detail":"Invalid HMAC signature"}`)
 			return
 		}
+	}
+
+	// Every handler reads JSON, and the inferred ones refuse anything else
+	// in Write. A refusal there fails the whole batch, and under RAISE ends
+	// the run, so one sender's bad body would answer every other sender in
+	// the batch 503 and stop the endpoint (#425). Refused here instead, to
+	// the sender alone, before it can reach a batch. After the signature
+	// check, so an unsigned body is refused as unsigned whatever it holds.
+	if !json.Valid(body) {
+		writeJSON(w, http.StatusBadRequest, `{"detail":"Request body is not valid JSON"}`)
+		return
 	}
 
 	msgs := []core.Message{{Value: body, EventAtNanos: s.stamp(body)}}
