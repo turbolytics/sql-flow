@@ -435,6 +435,17 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 // so 8 leaves the alarm a margin without letting the shape double quietly.
 func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
+	raw, err := json.Marshal(widestBundle(t))
+	assert.NoError(t, err)
+	t.Logf("a bundle with every field at its widest is %d bytes", len(raw))
+	assert.That(t, len(raw) < 8<<10)
+}
+
+// widestBundle is a bundle with every field at its widest value. The size
+// guard prices it, and the schema test validates it, so a field added to
+// the contract and forgotten here fails neither.
+func widestBundle(t *testing.T) wire.Bundle {
+	t.Helper()
 	big := int64(1) << 62
 	n := 1 << 30
 	at := time.Now().UTC()
@@ -442,42 +453,123 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	// bounded string and this is the widest one worth pricing.
 	code := "system.internal.unexpected"
 	secs := 1e9
-	b := wire.Bundle{
-		V: wire.Version, SentAt: at, IntervalSeconds: 86400, LastActivityAt: &at,
+	basis := "kafka_log_append_time"
+	connected := true
+	return wire.Bundle{
+		V:               wire.Version,
+		SentAt:          at,
+		IntervalSeconds: 86400,
+		LastActivityAt:  &at,
+		IdleSeconds:     &big,
 		Instance: wire.Instance{
-			ID: strings.Repeat("i", 64), Name: strings.Repeat("n", 64),
-			Version: "v2026.09.21.12", Commit: strings.Repeat("c", 40),
-			Arch: "linux/arm64", ConfigHash: "sha256:" + strings.Repeat("f", 64),
-			SourceType: "websocket", SinkType: "clickhouse", HandlerType: "inferred_disk",
-			Labels: widestLabels(t),
+			ID:              strings.Repeat("i", 64),
+			Name:            strings.Repeat("n", 64),
+			Version:         "v2026.09.21.12",
+			Commit:          strings.Repeat("c", 40),
+			Arch:            "linux/arm64",
+			ConfigHash:      "sha256:" + strings.Repeat("f", 64),
+			SourceType:      "websocket",
+			SinkType:        "clickhouse",
+			HandlerType:     "inferred_disk",
+			Runtime:         "kafka-connect",
+			RuntimeVersion:  "3.8.0-ccs",
+			ReporterVersion: "v2026.10.03.12",
+			Labels:          widestLabels(t),
 		},
-		Process: wire.Process{StartedAt: at, RSSBytes: big, Goroutines: n},
+		Process: wire.Process{
+			ID:               strings.Repeat("a", 32),
+			Host:             strings.Repeat("h", 64),
+			StartedAt:        at,
+			UptimeSeconds:    &big,
+			RSSBytes:         big,
+			Goroutines:       n,
+			GoRetainedBytes:  big,
+			GoHeapBytes:      big,
+			MemoryLimitBytes: big,
+			Memory: &wire.Memory{
+				Runtime:        "jvm",
+				RetainedBytes:  big,
+				LiveBytes:      big,
+				HeapLimitBytes: big,
+				GCCount:        big,
+			},
+		},
 		Pipeline: &wire.Pipeline{
-			MessageCount: big, MessagePayloadBytes: &big, HandlerRowsRead: big, ErrorCount: big,
-			SinkFlushCount: big, SinkRowsAccepted: big, SinkRowsWritten: big,
-			StateCommitCount: big, StateDBSizeBytes: &big, LastMessageAt: &at,
-			SinkRetryCount: &big, LagMaxMessages: &big, LagTotalMessages: &big,
-			LagPartitions: &n, LagObservedAt: &at, LateRowsDropped: &big,
-			LateRowsRecomputed: &big, WindowClosedCount: &big,
-			WindowLagSeconds: &big, WindowNewestBucketAt: &at,
-			SourceErrorCount: &big, HandlerErrorCount: &big, SinkErrorCount: &big,
-			StateErrorCount: &big, DLQRows: &big, LastErrorCode: &code,
-			LastErrorAt: &at, RecvWaitSeconds: &secs,
-			Duration: &wire.PipelineDurations{Batch: widestDuration(), SinkFlush: widestDuration()},
+			State:                "starting",
+			StartedAt:            &at,
+			RestartCount:         &big,
+			SourceConnected:      &connected,
+			MessageCount:         big,
+			MessagePayloadBytes:  &big,
+			HandlerRowsRead:      big,
+			ErrorCount:           big,
+			SinkFlushCount:       big,
+			SinkRowsAccepted:     big,
+			SinkRowsWritten:      big,
+			StateCommitCount:     big,
+			StateDBSizeBytes:     &big,
+			LastMessageAt:        &at,
+			LastSinkWriteAt:      &at,
+			ErrorRowsDropped:     &big,
+			SourceWireBytes:      &big,
+			SinkWireBytes:        &big,
+			SinkRetryCount:       &big,
+			LagMaxMessages:       &big,
+			LagTotalMessages:     &big,
+			LagPartitions:        &n,
+			LagObservedAt:        &at,
+			LateRowsDropped:      &big,
+			LateRowsRecomputed:   &big,
+			WindowClosedCount:    &big,
+			WindowLagSeconds:     &big,
+			WindowNewestBucketAt: &at,
+			SourceErrorCount:     &big,
+			HandlerErrorCount:    &big,
+			SinkErrorCount:       &big,
+			StateErrorCount:      &big,
+			DLQRows:              &big,
+			LastErrorCode:        &code,
+			LastErrorAt:          &at,
+			RecvWaitSeconds:      &secs,
+			EventLagSeconds:      &secs,
+			EventLagMaxSeconds:   &secs,
+			EventLagObservedAt:   &at,
+			EventLagBasis:        &basis,
+			Duration: &wire.PipelineDurations{
+				Batch:     widestDuration(),
+				SinkFlush: widestDuration(),
+			},
+			Backfill: &wire.Backfill{
+				State:          "completed",
+				BlocksStream:   true,
+				ElapsedSeconds: &big,
+				Unit:           "partition",
+				UnitsTotal:     &n,
+				UnitsLeft:      &n,
+				RowsRead:       &big,
+			},
 		},
 		Serve: &wire.Serve{
-			RequestCount: big, RequestErrorCount: big, SessionsInUse: n,
-			SessionsTotal: n, LastRequestAt: &at,
-			Cache: &wire.ServeCache{HitCount: big, MissCount: big, SharedCount: big,
-				EvictionCount: big, Bytes: big, Entries: n},
+			RequestCount:      big,
+			RequestErrorCount: big,
+			SessionsInUse:     n,
+			SessionsTotal:     n,
+			LastRequestAt:     &at,
+			Cache: &wire.ServeCache{
+				HitCount:      big,
+				MissCount:     big,
+				SharedCount:   big,
+				EvictionCount: big,
+				Bytes:         big,
+				Entries:       n,
+			},
 			Duration: &wire.ServeDurations{Request: widestDuration()},
 		},
-		Exit: &wire.Exit{Reason: "system.internal.unexpected", Code: 255},
+		Exit: &wire.Exit{
+			Reason: "system.internal.unexpected",
+			Code:   255,
+		},
 	}
-	raw, err := json.Marshal(b)
-	assert.NoError(t, err)
-	t.Logf("a bundle with every field at its widest is %d bytes", len(raw))
-	assert.That(t, len(raw) < 8<<10)
 }
 
 // widestLabels is the largest label set the config accepts: the most keys,

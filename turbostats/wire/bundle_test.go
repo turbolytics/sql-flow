@@ -261,3 +261,85 @@ func TestProcess_GoMemoryIsAbsentUntilSet(t *testing.T) {
 		}
 	}
 }
+
+// An engine that predates the generic fields sends none of them, and a
+// reader must see unknown, not a pipeline that never restarted, never
+// dropped a row and has nothing to backfill.
+func TestPipeline_AnOlderEngineDecodesAsUnknown(t *testing.T) {
+	var b Bundle
+	if err := json.Unmarshal([]byte(`{"v":1,"pipeline":{"message_count":1}}`), &b); err != nil {
+		t.Fatal(err)
+	}
+	p := b.Pipeline
+	if p.State != "" || p.StartedAt != nil || p.RestartCount != nil ||
+		p.SourceConnected != nil || p.LastSinkWriteAt != nil ||
+		p.ErrorRowsDropped != nil || p.SourceWireBytes != nil ||
+		p.SinkWireBytes != nil || p.Backfill != nil {
+		t.Fatalf("an older engine's pipeline decoded with readings: %+v", p)
+	}
+}
+
+// Zero restarts and a lost source are readings. Both must reach the wire.
+func TestPipeline_ZeroRestartsAndALostSourceArePresent(t *testing.T) {
+	zero := int64(0)
+	lost := false
+	raw := mustMarshal(t, Pipeline{
+		RestartCount:    &zero,
+		SourceConnected: &lost,
+	})
+	for _, want := range []string{`"restart_count":0`, `"source_connected":false`} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("want %s in %s", want, raw)
+		}
+	}
+}
+
+// A source that can backfill but has not says so, with nothing else: no
+// progress exists yet, and zeros would claim some.
+func TestBackfill_NoneCarriesOnlyItsState(t *testing.T) {
+	got := mustMarshal(t, Backfill{State: BackfillNone})
+	if got != `{"state":"none","blocks_stream":false}` {
+		t.Fatalf("a backfill that has not run is %s", got)
+	}
+}
+
+// A JVM has no goroutines. Absent says so; zero would be false.
+func TestProcess_GoroutinesIsOmittable(t *testing.T) {
+	if raw := mustMarshal(t, Process{}); strings.Contains(raw, "goroutines") {
+		t.Fatalf("a process with no goroutines sends the field: %s", raw)
+	}
+	if raw := mustMarshal(t, Process{Goroutines: 7}); !strings.Contains(raw, `"goroutines":7`) {
+		t.Fatalf("a Go process lost its goroutines: %s", raw)
+	}
+}
+
+// A runtime that has not collected yet has collected zero times. gc_count
+// is a reading from the first report.
+func TestMemory_ZeroCollectionsArePresent(t *testing.T) {
+	got := mustMarshal(t, Memory{Runtime: "jvm"})
+	if got != `{"runtime":"jvm","gc_count":0}` {
+		t.Fatalf("a fresh runtime's memory is %s", got)
+	}
+}
+
+// The runtime fields are absent from an engine that does not set them.
+func TestInstance_RuntimeFieldsAreAbsentUntilSet(t *testing.T) {
+	without := mustMarshal(t, Instance{ID: "gw-1"})
+	for _, absent := range []string{"runtime", "reporter_version"} {
+		if strings.Contains(without, absent) {
+			t.Errorf("an unset %s is present: %s", absent, without)
+		}
+	}
+	with := mustMarshal(t, Instance{
+		ID:              "prod-connect/inventory-cdc/0",
+		Runtime:         "kafka-connect",
+		RuntimeVersion:  "3.8.0",
+		ReporterVersion: "0.1.0",
+	})
+	for _, want := range []string{`"runtime":"kafka-connect"`,
+		`"runtime_version":"3.8.0"`, `"reporter_version":"0.1.0"`} {
+		if !strings.Contains(with, want) {
+			t.Errorf("want %s in %s", want, with)
+		}
+	}
+}

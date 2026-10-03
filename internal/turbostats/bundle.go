@@ -36,6 +36,8 @@ type (
 	ServeDurations    = wire.ServeDurations
 	ServeCache        = wire.ServeCache
 	Exit              = wire.Exit
+	Memory            = wire.Memory
+	Backfill          = wire.Backfill
 	// The rollup daemon's sections.
 	Freshness          = wire.Freshness
 	FreshTable         = wire.FreshTable

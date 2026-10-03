@@ -75,10 +75,16 @@ type Bundle struct {
 
 // Instance is what the operator and the build said this process is.
 type Instance struct {
-	// ID is the operator's name for the instance. Empty until a reporter is
-	// configured, which requires it.
+	// ID names one stream of reports, and the reporter guarantees it is
+	// unique within its org. Two streams under one ID are a reporter bug: a
+	// receiver flags the collision and never namespaces the ID, because only
+	// the reporter knows what makes it unique. A Kafka Connect task reports
+	// as <cluster>/<connector>/<task>. Empty until a reporter is configured,
+	// which requires it.
 	ID string `json:"id,omitempty"`
-	// Name is pipeline.name under run and serve.name under serve.
+	// Name is the logical pipeline. Instances that share a name are parts of
+	// one pipeline, such as a connector's tasks or a pipeline's replicas. It
+	// is pipeline.name under run and serve.name under serve.
 	Name       string `json:"name,omitempty"`
 	Version    string `json:"version"`
 	Commit     string `json:"commit"`
@@ -91,6 +97,18 @@ type Instance struct {
 	SourceType  string `json:"source_type,omitempty"`
 	SinkType    string `json:"sink_type,omitempty"`
 	HandlerType string `json:"handler_type,omitempty"`
+	// Runtime is the engine that runs the pipeline: sqlflow, or
+	// kafka-connect for a connector the Kafka Connect reporter describes.
+	// It is an open vocabulary: a reader that meets a name it does not know
+	// keeps the report. Absent from engines that predate the field.
+	Runtime string `json:"runtime,omitempty"`
+	// RuntimeVersion is that engine's version, when Version names something
+	// else. A Kafka Connect connector sends its plugin's version as Version
+	// and Kafka's here. SQLFlow sends none: Version already says it.
+	RuntimeVersion string `json:"runtime_version,omitempty"`
+	// ReporterVersion is the reporter's own version, when the reporter is
+	// not the engine. SQLFlow reports itself and sends none.
+	ReporterVersion string `json:"reporter_version,omitempty"`
 	// Labels are the operator's own, declared in the config and fixed for
 	// the life of the process. At most 10, keys [a-z][a-z0-9_]* up to 32
 	// characters, values up to 64, and never a name this contract already
@@ -108,7 +126,13 @@ type Process struct {
 	// gateways that boot near 1970, or two replicas of one config started in
 	// the same second. Absent from engines that predate the field; a
 	// receiver then falls back to started_at.
-	ID        string    `json:"id,omitempty"`
+	ID string `json:"id,omitempty"`
+	// Host is where this process runs, in the operator's terms: the
+	// hostname, or a Kafka Connect worker's ID. A receiver shows it to say
+	// where a stream ran and where it moved. It identifies nothing, since
+	// two containers can share a hostname; ID does that. Absent when the
+	// host would not say.
+	Host      string    `json:"host,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	// UptimeSeconds is how long this process has run, from its monotonic
 	// clock. Absent from engines that predate the field. StartedAt is for
@@ -128,8 +152,11 @@ type Process struct {
 	// worse: a failed read used to fail the whole bundle, so a process that
 	// was running fine reported nothing at all, and a receiver reads silence
 	// as a dead instance. Losing one number beats losing the heartbeat.
-	RSSBytes   int64 `json:"rss_bytes,omitempty"`
-	Goroutines int   `json:"goroutines"`
+	RSSBytes int64 `json:"rss_bytes,omitempty"`
+	// Goroutines is absent from a runtime that has none, such as a JVM. A
+	// live Go process always runs at least one, so zero cannot be confused
+	// with absent, as with RSSBytes.
+	Goroutines int `json:"goroutines,omitempty"`
 	// GoRetainedBytes is the memory the Go runtime holds from the operating
 	// system: everything it has mapped, less the heap pages it has released.
 	// It splits RSSBytes in two. RSSBytes less GoRetainedBytes is native
@@ -151,9 +178,100 @@ type Process struct {
 	// remainder alone is the runtime keeping freed pages. Absent before the
 	// first collection and from engines that predate the field.
 	GoHeapBytes int64 `json:"go_heap_bytes,omitempty"`
+	// MemoryLimitBytes is the container's memory limit, from the cgroup.
+	// Absent when no limit is set or the process cannot read it. RSSBytes
+	// approaching it predicts the kernel killing the process.
+	MemoryLimitBytes int64 `json:"memory_limit_bytes,omitempty"`
+	// Memory is the managed runtime's memory, in terms every garbage
+	// collected runtime shares. Absent from engines that predate it.
+	Memory *Memory `json:"memory,omitempty"`
 }
 
-// Pipeline carries the consume loop's totals since Process.StartedAt.
+// Memory is a garbage-collected runtime's view of its own memory.
+//
+// It exists so a receiver judges a Go process and a JVM with one rule. On
+// Go, RetainedBytes and LiveBytes copy GoRetainedBytes and GoHeapBytes, the
+// way last_activity_at copies its section timestamps; the Go fields stay the
+// source.
+//
+// LiveBytes is the leak signal. Heap in use rises and falls with every
+// collection; what a collection finds live rising across hours is a leak.
+// RSSBytes less RetainedBytes is memory the runtime cannot see: DuckDB and
+// Arrow on SQLFlow, direct buffers on a JVM.
+//
+// GC time is not here. A JVM reports wall-clock pause time and Go reports
+// CPU time, and one field would mean two things.
+type Memory struct {
+	// Runtime is "go" or "jvm", an open vocabulary.
+	Runtime string `json:"runtime"`
+	// RetainedBytes is what the runtime holds from the operating system:
+	// Go's mapped memory less released heap pages, or a JVM's committed
+	// heap and non-heap.
+	RetainedBytes int64 `json:"retained_bytes,omitempty"`
+	// LiveBytes is what the last collection found live. Absent before the
+	// first collection.
+	LiveBytes int64 `json:"live_bytes,omitempty"`
+	// HeapLimitBytes is the runtime's heap ceiling: GOMEMLIMIT or -Xmx.
+	// Absent when unlimited. LiveBytes approaching it predicts an
+	// out-of-memory failure.
+	HeapLimitBytes int64 `json:"heap_limit_bytes,omitempty"`
+	// GCCount is collections since the process started, a counter. Compare
+	// it only within one process: collectors count cycles differently, so
+	// its rate means something and its value across runtimes does not.
+	GCCount int64 `json:"gc_count"`
+}
+
+// The runtime and memory-runtime names SQLFlow sends.
+const (
+	RuntimeSQLFlow  = "sqlflow"
+	MemoryRuntimeGo = "go"
+)
+
+// Pipeline states. A reader treats a value it does not know as unknown,
+// never as running.
+const (
+	StateRunning = "running"
+	StateStopped = "stopped"
+	StateFailed  = "failed"
+)
+
+// BackfillNone is the state of a source that can backfill and is not.
+const BackfillNone = "none"
+
+// Backfill is bounded work inside an unbounded pipeline: a CDC snapshot, a
+// replay from the earliest offset, a rebuild of state. It is not a pipeline;
+// it has no source, sink or identity of its own.
+//
+// It is present for a source that can backfill, from the first report to
+// the last, with State none until one runs, so a process's field set never
+// changes. A completed backfill keeps its final values until the next one
+// starts.
+//
+// Its rows count toward the pipeline's totals as well: phase splits one
+// measurement, so RowsRead is message_count's backfill share. They never
+// enter event lag, because a backfilled row's age says when it was last
+// written, not how far behind the stream the pipeline runs.
+type Backfill struct {
+	// State is none, running, paused, completed or aborted.
+	State string `json:"state"`
+	// BlocksStream says the stream waits for this backfill: true for an
+	// initial or blocking snapshot, false for one interleaved with the
+	// stream.
+	BlocksStream bool `json:"blocks_stream"`
+	// ElapsedSeconds is how long the current or last backfill has run,
+	// paused time included.
+	ElapsedSeconds *int64 `json:"elapsed_seconds,omitempty"`
+	// Unit is what UnitsTotal and UnitsLeft count: table, partition.
+	Unit string `json:"unit,omitempty"`
+	// UnitsTotal and UnitsLeft follow the rollup daemon's tables_left: both
+	// count what remains, so progress reads the same way in both places.
+	UnitsTotal *int `json:"units_total,omitempty"`
+	UnitsLeft  *int `json:"units_left,omitempty"`
+	// RowsRead is rows read, summed over units. A source may update it in
+	// steps, so a receiver's stall threshold exceeds one step.
+	RowsRead *int64 `json:"rows_read,omitempty"`
+}
+
 // DurationBounds are the wire's histogram boundaries, in seconds, with a
 // ninth bucket for everything above the last.
 //
@@ -197,7 +315,44 @@ type ServeDurations struct {
 	Request *Duration `json:"request,omitempty"`
 }
 
+// Pipeline carries the consume loop's totals since Pipeline.StartedAt. On
+// SQLFlow that equals Process.StartedAt; a runtime that restarts a pipeline
+// inside a running process moves it, and its counters restart with it.
 type Pipeline struct {
+	// State is starting, running, paused, stopped or failed. It is the one
+	// field that can say a pipeline failed while its process stays healthy.
+	// SQLFlow sends running while it reports, and stopped or failed in its
+	// final bundle. Absent from engines that predate it.
+	State string `json:"state,omitempty"`
+	// StartedAt is the epoch of every pipeline counter. A receiver
+	// subtracts two reports only when their StartedAt agrees.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	// RestartCount counts pipeline starts after the first since the
+	// process started. A counter, because a pipeline can restart several
+	// times between two reports and StartedAt shows only the last.
+	RestartCount *int64 `json:"restart_count,omitempty"`
+	// SourceConnected says whether the source holds its connection now.
+	// Absent when the source cannot tell. It separates a quiet source from
+	// a lost one, which LastMessageAt alone cannot.
+	SourceConnected *bool `json:"source_connected,omitempty"`
+	// LastSinkWriteAt is the last write the destination acknowledged:
+	// output freshness, where LastMessageAt is input. A pipeline that reads
+	// and cannot write shows the first fresh and this stale. Absent until
+	// the first acknowledged write.
+	LastSinkWriteAt *time.Time `json:"last_sink_write_at,omitempty"`
+	// ErrorRowsDropped is rows discarded under a tolerant error policy,
+	// neither delivered nor diverted to a DLQ. It is silent data loss, like
+	// LateRowsDropped, and is never summed with another outcome. An engine
+	// that counts it always sends it, zero included.
+	ErrorRowsDropped *int64 `json:"error_rows_dropped,omitempty"`
+	// SourceWireBytes and SinkWireBytes are bytes on the network, framing
+	// and compression included, where MessagePayloadBytes is payload. Each
+	// is absent when the client cannot report it.
+	SourceWireBytes *int64 `json:"source_wire_bytes,omitempty"`
+	SinkWireBytes   *int64 `json:"sink_wire_bytes,omitempty"`
+	// Backfill is present for a source that can backfill. See Backfill.
+	Backfill *Backfill `json:"backfill,omitempty"`
+
 	MessageCount int64 `json:"message_count"`
 	// MessagePayloadBytes is the bytes of every message value received,
 	// the same messages MessageCount counts, so the two divide to a true
@@ -244,9 +399,10 @@ type Pipeline struct {
 	// kafka_log_append_time (the broker's, where the topic sets
 	// message.timestamp.type), both producer or broker to processing;
 	// arrival, the moment the record reached this process, which is
-	// queueing inside the process and nothing before it; or, for a source
-	// told where its event time is, the configured path into the payload,
-	// as written. It travels with the number because these measure
+	// queueing inside the process and nothing before it; source_commit_time,
+	// the source database's commit time of the change, to processing; or,
+	// for a source told where its event time is, the configured path into
+	// the payload, as written. It travels with the number because these measure
 	// different spans, and it is an open vocabulary: a reader that meets a
 	// name it does not know keeps the reading and declines to compare it,
 	// rather than treating
