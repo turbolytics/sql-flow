@@ -90,7 +90,7 @@ coverage-matrix: sqlflow-image
 		$(PY) pytest tests/release -q
 	@$(MAKE) --no-print-directory coverage-write
 
-# Regenerates the config JSON Schema from the Go types.
+# Regenerates the config and TurboStats JSON Schemas from the Go types.
 #
 # The schema is an artifact, not a source file: internal/config is the config
 # format, and this reflects it. A golden test fails when the committed file is
@@ -99,9 +99,10 @@ coverage-matrix: sqlflow-image
 # Run this after changing a config struct, its yaml tags, or its doc comments.
 .PHONY: schema
 schema:
-	UPDATE_GOLDEN=1 go test ./internal/schema/ -run 'TestConfigSchema_CommittedFileMatchesTheTypes|TestServeSchema_CommittedFileMatchesTheTypes|TestRollupsSchema_CommittedFileMatchesTheTypes'
+	UPDATE_GOLDEN=1 go test ./internal/schema/ -run 'TestConfigSchema_CommittedFileMatchesTheTypes|TestServeSchema_CommittedFileMatchesTheTypes|TestRollupsSchema_CommittedFileMatchesTheTypes|TestTurboStatsSchema_CommittedFilesMatchTheTypes'
 	UPDATE_GOLDEN=1 go test ./internal/cli/ -run 'TestConfigValidation_ExampleMatchesPythonOutput|TestCliServe_ConfigExamplePrintsTheServeSkeleton'
 	@echo "regenerated internal/validate/schemas/config.json, serve.json and rollups.json"
+	@echo "regenerated turbostats/wire/schema/bundle.schema.json and response.schema.json"
 	@echo "regenerated internal/cli/testdata/config_example.golden and serve_example.golden"
 
 # Renders everything from reports that already exist. Runs no tests.

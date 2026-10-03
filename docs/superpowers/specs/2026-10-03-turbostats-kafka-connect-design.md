@@ -400,10 +400,10 @@ statement of the contract with nothing holding the two together.
 - `internal/schema` gains a generator that reflects `wire.Bundle` and
   `wire.Response`. Descriptions come from the doc comments in
   `turbostats/wire`, so the schema carries the contract's prose.
-- The output is committed as `turbostats/wire/schema/bundle.json` and
-  `response.json`. The `turbostats/wire/schema` package embeds both with
-  `go:embed`, so `wire` and its subpackages still import only the standard
-  library.
+- The output is committed as `turbostats/wire/schema/bundle.schema.json`
+  and `response.schema.json`, named for their URLs. The
+  `turbostats/wire/schema` package embeds both with `go:embed`, so
+  `wire` and its subpackages still import only the standard library.
 - `make schema` regenerates them, and a golden test fails when they are
   stale.
 
@@ -442,9 +442,11 @@ step can fall behind.
 
 ### What validates against it
 
-- The contract's Go tests validate `testdata/vectors.json` and a freshly
-  collected bundle, with `santhosh-tekuri/jsonschema`, which is already a
-  dependency.
+- The contract's Go tests validate every bundle the engine builds, the
+  widest bundle the contract allows, an older engine's bundle and a newer
+  engine's bundle, with `santhosh-tekuri/jsonschema`, which is already a
+  dependency. `testdata/vectors.json` is not one of them: its body is
+  `{"v":1}`, a signing vector rather than a bundle, and the schema rejects it.
 - The Kafka Connect reporter's CI validates every bundle it builds against the
   same file. This is the guard across languages: the Java reporter can't drift
   from the Go types without failing CI. Whether it also generates its Java
@@ -515,7 +517,7 @@ The fields fall into the first two levels of data operational maturity:
 - `pytest tests/release`, because the bundle's shape has a Python guard as
   well as the Go type walk.
 - The schema's golden test, the test that no object forbids unknown fields,
-  and validation of `vectors.json` and a collected bundle against the schema.
+  and validation of every bundle the engine builds against the schema.
 - A mutation check: adding `"additionalProperties": false` to one object, or
   an enum to `state`, fails a test.
 
