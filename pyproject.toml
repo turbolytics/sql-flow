@@ -18,7 +18,7 @@ dev = [
     "click==8.5.0",
     "websockets==17.1",
 
-    "duckdb==1.5.5",
+    "duckdb==1.5.6",
     # pyarrow 14 is built against the numpy 1.x C ABI. Left to the resolver,
     # numpy 2 wins and `import pyarrow` dies on "_ARRAY_API not found".
     "numpy==2.4.6",
