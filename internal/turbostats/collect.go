@@ -36,7 +36,9 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	if err != nil {
 		rss = 0
 	}
-	goRetained, goHeap := GoMemory()
+	mem := GoMemory()
+	// Absent rather than zero when there is no limit to read.
+	limit, _ := MemoryLimit(cgroupRoot)
 
 	s := src.Static
 	b := Bundle{
@@ -53,14 +55,24 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 			SourceType:  s.SourceType,
 			SinkType:    s.SinkType,
 			HandlerType: s.HandlerType,
+			Runtime:     wire.RuntimeSQLFlow,
 			Labels:      copyLabels(s.Labels),
 		},
 		Process: Process{
-			StartedAt:       s.StartedAt.UTC().Truncate(time.Second),
-			RSSBytes:        rss,
-			Goroutines:      runtime.NumGoroutine(),
-			GoRetainedBytes: goRetained,
-			GoHeapBytes:     goHeap,
+			StartedAt:        s.StartedAt.UTC().Truncate(time.Second),
+			Host:             hostname(),
+			RSSBytes:         rss,
+			MemoryLimitBytes: limit,
+			Goroutines:       runtime.NumGoroutine(),
+			GoRetainedBytes:  mem.Retained,
+			GoHeapBytes:      mem.HeapLive,
+			Memory: &Memory{
+				Runtime:        wire.MemoryRuntimeGo,
+				RetainedBytes:  mem.Retained,
+				LiveBytes:      mem.HeapLive,
+				HeapLimitBytes: mem.HeapLimit,
+				GCCount:        mem.GCCycles,
+			},
 		},
 	}
 
