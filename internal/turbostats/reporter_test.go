@@ -338,3 +338,52 @@ func TestReporter_EveryBundleCarriesTheProcessID(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(bodies[len(bodies)-1], &last))
 	assert.That(t, last.Exit != nil)
 }
+
+// pipelineReporter collects a bundle with a running pipeline, as `sqlflow
+// run` does.
+func pipelineReporter(t *testing.T, url string) *Reporter {
+	t.Helper()
+	r, err := NewReporter(ReporterConfig{
+		ReportTo: url,
+		Key:      testKey(t),
+		Interval: time.Hour,
+		Collect: func(context.Context) (Bundle, error) {
+			return Bundle{
+				V:        Version,
+				Instance: Instance{ID: "one"},
+				Pipeline: &Pipeline{State: wire.StateRunning},
+			}, nil
+		},
+		Log: zap.NewNop(),
+	})
+	assert.NoError(t, err)
+	return r
+}
+
+func finalPipelineState(t *testing.T, exit Exit) string {
+	t.Helper()
+	rc := newReceiver()
+	srv := httptest.NewServer(rc)
+	defer srv.Close()
+	pipelineReporter(t, srv.URL).Final(context.Background(), exit)
+	rc.mu.Lock()
+	body := rc.bodies[0]
+	rc.mu.Unlock()
+	var b Bundle
+	assert.NoError(t, json.Unmarshal(body, &b))
+	return b.Pipeline.State
+}
+
+// The last bundle says the pipeline stopped. A receiver reading state alone
+// must never show a pipeline that shut down as running.
+func TestReporter_ACleanExitSaysStopped(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.reporter")
+	assert.Equal(t, wire.StateStopped, finalPipelineState(t, Exit{Reason: "SIGTERM", Code: 0}))
+}
+
+// A pipeline that died says failed, or a crash reads as a clean shutdown.
+func TestReporter_AFailedExitSaysFailed(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.reporter")
+	assert.Equal(t, wire.StateFailed,
+		finalPipelineState(t, Exit{Reason: "system.sink.unreachable", Code: 1}))
+}

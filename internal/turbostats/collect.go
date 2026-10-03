@@ -88,7 +88,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	}
 
 	if src.Pipeline != nil {
-		p, err := pipelineSection(ctx, flat, floats, hist, dim, b.SentAt, src.Pipeline)
+		p, err := pipelineSection(ctx, flat, floats, hist, dim, b.SentAt, b.Process.StartedAt, src.Pipeline)
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -108,8 +108,14 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 
 func pipelineSection(ctx context.Context, flat map[string]int64, floats map[string]float64,
 	hist map[string]metricdata.HistogramDataPoint[float64], dim *dimensional,
-	sentAt time.Time, src *PipelineSource) (*Pipeline, error) {
+	sentAt, startedAt time.Time, src *PipelineSource) (*Pipeline, error) {
 	p := &Pipeline{
+		// A SQLFlow pipeline starts with its process and never restarts
+		// inside it, so its epoch is the process's and its restarts are
+		// zero: a reading, not an unknown.
+		State:               wire.StateRunning,
+		StartedAt:           &startedAt,
+		RestartCount:        int64Ptr(0),
 		MessageCount:        flat["message_count"],
 		MessagePayloadBytes: int64Ptr(flat["message_payload_bytes"]),
 		HandlerRowsRead:     flat["handler_rows_read"],

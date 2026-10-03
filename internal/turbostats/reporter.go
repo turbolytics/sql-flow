@@ -204,6 +204,15 @@ func (r *Reporter) post(ctx context.Context, exit *Exit) {
 		return
 	}
 	b.Exit = exit
+	// The last bundle says how the pipeline ended, so a receiver that reads
+	// state alone never shows a pipeline that shut down as running. A
+	// non-zero exit code is a failure.
+	if exit != nil && b.Pipeline != nil {
+		b.Pipeline.State = wire.StateStopped
+		if exit.Code != 0 {
+			b.Pipeline.State = wire.StateFailed
+		}
+	}
 
 	body, err := json.Marshal(b)
 	if err != nil {

@@ -913,3 +913,21 @@ func TestGoMemory_NoLimitIsAbsent(t *testing.T) {
 	assert.NoError(t, err)
 	assert.That(t, !strings.Contains(string(raw), "heap_limit_bytes"))
 }
+
+// A SQLFlow pipeline runs exactly as long as its process: running while it
+// reports, one epoch, and no restarts.
+func TestCollect_APipelineLivesAsLongAsItsProcess(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+
+	p := b.Pipeline
+	assert.Equal(t, wire.StateRunning, p.State)
+	assert.That(t, p.StartedAt != nil)
+	assert.Equal(t, b.Process.StartedAt, *p.StartedAt)
+	assert.That(t, p.RestartCount != nil)
+	assert.Equal(t, int64(0), *p.RestartCount)
+	// SQLFlow cannot backfill yet, and says so by sending none.
+	assert.That(t, p.Backfill == nil)
+}
