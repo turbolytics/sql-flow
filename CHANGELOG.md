@@ -20,6 +20,14 @@
 
 ### Fixed
 
+- **A webhook body that is not JSON no longer stops the pipeline.** It
+  reached the batch, where the inferred handlers refused it, and under the
+  default `RAISE` that failed the batch for every sender in it and ended the
+  run: one `curl -d x` took the endpoint down. The source now refuses it to
+  its sender alone with 400 `{"detail":"Request body is not valid JSON"}`,
+  before it is queued, under either `ack`. An empty body and
+  newline-delimited JSON are refused the same way; with `StructuredBatch`
+  they used to become a row of nulls answered 200. (#425)
 - A windowed Kafka pipeline committed offsets past rows held only in an open
   window. A worker that lost its disk, or took a partition over in a
   rebalance, started after them and undercounted. It now commits each
