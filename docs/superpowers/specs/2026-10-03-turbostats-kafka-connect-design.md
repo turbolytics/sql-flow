@@ -72,9 +72,12 @@ share one `id`. That is #430, and it is out of this spec's scope.
 | `instance.reporter_version` | string | The reporter's own version, when it is not the engine | The jar's version | absent |
 
 On Connect, `instance.version` is the connector plugin's version, such as
-`3.2.0.Final`, and `instance.commit` is empty. `instance.config_hash` hashes
-the connector's config. The config's values never cross the wire, and many
-of them are secrets.
+`3.2.0.Final`, and `instance.commit` is empty. `instance.config_hash` is an
+HMAC-SHA256 of the connector's config, keyed by a key derived from the
+install's credential, and prefixed `hmac-sha256:`. The config's values never
+cross the wire, and many of them are secrets: a database password among
+them. Keyed, the hash means nothing outside the install, and nobody without
+the credential can test a guessed password against it.
 
 `source_type` and `sink_type` keep their open vocabulary. A Debezium Postgres
 connector sends `postgres` and `kafka`. A JDBC sink connector sends `kafka`
@@ -108,9 +111,17 @@ pipeline is in trouble.
 **Stopping is not moving.** A Connect task moved by a rebalance sends nothing
 more from its old worker, and its new worker starts reporting under the same
 `instance.id`. A connector that the operator stops or deletes sends a final
-bundle with `exit`, the way a clean SQLFlow shutdown does. A receiver then
-says `exited`, not `unreachable`. A connector that no worker holds sends
-nothing, and `unreachable` is the true reading.
+bundle with `exit`, the way a clean SQLFlow shutdown does, and so does a task
+removed by lowering `tasks.max`. A receiver then says `exited`, not
+`unreachable`. A connector that no worker holds sends nothing, and
+`unreachable` is the true reading.
+
+The reporter decides which happened from the cluster's answer, and waits for
+a definite one. Only a not-found answer means deleted: a timeout or a
+rebalance race is no answer, and reading it as deleted would send a false
+exit for a connector that is fine. A status store can also lag the task by a
+tick. A vanished task is asked about again each tick, for up to five, until
+the answer is deleted, stopped, removed, or listed on another worker.
 
 ## Backfill
 
@@ -273,11 +284,14 @@ The reporter is one jar with three parts:
 - **A REST extension** runs inside each worker (`rest.extension.classes`). It
   reads cluster state, task placement and connector config, and one daemon
   thread builds, signs and sends a bundle per local task every interval.
-- **A producer interceptor** (`producer.interceptor.classes`) counts
-  acknowledged records per source task. Connect's `source-record-write-total`
-  counts when the worker sends a record, before the broker acknowledges it
-  (`AbstractWorkerSourceTask`). `onAcknowledgement` is the only per-record
-  acknowledgment the worker exposes.
+- **A producer interceptor** (`producer.interceptor.classes`) counts each
+  source task's sends and acknowledgments, and the time of the last
+  acknowledgment. Connect's `source-record-write-total` counts acknowledged
+  batches: Connect 3.9 records it in the producer callback, once a batch is
+  acknowledged (disassembled from `connect-runtime-3.9.0.jar`; an earlier
+  reading of the source said send, and was wrong). So only the interceptor
+  sees records sent and not yet acknowledged, and the exact time of the
+  last acknowledgment.
 - **A consumer interceptor** (`consumer.interceptor.classes`) records each
   sink task's newest record timestamp per batch, for event lag.
 
@@ -342,7 +356,7 @@ the form `ConnectClusterState` reports task placement in.
 | `state` | Task status | Task status |
 | `message_count` | `source-record-poll-total` | `source-record-poll-total` |
 | `handler_rows_read` | `source-record-poll-total` | `source-record-poll-total` |
-| `sink_rows_accepted` | `source-record-write-total` | `source-record-write-total` |
+| `sink_rows_accepted` | Interceptor sends | Interceptor sends |
 | `sink_rows_written` | Interceptor acknowledgments | Interceptor acknowledgments |
 | `sink_flush_count` | absent | absent |
 | `state_commit_count` | 0: Connect keeps no state | 0 |
@@ -384,13 +398,21 @@ read as a lost database.
 | `message_count`, `handler_rows_read` | `sink-record-read-total` |
 | `sink_rows_accepted` | `sink-record-send-total` |
 | `sink_rows_written` | `sink-record-read-total` less `sink-record-active-count` |
-| `sink_flush_count` | `offset-commit-completion-total` |
+| `sink_flush_count` | absent |
 | `state_commit_count` | 0: Connect keeps no state |
-| `last_sink_write_at` | When `offset-commit-completion-total` last rose |
+| `last_sink_write_at` | When `sink_rows_written` last rose |
 | `last_message_at` | The consumer interceptor's last batch with records |
 | `event_lag_*` | Now minus the newest record timestamp per batch, from the consumer interceptor; basis `kafka_create_time` or `kafka_log_append_time` by the record's timestamp type |
 | `lag_*` | The broker: each assigned partition's end offset less the group's committed offset, collapsed by the dimensional series rule |
 | `source_wire_bytes` | Consumer `bytes-consumed-total` |
+
+**A sink's commit counter is not a write.** Connect raises
+`offset-commit-completion-total` even when it skips a commit because no
+offset changed, which it does every flush interval while the destination is
+down. Taken as a write, it kept a sink's output fresh through the outage. A
+write is rows finishing: `last_sink_write_at` is when `sink_rows_written`
+last rose, and `sink_flush_count` is absent, because Connect counts nothing a
+flush count could truly mean.
 
 **Lag in messages comes from the broker, never from the consumer.** A paused
 JDBC sink read `records-lag=0.0` while the broker reported a lag of 2,000:
@@ -425,10 +447,21 @@ not removing it, so the document stays v1.
 
 Each task start builds a new producer or consumer, and the interceptor's
 `configure` runs once for it. `started_at` is the latest `configure` for the
-task's `client.id`, and `restart_count` counts those after the first since
-the worker started. A task restarted through the REST API closed its old
-producer before the new one configured, and its counters restarted from zero,
-so the epoch holds.
+task's `client.id`, and `restart_count` counts those after the first, on this
+worker, since the task arrived here. A task restarted through the REST API
+closed its old producer before the new one configured, and its counters
+restarted from zero, so the epoch holds.
+
+Producer and consumer starts are counted apart. Under exactly-once source
+support, Connect builds a consumer for every source task under the task's
+consumer `client.id`, beside its producer; counted together, every start
+would count two and every task would look like a crash loop. A source
+task's starts are its producer's; a sink task's are its consumer's.
+
+A task that leaves this worker is forgotten. When it comes back after a
+rebalance, it starts counting afresh, so its return is not a restart, and
+the registry of a deleted connector's tasks does not grow for the life of
+the worker.
 
 Task metrics registrations are not a start signal. One restart produced about
 eight unregister and register pairs of `connector-task-metrics` in the same
@@ -438,12 +471,11 @@ the group.
 Once, the spike's interceptor reported zero acknowledgments after 450,000
 writes, around a restart during a snapshot; a clean restart did not
 reproduce it. The reporter compares acknowledgments with
-`source-record-write-total`. When writes rise and acknowledgments do not,
-with nothing in flight, it logs the interceptor as broken, leaves
-`last_sink_write_at` absent, and sends `sink_rows_written` as
-`source-record-write-total` less `source-record-active-count`: the field is
-required, and records written less records unacknowledged is the closest
-true number Connect offers.
+`source-record-write-total`. When Connect's count rises and the
+interceptor's does not, with nothing in flight, it logs the interceptor as
+broken, leaves `last_sink_write_at` absent, and sends `sink_rows_written` and
+`sink_rows_accepted` as `source-record-write-total`. That counter already
+counts acknowledgments, so nothing is subtracted from it.
 
 ## The document
 
@@ -615,7 +647,9 @@ The fields fall into the first two levels of data operational maturity:
 | Who makes ids unique | The reporter | The receiver: it can't know what is unique inside a runtime it doesn't understand. |
 | Grouping tasks into a connector | `instance.name`, later, in the receiver | A `member` field: it names a Connect concept, and `name` already carries the grouping. |
 | Two document types, process and pipeline | Not now | The cleanest model, but a v2-sized change before any customer asked for it. |
-| Acknowledged rows on Connect | A producer interceptor | `source-record-write-total`: it counts on send. |
+| Acknowledged rows on Connect | A producer interceptor, which also counts sends | `source-record-write-total` alone: it counts acknowledged batches, so it cannot show records sent and not acknowledged, or when the last acknowledgment came. |
+| A sink's last write | When records read less in flight rose | `offset-commit-completion-total`: it rises on skipped commits while the destination is down. |
+| The config hash | HMAC-SHA256 keyed from the credential | Plain SHA-256: a hash derived from a database password, which anyone who knows the rest of the config could test guesses against. |
 | The schema's source | Reflected from the Go types | Hand-written: a second statement of the contract that drifts silently. |
 | Where the schema is published | The control plane, under `/v1/turbostats` | `turbolytics.io`: a copy step that can fall behind. Raw GitHub at a tag: the URL changes with every release, and `$id` must not. |
 | Where the jar installs | The worker's classpath | The plugin path: every source task fails with a ClassNotFound inside its producer. |
