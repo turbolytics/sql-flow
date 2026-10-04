@@ -35,6 +35,17 @@
 
 ### Fixed
 
+- **A windowed worker that loses its group session no longer stops closing
+  windows after it rejoins.** A lost partition stayed in the worker's
+  watermark minimum until it was assigned back; when the rejoin gave it to
+  another member, it never was, and the watermark froze at that partition's
+  last position for good while the worker went on consuming, healthy. In a
+  two-worker usage-metering stack a 60s network cut left half the topic
+  uncounted until a restart. `Assigned` now settles every lost partition:
+  one not in the new assignment leaves the minimum, as a revoked one does,
+  which is what `LagTable` already did. `specs/quint/lost_session.qnt`
+  models it: invariant `liveMinimumOnlyOwned` fails on the old design and
+  holds on the new. (#436)
 - **A webhook body that is not JSON no longer stops the pipeline.** It
   reached the batch, where the inferred handlers refused it, and under the
   default `RAISE` that failed the batch for every sender in it and ended the

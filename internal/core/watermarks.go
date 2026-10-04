@@ -256,13 +256,27 @@ func (w *Watermarks) Restore(name string, newestBucketStart, asserted time.Time)
 // known keeps what it has seen: a lost partition coming back resumes from
 // its last position rather than from -inf, and its idleness restarts from
 // the assignment.
+//
+// A lost partition this assignment leaves out is another member's now, and
+// leaves the minimum as a revoked one does. A session fails all at once, so
+// the first assignment after it is the member's whole new assignment; a
+// lost partition waiting for one that is not coming held the watermark at
+// its last position for good, while the member went on consuming (#436).
 func (w *Watermarks) Assigned(parts map[string][]int32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	now := w.now()
+	assigned := map[partitionKey]bool{}
 	for topic, ps := range parts {
 		for _, p := range ps {
-			w.hold(partitionKey{topic, p}, now)
+			k := partitionKey{topic, p}
+			assigned[k] = true
+			w.hold(k, now)
+		}
+	}
+	for k, s := range w.parts {
+		if s.lost && !assigned[k] {
+			delete(w.parts, k)
 		}
 	}
 }
