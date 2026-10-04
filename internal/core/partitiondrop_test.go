@@ -134,9 +134,15 @@ func TestTurbine_PartitionDropSucceedsAfterAPassDeletedTheRows(t *testing.T) {
 		WithPartitionDropper(NewDuckDBPartitionDropper(pipeline, []string{"w"})),
 		WithStateStore(&nopSaver{}, tx))
 	loopCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	done := make(chan error, 1)
 	go func() { _, err := tb.ConsumeLoop(loopCtx, 0); done <- err }()
+	// The loop must be gone before the cleanups close its connection and
+	// database: a close under a running loop is a use after free in the
+	// ADBC driver, which segfaulted on CI.
+	defer func() {
+		cancel()
+		<-done
+	}()
 	src.assigned(map[string][]int32{"t": {3, 4, 5}})
 	src.lost(map[string][]int32{"t": {3, 4, 5}}) // blocks until dropped
 	select {
