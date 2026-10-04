@@ -439,8 +439,11 @@ Once, the spike's interceptor reported zero acknowledgments after 450,000
 writes, around a restart during a snapshot; a clean restart did not
 reproduce it. The reporter compares acknowledgments with
 `source-record-write-total`. When writes rise and acknowledgments do not,
-with nothing in flight, it reports `sink_rows_written` and
-`last_sink_write_at` as absent and logs the interceptor as broken.
+with nothing in flight, it logs the interceptor as broken, leaves
+`last_sink_write_at` absent, and sends `sink_rows_written` as
+`source-record-write-total` less `source-record-active-count`: the field is
+required, and records written less records unacknowledged is the closest
+true number Connect offers.
 
 ## The document
 
