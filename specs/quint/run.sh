@@ -29,3 +29,4 @@ check single_writer.qnt    noNonOwnerPublish      10
 check commit_offsets.qnt   commitsOnlyOwned       10
 check commit_offsets.qnt   committedBelowRetained 10
 check exactly_once.qnt     exactlyOnce            10
+check lost_session.qnt     liveMinimumOnlyOwned   8

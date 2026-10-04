@@ -212,6 +212,38 @@ func TestWindowWatermark_ARevokedPartitionLeavesAndALostOneHolds(t *testing.T) {
 	assert.Equal(t, wmT0.Add(8*time.Minute), w.Advance()["w"])
 }
 
+// A lost partition the rejoin gives to another member leaves the minimum.
+// A session that fails loses every partition at once, and the first
+// assignment after it is the member's whole new assignment: a lost
+// partition missing from it is another member's now, as a revoked one is.
+// Holding it waits for an assignment that never comes, and the watermark
+// froze at its last position while the member went on consuming (#436).
+//
+//	step                        p0            p1, p2        p5       W
+//	--------------------------------------------------------------------------
+//	assign p0, p1, p2
+//	observe all 12:05           12:05         12:05         -        12:04
+//	lose p0, p1, p2             lost @12:05   lost @12:05   -        -
+//	assign p1, p2, p5           gone          12:05 held    -inf     -    p5 holds
+//	observe p1, p2, p5 12:09    gone          12:09         12:09    12:08
+func TestWindowWatermark_ALostPartitionTheRejoinGivesAwayLeaves(t *testing.T) {
+	coverage.Covers(t, "manager.window")
+	c := &wmClock{at: wmT0}
+	w := NewWatermarks([]WindowSpec{wmSpec}, c.now)
+	w.Assigned(parts(0, 1, 2))
+	for _, p := range []int32{0, 1, 2} {
+		w.Observe("t", p, at(5*time.Minute))
+	}
+	assert.Equal(t, wmT0.Add(4*time.Minute), w.Advance()["w"])
+
+	w.Lost(parts(0, 1, 2))
+	w.Assigned(parts(1, 2, 5))
+	for _, p := range []int32{1, 2, 5} {
+		w.Observe("t", p, at(9*time.Minute))
+	}
+	assert.Equal(t, wmT0.Add(8*time.Minute), w.Advance()["w"])
+}
+
 // A partition lost before it ever delivered holds at -inf, the same as one
 // just assigned: nothing is known about what it will bring.
 func TestWindowWatermark_APartitionLostBeforeDeliveringHoldsEverything(t *testing.T) {

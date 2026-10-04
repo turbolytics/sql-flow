@@ -113,3 +113,27 @@ specs/quint/run.sh verify   # + exhaustive verify if java is on PATH
 - The five core invariants from #418 are now modeled and verified. Next:
   raise the step bounds, and pursue inductive (unbounded) invariants so the
   proofs no longer depend on a bound.
+
+## lost_session.qnt — issue #436
+
+Invariant `liveMinimumOnlyOwned`: a live worker's watermark minimum holds
+only partitions it owns. A partition another member owns brings no more data
+here, so holding it pins the watermark, and the worker stops closing windows
+while it goes on consuming. Unlike the four models above this is not a
+safety property of what gets written: it is the state that makes progress
+impossible, which is why the stall in #436 passed every other check.
+
+- `FIX = false` — `Assigned` keeps a lost partition held until it is assigned
+  back here. When the rejoin gives it to another member, it never is. **This
+  is #436:** the counterexample is a worker losing its session, another
+  member taking a partition over, and the first rejoining without it.
+- `FIX = true` — the rejoin's assignment settles every lost partition: one
+  not in it leaves the minimum, as a revoked one does.
+
+| Design | `quint run` (sampled) | `quint verify` (exhaustive ≤8 steps) |
+|---|---|---|
+| `FIX = false` (v2026.10.04) | counterexample, 55ms | **counterexample**, 5.7s |
+| `FIX = true` | no violation, 50k samples | **NoError (proved)**, 11 min |
+
+The exhaustive run is slower than the other models' because `rejoin` picks
+its assignment from the powerset of partitions.
