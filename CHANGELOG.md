@@ -35,6 +35,16 @@
 
 ### Fixed
 
+- **A `partition_owned` worker no longer crashes dropping the partitions
+  a failed session took from it.** The drop ran inside whatever transaction
+  the pipeline's connection had open, begun by an idle tick's progress
+  write before the drop took its locks. Its snapshot could predate a window
+  pass that had since deleted closed buckets' rows on the manager's
+  connection and committed, and DuckDB refused the drop's delete with
+  "Conflict on tuple deletion"; the pipeline stopped over it, and in a
+  two-worker stack a network blip crashed one worker while the other
+  stalled (#436). The drop now ends that transaction first, so it begins one
+  whose snapshot is after every pass its lock excludes. (#437)
 - **A windowed worker that loses its group session no longer stops closing
   windows after it rejoins.** A lost partition stayed in the worker's
   watermark minimum until it was assigned back; when the rejoin gave it to
