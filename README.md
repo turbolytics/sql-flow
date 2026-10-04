@@ -1449,6 +1449,7 @@ asserts this table against the running exporter.
 | `error_count` | `error_count_total` | counter | `class`, `domain`, `code`, `phase` |
 | `phase_duration` | `phase_duration_seconds` | histogram | `phase` |
 | `handler_checkpoints_skipped` | `handler_checkpoints_skipped_total` | counter | — |
+| `pipeline_last_sink_write_timestamp` | `pipeline_last_sink_write_timestamp_seconds` | gauge | — |
 
 `phase_duration` decomposes batch time. It carries the same six phases
 `error_count` does — `handler.write`, `handler.invoke`, `sink.write`,
@@ -1479,6 +1480,12 @@ it truncated. DuckDB refuses while another connection holds an uncommitted
 update or DDL, such as a window saving its watermark, and the next batch
 reclaims them instead. A count that rises with every batch means a write stays
 open for longer than a batch, and memory grows until it closes.
+
+`pipeline_last_sink_write_timestamp` is when the pipeline or a window last
+delivered rows, as acknowledged by the destination. A flush with nothing
+pending does not move it, and neither does the DLQ. Read it beside
+`pipeline_last_message_timestamp`: input that stays fresh while this goes
+stale is a pipeline that reads and cannot write.
 
 **Source:**
 

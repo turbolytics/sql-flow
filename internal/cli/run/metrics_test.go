@@ -219,6 +219,7 @@ func TestExportedSeriesNames(t *testing.T) {
 		"pipeline_errors_total",
 		"pipeline_flushes_total",
 		"pipeline_last_message_timestamp_seconds",
+		"pipeline_last_sink_write_timestamp_seconds",
 		"pipeline_rows_accepted_total",
 		"pipeline_rows_written_total",
 		"reference_table_rows",

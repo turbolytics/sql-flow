@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"go.opentelemetry.io/otel/attribute"
@@ -33,6 +34,10 @@ type counting struct {
 	flatAccepted metric.Int64Counter
 	flatWritten  metric.Int64Counter
 
+	// lastWrite records when rows were last delivered: the output's
+	// freshness. Nil for the DLQ, whose writes are failures landing.
+	lastWrite metric.Int64Gauge
+
 	mu      sync.Mutex
 	pending int64
 }
@@ -58,6 +63,10 @@ func (c *countingBuffered) BufferedRows() int { return c.reporter.BufferedRows()
 // row counters are recorded for this role alone. A second spelling of the
 // string would silently stop them recording.
 const SinkRolePipeline = "pipeline"
+
+// SinkRoleManager is the role of a window manager's sink, which delivers a
+// windowed pipeline's output.
+const SinkRoleManager = "manager"
 
 // NewCountingSink wraps a sink so its rows are counted.
 //
@@ -122,6 +131,19 @@ func NewCountingSink(inner Sink, mp metric.MeterProvider, sinkType, role string)
 		}
 	}
 
+	// A manager's sink delivers a windowed pipeline's output, so it counts.
+	// The DLQ's does not, or a pipeline would look fresh while every row it
+	// touched failed.
+	if role == SinkRolePipeline || role == SinkRoleManager {
+		if g, err := meter.Int64Gauge(
+			"pipeline_last_sink_write_timestamp",
+			metric.WithDescription("When a pipeline or window sink last delivered rows, as unix seconds"),
+			metric.WithUnit("s"),
+		); err == nil {
+			c.lastWrite = g
+		}
+	}
+
 	if reporter, ok := inner.(BufferedRowReporter); ok {
 		return &countingBuffered{counting: c, reporter: reporter}
 	}
@@ -169,6 +191,9 @@ func (c *counting) Flush(ctx context.Context) error {
 		c.written.Add(ctx, n, c.attrs)
 		if c.flatWritten != nil {
 			c.flatWritten.Add(ctx, n)
+		}
+		if c.lastWrite != nil {
+			c.lastWrite.Record(ctx, time.Now().Unix())
 		}
 	}
 	return nil

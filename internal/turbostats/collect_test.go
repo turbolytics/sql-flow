@@ -931,3 +931,23 @@ func TestCollect_APipelineLivesAsLongAsItsProcess(t *testing.T) {
 	// SQLFlow cannot backfill yet, and says so by sending none.
 	assert.That(t, p.Backfill == nil)
 }
+
+// Output freshness reaches the bundle as a time, and is absent before the
+// first delivered write.
+func TestCollect_CarriesWhenTheSinkLastDelivered(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, meter := provider(t)
+	ctx := context.Background()
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.LastSinkWriteAt == nil)
+
+	g, err := meter.Int64Gauge("pipeline_last_sink_write_timestamp")
+	assert.NoError(t, err)
+	g.Record(ctx, 1757570000)
+	b, err = Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.LastSinkWriteAt != nil)
+	assert.Equal(t, time.Unix(1757570000, 0).UTC(), *b.Pipeline.LastSinkWriteAt)
+}

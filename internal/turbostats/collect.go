@@ -125,6 +125,7 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 		SinkRowsWritten:     flat["pipeline_rows_written"],
 		StateCommitCount:    flat["pipeline_commits"],
 		LastMessageAt:       unixTime(flat["pipeline_last_message_timestamp"]),
+		LastSinkWriteAt:     unixTime(flat["pipeline_last_sink_write_timestamp"]),
 		// Always sent, zero included: a pipeline always has a sink.
 		SinkRetryCount: &dim.sinkRetries,
 	}
