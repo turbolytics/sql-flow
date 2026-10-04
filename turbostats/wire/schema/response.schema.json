@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://control.turbolytics.io/v1/turbostats/response.schema.json",
+  "properties": {
+    "v": {
+      "type": "integer"
+    },
+    "commands": {
+      "items": true,
+      "type": "array"
+    }
+  },
+  "type": "object",
+  "required": [
+    "v",
+    "commands"
+  ],
+  "description": "Response is the body of every 2xx answer to a heartbeat."
+}

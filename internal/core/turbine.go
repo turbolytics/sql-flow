@@ -1691,7 +1691,7 @@ func (t *Turbine) ConsumeLoop(ctx context.Context, maxMsgs int) (stats *Stats, e
 			if err := t.writeMessage(raw); err != nil {
 				t.recordError(ctx, err, phaseHandlerWrite, "error writing message")
 
-				if err := t.applyErrorPolicy(ctx, err, phaseHandlerWrite, string(raw.Value)); err != nil {
+				if err := t.applyErrorPolicy(ctx, err, phaseHandlerWrite, string(raw.Value), 1); err != nil {
 					return nil, err
 				}
 				// The message is dropped from the batch, but it was still
@@ -1914,11 +1914,15 @@ func (t *Turbine) LastError() (string, time.Time, bool) {
 
 // applyErrorPolicy decides what happens to a failed message or batch. It
 // returns a non-nil error only when the pipeline should stop. Counting and
-// logging belong to recordError, which every caller has already run.
-func (t *Turbine) applyErrorPolicy(ctx context.Context, cause error, phase, message string) error {
+// logging belong to recordError, which every caller has already run. rows
+// is how many rows the failure covers, which IGNORE discards.
+func (t *Turbine) applyErrorPolicy(ctx context.Context, cause error, phase, message string, rows int64) error {
 
 	switch t.errorPolicy.Policy {
 	case PolicyIgnore:
+		// Counted here and nowhere else: the DLQ diverts its rows and RAISE
+		// stops the pipeline, so only IGNORE loses them.
+		t.metrics.ErrorRowsDropped.Add(ctx, rows)
 		return nil
 
 	case PolicyDLQ:
@@ -2307,7 +2311,7 @@ func (t *Turbine) processBatch(ctx context.Context, numBatchMessages int) error 
 	if err != nil {
 		t.recordError(ctx, err, phaseHandlerInvoke, "error invoking handler")
 
-		if policyErr := t.applyErrorPolicy(ctx, err, phaseHandlerInvoke, "Handler invocation failed"); policyErr != nil {
+		if policyErr := t.applyErrorPolicy(ctx, err, phaseHandlerInvoke, "Handler invocation failed", int64(numBatchMessages)); policyErr != nil {
 			return policyErr
 		}
 		// The policy swallowed the failure, so this batch is discarded rather

@@ -1,0 +1,721 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://control.turbolytics.io/v1/turbostats/bundle.schema.json",
+  "properties": {
+    "v": {
+      "type": "integer"
+    },
+    "sent_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "interval_seconds": {
+      "type": "integer",
+      "description": "IntervalSeconds is the reporter's configured interval. A receiver needs\nit to tell a late heartbeat from a normal one. Absent when no reporter\nis configured."
+    },
+    "last_activity_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "LastActivityAt is the latest of the section activity timestamps. It is\na denormalized copy: the section fields are the source. A receiver\nreads it for staleness without knowing which sections exist."
+    },
+    "idle_seconds": {
+      "type": "integer",
+      "description": "IdleSeconds is how long since the process last did work, from its\nmonotonic clock. Absent before any work, and from engines that predate\nthe field. A receiver judging work reads this, not LastActivityAt: a\nwall-clock step between two readings moves their difference, and\ncannot move this. It excludes time the host was suspended, as\nUptimeSeconds does."
+    },
+    "instance": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID names one stream of reports, and the reporter guarantees it is\nunique within its org. Two streams under one ID are a reporter bug: a\nreceiver flags the collision and never namespaces the ID, because only\nthe reporter knows what makes it unique. A Kafka Connect task reports\nas \u003ccluster\u003e/\u003cconnector\u003e/\u003ctask\u003e. Empty until a reporter is configured,\nwhich requires it."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name is the logical pipeline. Instances that share a name are parts of\none pipeline, such as a connector's tasks or a pipeline's replicas. It\nis pipeline.name under run and serve.name under serve."
+        },
+        "version": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "config_hash": {
+          "type": "string"
+        },
+        "source_type": {
+          "type": "string",
+          "description": "What this instance is made of, from its config. A receiver groups a\nfleet by these: \"every stream that reads from Kafka\" is a query\nrather than a grep. A serve process has none of them and sends none of\nthem."
+        },
+        "sink_type": {
+          "type": "string"
+        },
+        "handler_type": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string",
+          "description": "Runtime is the engine that runs the pipeline: sqlflow, or\nkafka-connect for a connector the Kafka Connect reporter describes.\nIt is an open vocabulary: a reader that meets a name it does not know\nkeeps the report. Absent from engines that predate the field."
+        },
+        "runtime_version": {
+          "type": "string",
+          "description": "RuntimeVersion is that engine's version, when Version names something\nelse. A Kafka Connect connector sends its plugin's version as Version\nand Kafka's here. SQLFlow sends none: Version already says it."
+        },
+        "reporter_version": {
+          "type": "string",
+          "description": "ReporterVersion is the reporter's own version, when the reporter is\nnot the engine. SQLFlow reports itself and sends none."
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Labels are the operator's own, declared in the config and fixed for\nthe life of the process. At most 10, keys [a-z][a-z0-9_]* up to 32\ncharacters, values up to 64, and never a name this contract already\ndefines. The bounds are what keep a report a fixed shape and a\nbounded size."
+        }
+      },
+      "type": "object",
+      "required": [
+        "version",
+        "commit",
+        "arch",
+        "config_hash"
+      ]
+    },
+    "process": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID is 16 random bytes, hex-encoded, drawn once when the process\nstarts. Every bundle a process sends carries the same id, the final\none included, and a restart draws a new one. It is how a receiver\ntells two processes apart when instance.id and started_at agree: two\ngateways that boot near 1970, or two replicas of one config started in\nthe same second. Absent from engines that predate the field; a\nreceiver then falls back to started_at."
+        },
+        "host": {
+          "type": "string",
+          "description": "Host is where this process runs, in the operator's terms: the\nhostname, or a Kafka Connect worker's ID. A receiver shows it to say\nwhere a stream ran and where it moved. It identifies nothing, since\ntwo containers can share a hostname; ID does that. Absent when the\nhost would not say."
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "uptime_seconds": {
+          "type": "integer",
+          "description": "UptimeSeconds is how long this process has run, from its monotonic\nclock. Absent from engines that predate the field. StartedAt is for\ndisplay: a gateway that boots near 1970 and then syncs keeps a 1970\nStartedAt for the life of the process, and its uptime stays right.\n\nIt is time awake. Go's monotonic clock is CLOCK_MONOTONIC on Linux and\nmach_absolute_time on macOS, and neither advances while the host is\nsuspended, so a gateway that sleeps for an hour reports an uptime\nwithout that hour. It can be less than now minus StartedAt, and that\nis not a contradiction."
+        },
+        "rss_bytes": {
+          "type": "integer",
+          "description": "RSSBytes is absent when the kernel would not answer. A live process\nnever holds zero bytes, so absent and zero cannot be confused.\n\nIt is omittable rather than required because the alternative was\nworse: a failed read used to fail the whole bundle, so a process that\nwas running fine reported nothing at all, and a receiver reads silence\nas a dead instance. Losing one number beats losing the heartbeat."
+        },
+        "goroutines": {
+          "type": "integer",
+          "description": "Goroutines is absent from a runtime that has none, such as a JVM. A\nlive Go process always runs at least one, so zero cannot be confused\nwith absent, as with RSSBytes."
+        },
+        "go_retained_bytes": {
+          "type": "integer",
+          "description": "GoRetainedBytes is the memory the Go runtime holds from the operating\nsystem: everything it has mapped, less the heap pages it has released.\nIt splits RSSBytes in two. RSSBytes less GoRetainedBytes is native\nmemory: DuckDB, the ADBC driver, and the Arrow buffers DuckDB\nallocated, none of which the Go runtime can see. A leak on one side of\nthat line needs a heap profile and a leak on the other needs a soak, so\nthe split is the first question about any growth.\n\nThe two come from different sources and are not exact complements:\nretained memory the kernel has not paged in counts here and not in\nRSSBytes. The difference is an estimate of native memory, and its\ntrend is the signal.\n\nAbsent from engines that predate the field."
+        },
+        "go_heap_bytes": {
+          "type": "integer",
+          "description": "GoHeapBytes is the heap the last garbage collection found live. It is\nthe part of GoRetainedBytes that the program's own objects hold, so\ngrowth here with a flat remainder is a Go leak, and growth in the\nremainder alone is the runtime keeping freed pages. Absent before the\nfirst collection and from engines that predate the field."
+        },
+        "memory_limit_bytes": {
+          "type": "integer",
+          "description": "MemoryLimitBytes is the container's memory limit, from the cgroup.\nAbsent when no limit is set or the process cannot read it. RSSBytes\napproaching it predicts the kernel killing the process."
+        },
+        "memory": {
+          "properties": {
+            "runtime": {
+              "type": "string",
+              "description": "Runtime is \"go\" or \"jvm\", an open vocabulary."
+            },
+            "retained_bytes": {
+              "type": "integer",
+              "description": "RetainedBytes is what the runtime holds from the operating system:\nGo's mapped memory less released heap pages, or a JVM's committed\nheap and non-heap."
+            },
+            "live_bytes": {
+              "type": "integer",
+              "description": "LiveBytes is what the last collection found live. Absent before the\nfirst collection."
+            },
+            "heap_limit_bytes": {
+              "type": "integer",
+              "description": "HeapLimitBytes is the runtime's heap ceiling: GOMEMLIMIT or -Xmx.\nAbsent when unlimited. LiveBytes approaching it predicts an\nout-of-memory failure."
+            },
+            "gc_count": {
+              "type": "integer",
+              "description": "GCCount is collections since the process started, a counter. Compare\nit only within one process: collectors count cycles differently, so\nits rate means something and its value across runtimes does not."
+            }
+          },
+          "type": "object",
+          "required": [
+            "runtime",
+            "gc_count"
+          ],
+          "description": "Memory is the managed runtime's memory, in terms every garbage\ncollected runtime shares. Absent from engines that predate it."
+        }
+      },
+      "type": "object",
+      "required": [
+        "started_at"
+      ]
+    },
+    "pipeline": {
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "State is starting, running, paused, stopped or failed. It is the one\nfield that can say a pipeline failed while its process stays healthy.\nSQLFlow sends running while it reports, and stopped or failed in its\nfinal bundle. Absent from engines that predate it."
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "StartedAt is the epoch of every pipeline counter. A receiver\nsubtracts two reports only when their StartedAt agrees."
+        },
+        "restart_count": {
+          "type": "integer",
+          "description": "RestartCount counts pipeline starts after the first since the\nprocess started. A counter, because a pipeline can restart several\ntimes between two reports and StartedAt shows only the last."
+        },
+        "source_connected": {
+          "type": "boolean",
+          "description": "SourceConnected says whether the source holds its connection now.\nAbsent when the source cannot tell. It separates a quiet source from\na lost one, which LastMessageAt alone cannot."
+        },
+        "last_sink_write_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "LastSinkWriteAt is the last write the destination acknowledged:\noutput freshness, where LastMessageAt is input. A pipeline that reads\nand cannot write shows the first fresh and this stale. Absent until\nthe first acknowledged write."
+        },
+        "error_rows_dropped": {
+          "type": "integer",
+          "description": "ErrorRowsDropped is rows discarded under a tolerant error policy,\nneither delivered nor diverted to a DLQ. It is silent data loss, like\nLateRowsDropped, and is never summed with another outcome. An engine\nthat counts it always sends it, zero included."
+        },
+        "source_wire_bytes": {
+          "type": "integer",
+          "description": "SourceWireBytes and SinkWireBytes are bytes on the network, framing\nand compression included, where MessagePayloadBytes is payload. Each\nis absent when the client cannot report it."
+        },
+        "sink_wire_bytes": {
+          "type": "integer"
+        },
+        "backfill": {
+          "properties": {
+            "state": {
+              "type": "string",
+              "description": "State is none, running, paused, completed or aborted."
+            },
+            "blocks_stream": {
+              "type": "boolean",
+              "description": "BlocksStream says the stream waits for this backfill: true for an\ninitial or blocking snapshot, false for one interleaved with the\nstream."
+            },
+            "elapsed_seconds": {
+              "type": "integer",
+              "description": "ElapsedSeconds is how long the current or last backfill has run,\npaused time included."
+            },
+            "unit": {
+              "type": "string",
+              "description": "Unit is what UnitsTotal and UnitsLeft count: table, partition."
+            },
+            "units_total": {
+              "type": "integer",
+              "description": "UnitsTotal and UnitsLeft follow the rollup daemon's tables_left: both\ncount what remains, so progress reads the same way in both places."
+            },
+            "units_left": {
+              "type": "integer"
+            },
+            "rows_read": {
+              "type": "integer",
+              "description": "RowsRead is rows read, summed over units. A source may update it in\nsteps, so a receiver's stall threshold exceeds one step."
+            }
+          },
+          "type": "object",
+          "required": [
+            "state",
+            "blocks_stream"
+          ],
+          "description": "Backfill is present for a source that can backfill. See Backfill."
+        },
+        "message_count": {
+          "type": "integer"
+        },
+        "message_payload_bytes": {
+          "type": "integer",
+          "description": "MessagePayloadBytes is the bytes of every message value received,\nthe same messages MessageCount counts, so the two divide to a true\naverage message size.\n\nPayload, and named so. It excludes keys, headers, framing and TLS, and\nunder Kafka compression the wire carries fewer bytes than this. It is\nwhat the pipeline is asked to process, measured the same way for every\nsource. What a constrained or metered link pays is wire bytes, which\nonly some clients expose and which would be a different field.\n\nA pointer, so an engine that predates it reads as unknown rather than\nas a pipeline that received nothing."
+        },
+        "handler_rows_read": {
+          "type": "integer"
+        },
+        "error_count": {
+          "type": "integer"
+        },
+        "source_error_count": {
+          "type": "integer",
+          "description": "The phases errors are attributed to. Absent from engines that predate\nthem; zero is a reading, and means nothing failed in that phase.\n\nErrorCount stays the total, and stays authoritative for it: a receiver\nthat reads only it keeps working."
+        },
+        "handler_error_count": {
+          "type": "integer"
+        },
+        "sink_error_count": {
+          "type": "integer"
+        },
+        "state_error_count": {
+          "type": "integer"
+        },
+        "dlq_rows": {
+          "type": "integer",
+          "description": "DLQRows is rows diverted to the dead-letter queue rather than dropped."
+        },
+        "last_error_code": {
+          "type": "string",
+          "description": "LastErrorCode is the engine's code, such as system.sink.unreachable.\nThe message never crosses the wire: it carries the row that failed, a\nconnection string, a customer's data. An operator with the code and\nthe time finds the message in their own logs."
+        },
+        "last_error_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "event_lag_seconds": {
+          "type": "number",
+          "description": "EventLagSeconds is how far behind the stream the pipeline ran at its\nlast batch: now minus the newest event in it. EventLagMaxSeconds is\nthe worst since the process started.\n\nEventLagObservedAt is when that reading was taken. A consumer cut off\nfrom its brokers keeps its last reading, so a receiver judges the\nreading by its age.\n\nEventLagBasis is where the event time came from. The engine sends\nkafka_create_time (the producer's clock, Kafka's default) or\nkafka_log_append_time (the broker's, where the topic sets\nmessage.timestamp.type), both producer or broker to processing;\narrival, the moment the record reached this process, which is\nqueueing inside the process and nothing before it; source_commit_time,\nthe source database's commit time of the change, to processing; or,\nfor a source told where its event time is, the configured path into\nthe payload, as written. It travels with the number because these measure\ndifferent spans, and it is an open vocabulary: a reader that meets a\nname it does not know keeps the reading and declines to compare it,\nrather than treating\nthe bundle as invalid. All four are absent for a source with no\nevent time."
+        },
+        "event_lag_max_seconds": {
+          "type": "number"
+        },
+        "event_lag_observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "event_lag_basis": {
+          "type": "string"
+        },
+        "recv_wait_seconds": {
+          "type": "number",
+          "description": "RecvWaitSeconds is how long the consume loop has spent waiting for\ninput. It separates a pipeline waiting on a quiet source from one\nsaturated by its own work: near the wall clock means the source is\nquiet, near zero means the engine is the bottleneck."
+        },
+        "duration": {
+          "properties": {
+            "batch": {
+              "properties": {
+                "count": {
+                  "type": "integer"
+                },
+                "sum_seconds": {
+                  "type": "number"
+                },
+                "min_seconds": {
+                  "type": "number"
+                },
+                "max_seconds": {
+                  "type": "number"
+                },
+                "buckets": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array",
+                  "maxItems": 9,
+                  "minItems": 9,
+                  "description": "Buckets is len(DurationBounds)+1 counts, the last for everything above\nthe final boundary."
+                }
+              },
+              "type": "object",
+              "required": [
+                "count",
+                "sum_seconds",
+                "min_seconds",
+                "max_seconds",
+                "buckets"
+              ]
+            },
+            "sink_flush": {
+              "properties": {
+                "count": {
+                  "type": "integer"
+                },
+                "sum_seconds": {
+                  "type": "number"
+                },
+                "min_seconds": {
+                  "type": "number"
+                },
+                "max_seconds": {
+                  "type": "number"
+                },
+                "buckets": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array",
+                  "maxItems": 9,
+                  "minItems": 9,
+                  "description": "Buckets is len(DurationBounds)+1 counts, the last for everything above\nthe final boundary."
+                }
+              },
+              "type": "object",
+              "required": [
+                "count",
+                "sum_seconds",
+                "min_seconds",
+                "max_seconds",
+                "buckets"
+              ]
+            }
+          },
+          "type": "object",
+          "description": "Duration is how long its work takes."
+        },
+        "sink_flush_count": {
+          "type": "integer"
+        },
+        "sink_rows_accepted": {
+          "type": "integer"
+        },
+        "sink_rows_written": {
+          "type": "integer"
+        },
+        "state_commit_count": {
+          "type": "integer"
+        },
+        "state_db_size_bytes": {
+          "type": "integer",
+          "description": "A pointer so a pipeline with no state path omits the field: absent\nstate and empty state are different facts."
+        },
+        "last_message_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Absent until the pipeline receives anything, because zero is not a time."
+        },
+        "sink_retry_count": {
+          "type": "integer",
+          "description": "SinkRetryCount is every sink write retried after a failure, summed\nacross sinks. An engine that reports it always sends it, zero included.\n\nA pointer, so an engine that predates the field reads as unknown. As a\nplain integer it decoded to zero from a bundle that never carried it,\nand an old instance whose sink retried constantly read as one that\nnever had."
+        },
+        "lag_max_messages": {
+          "type": "integer",
+          "description": "Lag is how far behind the source this pipeline is, summarized across\nevery topic and partition it has read.\n\nPointers, not omitempty on a value. A pipeline that has caught up\nreports zero, and a pipeline with no Kafka source reports nothing, and\nomitempty on an int64 would render both as an absent field -- turning\nthe healthiest state the system has into the same page as the unknown\none.\n\nBoth aggregates, because either alone misleads: max hides a backlog\nspread evenly over every partition, and the total hides one stuck\npartition among many. LagPartitions says how many points they\nsummarize, without which the two cannot be told apart."
+        },
+        "lag_total_messages": {
+          "type": "integer"
+        },
+        "lag_partitions": {
+          "type": "integer"
+        },
+        "lag_observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "LagObservedAt is when the lag above was last measured, and a receiver\nmust read the two together. Lag is measured when a message is\nprocessed, so a consumer that stops receiving keeps its last reading,\nusually zero, while the backlog grows behind it. SentAt minus this is\nhow old the reading is."
+        },
+        "late_rows_dropped": {
+          "type": "integer",
+          "description": "The three window counters travel as a group: all present when this\npipeline runs any window, from the moment it starts, and all absent\nwhen it runs none.\n\nThat is what makes LateRowsDropped readable. It counts rows the engine\nrefused before the handler because their bucket had closed more than\nallowed_lateness_seconds before the watermark, which is silent data\nloss, and an operator has to be able to tell \"no rows were dropped\"\nfrom \"nothing here drops rows\". Absent says the second; zero says the\nfirst. LateRowsRecomputed counts rows admitted within the lateness,\neach of which republished its bucket whole; nothing was lost.\n\nDropped and recomputed are separate fields because the outcome that\nsplits them is not a shard: one number loses data and the other does\nnot, and a sum of the two is true of neither. Both are absent if a\nwindow reports an outcome this contract has no field for, because a\ncount that leaves some rows out is worse than none. late_rows_reemitted\nwas the field before recomputes replaced the delta; an older receiver\nsees it absent, the way it sees every window field of a pipeline with\nno window.\n\nThe unit is rows of the window table, not source events. The handler's\nSQL runs before the window sees anything, so a batch of forty late\nevents grouped into one row is one late row here. The two agree only\nat batch_size 1; above it the ratio is the handler's aggregation, which\nis a tuning knob and not a loss. An operator comparing this with an\ninput count is comparing different units. A count in events would\nneed the window to know which column carries each row's event count,\nwhich nothing declares today."
+        },
+        "late_rows_recomputed": {
+          "type": "integer"
+        },
+        "window_closed_count": {
+          "type": "integer"
+        },
+        "window_lag_seconds": {
+          "type": "integer",
+          "description": "WindowLagSeconds is how far the most behind window's closes trail the\ndata it holds, in event seconds: where its watermark should be, given\nits rows, minus where it is. It is zero while closes keep up, zero\nafter an idle close has closed everything, and it grows while rows\narrive and closes fail. Present once any window has polled.\n\nNo clock enters it, so it carries no skew and a sparse stream does not\nread as stalled. A stream going quiet is the source's to report, as\nlast_message_at does. Two earlier readings measured against this\nhost's clock and got both wrong: the watermark's age trailed by size\nand grace by design, and wall time past the next close grew for any\nstream that paused."
+        },
+        "window_newest_bucket_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "WindowNewestBucketAt is the start of the newest bucket any window\nholds, in event time: a timestamp from the data, not from this host.\n\nAhead of now means rows are stamped in the future. That is a fault,\nnot an artefact: one device with a fast clock moves the watermark past\nevery correctly-timed row, and under a drop policy each of those is\nthen late and deleted. The engine does not subtract this host's clock\nfrom it, because on a gateway without a real-time clock that clock is\nthe thing most likely to be wrong. A receiver compares it with its own\nclock at receipt."
+        }
+      },
+      "type": "object",
+      "required": [
+        "message_count",
+        "handler_rows_read",
+        "error_count",
+        "sink_flush_count",
+        "sink_rows_accepted",
+        "sink_rows_written",
+        "state_commit_count"
+      ],
+      "description": "Pipeline is present when the process runs a consume loop."
+    },
+    "serve": {
+      "properties": {
+        "request_count": {
+          "type": "integer"
+        },
+        "request_error_count": {
+          "type": "integer",
+          "description": "RequestErrorCount counts 5xx answers only. A 4xx is the caller's error."
+        },
+        "duration": {
+          "properties": {
+            "request": {
+              "properties": {
+                "count": {
+                  "type": "integer"
+                },
+                "sum_seconds": {
+                  "type": "number"
+                },
+                "min_seconds": {
+                  "type": "number"
+                },
+                "max_seconds": {
+                  "type": "number"
+                },
+                "buckets": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array",
+                  "maxItems": 9,
+                  "minItems": 9,
+                  "description": "Buckets is len(DurationBounds)+1 counts, the last for everything above\nthe final boundary."
+                }
+              },
+              "type": "object",
+              "required": [
+                "count",
+                "sum_seconds",
+                "min_seconds",
+                "max_seconds",
+                "buckets"
+              ]
+            }
+          },
+          "type": "object",
+          "description": "Duration is how long a request takes, end to end."
+        },
+        "sessions_in_use": {
+          "type": "integer"
+        },
+        "sessions_total": {
+          "type": "integer"
+        },
+        "last_request_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Absent until the server answers a dataset request."
+        },
+        "cache": {
+          "properties": {
+            "hit_count": {
+              "type": "integer"
+            },
+            "miss_count": {
+              "type": "integer"
+            },
+            "shared_count": {
+              "type": "integer"
+            },
+            "eviction_count": {
+              "type": "integer"
+            },
+            "bytes": {
+              "type": "integer"
+            },
+            "entries": {
+              "type": "integer"
+            }
+          },
+          "type": "object",
+          "required": [
+            "hit_count",
+            "miss_count",
+            "shared_count",
+            "eviction_count",
+            "bytes",
+            "entries"
+          ],
+          "description": "Cache is absent on a server where no dataset opted into the cache."
+        }
+      },
+      "type": "object",
+      "required": [
+        "request_count",
+        "request_error_count",
+        "sessions_in_use",
+        "sessions_total"
+      ],
+      "description": "Serve is present when the process answers dataset requests."
+    },
+    "freshness": {
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "description": "StoreID names the database without its host or credentials: \"pg:\"\nand 16 hex characters of a hash of the server's system identifier and\nthe database's name, the same for every reporter."
+        },
+        "store_id_kind": {
+          "type": "string",
+          "description": "StoreIDKind is \"system\", or \"address\" when the server refused its\nsystem identifier and the id came from the address it answered on,\nwhich another reporter may see differently."
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ObservedAt is the database's clock when the tables were read."
+        },
+        "tables": {
+          "items": {
+            "properties": {
+              "table": {
+                "type": "string",
+                "description": "Table is qualified by its schema."
+              },
+              "grain_seconds": {
+                "type": "integer"
+              },
+              "newest_bucket_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "NewestBucketAt is the start of the newest bucket, absent for an empty\ntable."
+              }
+            },
+            "type": "object",
+            "required": [
+              "table",
+              "grain_seconds"
+            ],
+            "description": "FreshTable is one table's newest bucket."
+          },
+          "type": "array",
+          "description": "Tables is one entry per table. The reporter's config bounds it: a\nrollups file that reports declares at most ten tables, and each rollup\nadds its source."
+        }
+      },
+      "type": "object",
+      "required": [
+        "store_id",
+        "store_id_kind",
+        "observed_at",
+        "tables"
+      ],
+      "description": "Freshness is present when the process measures a store's tables: the\nrollup daemon's leader."
+    },
+    "rollup": {
+      "properties": {
+        "role": {
+          "type": "string",
+          "description": "Role is \"leader\", \"standby\" or \"starting\". Only the leader reports\nthe rollups: a standby checks nothing."
+        },
+        "rollups": {
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "strategy": {
+                "type": "string",
+                "description": "Strategy is how the store keeps the rollup current: \"trigger\" in v1."
+              },
+              "backfill": {
+                "properties": {
+                  "tables_left": {
+                    "type": "integer"
+                  },
+                  "history_left_seconds": {
+                    "type": "integer",
+                    "description": "HistoryLeftSeconds is the source history still to fill in the table\nfurthest behind, absent before that table's first chunk."
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "tables_left"
+                ],
+                "description": "Backfill is absent once every table of the rollup is filled."
+              },
+              "verify_bucket_count": {
+                "type": "integer"
+              },
+              "drift_bucket_count": {
+                "type": "integer"
+              },
+              "completeness": {
+                "properties": {
+                  "table": {
+                    "type": "string",
+                    "description": "Table is qualified by its schema, as in Freshness, so a receiver joins\nthe two."
+                  },
+                  "bucket_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "source_buckets": {
+                    "type": "integer"
+                  },
+                  "expected_buckets": {
+                    "type": "integer"
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "table",
+                  "bucket_at",
+                  "source_buckets",
+                  "expected_buckets"
+                ],
+                "description": "Completeness is absent for a rollup with no count_buckets measure in a\nset without dimensions, and before any such table has a closed bucket."
+              },
+              "triggers": {
+                "properties": {
+                  "calls": {
+                    "type": "integer"
+                  },
+                  "total_seconds": {
+                    "type": "number"
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "calls",
+                  "total_seconds"
+                ],
+                "description": "Triggers is absent unless the server tracks function calls, which\ntakes track_functions set to pl or all."
+              }
+            },
+            "type": "object",
+            "required": [
+              "name",
+              "strategy",
+              "verify_bucket_count",
+              "drift_bucket_count"
+            ],
+            "description": "RollupEntry is one rollup's totals since the process started."
+          },
+          "type": "array",
+          "description": "Rollups is one entry per rollup the file declares. Every rollup\ndeclares a table, so the cap on tables bounds it."
+        },
+        "last_error_code": {
+          "type": "string",
+          "description": "The code and time of the last error the daemon counted. The message\nstays in the process: it can carry a DSN."
+        },
+        "last_error_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "type": "object",
+      "required": [
+        "role"
+      ],
+      "description": "Rollup is present when the process runs rollups."
+    },
+    "commands": {
+      "items": true,
+      "type": "array",
+      "description": "Commands is a reserved name. v1 never populates it; a later spec\ndefines command status."
+    },
+    "exit": {
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "code": {
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "required": [
+        "reason",
+        "code"
+      ],
+      "description": "Exit is present only in the last bundle a clean shutdown sends."
+    }
+  },
+  "type": "object",
+  "required": [
+    "v",
+    "sent_at",
+    "instance",
+    "process"
+  ],
+  "description": "Bundle is one report."
+}

@@ -305,7 +305,7 @@ func buildManagedTables(
 		// loop for the length of every window write.
 		sink, err := sinks.New(ctx, table.Window.Sink, sinkConn,
 			sinks.WithMeterProvider(mp),
-			sinks.WithSinkRole("manager"),
+			sinks.WithSinkRole(core.SinkRoleManager),
 			sinks.WithRetryEvents(events),
 			sinks.WithConnLock(&sync.Mutex{}),
 			sinks.WithLogger(l))

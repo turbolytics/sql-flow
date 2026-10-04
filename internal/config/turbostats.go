@@ -41,7 +41,8 @@ type TurboStats struct {
 	// At most 10. A key is lower case, starts with a letter, and is at most
 	// 32 characters of [a-z0-9_]. A value is at most 64 characters. A key
 	// the bundle already carries is refused: id, name, version, commit,
-	// arch, config_hash, source_type, sink_type, handler_type.
+	// arch, config_hash, source_type, sink_type, handler_type, runtime,
+	// runtime_version, reporter_version.
 	//
 	// They are fixed for the life of the process: a receiver stores a series
 	// per field, and a set that changed mid-run would split one instance's
@@ -67,6 +68,7 @@ var labelKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 var reservedLabels = map[string]bool{
 	"id": true, "name": true, "version": true, "commit": true, "arch": true,
 	"config_hash": true, "source_type": true, "sink_type": true, "handler_type": true,
+	"runtime": true, "runtime_version": true, "reporter_version": true,
 }
 
 // Enabled reports whether this instance posts anywhere.

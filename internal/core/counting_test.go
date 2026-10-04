@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/zeebo/assert"
 	"go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 // countStubSink records what it was given and fails its flush on demand.
@@ -116,4 +119,77 @@ func TestCountingNilProviderRecordsNothing(t *testing.T) {
 
 	assert.NoError(t, c.WriteTable(context.Background(), tbl))
 	assert.NoError(t, c.Flush(context.Background()))
+}
+
+const lastWrite = "pipeline_last_sink_write_timestamp"
+
+func meteredCounting(t *testing.T, inner Sink, role string) (Sink, *sdkmetric.ManualReader) {
+	t.Helper()
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	return NewCountingSink(inner, mp, "postgres", role), r
+}
+
+// The last write is the destination's acknowledgment, not the buffer's. A
+// failed flush delivered nothing, and the retry that delivers is the write.
+func TestCounting_RecordsTheLastWriteOnDeliveryOnly(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	inner := &countStubSink{failFlush: true}
+	c, r := meteredCounting(t, inner, SinkRolePipeline)
+	ctx := context.Background()
+
+	assert.NoError(t, c.WriteTable(ctx, countIDTable(3)))
+	assert.Error(t, c.Flush(ctx))
+	assert.Equal(t, int64(0), flatValue(t, r, lastWrite))
+
+	inner.failFlush = false
+	before := time.Now().Unix()
+	assert.NoError(t, c.Flush(ctx))
+	got := flatValue(t, r, lastWrite)
+	assert.That(t, got >= before && got <= time.Now().Unix())
+}
+
+// A periodic flush with nothing pending delivered nothing. Counting it would
+// make a pipeline that writes nothing look fresh.
+func TestCounting_AFlushWithNothingPendingIsNotAWrite(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	c, r := meteredCounting(t, &countStubSink{}, SinkRolePipeline)
+	assert.NoError(t, c.Flush(context.Background()))
+	assert.Equal(t, int64(0), flatValue(t, r, lastWrite))
+}
+
+// A windowed pipeline's output lands through its manager's sink, so that is
+// a write too.
+func TestCounting_AManagerSinkWriteIsAWrite(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	c, r := meteredCounting(t, &countStubSink{}, SinkRoleManager)
+	ctx := context.Background()
+	assert.NoError(t, c.WriteTable(ctx, countIDTable(1)))
+	assert.NoError(t, c.Flush(ctx))
+	assert.That(t, flatValue(t, r, lastWrite) > 0)
+}
+
+// The DLQ's writes are failures landing. Counting them would make a
+// pipeline look fresh while every row it touched failed.
+func TestCounting_TheDLQNeverMovesTheLastWrite(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	c, r := meteredCounting(t, &countStubSink{}, "dlq")
+	ctx := context.Background()
+	assert.NoError(t, c.WriteTable(ctx, countIDTable(2)))
+	assert.NoError(t, c.Flush(ctx))
+	assert.Equal(t, int64(0), flatValue(t, r, lastWrite))
+}
+
+// A noop sink delivers nothing anywhere. A windowed pipeline's pipeline sink
+// is noop and is handed DuckDB's one-row INSERT count every batch; recording
+// that as a write kept a pipeline fresh while its window sink was down.
+func TestCounting_ANoopSinkNeverMovesTheLastWrite(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	c := NewCountingSink(&countStubSink{}, mp, "noop", SinkRolePipeline)
+	ctx := context.Background()
+	assert.NoError(t, c.WriteTable(ctx, countIDTable(1)))
+	assert.NoError(t, c.Flush(ctx))
+	assert.Equal(t, int64(0), flatValue(t, r, lastWrite))
 }

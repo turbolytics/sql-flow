@@ -36,7 +36,9 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	if err != nil {
 		rss = 0
 	}
-	goRetained, goHeap := GoMemory()
+	mem := GoMemory()
+	// Absent rather than zero when there is no limit to read.
+	limit, _ := MemoryLimit(cgroupRoot)
 
 	s := src.Static
 	b := Bundle{
@@ -53,14 +55,24 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 			SourceType:  s.SourceType,
 			SinkType:    s.SinkType,
 			HandlerType: s.HandlerType,
+			Runtime:     wire.RuntimeSQLFlow,
 			Labels:      copyLabels(s.Labels),
 		},
 		Process: Process{
-			StartedAt:       s.StartedAt.UTC().Truncate(time.Second),
-			RSSBytes:        rss,
-			Goroutines:      runtime.NumGoroutine(),
-			GoRetainedBytes: goRetained,
-			GoHeapBytes:     goHeap,
+			StartedAt:        s.StartedAt.UTC().Truncate(time.Second),
+			Host:             hostname(),
+			RSSBytes:         rss,
+			MemoryLimitBytes: limit,
+			Goroutines:       runtime.NumGoroutine(),
+			GoRetainedBytes:  mem.Retained,
+			GoHeapBytes:      mem.HeapLive,
+			Memory: &Memory{
+				Runtime:        wire.MemoryRuntimeGo,
+				RetainedBytes:  mem.Retained,
+				LiveBytes:      mem.HeapLive,
+				HeapLimitBytes: mem.HeapLimit,
+				GCCount:        mem.GCCycles,
+			},
 		},
 	}
 
@@ -76,7 +88,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 	}
 
 	if src.Pipeline != nil {
-		p, err := pipelineSection(ctx, flat, floats, hist, dim, b.SentAt, src.Pipeline)
+		p, err := pipelineSection(ctx, flat, floats, hist, dim, b.SentAt, b.Process.StartedAt, src.Pipeline)
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -96,8 +108,14 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 
 func pipelineSection(ctx context.Context, flat map[string]int64, floats map[string]float64,
 	hist map[string]metricdata.HistogramDataPoint[float64], dim *dimensional,
-	sentAt time.Time, src *PipelineSource) (*Pipeline, error) {
+	sentAt, startedAt time.Time, src *PipelineSource) (*Pipeline, error) {
 	p := &Pipeline{
+		// A SQLFlow pipeline starts with its process and never restarts
+		// inside it, so its epoch is the process's and its restarts are
+		// zero: a reading, not an unknown.
+		State:               wire.StateRunning,
+		StartedAt:           &startedAt,
+		RestartCount:        int64Ptr(0),
 		MessageCount:        flat["message_count"],
 		MessagePayloadBytes: int64Ptr(flat["message_payload_bytes"]),
 		HandlerRowsRead:     flat["handler_rows_read"],
@@ -107,8 +125,12 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 		SinkRowsWritten:     flat["pipeline_rows_written"],
 		StateCommitCount:    flat["pipeline_commits"],
 		LastMessageAt:       unixTime(flat["pipeline_last_message_timestamp"]),
+		LastSinkWriteAt:     unixTime(flat["pipeline_last_sink_write_timestamp"]),
 		// Always sent, zero included: a pipeline always has a sink.
 		SinkRetryCount: &dim.sinkRetries,
+		// Always sent, zero included: the engine counts every row IGNORE
+		// discards.
+		ErrorRowsDropped: int64Ptr(flat["error_rows_dropped"]),
 	}
 	// Present once lag has been measured at all, not only while partitions
 	// are held. An instance whose partitions all moved elsewhere, or one in a

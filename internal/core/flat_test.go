@@ -428,3 +428,50 @@ func TestCoreConsumeLoop_AClockBelowTheFloorIsNotAnOldEvent(t *testing.T) {
 		})
 	}
 }
+
+func ignoringTurbine(t *testing.T, src Source, h Handler, batchSize int) (*Turbine, *sdkmetric.ManualReader) {
+	t.Helper()
+	r := sdkmetric.NewManualReader()
+	m, err := NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)))
+	assert.NoError(t, err)
+	tb := NewTurbine(src, h, &fakeSink{}, batchSize, time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyIgnore}, WithMetrics(m))
+	return tb, r
+}
+
+// IGNORE discards a message the handler rejects. It is gone, and the count
+// says so.
+func TestErrorIgnore_CountsARejectedMessageAsDropped(t *testing.T) {
+	coverage.Covers(t, "error.ignore")
+	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
+	tb, r := ignoringTurbine(t, src, &failingHandler{failWriteOn: "bad"}, 4)
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), flatValue(t, r, "error_rows_dropped"))
+}
+
+// IGNORE discards a whole batch when the handler's SQL fails, and every
+// message in it is gone.
+func TestErrorIgnore_CountsAFailedBatchAsDropped(t *testing.T) {
+	coverage.Covers(t, "error.ignore")
+	src := &fakeSource{batches: [][]Message{messages(4)}}
+	tb, r := ignoringTurbine(t, src, &failingHandler{failInvokeOn: true}, 4)
+	_, err := tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(4), flatValue(t, r, "error_rows_dropped"))
+}
+
+// The DLQ diverts what it takes. Nothing is dropped.
+func TestErrorDlq_DropsNothing(t *testing.T) {
+	coverage.Covers(t, "error.dlq")
+	r := sdkmetric.NewManualReader()
+	m, err := NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)))
+	assert.NoError(t, err)
+	src := &fakeSource{batches: [][]Message{mixedMessages("bad", 4)}}
+	tb := NewTurbine(src, &failingHandler{failWriteOn: "bad"}, &fakeSink{}, 4,
+		time.Second, &sync.Mutex{},
+		PipelineErrorPolicies{Policy: PolicyDLQ, DLQSink: &recordingSink{}}, WithMetrics(m))
+	_, err = tb.ConsumeLoop(context.Background(), 0)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), flatValue(t, r, "error_rows_dropped"))
+}

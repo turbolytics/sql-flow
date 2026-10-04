@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
+	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -861,4 +864,108 @@ func TestCollect_TheProcessIDIsTheClocks(t *testing.T) {
 	restarted, err := Collect(context.Background(), src)
 	assert.NoError(t, err)
 	assert.NotEqual(t, first.Process.ID, restarted.Process.ID)
+}
+
+// Every SQLFlow bundle says which engine sent it and where it runs, and its
+// memory object copies the Go fields, so a receiver reads one rule for Go
+// and for a JVM.
+func TestCollect_CarriesTheRuntimeHostAndMemory(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	runtime.GC()
+
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+
+	assert.Equal(t, wire.RuntimeSQLFlow, b.Instance.Runtime)
+	want, err := os.Hostname()
+	assert.NoError(t, err)
+	assert.Equal(t, want, b.Process.Host)
+
+	m := b.Process.Memory
+	assert.That(t, m != nil)
+	assert.Equal(t, wire.MemoryRuntimeGo, m.Runtime)
+	assert.Equal(t, b.Process.GoRetainedBytes, m.RetainedBytes)
+	assert.Equal(t, b.Process.GoHeapBytes, m.LiveBytes)
+	assert.That(t, m.GCCount > 0)
+}
+
+// GOMEMLIMIT reaches the bundle as the heap ceiling.
+func TestGoMemory_ReadsTheHeapLimit(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	old := debug.SetMemoryLimit(512 << 20)
+	defer debug.SetMemoryLimit(old)
+	assert.Equal(t, int64(512<<20), GoMemory().HeapLimit)
+}
+
+// No GOMEMLIMIT is no ceiling. The runtime spells that math.MaxInt64, and
+// sending it would make every heap look empty against its limit.
+func TestGoMemory_NoLimitIsAbsent(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	old := debug.SetMemoryLimit(math.MaxInt64)
+	defer debug.SetMemoryLimit(old)
+	assert.Equal(t, int64(0), GoMemory().HeapLimit)
+
+	reader, _, _ := provider(t)
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	raw, err := json.Marshal(b)
+	assert.NoError(t, err)
+	assert.That(t, !strings.Contains(string(raw), "heap_limit_bytes"))
+}
+
+// A SQLFlow pipeline runs exactly as long as its process: running while it
+// reports, one epoch, and no restarts.
+func TestCollect_APipelineLivesAsLongAsItsProcess(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+
+	p := b.Pipeline
+	assert.Equal(t, wire.StateRunning, p.State)
+	assert.That(t, p.StartedAt != nil)
+	assert.Equal(t, b.Process.StartedAt, *p.StartedAt)
+	assert.That(t, p.RestartCount != nil)
+	assert.Equal(t, int64(0), *p.RestartCount)
+	// SQLFlow cannot backfill yet, and says so by sending none.
+	assert.That(t, p.Backfill == nil)
+}
+
+// Output freshness reaches the bundle as a time, and is absent before the
+// first delivered write.
+func TestCollect_CarriesWhenTheSinkLastDelivered(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, meter := provider(t)
+	ctx := context.Background()
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.LastSinkWriteAt == nil)
+
+	g, err := meter.Int64Gauge("pipeline_last_sink_write_timestamp")
+	assert.NoError(t, err)
+	g.Record(ctx, 1757570000)
+	b, err = Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.LastSinkWriteAt != nil)
+	assert.Equal(t, time.Unix(1757570000, 0).UTC(), *b.Pipeline.LastSinkWriteAt)
+}
+
+// An engine that counts dropped rows always sends the count, zero included:
+// "nothing was dropped" is a reading.
+func TestCollect_AlwaysSendsErrorRowsDropped(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.ErrorRowsDropped != nil)
+	assert.Equal(t, int64(0), *b.Pipeline.ErrorRowsDropped)
+
+	m.ErrorRowsDropped.Add(ctx, 4)
+	b, err = Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, int64(4), *b.Pipeline.ErrorRowsDropped)
 }

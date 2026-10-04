@@ -602,8 +602,9 @@ pipeline:
 
             pipeline = DockerContainer(image) \
                 .with_volume_mapping(tmp, "/conf") \
-                .with_kwargs(network_mode=(
-                    f"container:{receiver.get_wrapped_container().id}")) \
+                .with_kwargs(
+                    network_mode=f"container:{receiver.get_wrapped_container().id}",
+                    mem_limit="512m") \
                 .with_command("run /conf/pipeline.yml")
             pipeline.start()
             try:
@@ -628,6 +629,23 @@ pipeline:
     assert bundle["interval_seconds"] == 1
     assert "pipeline" in bundle
     assert "serve" not in bundle
+
+    # The generic fields, as the shipped image sends them. The container's
+    # limit reaches the bundle, so an OOM kill can be predicted.
+    assert bundle["instance"]["runtime"] == "sqlflow"
+    assert bundle["process"]["host"]
+    assert bundle["process"]["memory_limit_bytes"] == 512 * 1024 * 1024
+    memory = bundle["process"]["memory"]
+    assert memory["runtime"] == "go"
+    assert memory["retained_bytes"] > 0
+    assert "gc_count" in memory
+
+    pipeline = bundle["pipeline"]
+    assert pipeline["state"] == "running"
+    assert pipeline["started_at"] == bundle["process"]["started_at"]
+    assert pipeline["restart_count"] == 0
+    assert pipeline["error_rows_dropped"] == 0
+    assert "backfill" not in pipeline
 
     # The version in the bundle is the one stamped into the image.
     stdout, _ = run_docker_container(image, "version")
