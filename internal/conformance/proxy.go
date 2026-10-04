@@ -88,6 +88,34 @@ func (p *Proxy) Break(t *testing.T) {
 	}
 }
 
+// Refuse closes the proxy's listener and the connections through it, so every
+// dial is refused: a destination that stopped, rather than one that hangs.
+// A client that was connected loses its connections and cannot make new ones.
+func (p *Proxy) Refuse(t *testing.T) {
+	t.Helper()
+
+	proxy, err := p.client.Proxy(proxyName)
+	if err != nil {
+		t.Fatalf("conformance: look up proxy: %v", err)
+	}
+	if err := proxy.Disable(); err != nil {
+		t.Fatalf("conformance: disable the proxy: %v", err)
+	}
+}
+
+// Accept reopens the listener Refuse closed.
+func (p *Proxy) Accept(t *testing.T) {
+	t.Helper()
+
+	proxy, err := p.client.Proxy(proxyName)
+	if err != nil {
+		t.Fatalf("conformance: look up proxy: %v", err)
+	}
+	if err := proxy.Enable(); err != nil {
+		t.Fatalf("conformance: enable the proxy: %v", err)
+	}
+}
+
 // Heal removes the hang.
 func (p *Proxy) Heal(t *testing.T) {
 	t.Helper()

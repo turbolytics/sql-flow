@@ -901,6 +901,12 @@ sender retries. The cost is the wait: a request waits for its batch to fill
 or for `flush_interval_seconds`, whichever comes first, so a lone sender
 waits the whole interval (measured p50 1.00s, p99 1.04s at 1s). A sender
 that hangs up keeps its place in the queue; nobody else is given its answer.
+A flush the sink cannot finish fails within a bound, so a sender always gets
+an answer: with a Kafka sink whose broker is unreachable, waiting senders get
+503 after about 30s (the 20s record timeout, a 5s margin, and up to 5s to
+abort what is buffered). A failed flush ends the run and the process exits
+12 (`system.sink.unreachable`), so run it under a supervisor that restarts it;
+until the broker is back it fails at start.
 `after_flush` is refused on a pipeline that windows, because a window holds
 a row for minutes; put the webhook in front of a Kafka topic and window in a
 second pipeline, as [`metering/ingest.yml`](dev/config/examples/metering/ingest.yml)

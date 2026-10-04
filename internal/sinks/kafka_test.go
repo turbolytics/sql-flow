@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/testcontainers/testcontainers-go"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
+	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/conformance"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -410,4 +413,76 @@ func TestIntegrationSinkKafka_KeyedRecordsShareAPartition(t *testing.T) {
 	}
 	assert.Equal(t, 1, len(partitionOf["a"]))
 	assert.Equal(t, 1, len(partitionOf["b"]))
+}
+
+// A flush against a broker the sink was connected to, and that then stopped
+// answering, must still end (#426).
+//
+// The tests above point the sink at a broker it never reached, where the
+// topic never resolves and franz-go's record timeout fires. A broker that
+// went away after the topic resolved is a different state: there, against a
+// stopped broker, a flush with no deadline was still blocked after 90s with a
+// 20s record timeout. A webhook source with ack after_flush waits on that
+// flush, so its senders got no answer at all and nothing was logged.
+//
+// Both ways a broker goes away are covered: refusing connections, as a
+// stopped broker does, and holding them open without answering, as a hung
+// one does.
+func TestIntegrationSinkKafka_FlushEndsWhenAConnectedBrokerGoesAway(t *testing.T) {
+	coverage.Covers(t, "sink.kafka")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	restore := recordDeliveryTimeout
+	recordDeliveryTimeout = time.Second
+	t.Cleanup(func() { recordDeliveryTimeout = restore })
+
+	ctx := context.Background()
+	nw, err := network.New(ctx)
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = nw.Remove(context.Background()) })
+	broker, err := tckafka.Run(ctx, sinkBrokerImage, network.WithNetwork([]string{"kafka"}, nw))
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = broker.Terminate(context.Background()) })
+
+	for _, fault := range []struct {
+		name  string
+		apply func(*conformance.Proxy, *testing.T)
+	}{
+		{"refused", (*conformance.Proxy).Refuse},
+		{"hung", (*conformance.Proxy).Break},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			proxy := conformance.NewProxy(t, nw, "kafka:9093")
+			viaProxy := kgo.Dialer(func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "tcp", proxy.Addr)
+			})
+			s, err := NewKafkaSink(config.KafkaSink{
+				Brokers: []string{proxy.Addr},
+				Topic:   fmt.Sprintf("goes-away-%s-%d", fault.name, time.Now().UnixNano()),
+			}, viaProxy)
+			assert.NoError(t, err)
+			t.Cleanup(func() { s.Close() })
+
+			// Connected, and the topic resolved: the first flush is acknowledged.
+			first := newTestTable(t, []string{"nyc"}, []int64{1})
+			defer first.Release()
+			assert.NoError(t, s.WriteTable(ctx, first))
+			assert.NoError(t, flushWithin(t, s, ctx, 60*time.Second))
+
+			fault.apply(proxy, t)
+
+			second := newTestTable(t, []string{"sf"}, []int64{2})
+			defer second.Release()
+			assert.NoError(t, s.WriteTable(ctx, second))
+			// No deadline on the context, as the pipeline's drain passes it.
+			err = flushWithin(t, s, ctx, recordDeliveryTimeout+15*time.Second)
+			assert.Error(t, err)
+			// Coded as the partition it is, so the process exits 12, not 1.
+			assert.Equal(t, errs.CodeSinkUnreachable, errs.CodeOf(err))
+			// And the row is still owed, for the next attempt.
+			assert.Equal(t, 1, s.BufferedRows())
+		})
+	}
 }
