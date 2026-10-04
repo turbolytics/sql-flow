@@ -14,6 +14,7 @@ import (
 
 	"github.com/turbolytics/sql-flow/internal/activity"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"github.com/zeebo/assert"
 	"go.uber.org/zap"
@@ -386,4 +387,13 @@ func TestReporter_AFailedExitSaysFailed(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats.reporter")
 	assert.Equal(t, wire.StateFailed,
 		finalPipelineState(t, Exit{Reason: "system.sink.unreachable", Code: 1}))
+}
+
+// A stop that ran out of time to drain is still a stop the operator asked
+// for: nothing unwritten was committed, and the next start replays it.
+// Reporting failed would page on every rolling deploy that hits its deadline.
+func TestReporter_AnIncompleteDrainSaysStopped(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats.reporter")
+	assert.Equal(t, wire.StateStopped,
+		finalPipelineState(t, Exit{Reason: "system.drain.incomplete", Code: errs.ExitDrainIncomplete}))
 }

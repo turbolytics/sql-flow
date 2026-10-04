@@ -17,6 +17,20 @@
   (bucket, partition) key. A partition_owned pipeline starts empty and
   recounts from Kafka. `dev/config/examples/metering/` is the two-pipeline
   usage-metering stack that uses all three.
+- **TurboStats describes any pipeline runtime.** The bundle gains
+  `pipeline.state`, a `pipeline.started_at` counter epoch, `restart_count`,
+  `last_sink_write_at` (output freshness), `error_rows_dropped`,
+  `source_connected`, wire bytes, `backfill`, `process.host`,
+  `process.memory_limit_bytes`, `process.memory` and `instance.runtime`.
+  Every field is additive and the document stays v1. `goroutines` becomes
+  omittable for runtimes without goroutines.
+- **The TurboStats contract as JSON Schema.** `turbostats/wire/schema`
+  embeds `bundle.schema.json` and `response.schema.json`, generated from the
+  Go types by `make schema`, for reporters not written in Go.
+- **Two series.** `pipeline_last_sink_write_timestamp_seconds` is when the
+  pipeline or a window last delivered rows; a noop sink and the DLQ never
+  move it. `error_rows_dropped_total` counts input records the `IGNORE`
+  policy discarded.
 
 ### Fixed
 
@@ -31,6 +45,9 @@
 
 ### Changed
 
+- `runtime`, `runtime_version` and `reporter_version` are reserved
+  TurboStats label names. A config that uses one as a label fails
+  `sqlflow validate`.
 - **A rollup can no longer read another rollup's table.** `sqlflow
   validate` and every `sqlflow rollup` command refuse a rollup whose
   `source.table` another rollup of the file makes, and name the rollup to

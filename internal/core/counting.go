@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,8 +134,12 @@ func NewCountingSink(inner Sink, mp metric.MeterProvider, sinkType, role string)
 
 	// A manager's sink delivers a windowed pipeline's output, so it counts.
 	// The DLQ's does not, or a pipeline would look fresh while every row it
-	// touched failed.
-	if role == SinkRolePipeline || role == SinkRoleManager {
+	// touched failed. Nor does a noop sink, which delivers nothing: a
+	// windowed pipeline's pipeline sink is noop and receives DuckDB's one-row
+	// INSERT count every batch, so counting it kept the pipeline fresh while
+	// its window sink was down.
+	delivers := !strings.EqualFold(sinkType, "noop")
+	if delivers && (role == SinkRolePipeline || role == SinkRoleManager) {
 		if g, err := meter.Int64Gauge(
 			"pipeline_last_sink_write_timestamp",
 			metric.WithDescription("When a pipeline or window sink last delivered rows, as unix seconds"),

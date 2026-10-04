@@ -179,3 +179,17 @@ func TestCounting_TheDLQNeverMovesTheLastWrite(t *testing.T) {
 	assert.NoError(t, c.Flush(ctx))
 	assert.Equal(t, int64(0), flatValue(t, r, lastWrite))
 }
+
+// A noop sink delivers nothing anywhere. A windowed pipeline's pipeline sink
+// is noop and is handed DuckDB's one-row INSERT count every batch; recording
+// that as a write kept a pipeline fresh while its window sink was down.
+func TestCounting_ANoopSinkNeverMovesTheLastWrite(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	c := NewCountingSink(&countStubSink{}, mp, "noop", SinkRolePipeline)
+	ctx := context.Background()
+	assert.NoError(t, c.WriteTable(ctx, countIDTable(1)))
+	assert.NoError(t, c.Flush(ctx))
+	assert.Equal(t, int64(0), flatValue(t, r, lastWrite))
+}

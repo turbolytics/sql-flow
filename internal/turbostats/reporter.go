@@ -206,10 +206,12 @@ func (r *Reporter) post(ctx context.Context, exit *Exit) {
 	b.Exit = exit
 	// The last bundle says how the pipeline ended, so a receiver that reads
 	// state alone never shows a pipeline that shut down as running. A
-	// non-zero exit code is a failure.
+	// non-zero exit code is a failure, except a drain that ran out of time:
+	// that was a stop the operator asked for, nothing unwritten was
+	// committed, and failed would page on every slow rolling deploy.
 	if exit != nil && b.Pipeline != nil {
 		b.Pipeline.State = wire.StateStopped
-		if exit.Code != 0 {
+		if exit.Code != 0 && exit.Code != errs.ExitDrainIncomplete {
 			b.Pipeline.State = wire.StateFailed
 		}
 	}
