@@ -34,6 +34,22 @@ const defaultRecordDeliveryTimeout = 20 * time.Second
 // floor, rather than wait twenty seconds for it.
 var recordDeliveryTimeout = defaultRecordDeliveryTimeout
 
+// flushMargin is how much longer than the record timeout a flush waits before
+// the sink ends it itself.
+//
+// The record timeout does not end every flush. Once a topic has resolved,
+// a broker that then stops -- refusing connections, or holding them open
+// without answering -- leaves franz-go retrying with the timer never firing:
+// against a stopped broker a flush with no deadline was still blocked after
+// 90s, and a webhook with ack after_flush answered its senders nothing at all
+// (#426). The sink bounds the wait so the flush fails, and the caller hears
+// it, within recordDeliveryTimeout + flushMargin whatever franz-go does.
+const flushMargin = 5 * time.Second
+
+// abortWait bounds AbortBufferedRecords, which waits on requests in flight;
+// against a hung broker those may not end on their own.
+const abortWait = 5 * time.Second
+
 // kafkaSinkError codes a flush failure, teaching sinkError the two franz-go
 // errors it cannot recognise.
 //
@@ -188,7 +204,31 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 	// and a SIGTERM all reach the sink through ctx. The pipeline's drain hands
 	// the sink a context stripped of cancellation, so honouring it here cannot
 	// cut the final write short.
-	flushErr := s.client.Flush(ctx)
+	//
+	// The sink adds its own deadline on top, since the record timeout does not
+	// always fire (see flushMargin).
+	bound := recordDeliveryTimeout + flushMargin
+	fctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	flushErr := s.client.Flush(fctx)
+	if flushErr != nil && ctx.Err() == nil && fctx.Err() != nil {
+		// Our bound ended the flush, not the caller's context: the same
+		// partition as an expired record, so coded the same.
+		flushErr = fmt.Errorf("no acknowledgement within %s: %w", bound, kgo.ErrRecordTimeout)
+		// What failed stays in pending for the next flush to re-send. Abort
+		// it in franz-go too, or the client keeps retrying it in the
+		// background and a recovered broker receives it twice: once from
+		// that retry and once from the next flush. The aborted records'
+		// callbacks report ErrAborting; the reason this flush ended is
+		// flushErr, which is what is reported below.
+		//
+		// Only on our own bound. When the caller's context ends, Flush
+		// returns at once: the pipeline's drain reaches the sink only through
+		// that context, and a wait here would outlast it.
+		actx, acancel := context.WithTimeout(context.WithoutCancel(ctx), abortWait)
+		_ = s.client.AbortBufferedRecords(actx)
+		acancel()
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -204,7 +244,7 @@ func (s *KafkaSink) Flush(ctx context.Context) error {
 		if !acked[i] || didFail {
 			keep = append(keep, row)
 			if firstErr == nil {
-				if err != nil {
+				if err != nil && flushErr == nil {
 					firstErr = err
 				} else {
 					firstErr = flushErr

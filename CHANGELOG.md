@@ -20,6 +20,15 @@
 
 ### Fixed
 
+- **A Kafka sink flush fails within a bound when its broker goes away.**
+  franz-go's 20s record timeout does not fire once a topic has resolved and
+  the broker then stops or hangs, so a flush with no deadline never returned:
+  a webhook with `ack: after_flush` answered its senders nothing, with
+  nothing logged. The sink now ends the flush itself after the record
+  timeout plus 5s, aborts what franz-go still holds so a recovered broker
+  does not receive it twice, and reports `system.sink.unreachable` (exit 12).
+  Waiting senders get 503 after about 30s. A flush ended by the caller's own
+  context returns at once, as before. (#426)
 - A windowed Kafka pipeline committed offsets past rows held only in an open
   window. A worker that lost its disk, or took a partition over in a
   rebalance, started after them and undercounted. It now commits each
