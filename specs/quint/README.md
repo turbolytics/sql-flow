@@ -132,5 +132,8 @@ impossible, which is why the stall in #436 passed every other check.
 
 | Design | `quint run` (sampled) | `quint verify` (exhaustive ≤8 steps) |
 |---|---|---|
-| `FIX = false` (v2026.10.04) | counterexample, 55ms | see below |
-| `FIX = true` | no violation, 50k samples | see below |
+| `FIX = false` (v2026.10.04) | counterexample, 55ms | **counterexample**, 5.7s |
+| `FIX = true` | no violation, 50k samples | **NoError (proved)**, 11 min |
+
+The exhaustive run is slower than the other models' because `rejoin` picks
+its assignment from the powerset of partitions.
