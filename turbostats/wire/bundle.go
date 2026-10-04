@@ -418,11 +418,15 @@ type Pipeline struct {
 	// quiet, near zero means the engine is the bottleneck.
 	RecvWaitSeconds *float64 `json:"recv_wait_seconds,omitempty"`
 	// Duration is how long its work takes.
-	Duration         *PipelineDurations `json:"duration,omitempty"`
-	SinkFlushCount   int64              `json:"sink_flush_count"`
-	SinkRowsAccepted int64              `json:"sink_rows_accepted"`
-	SinkRowsWritten  int64              `json:"sink_rows_written"`
-	StateCommitCount int64              `json:"state_commit_count"`
+	Duration *PipelineDurations `json:"duration,omitempty"`
+	// SinkFlushCount is flushes that delivered. A pointer, absent from a
+	// runtime that does not flush in batches, such as a Kafka Connect source
+	// task: zero would claim it never flushed. SQLFlow always sends it, zero
+	// included.
+	SinkFlushCount   *int64 `json:"sink_flush_count,omitempty"`
+	SinkRowsAccepted int64  `json:"sink_rows_accepted"`
+	SinkRowsWritten  int64  `json:"sink_rows_written"`
+	StateCommitCount int64  `json:"state_commit_count"`
 	// A pointer so a pipeline with no state path omits the field: absent
 	// state and empty state are different facts.
 	StateDBSizeBytes *int64 `json:"state_db_size_bytes,omitempty"`

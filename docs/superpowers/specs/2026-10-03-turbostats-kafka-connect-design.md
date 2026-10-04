@@ -209,7 +209,7 @@ a managed heap:
 |---|---|---|---|---|
 | `runtime` | string | Which runtime's memory this is | `go` | `jvm` |
 | `retained_bytes` | int64 | Memory the runtime holds from the operating system | `go_retained_bytes` | Heap and non-heap committed |
-| `live_bytes` | int64 | What the last collection found live | `go_heap_bytes` | Old generation usage after collection |
+| `live_bytes` | int64 | What the last collection found live | `go_heap_bytes` | After-collection usage of the old generation under G1, or of the heap under non-generational ZGC; absent under any other collector |
 | `heap_limit_bytes` | int64 | The runtime's heap ceiling; absent when unlimited | `GOMEMLIMIT` | `-Xmx` |
 | `gc_count` | int64 | Collections since the process started | `/gc/cycles/total:gc-cycles` | Sum over the collector beans |
 
@@ -219,6 +219,13 @@ source.
 
 - **`live_bytes` is the leak signal.** Heap in use rises and falls with every
   collection. Live bytes rising across hours is a leak.
+- **A JVM sends `live_bytes` only under a collector it was measured on.** A
+  spike leaked 2 MiB/s into a worker under three collectors. ZGC's
+  after-collection usage tracked it exactly, 64 to 190 MiB. G1's old
+  generation tracked it in steps, 29 to 165 to 287 MiB. Parallel's stayed at
+  33 MiB while 140 MiB leaked, because only a full collection updates it. A
+  flat reading during a leak is the worst kind of field, so a collector not
+  verified sends none.
 - **`rss_bytes` less `retained_bytes` is native memory.** That covers DuckDB
   and Arrow on SQLFlow, and direct buffers on the JVM. The Go field's comment
   already defines the split this way.
@@ -261,28 +268,84 @@ reporter's design, not the contract's.
 
 ### How the reporter collects
 
+The reporter is one jar with three parts:
+
 - **A REST extension** runs inside each worker (`rest.extension.classes`). It
-  reads cluster state, task placement and connector config, and it sends the
-  bundles.
-- **JMX** supplies Connect's metrics, Debezium's metrics and the JVM's memory,
-  from the worker's platform MBean server.
+  reads cluster state, task placement and connector config, and one daemon
+  thread builds, signs and sends a bundle per local task every interval.
 - **A producer interceptor** (`producer.interceptor.classes`) counts
-  acknowledged records per task. Connect's `source-record-write-total` counts
-  when the worker sends a record, before the broker acknowledges it
-  (`AbstractWorkerSourceTask`). The interceptor's `onAcknowledgement` is the
-  only per-record acknowledgment the worker exposes. The interceptor publishes
-  its counts as an MBean, so the extension reads them through JMX whatever
-  classloader each one runs in.
+  acknowledged records per source task. Connect's `source-record-write-total`
+  counts when the worker sends a record, before the broker acknowledges it
+  (`AbstractWorkerSourceTask`). `onAcknowledgement` is the only per-record
+  acknowledgment the worker exposes.
+- **A consumer interceptor** (`consumer.interceptor.classes`) records each
+  sink task's newest record timestamp per batch, for event lag.
+
+JMX supplies Connect's metrics, Debezium's metrics and the JVM's memory, and
+carries the interceptors' counts to the extension. Each interceptor publishes
+one MBean per `client.id`, which Connect sets to
+`connector-producer-<connector>-<task>` or
+`connector-consumer-<connector>-<task>`; the task is the part after the last
+hyphen.
+
+The interceptors are the only code on the data path. Each does an atomic
+increment or a timestamp compare per record, never blocks, allocates or does
+I/O, and swallows its own failures.
+
+**The jar goes on the worker's classpath, not its plugin path.** Connect
+builds a task's producer and consumer with the connector's classloader, which
+cannot see another plugin. With the jar in the plugin path, every source task
+on the worker failed with `Failed to construct kafka producer`. On the
+classpath (`/kafka/libs` in the Debezium image), every part loads with the
+application classloader. An install mistake here stops every connector on the
+worker, so the README leads with it, and the extension logs an error at
+startup when it was itself loaded from a plugin classloader.
+
+**The reporter never takes down the worker.** An exception from the
+extension's `configure` would stop the worker's REST server. Every
+configuration error is caught, logged once, and leaves reporting off while
+the connectors run.
+
+**A hung receiver delays nothing.** Each POST has a timeout, and an interval
+whose previous POST is still in flight is skipped, not queued.
+
+### Configuration
+
+Worker properties, under a `turbostats.` prefix. Connect hands them to the
+extension's `configure`; it logs their names, never their values, as
+supplied but unused.
+
+| Property | Default | Means |
+|---|---|---|
+| `turbostats.report.to` | none: reporting is off | The receiver's URL. `https`, or `http` to the loopback, as SQLFlow requires. |
+| `turbostats.key` | none | The `sfc_` credential. Required with `report.to`. |
+| `turbostats.cluster` | the worker's `group.id` | The first part of every `instance.id`. A stock value such as `connect-cluster` logs a warning. |
+| `turbostats.interval.seconds` | 60 | How often to report. |
+| `turbostats.timeout.seconds` | 10 | How long one POST may take. Must be less than the interval. |
+| `turbostats.label.<key>` | none | One operator label per property. SQLFlow's rules: at most 10, keys `[a-z][a-z0-9_]*` up to 32 characters, values up to 64, no reserved names. |
+
+**The key never sits in a properties file in plain text.** Kafka's config
+providers resolve `turbostats.key=${env:TURBOSTATS_KEY}` or `${file:...}`
+before the extension sees the value; the spike confirmed the extension
+receives the resolved credential. The reporter never logs it.
+
+Everything else is derived: `runtime`, `runtime_version`, the connector
+plugin's `version`, `reporter_version`, `source_type`, `sink_type`,
+`config_hash` and `process.host`. The worker's own ID, for `process.host`, is
+`rest.advertised.host.name:rest.advertised.port` from the extension's config,
+the form `ConnectClusterState` reports task placement in.
 
 ### Source connectors
 
 | Contract | Debezium source connector | Other source connectors |
 |---|---|---|
 | `state` | Task status | Task status |
-| `message_count` | `TotalNumberOfEventsSeen`, snapshot plus streaming | `source-record-poll-total` |
+| `message_count` | `source-record-poll-total` | `source-record-poll-total` |
 | `handler_rows_read` | `source-record-poll-total` | `source-record-poll-total` |
 | `sink_rows_accepted` | `source-record-write-total` | `source-record-write-total` |
 | `sink_rows_written` | Interceptor acknowledgments | Interceptor acknowledgments |
+| `sink_flush_count` | absent | absent |
+| `state_commit_count` | 0: Connect keeps no state | 0 |
 | `last_sink_write_at` | Interceptor's last acknowledgment | Interceptor's last acknowledgment |
 | `last_message_at` | Newer of the two contexts' `MilliSecondsSinceLastEvent` | When `source-record-poll-total` last rose |
 | `error_count` | `total-record-errors` | `total-record-errors` |
@@ -293,6 +356,15 @@ reporter's design, not the contract's.
 | `source_connected` | Streaming `Connected` | absent |
 | `event_lag_*` | `MilliSecondsBehindSource`, its max, basis `source_commit_time` | absent |
 | `backfill` | Snapshot context | absent |
+
+`message_count` is Connect's poll count, not Debezium's event counts. An
+incremental snapshot's rows appear in both the snapshot context's
+`TotalNumberOfEventsSeen` and the streaming context's, so their sum counts
+each of those rows twice.
+
+During a task restart, Debezium retries registering its metrics for up to a
+minute while the old ones are still registered, and their values stand still
+meanwhile. A receiver's stall rule must outlast that.
 
 `backfill.state` comes from `SnapshotRunning`, `SnapshotPaused`,
 `SnapshotCompleted` and `SnapshotAborted`. A skipped snapshot is `none`.
@@ -311,20 +383,67 @@ read as a lost database.
 |---|---|
 | `message_count`, `handler_rows_read` | `sink-record-read-total` |
 | `sink_rows_accepted` | `sink-record-send-total` |
+| `sink_rows_written` | `sink-record-read-total` less `sink-record-active-count` |
+| `sink_flush_count` | `offset-commit-completion-total` |
+| `state_commit_count` | 0: Connect keeps no state |
 | `last_sink_write_at` | When `offset-commit-completion-total` last rose |
-| `lag_*` | Consumer `records-lag`, collapsed by the dimensional series rule |
+| `last_message_at` | The consumer interceptor's last batch with records |
+| `event_lag_*` | Now minus the newest record timestamp per batch, from the consumer interceptor; basis `kafka_create_time` or `kafka_log_append_time` by the record's timestamp type |
+| `lag_*` | The broker: each assigned partition's end offset less the group's committed offset, collapsed by the dimensional series rule |
 | `source_wire_bytes` | Consumer `bytes-consumed-total` |
 
-`sink_rows_written` is absent. Connect commits a sink task's offsets only
-after the task has flushed, so a commit dates a write, but no metric counts
-the rows behind it.
+**Lag in messages comes from the broker, never from the consumer.** A paused
+JDBC sink read `records-lag=0.0` while the broker reported a lag of 2,000:
+the consumer stops measuring when it stops fetching, and its last reading is
+the healthiest one possible. The reporter asks the broker with an admin
+client: the group `connect-<connector>`, the partitions each task's
+`client.id` holds, and their end offsets. `lag_observed_at` is when the broker
+answered.
+
+**Lag in time comes from the consumer interceptor,** as SQLFlow measures it.
+It freezes when the consumer stops, and `event_lag_observed_at` ages; the
+broker's message lag keeps growing. Read together, they catch a stalled sink.
+
+Consumer metrics replace the dots in a topic name with underscores, so a
+reporter reading them per topic maps the names back.
+
+`sink_rows_written` is required in v1, so a sink task must send a true
+number. Records read less records still in flight is the records Connect has
+finished: flushed, committed, or dropped by a transform. That last part makes
+it a ceiling on rows delivered rather than an exact count, and the reporter's
+documentation says so.
+
+**`sink_flush_count` becomes optional.** A Connect source task produces
+continuously and never flushes in batches, and Connect counts nothing a flush
+count could mean. v1 required the field, so a source task would have had to
+send 0, which claims a pipeline that writes fine has never flushed. It
+becomes a pointer, as `goroutines` did: SQLFlow always sends it, zero
+included, and a runtime without batch flushes omits it. Loosening a field is
+not removing it, so the document stays v1.
 
 ### Restarts
 
-`started_at` is when the task's metrics group registered. `restart_count`
-counts registrations after the first, observed through the MBean server's
-registration notifications. Sampling would miss a task that restarts between
-two samples.
+Each task start builds a new producer or consumer, and the interceptor's
+`configure` runs once for it. `started_at` is the latest `configure` for the
+task's `client.id`, and `restart_count` counts those after the first since
+the worker started. A task restarted through the REST API closed its old
+producer before the new one configured, and its counters restarted from zero,
+so the epoch holds.
+
+Task metrics registrations are not a start signal. One restart produced about
+eight unregister and register pairs of `connector-task-metrics` in the same
+millisecond, because Kafka re-registers the MBean each time a metric joins
+the group.
+
+Once, the spike's interceptor reported zero acknowledgments after 450,000
+writes, around a restart during a snapshot; a clean restart did not
+reproduce it. The reporter compares acknowledgments with
+`source-record-write-total`. When writes rise and acknowledgments do not,
+with nothing in flight, it logs the interceptor as broken, leaves
+`last_sink_write_at` absent, and sends `sink_rows_written` as
+`source-record-write-total` less `source-record-active-count`: the field is
+required, and records written less records unacknowledged is the closest
+true number Connect offers.
 
 ## The document
 
@@ -499,6 +618,11 @@ The fields fall into the first two levels of data operational maturity:
 | Acknowledged rows on Connect | A producer interceptor | `source-record-write-total`: it counts on send. |
 | The schema's source | Reflected from the Go types | Hand-written: a second statement of the contract that drifts silently. |
 | Where the schema is published | The control plane, under `/v1/turbostats` | `turbolytics.io`: a copy step that can fall behind. Raw GitHub at a tag: the URL changes with every release, and `$id` must not. |
+| Where the jar installs | The worker's classpath | The plugin path: every source task fails with a ClassNotFound inside its producer. |
+| Sink lag in messages | The broker, by admin client | The consumer's `records-lag`: it read 0 while a paused sink fell 2,000 behind. |
+| A restart signal | The interceptor's `configure` | Task metrics registrations: about eight per restart. |
+| `message_count` for Debezium | `source-record-poll-total` | Snapshot plus streaming events: an incremental snapshot counts twice. |
+| `live_bytes` on a JVM | G1 and non-generational ZGC only | Every collector: Parallel stayed flat through a 140 MiB leak. |
 | GC time | Out | One field meaning wall time on the JVM and CPU time on Go. |
 | Heap in use, garbage included | Out | It rises and falls every collection and says nothing `live_bytes` doesn't. |
 
@@ -554,7 +678,18 @@ Each trouble case has a test that fails if its field reads healthy:
 - A sink connector with three tasks: three distinct `instance.id` values under
   one `instance.name`.
 - A stock `group.id` without `turbostats.cluster`: the warning is logged.
-- `live_bytes` under G1 and under ZGC, against a deliberate leak.
+- `live_bytes` under G1 and under ZGC, against a deliberate leak, and absent
+  under Parallel.
+- A paused sink connector, with rows arriving: `lag_total_messages` grows and
+  `event_lag_observed_at` ages.
+- An incremental snapshot of N rows raises `message_count` by N, not 2N.
+- A REST task restart raises `restart_count` by one.
+- The jar in the plugin path: the extension logs the install error, and no
+  exception escapes `configure`.
+- A malformed `turbostats.label.*` or a timeout not below the interval: logged
+  once, reporting off, every connector running.
+- `turbostats.key=${env:TURBOSTATS_KEY}`: the bundle is signed, and the key
+  appears in no log line.
 
 ## What breaks if this is wrong
 
@@ -571,27 +706,28 @@ Each trouble case has a test that fails if its field reads healthy:
   new connector pages as a lost database.
 - **If `backfill` appears only when a snapshot starts,** the field set changes
   mid-process and a receiver's series split.
+- **If the jar is installed in the plugin path,** every source task on the
+  worker fails. Monitoring takes down the thing it monitors.
+- **If sink lag came from the consumer,** a stalled sink would report zero
+  lag.
 
-## Verify before building
+## What the spike verified
 
-These rest on documentation or reading source, not on execution. The plan
-proves each one first:
+These rested on documentation and reading source. A spike ran each one on
+2026-10-04 against Kafka 3.8, two Kafka Connect 3.9.0 workers with Debezium
+3.0.8 on Java 21, and Postgres 16, with a probe jar holding a REST extension
+and both interceptors. The sections above already carry the consequences.
 
-- The producer interceptor sees the client ID Connect assigns per task, so it
-  can attribute an acknowledgment to a connector and task.
-- The interceptor's MBean is readable from the REST extension across plugin
-  classloaders.
-- `ChunkId` is non-empty during an incremental snapshot, and `Connected` is
-  false before streaming starts.
-- Old-generation usage after collection tracks a leak under G1, ZGC and
-  Parallel.
-- Task metrics groups register on every task start, including a restart
-  through the REST API.
-- `ConnectClusterState` exposes a connector's config and its tasks' workers to
-  a REST extension.
-- A sink connector's consumer `records-lag` keeps its last value when the
-  consumer stops fetching. If it does, `lag_observed_at` needs a time the
-  consumer recorded, not the reporter's sample time.
+| Assumption | Observed |
+|---|---|
+| The producer interceptor can attribute an acknowledgment to a task | Holds. `client.id` is `connector-producer-inventory-cdc-0`; acknowledgments matched `source-record-write-total`, 55,000 to 55,000. |
+| The interceptor can sit in the plugin path, read across classloaders | Wrong. Every source task failed to build its producer. On the worker classpath it works, and JMX carries the counts. |
+| `ChunkId` marks an incremental snapshot; `Connected` is false before streaming | Holds. Initial snapshot: `Connected=false`, `ChunkId=null`. Incremental: `ChunkId` changed per chunk while streaming stayed connected. |
+| Old-generation usage after collection tracks a leak | ZGC exactly, G1 in steps, Parallel not at all. |
+| Task metrics register once per start | Wrong. About eight pairs per restart. The interceptor's `configure` is once per start. |
+| A REST extension sees connector config and task placement | Holds. The config carries secrets in plain text, so only its hash leaves the worker. Custom `turbostats.*` worker properties reach `configure`, and `${env:...}` arrives resolved. |
+| A sink consumer's `records-lag` stays true when it stops fetching | Wrong. It read 0 while the broker reported a lag of 2,000. |
+| A consumer interceptor loads for a sink task and sees timestamps | Holds. `connector-consumer-customers-sink-0`, `CreateTime` timestamps, event lag 9 to 77 ms. |
 
 ## Out of scope
 

@@ -503,7 +503,7 @@ func widestBundle(t *testing.T) wire.Bundle {
 			MessagePayloadBytes:  &big,
 			HandlerRowsRead:      big,
 			ErrorCount:           big,
-			SinkFlushCount:       big,
+			SinkFlushCount:       &big,
 			SinkRowsAccepted:     big,
 			SinkRowsWritten:      big,
 			StateCommitCount:     big,

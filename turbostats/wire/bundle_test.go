@@ -343,3 +343,20 @@ func TestInstance_RuntimeFieldsAreAbsentUntilSet(t *testing.T) {
 		}
 	}
 }
+
+// A runtime that does not flush in batches, such as a Kafka Connect source
+// task, sends no flush count. Absent reads as unknown; zero would claim the
+// pipeline has never flushed.
+func TestPipeline_FlushCountIsOmittable(t *testing.T) {
+	var b Bundle
+	if err := json.Unmarshal([]byte(`{"v":1,"pipeline":{"message_count":1}}`), &b); err != nil {
+		t.Fatal(err)
+	}
+	if b.Pipeline.SinkFlushCount != nil {
+		t.Fatalf("a missing flush count decoded as %d", *b.Pipeline.SinkFlushCount)
+	}
+	zero := int64(0)
+	if raw := mustMarshal(t, Pipeline{SinkFlushCount: &zero}); !strings.Contains(raw, `"sink_flush_count":0`) {
+		t.Fatalf("a zero flush count is absent: %s", raw)
+	}
+}

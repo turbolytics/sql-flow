@@ -120,7 +120,7 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 		MessagePayloadBytes: int64Ptr(flat["message_payload_bytes"]),
 		HandlerRowsRead:     flat["handler_rows_read"],
 		ErrorCount:          flat["pipeline_errors"],
-		SinkFlushCount:      flat["pipeline_flushes"],
+		SinkFlushCount:      int64Ptr(flat["pipeline_flushes"]),
 		SinkRowsAccepted:    flat["pipeline_rows_accepted"],
 		SinkRowsWritten:     flat["pipeline_rows_written"],
 		StateCommitCount:    flat["pipeline_commits"],

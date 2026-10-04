@@ -87,7 +87,7 @@ func TestCollect_ADimensionedSeriesIsNotTheBundles(t *testing.T) {
 
 	b, err := Collect(ctx, runSource(reader, nil))
 	assert.NoError(t, err)
-	assert.Equal(t, int64(3), b.Pipeline.SinkFlushCount)
+	assert.Equal(t, int64(3), *b.Pipeline.SinkFlushCount)
 }
 
 // The bundle reads the flat twins, not the instruments they shadow.
@@ -104,7 +104,7 @@ func TestCollect_ReadsTheFlatSeries(t *testing.T) {
 	b, err := Collect(ctx, runSource(reader, nil))
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), b.Pipeline.ErrorCount)
-	assert.Equal(t, int64(3), b.Pipeline.SinkFlushCount)
+	assert.Equal(t, int64(3), *b.Pipeline.SinkFlushCount)
 	assert.Equal(t, int64(4), b.Pipeline.StateCommitCount)
 	assert.Equal(t, int64(5), b.Pipeline.SinkRowsAccepted)
 	assert.Equal(t, int64(6), b.Pipeline.SinkRowsWritten)
@@ -968,4 +968,15 @@ func TestCollect_AlwaysSendsErrorRowsDropped(t *testing.T) {
 	b, err = Collect(ctx, runSource(reader, nil))
 	assert.NoError(t, err)
 	assert.Equal(t, int64(4), *b.Pipeline.ErrorRowsDropped)
+}
+
+// SQLFlow flushes in batches, so it always sends its flush count, zero
+// included: "never flushed" is a reading.
+func TestCollect_AlwaysSendsTheFlushCount(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.SinkFlushCount != nil)
+	assert.Equal(t, int64(0), *b.Pipeline.SinkFlushCount)
 }
