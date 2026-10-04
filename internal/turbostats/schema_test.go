@@ -151,3 +151,12 @@ func TestSchema_TheResponseValidates(t *testing.T) {
 		assert.NoError(t, s.Validate(v))
 	}
 }
+
+// A Kafka Connect source task does not flush in batches and sends no flush
+// count. Its bundle must validate.
+func TestSchema_ABundleWithoutAFlushCountValidates(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	doc := asJSON(t, widestBundle(t)).(map[string]any)
+	delete(doc["pipeline"].(map[string]any), "sink_flush_count")
+	assert.NoError(t, compiled(t, tsschema.BundleID, tsschema.Bundle).Validate(doc))
+}

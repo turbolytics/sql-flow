@@ -344,6 +344,8 @@ the form `ConnectClusterState` reports task placement in.
 | `handler_rows_read` | `source-record-poll-total` | `source-record-poll-total` |
 | `sink_rows_accepted` | `source-record-write-total` | `source-record-write-total` |
 | `sink_rows_written` | Interceptor acknowledgments | Interceptor acknowledgments |
+| `sink_flush_count` | absent | absent |
+| `state_commit_count` | 0: Connect keeps no state | 0 |
 | `last_sink_write_at` | Interceptor's last acknowledgment | Interceptor's last acknowledgment |
 | `last_message_at` | Newer of the two contexts' `MilliSecondsSinceLastEvent` | When `source-record-poll-total` last rose |
 | `error_count` | `total-record-errors` | `total-record-errors` |
@@ -381,6 +383,9 @@ read as a lost database.
 |---|---|
 | `message_count`, `handler_rows_read` | `sink-record-read-total` |
 | `sink_rows_accepted` | `sink-record-send-total` |
+| `sink_rows_written` | `sink-record-read-total` less `sink-record-active-count` |
+| `sink_flush_count` | `offset-commit-completion-total` |
+| `state_commit_count` | 0: Connect keeps no state |
 | `last_sink_write_at` | When `offset-commit-completion-total` last rose |
 | `last_message_at` | The consumer interceptor's last batch with records |
 | `event_lag_*` | Now minus the newest record timestamp per batch, from the consumer interceptor; basis `kafka_create_time` or `kafka_log_append_time` by the record's timestamp type |
@@ -402,9 +407,19 @@ broker's message lag keeps growing. Read together, they catch a stalled sink.
 Consumer metrics replace the dots in a topic name with underscores, so a
 reporter reading them per topic maps the names back.
 
-`sink_rows_written` is absent. Connect commits a sink task's offsets only
-after the task has flushed, so a commit dates a write, but no metric counts
-the rows behind it.
+`sink_rows_written` is required in v1, so a sink task must send a true
+number. Records read less records still in flight is the records Connect has
+finished: flushed, committed, or dropped by a transform. That last part makes
+it a ceiling on rows delivered rather than an exact count, and the reporter's
+documentation says so.
+
+**`sink_flush_count` becomes optional.** A Connect source task produces
+continuously and never flushes in batches, and Connect counts nothing a flush
+count could mean. v1 required the field, so a source task would have had to
+send 0, which claims a pipeline that writes fine has never flushed. It
+becomes a pointer, as `goroutines` did: SQLFlow always sends it, zero
+included, and a runtime without batch flushes omits it. Loosening a field is
+not removing it, so the document stays v1.
 
 ### Restarts
 

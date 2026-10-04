@@ -22,8 +22,9 @@
   `last_sink_write_at` (output freshness), `error_rows_dropped`,
   `source_connected`, wire bytes, `backfill`, `process.host`,
   `process.memory_limit_bytes`, `process.memory` and `instance.runtime`.
-  Every field is additive and the document stays v1. `goroutines` becomes
-  omittable for runtimes without goroutines.
+  Every field is additive and the document stays v1. `goroutines` and
+  `sink_flush_count` become omittable, for runtimes without goroutines or
+  without batch flushes.
 - **The TurboStats contract as JSON Schema.** `turbostats/wire/schema`
   embeds `bundle.schema.json` and `response.schema.json`, generated from the
   Go types by `make schema`, for reporters not written in Go.

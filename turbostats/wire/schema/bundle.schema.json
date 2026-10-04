@@ -357,7 +357,8 @@
           "description": "Duration is how long its work takes."
         },
         "sink_flush_count": {
-          "type": "integer"
+          "type": "integer",
+          "description": "SinkFlushCount is flushes that delivered. A pointer, absent from a\nruntime that does not flush in batches, such as a Kafka Connect source\ntask: zero would claim it never flushed. SQLFlow always sends it, zero\nincluded."
         },
         "sink_rows_accepted": {
           "type": "integer"
@@ -421,7 +422,6 @@
         "message_count",
         "handler_rows_read",
         "error_count",
-        "sink_flush_count",
         "sink_rows_accepted",
         "sink_rows_written",
         "state_commit_count"
