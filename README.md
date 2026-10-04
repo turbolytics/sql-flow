@@ -1447,6 +1447,7 @@ asserts this table against the running exporter.
 |---|---|---|---|
 | `batch_processing_latency` | `batch_processing_latency_seconds` | histogram | — |
 | `error_count` | `error_count_total` | counter | `class`, `domain`, `code`, `phase` |
+| `error_rows_dropped` | `error_rows_dropped_total` | counter | — |
 | `phase_duration` | `phase_duration_seconds` | histogram | `phase` |
 | `handler_checkpoints_skipped` | `handler_checkpoints_skipped_total` | counter | — |
 | `pipeline_last_sink_write_timestamp` | `pipeline_last_sink_write_timestamp_seconds` | gauge | — |
@@ -1486,6 +1487,12 @@ delivered rows, as acknowledged by the destination. A flush with nothing
 pending does not move it, and neither does the DLQ. Read it beside
 `pipeline_last_message_timestamp`: input that stays fresh while this goes
 stale is a pipeline that reads and cannot write.
+
+`error_rows_dropped` counts rows the `IGNORE` error policy discarded: a
+message the handler rejected counts one, and a batch whose SQL failed counts
+every message in it. They were neither delivered nor diverted, so a rising
+count is data loss. The DLQ policy never moves it. The series appears with
+the first dropped row; the TurboStats bundle reports zero before that.
 
 **Source:**
 

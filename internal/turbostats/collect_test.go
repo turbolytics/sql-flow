@@ -951,3 +951,21 @@ func TestCollect_CarriesWhenTheSinkLastDelivered(t *testing.T) {
 	assert.That(t, b.Pipeline.LastSinkWriteAt != nil)
 	assert.Equal(t, time.Unix(1757570000, 0).UTC(), *b.Pipeline.LastSinkWriteAt)
 }
+
+// An engine that counts dropped rows always sends the count, zero included:
+// "nothing was dropped" is a reading.
+func TestCollect_AlwaysSendsErrorRowsDropped(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, m, _ := provider(t)
+	ctx := context.Background()
+
+	b, err := Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.That(t, b.Pipeline.ErrorRowsDropped != nil)
+	assert.Equal(t, int64(0), *b.Pipeline.ErrorRowsDropped)
+
+	m.ErrorRowsDropped.Add(ctx, 4)
+	b, err = Collect(ctx, runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, int64(4), *b.Pipeline.ErrorRowsDropped)
+}

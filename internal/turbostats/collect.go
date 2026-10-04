@@ -128,6 +128,9 @@ func pipelineSection(ctx context.Context, flat map[string]int64, floats map[stri
 		LastSinkWriteAt:     unixTime(flat["pipeline_last_sink_write_timestamp"]),
 		// Always sent, zero included: a pipeline always has a sink.
 		SinkRetryCount: &dim.sinkRetries,
+		// Always sent, zero included: the engine counts every row IGNORE
+		// discards.
+		ErrorRowsDropped: int64Ptr(flat["error_rows_dropped"]),
 	}
 	// Present once lag has been measured at all, not only while partitions
 	// are held. An instance whose partitions all moved elsewhere, or one in a

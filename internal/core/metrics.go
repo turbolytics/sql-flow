@@ -58,6 +58,10 @@ type Metrics struct {
 	PipelineCommits      metric.Int64Counter
 	PipelineRowsAccepted metric.Int64Counter
 	PipelineRowsWritten  metric.Int64Counter
+	// ErrorRowsDropped is rows the IGNORE policy discarded: neither
+	// delivered nor diverted to a DLQ. Silent loss, counted where it
+	// happens.
+	ErrorRowsDropped metric.Int64Counter
 	// PipelineLastMessage is when the pipeline last received messages, as
 	// unix seconds. It answers "is it still doing anything", which offset lag
 	// cannot: a websocket or webhook source has no offsets at all, and a
@@ -347,6 +351,8 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 			"Rows the pipeline sink buffered, excluding the DLQ's"},
 		{&m.PipelineRowsWritten, "pipeline_rows_written", "rows",
 			"Rows the pipeline sink delivered, excluding the DLQ's"},
+		{&m.ErrorRowsDropped, "error_rows_dropped", "rows",
+			"Rows the IGNORE error policy discarded; neither delivered nor diverted"},
 	} {
 		if *f.into, err = meter.Int64Counter(
 			f.name,
