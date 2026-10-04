@@ -133,12 +133,15 @@ func TestTurboStatsLabels_RefusesWhatBreaksTheShape(t *testing.T) {
 		tooMany[fmt.Sprintf("k%d", i)] = "v"
 	}
 	cases := map[string]map[string]string{
-		"too many":      tooMany,
-		"reserved name": {"version": "v1"},
-		"upper case":    {"Region": "eu"},
-		"leading digit": {"1region": "eu"},
-		"long key":      {strings.Repeat("k", 33): "eu"},
-		"long value":    {"region": strings.Repeat("v", 65)},
+		"too many":                  tooMany,
+		"reserved name":             {"version": "v1"},
+		"reserved runtime":          {"runtime": "jvm"},
+		"reserved runtime version":  {"runtime_version": "3.8"},
+		"reserved reporter version": {"reporter_version": "0.1"},
+		"upper case":                {"Region": "eu"},
+		"leading digit":             {"1region": "eu"},
+		"long key":                  {strings.Repeat("k", 33): "eu"},
+		"long value":                {"region": strings.Repeat("v", 65)},
 	}
 	for name, labels := range cases {
 		t.Run(name, func(t *testing.T) {
