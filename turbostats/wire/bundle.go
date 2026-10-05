@@ -59,6 +59,9 @@ type Bundle struct {
 	Pipeline *Pipeline `json:"pipeline,omitempty"`
 	// Serve is present when the process answers dataset requests.
 	Serve *Serve `json:"serve,omitempty"`
+	// Database is present when the process watches a database endpoint, the
+	// dbhealth reporter. A bundle carries it and no Pipeline.
+	Database *Database `json:"database,omitempty"`
 	// Freshness is present when the process measures a store's tables: the
 	// rollup daemon's leader.
 	Freshness *Freshness `json:"freshness,omitempty"`

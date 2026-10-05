@@ -4,6 +4,13 @@
 
 ### Added
 
+- **TurboStats `database` section.** The section a `dbhealth` reporter
+  sends: the probe (serving, and how fast), resources (connections against
+  the maximum, size on disk, the oldest open transaction), per-table
+  freshness and row counts, and replication, for one database endpoint.
+  Facts only; the receiver judges. `wire.Database`, optional on the bundle
+  beside `Pipeline` and `Serve`. A failed probe marshals `probe` alone. The
+  spec is `docs/superpowers/specs/2026-10-05-turbostats-database-section-design.md`. (#441)
 - **Webhook source `ack: after_flush`.** A 200 means the body reached the
   sink: the answer waits for the batch holding it to flush and commit, and a
   failed flush answers 503. The default, `on_receive`, is unchanged. Refused

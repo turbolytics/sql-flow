@@ -529,6 +529,227 @@
       ],
       "description": "Serve is present when the process answers dataset requests."
     },
+    "database": {
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "Kind is postgres, mysql, mongo, snowflake or redshift."
+        },
+        "target": {
+          "type": "string",
+          "description": "Target is host:port/database. Never a DSN: it carries no credential."
+        },
+        "cluster": {
+          "type": "string",
+          "description": "Cluster groups a primary with its replicas. Absent when not configured."
+        },
+        "server_version": {
+          "type": "string"
+        },
+        "probe": {
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "latency_ms": {
+              "type": "integer"
+            },
+            "last_ok_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "consecutive_failures": {
+              "type": "integer",
+              "description": "ConsecutiveFailures counts probes failed in a row, 0 when OK."
+            },
+            "error": {
+              "type": "string",
+              "description": "Error is the class of the latest failure: refused, timeout, auth or\nother. Empty when OK."
+            }
+          },
+          "type": "object",
+          "required": [
+            "ok",
+            "latency_ms",
+            "consecutive_failures"
+          ],
+          "description": "Probe is always present. When it failed, nothing below it is."
+        },
+        "resources": {
+          "properties": {
+            "connections": {
+              "properties": {
+                "used": {
+                  "type": "integer"
+                },
+                "max": {
+                  "type": "integer"
+                },
+                "waiting": {
+                  "type": "integer"
+                }
+              },
+              "type": "object",
+              "required": [
+                "used",
+                "max",
+                "waiting"
+              ]
+            },
+            "size_bytes": {
+              "type": "integer",
+              "description": "SizeBytes is this database on disk."
+            },
+            "oldest_transaction_seconds": {
+              "type": "integer",
+              "description": "OldestTransactionSeconds is the age of the oldest open transaction;\none idle in transaction holds vacuum back."
+            },
+            "memory": {
+              "properties": {
+                "shared_buffers_bytes": {
+                  "type": "integer"
+                }
+              },
+              "type": "object",
+              "required": [
+                "shared_buffers_bytes"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "tables": {
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "freshness_column": {
+                "type": "string"
+              },
+              "newest_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "NewestAt is max(FreshnessColumn). Absent when the table has none."
+              },
+              "rows": {
+                "type": "integer",
+                "description": "Rows is an estimate unless RowsExact, which says count(*) ran."
+              },
+              "rows_exact": {
+                "type": "boolean"
+              },
+              "size_bytes": {
+                "type": "integer"
+              },
+              "last_vacuum_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "checked_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "type": "object",
+            "required": [
+              "name",
+              "rows_exact",
+              "size_bytes",
+              "checked_at"
+            ],
+            "description": "DatabaseTable is one watched table's freshness, size and row count."
+          },
+          "type": "array"
+        },
+        "replication": {
+          "properties": {
+            "role": {
+              "type": "string",
+              "description": "Role is primary or replica."
+            },
+            "lag_seconds": {
+              "type": "number"
+            },
+            "last_replayed_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "upstream": {
+              "type": "string"
+            },
+            "replicas": {
+              "items": {
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "lag_seconds": {
+                    "type": "number"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "description": "DatabaseReplica is one replica as its primary sees it."
+              },
+              "type": "array",
+              "description": "Replicas is a primary's view of each replica."
+            }
+          },
+          "type": "object",
+          "required": [
+            "role"
+          ]
+        },
+        "collection": {
+          "properties": {
+            "queries": {
+              "type": "integer"
+            },
+            "duration_ms": {
+              "type": "integer"
+            },
+            "errors": {
+              "items": {
+                "properties": {
+                  "table": {
+                    "type": "string"
+                  },
+                  "error": {
+                    "type": "string"
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "error"
+                ],
+                "description": "DatabaseError is one query that failed this interval."
+              },
+              "type": "array"
+            }
+          },
+          "type": "object",
+          "required": [
+            "queries",
+            "duration_ms",
+            "errors"
+          ]
+        }
+      },
+      "type": "object",
+      "required": [
+        "kind",
+        "target",
+        "probe",
+        "collection"
+      ],
+      "description": "Database is present when the process watches a database endpoint, the\ndbhealth reporter. A bundle carries it and no Pipeline."
+    },
     "freshness": {
       "properties": {
         "store_id": {
