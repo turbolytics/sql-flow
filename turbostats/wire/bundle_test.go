@@ -360,3 +360,21 @@ func TestPipeline_FlushCountIsOmittable(t *testing.T) {
 		t.Fatalf("a zero flush count is absent: %s", raw)
 	}
 }
+
+// The kind is sent when set and absent when empty, so a receiver can tell a
+// reporter that predates the field from one that declares a pipeline.
+func TestInstance_KindMarshalsAndIsOmittedWhenEmpty(t *testing.T) {
+	withKind := mustMarshal(t, Instance{
+		ID:   "billing-pg",
+		Kind: KindDatabase,
+	})
+	if !strings.Contains(withKind, `"kind":"database"`) {
+		t.Fatalf("kind missing: %s", withKind)
+	}
+	without := mustMarshal(t, Instance{
+		ID: "billing-pg",
+	})
+	if strings.Contains(without, `"kind"`) {
+		t.Fatalf("empty kind sent: %s", without)
+	}
+}

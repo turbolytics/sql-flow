@@ -66,6 +66,10 @@
           "type": "string",
           "description": "ReporterVersion is the reporter's own version, when the reporter is\nnot the engine. SQLFlow reports itself and sends none."
         },
+        "kind": {
+          "type": "string",
+          "description": "Kind is what the process reports on: KindPipeline or KindDatabase. A\nreceiver files the report by it and checks it against the sections,\nso a kind and its sections never disagree. Absent from reporters that\npredate it; a receiver reads absent as a pipeline when the bundle has\nno database section."
+        },
         "labels": {
           "additionalProperties": {
             "type": "string"
