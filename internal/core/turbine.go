@@ -916,6 +916,20 @@ func (t *Turbine) dropPartitions(ctx context.Context, parts map[string][]int32) 
 
 	t.lock.Lock()
 	defer t.lock.Unlock()
+	// The drop runs between batches, so the connection's open transaction,
+	// if any, holds only an idle tick's progress write, begun before this
+	// lock was taken. Its snapshot can predate a window pass that has since
+	// deleted closed buckets' rows on the manager's connection and committed;
+	// DuckDB then refuses the drop's delete of those rows as a conflict on
+	// tuple deletion, and the pipeline stopped over it (#437). Committed
+	// here, so the drop begins a transaction whose snapshot is after every
+	// pass this lock excludes. The progress write is rewritten every commit,
+	// so committing it early loses nothing.
+	if t.dropper != nil && t.stateTx != nil {
+		if err := t.stateTx.Commit(ctx); err != nil {
+			return errs.Wrap(errs.CodeStateCommitFailed, err, "ending the transaction before a partition drop")
+		}
+	}
 	fail := func(err error) error {
 		if t.stateTx != nil {
 			if rbErr := t.stateTx.Rollback(context.WithoutCancel(ctx)); rbErr != nil {
