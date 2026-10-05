@@ -403,6 +403,16 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 				if at == ".Bundle.Freshness.Tables" || at == ".Bundle.Rollup.Rollups" {
 					continue
 				}
+				// A database bundle's tables are the operator's list, capped
+				// by wire.MaxDatabaseTables; its replicas are the cluster's
+				// topology, capped by wire.MaxDatabaseReplicas; its errors
+				// are at most one per table and one per catalog query,
+				// wire.MaxDatabaseErrors. None grows with the data in the
+				// database. TestCollect_AFullDatabaseBundleStaysUnderTheCeiling
+				// prices all three at their caps.
+				if at == ".Bundle.Database.Tables" || at == ".Bundle.Database.Replication.Replicas" || at == ".Bundle.Database.Collection.Errors" {
+					continue
+				}
 				// A duration's buckets are a fixed-length array whose length
 				// the contract sets: len(wire.DurationBounds)+1, the same
 				// for every process forever. It is the one shape a receiver
@@ -565,11 +575,83 @@ func widestBundle(t *testing.T) wire.Bundle {
 			},
 			Duration: &wire.ServeDurations{Request: widestDuration()},
 		},
+		// One of each repeated field: enough for the schema to validate
+		// the shape. The full width is priced by
+		// TestCollect_AFullDatabaseBundleStaysUnderTheCeiling.
+		Database: widestDatabase(1, 1, 1),
 		Exit: &wire.Exit{
 			Reason: "system.internal.unexpected",
 			Code:   255,
 		},
 	}
+}
+
+// widestDatabase is a database section with every field at its widest
+// value: the longest identifiers Postgres allows, the longest host name DNS
+// allows, and 2^62 in every count, with the given number of tables,
+// replicas and errors.
+func widestDatabase(tables, replicas, errors int) *wire.Database {
+	big := int64(1) << 62
+	n := 1 << 30
+	at := time.Now().UTC()
+	secs := 1e9
+	ident := strings.Repeat("i", 63)
+	table := strings.Repeat("s", 63) + "." + strings.Repeat("t", 63)
+	host := strings.Repeat("h", 253)
+	d := &wire.Database{
+		Kind:          "postgres",
+		Target:        host + ":65535/" + ident,
+		Cluster:       strings.Repeat("c", 64),
+		ServerVersion: "PostgreSQL 18.1 (Debian 18.1-1.pgdg13+1) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+		Probe:         wire.DatabaseProbe{OK: true, LatencyMs: big, LastOKAt: &at, ConsecutiveFailures: n, Error: "timeout"},
+		Resources: &wire.DatabaseResources{
+			Connections:              &wire.DatabaseConnections{Used: n, Max: n, Waiting: n},
+			SizeBytes:                &big,
+			OldestTransactionSeconds: &big,
+			Memory:                   &wire.DatabaseMemory{SharedBuffersBytes: big},
+		},
+		Replication: &wire.DatabaseReplication{Role: "primary", LagSeconds: &secs, LastReplayedAt: &at, Upstream: host + ":65535"},
+		Collection:  wire.DatabaseCollection{Queries: n, DurationMs: big},
+	}
+	for i := 0; i < tables; i++ {
+		d.Tables = append(d.Tables, wire.DatabaseTable{
+			Name: table, FreshnessColumn: ident, NewestAt: &at, Rows: &big, RowsExact: true,
+			SizeBytes: big, LastVacuumAt: &at, CheckedAt: at,
+		})
+	}
+	for i := 0; i < replicas; i++ {
+		d.Replication.Replicas = append(d.Replication.Replicas, wire.DatabaseReplica{Name: ident, LagSeconds: &secs, State: "streaming"})
+	}
+	for i := 0; i < errors; i++ {
+		d.Collection.Errors = append(d.Collection.Errors, wire.DatabaseError{Table: table, Error: strings.Repeat("e", 200)})
+	}
+	return d
+}
+
+// The widest database bundle the contract allows stays under 48 KiB:
+// wire.MaxDatabaseTables tables, each with the longest schema and table
+// name Postgres allows, wire.MaxDatabaseReplicas replicas, an error for
+// every table and every catalog query, and every count at 2^62. It
+// measured 47725 bytes on 2026-10-05. The 16 KiB limit that holds every
+// pipeline bundle cannot hold it: a receiver that accepts database bundles
+// allows 64 KiB, so 48 leaves the alarm a margin without letting the shape
+// double quietly.
+func TestCollect_AFullDatabaseBundleStaysUnderTheCeiling(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	at := time.Now().UTC()
+	b := wire.Bundle{
+		V: wire.Version, SentAt: at, IntervalSeconds: 86400, LastActivityAt: &at,
+		Instance: wire.Instance{
+			ID: strings.Repeat("i", 64), Name: strings.Repeat("n", 64), Version: "v2026.10.05", Commit: strings.Repeat("c", 40),
+			Arch: "linux/arm64", ConfigHash: "sha256:" + strings.Repeat("f", 64), Labels: widestLabels(t),
+		},
+		Process:  wire.Process{StartedAt: at, RSSBytes: 1 << 62, Goroutines: 1 << 30},
+		Database: widestDatabase(wire.MaxDatabaseTables, wire.MaxDatabaseReplicas, wire.MaxDatabaseErrors),
+	}
+	raw, err := json.Marshal(b)
+	assert.NoError(t, err)
+	t.Logf("the widest database bundle is %d bytes", len(raw))
+	assert.That(t, len(raw) < 48<<10)
 }
 
 // widestLabels is the largest label set the config accepts: the most keys,

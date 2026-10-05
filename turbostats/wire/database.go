@@ -2,6 +2,22 @@ package wire
 
 import "time"
 
+// MaxDatabaseTables bounds Database.Tables. A reporter watches at most this
+// many tables per endpoint; its config refuses more. It is the one number
+// that sets a database bundle's width, so it is in the contract: the widest
+// bundle of MaxDatabaseTables tables with the longest names Postgres allows
+// is priced by TestCollect_AFullDatabaseBundleStaysUnderTheCeiling, and the
+// receiver's body limit has to hold it.
+const MaxDatabaseTables = 50
+
+// MaxDatabaseReplicas bounds DatabaseReplication.Replicas. A primary with
+// more sends the first MaxDatabaseReplicas by name.
+const MaxDatabaseReplicas = 16
+
+// MaxDatabaseErrors bounds DatabaseCollection.Errors: one per watched table
+// and one per catalog query, which is fewer than ten.
+const MaxDatabaseErrors = MaxDatabaseTables + 10
+
 // Database is the section a dbhealth reporter sends: one database endpoint,
 // probed and measured. Facts only: timestamps, counts and limits. The
 // receiver judges them. Fields a kind cannot provide are absent, not zero.
