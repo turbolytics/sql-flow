@@ -62,20 +62,13 @@ path and retention.
     "cluster": "billing",                     // groups a primary with its replicas in control
     "server_version": "18.0",
 
-    // Is it serving, and how fast? Probes run every probe.every_seconds;
-    // the bundle summarizes the interval's probes, so one slow answer in
-    // sixty is visible, not averaged away.
+    // Is it serving, and how fast? One round trip per interval.
     "probe": {
-      "ok": true,                             // the latest probe
+      "ok": true,
+      "latency_ms": 3,
       "last_ok_at": "2026-10-05T11:59:59Z",
       "consecutive_failures": 0,
-      "error": null,                          // the latest error's class when not ok: "refused", "timeout", "auth", "other"
-      "count": 60, "failures": 1,             // this interval
-      "latency_ms": { "min": 2, "p50": 3, "max": 2104, "last": 3 },
-      // Where the time goes. Slow to connect (exhaustion, DNS, auth) and
-      // slow to answer (load, locks) are different problems.
-      "connect_ms": { "p50": 1, "max": 2000 },
-      "query_ms":   { "p50": 2, "max": 104 }
+      "error": null                           // the error's class when not ok: "refused", "timeout", "auth", "other"
     },
 
     // How close to its limits.
@@ -121,12 +114,8 @@ path and retention.
 
 - `probe` is always present. It is the one thing a bundle with an unreachable
   database still carries: `ok: false`, the error class, and the failure count.
-  Everything else is absent when the latest probe failed, because nothing
-  else could run.
-- Latency is a summary over the interval's probes, never one reading. A
-  probe runs every `probe.every_seconds` (default 1) and the bundle carries
-  min, p50, max and the last. `connect_ms` and `query_ms` split the round
-  trip, so control can say which half went slow.
+  Everything else is absent when the probe failed, because nothing else could
+  run.
 - `newest_at` is an absolute time, not an age. Control computes staleness on
   its own clock and keeps the history. An age would be one reading and useless
   a minute later.
@@ -168,9 +157,8 @@ databases:
     cluster: billing
 
 probe:
-  every_seconds: 1                    # probes per interval = interval / this; 60 by default
+  interval_seconds: 60                # one probe and one bundle per database per interval
   timeout_seconds: 5
-  interval_seconds: 60                # one bundle per database per interval
 
 tables:
   # Which tables to watch. Exactly one of discover or static.
@@ -246,10 +234,8 @@ The section is stored and retained as every bundle is.
 - Go, one binary, `dbhealth run -c dbhealth.yml`. It imports
   `github.com/turbolytics/sql-flow/turbostats/wire` for the bundle and the
   signing, like `kafka-connect-turbostats` does.
-- Every second: one probe per database, timed as connect and query. Every
-  interval: resources, then the tables due, then one signed POST per
-  database with the interval's probe summary. A failed latest probe sends the
-  bundle with `probe` alone.
+- Every interval, per database: probe, then resources, then the tables due,
+  then one signed POST. A failed probe sends the bundle with `probe` alone.
 - A query that fails lands in `collection.errors` and the interval continues.
 - `dbhealth validate -c dbhealth.yml` checks the file and, with `--connect`,
   that the role can read every catalog view the kind needs, naming each one it
