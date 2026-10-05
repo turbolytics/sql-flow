@@ -193,36 +193,19 @@ A kind reports the fields it has. Control renders what arrives.
 
 ## Control
 
-Today control assumes every instance is a pipeline. This adds a second kind
-beside it, not inside it.
+Today control assumes every instance is a pipeline. This section needs two
+things from it; everything else, the pages and the verdicts, is control's own
+design and not part of this spec.
 
-1. **Kind.** `derive.Instance` gains `Kind`: `pipeline` when the bundle has
-   `pipeline` or `serve`, `database` when it has `database`. `ReportsWork` is
-   true for either.
-2. **Process status is shared.** `up`, `idle`, `unreachable` and `exited` are
-   about the reporter process and apply to a database instance unchanged. A
-   `dbhealth` that stops reporting is `unreachable`, as a pipeline is.
-3. **A database verdict is new**, decided from the section, with the evidence:
+1. **Kind.** Control decides an instance's kind from the sections present:
+   `pipeline` or `serve` means a pipeline, `database` means a database. A
+   database instance gets its own section of the site, beside the pipelines,
+   not inside them.
+2. **The process status is shared.** `up`, `idle`, `unreachable` and `exited`
+   are about the reporter process and apply unchanged. A `dbhealth` that stops
+   reporting is `unreachable`, as a pipeline is.
 
-   | Verdict | Rule |
-   |---|---|
-   | `down` | `probe.ok` false in the latest bundle |
-   | `degraded` | the probe is ok but the database is near a limit: `probe.latency_ms` over the org's threshold (default 500), or `connections.used / max` over 90% |
-   | `stale` | the database is serving and within limits, but a watched table's `now - newest_at` is over its threshold (default: 10 × `freshness_interval_seconds`) |
-   | `healthy` | none of the above |
-
-   The first matching row wins, top to bottom, so a database that is both
-   near its connection limit and stale reads `degraded`: serving matters
-   before data. The verdict names the rule and the measurement, as pipeline
-   verdicts do.
-4. **Pages.** A databases list beside the fleet page: name, kind, verdict,
-   probe latency, connections, size, last ping. An instance page with the
-   probe over time, the resources, and one row per table with freshness and
-   rows. The pipeline pages are untouched.
-5. **Retention and tiers.** The bundle is stored as every bundle is. The free
-   tier shows the latest reading. Retention and the history graphs are the
-   paid tiers, as the pricing design says, and this spec does not change the
-   retention code.
+The section is stored and retained as every bundle is.
 
 ## dbhealth, the binary
 
@@ -248,8 +231,9 @@ beside it, not inside it.
   send no `connections` and control would show nothing wrong. Hence
   `collection.errors` in every bundle and `validate --connect` before the
   first run.
-- **A verdict in the wrong place.** If the reporter judged staleness, every
-  threshold change would be a redeploy at every customer. Hence facts only.
+- **A judgment in the reporter.** If the reporter decided staleness, every
+  threshold change would be a redeploy at every customer. Hence facts only;
+  control judges.
 
 ## Testing
 
@@ -258,13 +242,12 @@ beside it, not inside it.
   `pg_read_all_stats` (the errors land in `collection.errors`, the bundle
   still sends); discovery picks the first matching freshness column and
   honours `exclude` and `max_tables`; exact counts run on their own interval.
-- **Unit, control:** `Kind` from sections; each verdict row from one
-  example bundle, as `derive/verdict_test.go` does for pipelines; a bundle
-  with `database` renders the database page and not the pipeline one.
+- **Unit, control:** `Kind` from sections; a bundle with `database` is a
+  database instance and not a pipeline.
 - **End to end:** `dbhealth` against the usage-metering stack's Postgres,
   reporting to a local control: the table list matches `\dt`, the row count
-  for `usage_per_minute` is within 10% of `count(*)`, stopping Postgres turns
-  the verdict `down` within two intervals.
+  for `usage_per_minute` is within 10% of `count(*)`, and stopping Postgres
+  sends a bundle with `probe.ok` false and nothing else within two intervals.
 
 ## Out of scope
 
