@@ -58,16 +58,24 @@ path and retention.
 
   "database": {
     "kind": "postgres",                       // postgres | mysql | mongo | snowflake | redshift
-    "target": "pg.internal:5432/billing",     // host:port/database; never a DSN
+    "target": "pg-2.internal:5432/billing",   // host:port/database; never a DSN
+    "cluster": "billing",                     // groups a primary with its replicas in control
     "server_version": "18.0",
 
-    // Is it serving? One round trip, every interval.
+    // Is it serving, and how fast? Probes run every probe.every_seconds;
+    // the bundle summarizes the interval's probes, so one slow answer in
+    // sixty is visible, not averaged away.
     "probe": {
-      "ok": true,
-      "latency_ms": 3,
+      "ok": true,                             // the latest probe
       "last_ok_at": "2026-10-05T11:59:59Z",
       "consecutive_failures": 0,
-      "error": null                           // the last error's class when not ok: "refused", "timeout", "auth", "other"
+      "error": null,                          // the latest error's class when not ok: "refused", "timeout", "auth", "other"
+      "count": 60, "failures": 1,             // this interval
+      "latency_ms": { "min": 2, "p50": 3, "max": 2104, "last": 3 },
+      // Where the time goes. Slow to connect (exhaustion, DNS, auth) and
+      // slow to answer (load, locks) are different problems.
+      "connect_ms": { "p50": 1, "max": 2000 },
+      "query_ms":   { "p50": 2, "max": 104 }
     },
 
     // How close to its limits.
@@ -92,11 +100,15 @@ path and retention.
       }
     ],
 
-    // Present only when the target replicates.
+    // Present only when the target replicates. Measured from this
+    // endpoint's side: a replica reports how far behind what it serves is;
+    // a primary reports what it knows about each replica.
     "replication": {
-      "role": "primary",                        // primary | replica
-      "lag_seconds": 0.4,                       // on a replica: now - last replayed; on a primary: the slowest replica
-      "replicas": 2
+      "role": "replica",                        // primary | replica
+      "lag_seconds": 0.4,                       // replica: now - last replayed
+      "last_replayed_at": "2026-10-05T11:59:59Z",
+      "upstream": "pg-1.internal:5432"
+      // a primary instead carries: "replicas": [{"name": "pg-2", "lag_seconds": 0.4, "state": "streaming"}]
     },
 
     // What ran this interval, so control can show the cost of watching.
@@ -109,8 +121,12 @@ path and retention.
 
 - `probe` is always present. It is the one thing a bundle with an unreachable
   database still carries: `ok: false`, the error class, and the failure count.
-  Everything else is absent when the probe failed, because nothing else could
-  run.
+  Everything else is absent when the latest probe failed, because nothing
+  else could run.
+- Latency is a summary over the interval's probes, never one reading. A
+  probe runs every `probe.every_seconds` (default 1) and the bundle carries
+  min, p50, max and the last. `connect_ms` and `query_ms` split the round
+  trip, so control can say which half went slow.
 - `newest_at` is an absolute time, not an age. Control computes staleness on
   its own clock and keeps the history. An age would be one reading and useless
   a minute later.
@@ -122,21 +138,39 @@ path and retention.
 - Every number is a reading at `sent_at`. Nothing is a rate; control derives
   rates from consecutive bundles as it does for pipelines.
 
-## The config
+## Replicas
 
-One file, one database per process. Watching three databases is three
-processes with three instance ids, which is how pipelines work too.
+One instance per endpoint `dbhealth` connects to, replicas included. "Is it
+serving?" is a question about an endpoint: a primary that answers says
+nothing about the replica an application reads from. Lag is measured from
+the replica's side, how far behind what it serves is, and table freshness on
+a replica is a different number by definition. So a primary and two replicas
+are three instances in control, each with its own probe. `cluster` groups
+them, so control can show the three together and line up the primary's view
+of a replica's lag with that replica's own.
+
+One process can watch all three, and several databases on one server. Each
+entry in `databases` is one instance with its own id. A replica is a
+database being watched, and a unit, as a pipeline is.
+
+## The config
 
 ```yaml
 # dbhealth.yml
-database:
-  kind: postgres
-  dsn: "{{ DBHEALTH_DSN }}"          # from the environment; the bundle carries host:port/db only
-  name: billing                       # the instance name control shows
+databases:
+  - kind: postgres
+    dsn: "{{ DBHEALTH_PRIMARY_DSN }}"   # from the environment; the bundle carries host:port/db only
+    name: billing-primary               # the instance name control shows
+    cluster: billing
+  - kind: postgres
+    dsn: "{{ DBHEALTH_REPLICA_A_DSN }}"
+    name: billing-replica-a
+    cluster: billing
 
 probe:
-  interval_seconds: 60
+  every_seconds: 1                    # probes per interval = interval / this; 60 by default
   timeout_seconds: 5
+  interval_seconds: 60                # one bundle per database per interval
 
 tables:
   # Which tables to watch. Exactly one of discover or static.
@@ -212,8 +246,10 @@ The section is stored and retained as every bundle is.
 - Go, one binary, `dbhealth run -c dbhealth.yml`. It imports
   `github.com/turbolytics/sql-flow/turbostats/wire` for the bundle and the
   signing, like `kafka-connect-turbostats` does.
-- Every interval: probe, then resources, then the tables due this interval,
-  then one signed POST. A probe failure sends the bundle with `probe` alone.
+- Every second: one probe per database, timed as connect and query. Every
+  interval: resources, then the tables due, then one signed POST per
+  database with the interval's probe summary. A failed latest probe sends the
+  bundle with `probe` alone.
 - A query that fails lands in `collection.errors` and the interval continues.
 - `dbhealth validate -c dbhealth.yml` checks the file and, with `--connect`,
   that the role can read every catalog view the kind needs, naming each one it
