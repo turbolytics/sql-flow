@@ -70,3 +70,66 @@ func TestBundle_DatabaseSectionIsOptional(t *testing.T) {
 }
 
 func dbPtr[T any](v T) *T { return &v }
+
+// The load amendment's example, field for field. A kind that cannot say
+// a field omits it; the names are the spec's.
+func TestDatabaseLoad_SpecExampleRoundTrips(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	raw := `{
+	  "sessions_active_now": 12, "sessions_idle_in_transaction_now": 3, "sessions_waiting_now": 1,
+	  "queries_queued_now": 0, "longest_query_seconds": 41.2,
+	  "queries_per_second": 1240.5, "transactions_per_second": 182.4, "rollbacks_per_second": 0.3,
+	  "rows_read_per_second": 90210, "rows_written_per_second": 1850, "bytes_scanned_per_second": 0,
+	  "cache_hit_ratio": 0.993, "deadlocks_per_second": 0, "temp_bytes_per_second": 0
+	}`
+	var l DatabaseLoad
+	assert.NoError(t, json.Unmarshal([]byte(raw), &l))
+	assert.Equal(t, 12, *l.SessionsActiveNow)
+	assert.Equal(t, 41.2, *l.LongestQuerySeconds)
+	assert.Equal(t, 0.993, *l.CacheHitRatio)
+	assert.Equal(t, 0.0, *l.TempBytesPerSecond)
+	out, err := json.Marshal(l)
+	assert.NoError(t, err)
+	var back map[string]any
+	assert.NoError(t, json.Unmarshal(out, &back))
+	for _, k := range []string{"sessions_active_now", "sessions_idle_in_transaction_now", "sessions_waiting_now",
+		"queries_queued_now", "longest_query_seconds", "queries_per_second", "transactions_per_second",
+		"rollbacks_per_second", "rows_read_per_second", "rows_written_per_second", "bytes_scanned_per_second",
+		"cache_hit_ratio", "deadlocks_per_second", "temp_bytes_per_second"} {
+		if _, ok := back[k]; !ok {
+			t.Errorf("marshalled load lacks %q", k)
+		}
+	}
+	assert.Equal(t, 14, len(back))
+
+	q := `{"id":"a7f3","text":"SELECT * FROM events WHERE customer = $1","calls_per_second":310.2,"mean_ms":2.4,"time_share":0.31,"rows_per_call":18}`
+	var dq DatabaseQuery
+	assert.NoError(t, json.Unmarshal([]byte(q), &dq))
+	assert.Equal(t, "a7f3", dq.ID)
+	assert.Equal(t, 0.31, dq.TimeShare)
+	out, err = json.Marshal(dq)
+	assert.NoError(t, err)
+	assert.Equal(t, q, string(out))
+
+	tbl := `{"name":"public.events","rows_exact":false,"size_bytes":1,"checked_at":"2026-10-06T12:00:00Z","dead_rows":1203,"seq_scans_per_second":0.1,"index_scans_per_second":44}`
+	var dt DatabaseTable
+	assert.NoError(t, json.Unmarshal([]byte(tbl), &dt))
+	assert.Equal(t, int64(1203), *dt.DeadRows)
+	assert.Equal(t, 44.0, *dt.IndexScansPerSecond)
+}
+
+// A rate the interval could not compute is absent, never zero: the first
+// interval and a reset send the samples alone.
+func TestDatabaseLoad_AbsentRatesAreAbsent(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	n := 12
+	out, err := json.Marshal(DatabaseLoad{SessionsActiveNow: &n})
+	assert.NoError(t, err)
+	assert.Equal(t, `{"sessions_active_now":12}`, string(out))
+	d := Database{Kind: "postgres", Target: "h:5432/d", Collection: DatabaseCollection{Errors: []DatabaseError{}}}
+	out, err = json.Marshal(d)
+	assert.NoError(t, err)
+	assert.False(t, strings.Contains(string(out), `"load"`))
+	assert.False(t, strings.Contains(string(out), `"queries":[`))
+	assert.Equal(t, 20, MaxDatabaseQueries)
+}

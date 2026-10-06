@@ -18,6 +18,14 @@ const MaxDatabaseReplicas = 16
 // and one per catalog query, which is fewer than ten.
 const MaxDatabaseErrors = MaxDatabaseTables + 10
 
+// MaxDatabaseQueries bounds Database.Queries, the opt-in per-query facts:
+// the reporter sends at most this many, by share of time.
+const MaxDatabaseQueries = 20
+
+// MaxDatabaseQueryText bounds DatabaseQuery.Text, in bytes. The text is
+// the system's normalized form, literals replaced, and truncated.
+const MaxDatabaseQueryText = 200
+
 // Database is the section a dbhealth reporter sends: one database endpoint,
 // probed and measured. Facts only: timestamps, counts and limits. The
 // receiver judges them. Fields a kind cannot provide are absent, not zero.
@@ -38,7 +46,63 @@ type Database struct {
 	Resources   *DatabaseResources   `json:"resources,omitempty"`
 	Tables      []DatabaseTable      `json:"tables,omitempty"`
 	Replication *DatabaseReplication `json:"replication,omitempty"`
-	Collection  DatabaseCollection   `json:"collection"`
+	// Load is what people are doing to the database. Present when the kind
+	// provides at least one field.
+	Load *DatabaseLoad `json:"load,omitempty"`
+	// Queries is the work by query, opt-in, at most MaxDatabaseQueries,
+	// ordered by TimeShare descending.
+	Queries    []DatabaseQuery    `json:"queries,omitempty"`
+	Collection DatabaseCollection `json:"collection"`
+}
+
+// DatabaseLoad is what people are doing to the database. Samples, named
+// _now, are the instant of collection; rates, named _per_second, are the
+// interval's work computed from the system's own counters two readings
+// apart, absent on the first interval and after a counter reset, never
+// zero in those cases. Every field is optional: a kind sends what it has.
+//
+// Spec: docs/superpowers/specs/2026-10-06-turbostats-database-load-design.md.
+type DatabaseLoad struct {
+	// SessionsActiveNow is sessions executing a statement.
+	SessionsActiveNow            *int `json:"sessions_active_now,omitempty"`
+	SessionsIdleInTransactionNow *int `json:"sessions_idle_in_transaction_now,omitempty"`
+	// SessionsWaitingNow is sessions blocked: on a lock, a queue, a resource.
+	SessionsWaitingNow *int `json:"sessions_waiting_now,omitempty"`
+	// QueriesQueuedNow is queries waiting to start; warehouses and WLM.
+	QueriesQueuedNow *int `json:"queries_queued_now,omitempty"`
+	// LongestQuerySeconds is the age of the oldest statement still running.
+	LongestQuerySeconds *float64 `json:"longest_query_seconds,omitempty"`
+
+	QueriesPerSecond      *float64 `json:"queries_per_second,omitempty"`
+	TransactionsPerSecond *float64 `json:"transactions_per_second,omitempty"`
+	RollbacksPerSecond    *float64 `json:"rollbacks_per_second,omitempty"`
+	// RowsReadPerSecond is rows returned to clients.
+	RowsReadPerSecond *float64 `json:"rows_read_per_second,omitempty"`
+	// RowsWrittenPerSecond is inserted, updated and deleted.
+	RowsWrittenPerSecond *float64 `json:"rows_written_per_second,omitempty"`
+	// BytesScannedPerSecond is storage read to answer queries.
+	BytesScannedPerSecond *float64 `json:"bytes_scanned_per_second,omitempty"`
+	// CacheHitRatio is the interval's block or page reads served from
+	// memory, 0..1; not since the server started.
+	CacheHitRatio      *float64 `json:"cache_hit_ratio,omitempty"`
+	DeadlocksPerSecond *float64 `json:"deadlocks_per_second,omitempty"`
+	// TempBytesPerSecond is sorts and hashes spilling to disk.
+	TempBytesPerSecond *float64 `json:"temp_bytes_per_second,omitempty"`
+}
+
+// DatabaseQuery is one query shape's share of the interval's work.
+type DatabaseQuery struct {
+	// ID is the system's query id, or a hash of the text, stable across
+	// intervals for the same shape.
+	ID string `json:"id"`
+	// Text is the normalized form, literals replaced, at most
+	// MaxDatabaseQueryText bytes.
+	Text           string  `json:"text"`
+	CallsPerSecond float64 `json:"calls_per_second"`
+	MeanMs         float64 `json:"mean_ms"`
+	// TimeShare is this shape's share of all query time in the interval, 0..1.
+	TimeShare   float64 `json:"time_share"`
+	RowsPerCall float64 `json:"rows_per_call"`
 }
 
 // DatabaseProbe is one round trip per interval: is it serving, and how fast.
@@ -90,6 +154,12 @@ type DatabaseTable struct {
 	SizeBytes    int64      `json:"size_bytes"`
 	LastVacuumAt *time.Time `json:"last_vacuum_at,omitempty"`
 	CheckedAt    time.Time  `json:"checked_at"`
+	// DeadRows is rows deleted or updated and not yet reclaimed.
+	DeadRows *int64 `json:"dead_rows,omitempty"`
+	// SeqScansPerSecond is whole-table reads; IndexScansPerSecond the rest.
+	// Rates over the interval, absent on the first and after a reset.
+	SeqScansPerSecond   *float64 `json:"seq_scans_per_second,omitempty"`
+	IndexScansPerSecond *float64 `json:"index_scans_per_second,omitempty"`
 }
 
 // DatabaseReplication is measured from this endpoint's side. A replica

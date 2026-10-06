@@ -653,6 +653,17 @@
               "checked_at": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "dead_rows": {
+                "type": "integer",
+                "description": "DeadRows is rows deleted or updated and not yet reclaimed."
+              },
+              "seq_scans_per_second": {
+                "type": "number",
+                "description": "SeqScansPerSecond is whole-table reads; IndexScansPerSecond the rest.\nRates over the interval, absent on the first and after a reset."
+              },
+              "index_scans_per_second": {
+                "type": "number"
               }
             },
             "type": "object",
@@ -709,6 +720,102 @@
           "required": [
             "role"
           ]
+        },
+        "load": {
+          "properties": {
+            "sessions_active_now": {
+              "type": "integer",
+              "description": "SessionsActiveNow is sessions executing a statement."
+            },
+            "sessions_idle_in_transaction_now": {
+              "type": "integer"
+            },
+            "sessions_waiting_now": {
+              "type": "integer",
+              "description": "SessionsWaitingNow is sessions blocked: on a lock, a queue, a resource."
+            },
+            "queries_queued_now": {
+              "type": "integer",
+              "description": "QueriesQueuedNow is queries waiting to start; warehouses and WLM."
+            },
+            "longest_query_seconds": {
+              "type": "number",
+              "description": "LongestQuerySeconds is the age of the oldest statement still running."
+            },
+            "queries_per_second": {
+              "type": "number"
+            },
+            "transactions_per_second": {
+              "type": "number"
+            },
+            "rollbacks_per_second": {
+              "type": "number"
+            },
+            "rows_read_per_second": {
+              "type": "number",
+              "description": "RowsReadPerSecond is rows returned to clients."
+            },
+            "rows_written_per_second": {
+              "type": "number",
+              "description": "RowsWrittenPerSecond is inserted, updated and deleted."
+            },
+            "bytes_scanned_per_second": {
+              "type": "number",
+              "description": "BytesScannedPerSecond is storage read to answer queries."
+            },
+            "cache_hit_ratio": {
+              "type": "number",
+              "description": "CacheHitRatio is the interval's block or page reads served from\nmemory, 0..1; not since the server started."
+            },
+            "deadlocks_per_second": {
+              "type": "number"
+            },
+            "temp_bytes_per_second": {
+              "type": "number",
+              "description": "TempBytesPerSecond is sorts and hashes spilling to disk."
+            }
+          },
+          "type": "object",
+          "description": "Load is what people are doing to the database. Present when the kind\nprovides at least one field."
+        },
+        "queries": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "ID is the system's query id, or a hash of the text, stable across\nintervals for the same shape."
+              },
+              "text": {
+                "type": "string",
+                "description": "Text is the normalized form, literals replaced, at most\nMaxDatabaseQueryText bytes."
+              },
+              "calls_per_second": {
+                "type": "number"
+              },
+              "mean_ms": {
+                "type": "number"
+              },
+              "time_share": {
+                "type": "number",
+                "description": "TimeShare is this shape's share of all query time in the interval, 0..1."
+              },
+              "rows_per_call": {
+                "type": "number"
+              }
+            },
+            "type": "object",
+            "required": [
+              "id",
+              "text",
+              "calls_per_second",
+              "mean_ms",
+              "time_share",
+              "rows_per_call"
+            ],
+            "description": "DatabaseQuery is one query shape's share of the interval's work."
+          },
+          "type": "array",
+          "description": "Queries is the work by query, opt-in, at most MaxDatabaseQueries,\nordered by TimeShare descending."
         },
         "collection": {
           "properties": {

@@ -157,9 +157,11 @@ one on MongoDB (`serverStatus`). The warehouses pay a query-history read
 each. `queries` is one more read, at its own interval. Every read is counted
 in `collection.queries` as before.
 
-The bundle grows by about 400 bytes for `load` and up to 20 × ~350 bytes for
-`queries`; the widest bundle stays under the 48 KiB ceiling with
-`wire.MaxDatabaseQueries = 20`.
+The bundle grows by about 500 bytes for `load`, about 100 per table for its
+counters, and up to 20 × ~370 bytes for `queries`. The widest bundle the
+contract allows measured 60,925 bytes with `wire.MaxDatabaseQueries = 20`,
+so its ceiling is 64 KiB and the receiver that accepts database bundles
+allows 128 KiB (it was 64).
 
 ## Control
 
