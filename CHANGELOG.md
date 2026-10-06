@@ -4,6 +4,17 @@
 
 ### Added
 
+- **TurboStats `database.load`.** What people are doing to the database:
+  samples (`sessions_active_now`, `sessions_waiting_now`, the longest
+  query) and rates over the interval from the system's own counters
+  (`transactions_per_second`, `rows_read_per_second`, `cache_hit_ratio`,
+  `temp_bytes_per_second`, …), each a thing every kind can say in its own
+  terms. `queries`, opt-in and at most `wire.MaxDatabaseQueries` (20), is
+  the work by query shape, normalized text only. Tables gain `dead_rows`
+  and scan rates. The widest database bundle is 61 KiB, under the
+  receiver's 64 KiB limit for a database bundle. Spec:
+  `docs/superpowers/specs/2026-10-06-turbostats-database-load-design.md`.
+  (#445, #446)
 - **TurboStats `instance.kind`.** The reporter declares what it reports on:
   `pipeline` or `database`. SQLFlow sends `pipeline`. A receiver files the
   report by it and checks it against the sections; absent reads as a
