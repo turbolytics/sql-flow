@@ -56,6 +56,7 @@ func Collect(ctx context.Context, src Source) (Bundle, error) {
 			SinkType:    s.SinkType,
 			HandlerType: s.HandlerType,
 			Runtime:     wire.RuntimeSQLFlow,
+			Kind:        wire.KindPipeline,
 			Labels:      copyLabels(s.Labels),
 		},
 		Process: Process{

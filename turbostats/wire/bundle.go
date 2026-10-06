@@ -112,6 +112,12 @@ type Instance struct {
 	// ReporterVersion is the reporter's own version, when the reporter is
 	// not the engine. SQLFlow reports itself and sends none.
 	ReporterVersion string `json:"reporter_version,omitempty"`
+	// Kind is what the process reports on: KindPipeline or KindDatabase. A
+	// receiver files the report by it and checks it against the sections,
+	// so a kind and its sections never disagree. Absent from reporters that
+	// predate it; a receiver reads absent as a pipeline when the bundle has
+	// no database section.
+	Kind string `json:"kind,omitempty"`
 	// Labels are the operator's own, declared in the config and fixed for
 	// the life of the process. At most 10, keys [a-z][a-z0-9_]* up to 32
 	// characters, values up to 64, and never a name this contract already
@@ -228,6 +234,12 @@ type Memory struct {
 const (
 	RuntimeSQLFlow  = "sqlflow"
 	MemoryRuntimeGo = "go"
+)
+
+// The kinds an instance reports as.
+const (
+	KindPipeline = "pipeline"
+	KindDatabase = "database"
 )
 
 // Pipeline states. A reader treats a value it does not know as unknown,

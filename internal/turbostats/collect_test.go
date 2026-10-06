@@ -890,6 +890,16 @@ func TestCollect_CarriesTheRuntimeHostAndMemory(t *testing.T) {
 	assert.That(t, m.GCCount > 0)
 }
 
+// SQLFlow declares its reports pipelines, so a receiver never infers it.
+func TestCollect_InstanceKindIsPipeline(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	reader, _, _ := provider(t)
+
+	b, err := Collect(context.Background(), runSource(reader, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, wire.KindPipeline, b.Instance.Kind)
+}
+
 // GOMEMLIMIT reaches the bundle as the heap ceiling.
 func TestGoMemory_ReadsTheHeapLimit(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")

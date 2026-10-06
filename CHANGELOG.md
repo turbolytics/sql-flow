@@ -4,6 +4,11 @@
 
 ### Added
 
+- **TurboStats `instance.kind`.** The reporter declares what it reports on:
+  `pipeline` or `database`. SQLFlow sends `pipeline`. A receiver files the
+  report by it and checks it against the sections; absent reads as a
+  pipeline when the bundle has no `database` section. `wire.KindPipeline`,
+  `wire.KindDatabase`.
 - **TurboStats `database` section.** The section a `dbhealth` reporter
   sends: the probe (serving, and how fast), resources (connections against
   the maximum, size on disk, the oldest open transaction), per-table

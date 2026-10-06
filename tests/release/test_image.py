@@ -633,6 +633,7 @@ pipeline:
     # The generic fields, as the shipped image sends them. The container's
     # limit reaches the bundle, so an OOM kill can be predicted.
     assert bundle["instance"]["runtime"] == "sqlflow"
+    assert bundle["instance"]["kind"] == "pipeline"
     assert bundle["process"]["host"]
     assert bundle["process"]["memory_limit_bytes"] == 512 * 1024 * 1024
     memory = bundle["process"]["memory"]
