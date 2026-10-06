@@ -160,8 +160,9 @@ in `collection.queries` as before.
 The bundle grows by about 500 bytes for `load`, about 100 per table for its
 counters, and up to 20 × ~370 bytes for `queries`. The widest bundle the
 contract allows measured 60,925 bytes with `wire.MaxDatabaseQueries = 20`,
-so its ceiling is 64 KiB and the receiver that accepts database bundles
-allows 128 KiB (it was 64).
+so its ceiling is 64 KiB, which is the receiver's limit for a database
+bundle; control holds everything outside the `database` section to the
+pipeline's 16 KiB.
 
 ## Control
 

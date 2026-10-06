@@ -656,9 +656,10 @@ func widestDatabase(tables, replicas, errors, queries int) *wire.Database {
 // replicas, an error for every table and every catalog query, every load
 // field, wire.MaxDatabaseQueries queries at 200 characters, and every
 // count at 2^62. It measured 47725 bytes on 2026-10-05 before load and
-// 60925 with it on 2026-10-06. The receiver that accepts database bundles
-// allows 128 KiB, so 64 leaves the alarm a margin without letting the
-// shape double quietly. The 16 KiB limit that holds every
+// 60925 with it on 2026-10-06. The receiver's limit for a database bundle
+// is 64 KiB, so the alarm is the limit itself: the widest legal bundle
+// has 4.6 KiB of room, and a field added here is paid for by the comment
+// above saying what it measured. The 16 KiB limit that holds every
 // pipeline bundle cannot hold it: a receiver that accepts database bundles
 // allows 64 KiB, so 48 leaves the alarm a margin without letting the shape
 // double quietly.
