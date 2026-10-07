@@ -449,8 +449,10 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 // buckets took the widest bundle to 4212 bytes, which is the price of the
 // one nested array the shape guard exempts. It was 8 KiB until the
 // database section's load landed, with one of each of its lists and every
-// load field: 8.7 KiB on 2026-10-06. The receiver's limit is 16 KiB, so 10
-// leaves the alarm a margin without letting the shape double quietly.
+// load field: 8.7 KiB on 2026-10-06, and 9183 bytes on 2026-10-07 with the
+// one table's schema hash, one schema change and its write rates. The
+// receiver's limit is 16 KiB, so 10 leaves the alarm a margin without
+// letting the shape double quietly; the next field here costs the margin.
 func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	raw, err := json.Marshal(widestBundle(t))
@@ -586,7 +588,7 @@ func widestBundle(t *testing.T) wire.Bundle {
 		// One of each repeated field: enough for the schema to validate
 		// the shape. The full width is priced by
 		// TestCollect_AFullDatabaseBundleStaysUnderTheCeiling.
-		Database: widestDatabase(1, 1, 1, 1),
+		Database: widestDatabase(1, 1, 1, 1, 1),
 		Exit: &wire.Exit{
 			Reason: "system.internal.unexpected",
 			Code:   255,
@@ -598,7 +600,7 @@ func widestBundle(t *testing.T) wire.Bundle {
 // value: the longest identifiers Postgres allows, the longest host name DNS
 // allows, and 2^62 in every count, with the given number of tables,
 // replicas, errors and queries, and every load field set.
-func widestDatabase(tables, replicas, errors, queries int) *wire.Database {
+func widestDatabase(tables, replicas, errors, queries, changes int) *wire.Database {
 	big := int64(1) << 62
 	n := 1 << 30
 	at := time.Now().UTC()
@@ -639,6 +641,15 @@ func widestDatabase(tables, replicas, errors, queries int) *wire.Database {
 			Name: table, FreshnessColumn: ident, NewestAt: &at, Rows: &big, RowsExact: true,
 			SizeBytes: big, LastVacuumAt: &at, CheckedAt: at,
 			DeadRows: &big, SeqScansPerSecond: &secs, IndexScansPerSecond: &secs,
+			SchemaHash:            strings.Repeat("a", 16),
+			RowsInsertedPerSecond: &secs, RowsUpdatedPerSecond: &secs, RowsDeletedPerSecond: &secs,
+		})
+	}
+	// The schema changes, bundle-wide, land on the tables in turn.
+	for i := 0; i < changes && len(d.Tables) > 0; i++ {
+		t := &d.Tables[i%len(d.Tables)]
+		t.SchemaChanges = append(t.SchemaChanges, wire.DatabaseSchemaChange{
+			Column: ident, Change: "nullability", From: strings.Repeat("f", wire.MaxDatabaseTypeText), To: strings.Repeat("t", wire.MaxDatabaseTypeText),
 		})
 	}
 	for i := 0; i < replicas; i++ {
@@ -650,19 +661,19 @@ func widestDatabase(tables, replicas, errors, queries int) *wire.Database {
 	return d
 }
 
-// The widest database bundle the contract allows stays under 64 KiB:
+// The widest database bundle the contract allows stays under 128 KiB:
 // wire.MaxDatabaseTables tables, each with the longest schema and table
-// name Postgres allows and its load counters, wire.MaxDatabaseReplicas
-// replicas, an error for every table and every catalog query, every load
-// field, wire.MaxDatabaseQueries queries at 200 characters, and every
-// count at 2^62. It measured 47725 bytes on 2026-10-05 before load and
-// 60925 with it on 2026-10-06. The receiver's limit for a database bundle
-// is 64 KiB, so the alarm is the limit itself: the widest legal bundle
-// has 4.6 KiB of room, and a field added here is paid for by the comment
-// above saying what it measured. The 16 KiB limit that holds every
-// pipeline bundle cannot hold it: a receiver that accepts database bundles
-// allows 64 KiB, so 48 leaves the alarm a margin without letting the shape
-// double quietly.
+// name Postgres allows, its load counters, its write rates and a schema
+// hash, wire.MaxDatabaseSchemaChanges changes at the widest type names,
+// wire.MaxDatabaseReplicas replicas, an error for every table and every
+// catalog query, every load field, wire.MaxDatabaseQueries queries at 200
+// characters, and every count at 2^62. It measured 47725 bytes on
+// 2026-10-05 before load, 60925 with it on 2026-10-06, and 84037 with
+// the schema and the writes on 2026-10-07, past the 64 KiB a receiver
+// allowed before; a receiver that accepts database bundles allows 128 KiB
+// now, which is what the load spec first asked for. A field added here is
+// paid for by this comment saying what it measured. The 16 KiB limit that
+// holds every pipeline bundle cannot hold it.
 func TestCollect_AFullDatabaseBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	at := time.Now().UTC()
@@ -673,12 +684,12 @@ func TestCollect_AFullDatabaseBundleStaysUnderTheCeiling(t *testing.T) {
 			Arch: "linux/arm64", ConfigHash: "sha256:" + strings.Repeat("f", 64), Labels: widestLabels(t),
 		},
 		Process:  wire.Process{StartedAt: at, RSSBytes: 1 << 62, Goroutines: 1 << 30},
-		Database: widestDatabase(wire.MaxDatabaseTables, wire.MaxDatabaseReplicas, wire.MaxDatabaseErrors, wire.MaxDatabaseQueries),
+		Database: widestDatabase(wire.MaxDatabaseTables, wire.MaxDatabaseReplicas, wire.MaxDatabaseErrors, wire.MaxDatabaseQueries, wire.MaxDatabaseSchemaChanges),
 	}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)
 	t.Logf("the widest database bundle is %d bytes", len(raw))
-	assert.That(t, len(raw) < 64<<10)
+	assert.That(t, len(raw) < 128<<10)
 }
 
 // widestLabels is the largest label set the config accepts: the most keys,

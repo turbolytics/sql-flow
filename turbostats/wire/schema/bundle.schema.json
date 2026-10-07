@@ -664,6 +664,45 @@
               },
               "index_scans_per_second": {
                 "type": "number"
+              },
+              "schema_hash": {
+                "type": "string",
+                "description": "SchemaHash is a hash of the table's columns: each name, type and\nnullability, in column order. The same every report until the\nschema moves; a receiver that sees it change knows the table changed\nshape, and SchemaChanges, sent in that report alone, says how. A\nreporter that has no previous reading, having just started, sends\nthe hash without changes."
+              },
+              "schema_changes": {
+                "items": {
+                  "properties": {
+                    "column": {
+                      "type": "string"
+                    },
+                    "change": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object",
+                  "required": [
+                    "column",
+                    "change"
+                  ],
+                  "description": "DatabaseSchemaChange is one column's change between two readings of a table's schema: added, dropped, retyped or nullability."
+                },
+                "type": "array"
+              },
+              "rows_inserted_per_second": {
+                "type": "number",
+                "description": "RowsInsertedPerSecond, RowsUpdatedPerSecond and RowsDeletedPerSecond\nare the table's writes over the interval from the system's own\ncounters: what the table's volume did, exactly, not what an estimate\nsays it is. Absent on the first interval and after a reset."
+              },
+              "rows_updated_per_second": {
+                "type": "number"
+              },
+              "rows_deleted_per_second": {
+                "type": "number"
               }
             },
             "type": "object",
