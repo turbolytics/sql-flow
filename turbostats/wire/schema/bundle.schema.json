@@ -667,7 +667,7 @@
               },
               "schema_hash": {
                 "type": "string",
-                "description": "SchemaHash is a hash of the table's columns: each name, type and\nnullability, in column order. The same every report until the\nschema moves; a receiver that sees it change knows the table changed\nshape, and SchemaChanges, sent in that report alone, says how. A\nreporter that has no previous reading, having just started, sends\nthe hash without changes."
+                "description": "SchemaHash is a hash of the table's columns: each name, type and\nnullability, in column order. The same every report until the\nschema moves; a receiver that sees it change knows the table changed\nshape, and SchemaChanges says how: sent in that report and, a report\nbeing a thing that can be lost, the two after it, so a receiver\ntreats repeats of one change as one. A reporter that has no previous\nreading, having just started, sends the hash without changes."
               },
               "schema_changes": {
                 "items": {

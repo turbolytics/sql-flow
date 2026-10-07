@@ -173,9 +173,10 @@ type DatabaseTable struct {
 	// SchemaHash is a hash of the table's columns: each name, type and
 	// nullability, in column order. The same every report until the
 	// schema moves; a receiver that sees it change knows the table changed
-	// shape, and SchemaChanges, sent in that report alone, says how. A
-	// reporter that has no previous reading, having just started, sends
-	// the hash without changes.
+	// shape, and SchemaChanges says how: sent in that report and, a report
+	// being a thing that can be lost, the two after it, so a receiver
+	// treats repeats of one change as one. A reporter that has no previous
+	// reading, having just started, sends the hash without changes.
 	SchemaHash    string                 `json:"schema_hash,omitempty"`
 	SchemaChanges []DatabaseSchemaChange `json:"schema_changes,omitempty"`
 	// RowsInsertedPerSecond, RowsUpdatedPerSecond and RowsDeletedPerSecond
