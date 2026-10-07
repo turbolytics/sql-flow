@@ -133,3 +133,33 @@ func TestDatabaseLoad_AbsentRatesAreAbsent(t *testing.T) {
 	assert.False(t, strings.Contains(string(out), `"queries":[`))
 	assert.Equal(t, 20, MaxDatabaseQueries)
 }
+
+// A table carries its schema as a hash every report and the changes the
+// reporter saw in the report where the hash moved; its writes are rates
+// from the system's own counters, like its scans.
+func TestDatabaseTable_SchemaAndWritesRoundTrip(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	raw := `{"name":"public.events","rows_exact":false,"size_bytes":1,"checked_at":"2026-10-07T12:00:00Z",` +
+		`"schema_hash":"9f2c1a7e4b3d8c05",` +
+		`"schema_changes":[{"column":"amount","change":"retyped","from":"integer","to":"numeric(12,2)"},{"column":"legacy_id","change":"dropped","from":"text"},{"column":"region","change":"added","to":"text"}],` +
+		`"rows_inserted_per_second":33.4,"rows_updated_per_second":0.2,"rows_deleted_per_second":0}`
+	var dt DatabaseTable
+	assert.NoError(t, json.Unmarshal([]byte(raw), &dt))
+	assert.Equal(t, "9f2c1a7e4b3d8c05", dt.SchemaHash)
+	assert.Equal(t, 3, len(dt.SchemaChanges))
+	assert.Equal(t, DatabaseSchemaChange{Column: "amount", Change: "retyped", From: "integer", To: "numeric(12,2)"}, dt.SchemaChanges[0])
+	assert.Equal(t, 33.4, *dt.RowsInsertedPerSecond)
+	assert.Equal(t, 0.0, *dt.RowsDeletedPerSecond)
+	out, err := json.Marshal(dt)
+	assert.NoError(t, err)
+	assert.Equal(t, raw, string(out))
+
+	// A table whose schema did not move sends the hash alone.
+	var quiet DatabaseTable
+	assert.NoError(t, json.Unmarshal([]byte(`{"name":"public.quiet","rows_exact":false,"size_bytes":1,"checked_at":"2026-10-07T12:00:00Z","schema_hash":"9f2c1a7e4b3d8c05"}`), &quiet))
+	out, err = json.Marshal(quiet)
+	assert.NoError(t, err)
+	assert.That(t, !strings.Contains(string(out), "schema_changes"))
+	assert.That(t, !strings.Contains(string(out), "rows_inserted"))
+	assert.Equal(t, 60, MaxDatabaseSchemaChanges)
+}

@@ -4,6 +4,17 @@
 
 ### Added
 
+- **TurboStats tables carry their schema and their writes.** A
+  `DatabaseTable` sends `schema_hash` every report, a hash of its columns'
+  names, types and nullability, and `schema_changes` in the report where
+  the hash moved: each column added, dropped, retyped or changed in
+  nullability, with the type before and after, at most
+  `wire.MaxDatabaseSchemaChanges` (60) a bundle. Its volume is what the
+  system's counters say: `rows_inserted_per_second`,
+  `rows_updated_per_second` and `rows_deleted_per_second` over the
+  interval, beside the estimate. The widest database bundle grows past
+  64 KiB; a receiver that accepts database bundles allows 128 KiB.
+
 - **TurboStats `database.load`.** What people are doing to the database:
   samples (`sessions_active_now`, `sessions_waiting_now`, the longest
   query) and rates over the interval from the system's own counters

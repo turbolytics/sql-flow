@@ -26,6 +26,16 @@ const MaxDatabaseQueries = 20
 // the system's normalized form, literals replaced, and truncated.
 const MaxDatabaseQueryText = 200
 
+// MaxDatabaseSchemaChanges bounds the DatabaseTable.SchemaChanges across a
+// bundle: a reporter sends at most this many in one report, by table and
+// then by column, and the rest in the next. A migration touches a handful
+// of columns on a few tables; sixty is a schema rewrite.
+const MaxDatabaseSchemaChanges = 60
+
+// MaxDatabaseTypeText bounds DatabaseSchemaChange.From and To, in bytes:
+// a column type as the system names it, truncated.
+const MaxDatabaseTypeText = 64
+
 // Database is the section a dbhealth reporter sends: one database endpoint,
 // probed and measured. Facts only: timestamps, counts and limits. The
 // receiver judges them. Fields a kind cannot provide are absent, not zero.
@@ -160,6 +170,32 @@ type DatabaseTable struct {
 	// Rates over the interval, absent on the first and after a reset.
 	SeqScansPerSecond   *float64 `json:"seq_scans_per_second,omitempty"`
 	IndexScansPerSecond *float64 `json:"index_scans_per_second,omitempty"`
+	// SchemaHash is a hash of the table's columns: each name, type and
+	// nullability, in column order. The same every report until the
+	// schema moves; a receiver that sees it change knows the table changed
+	// shape, and SchemaChanges, sent in that report alone, says how. A
+	// reporter that has no previous reading, having just started, sends
+	// the hash without changes.
+	SchemaHash    string                 `json:"schema_hash,omitempty"`
+	SchemaChanges []DatabaseSchemaChange `json:"schema_changes,omitempty"`
+	// RowsInsertedPerSecond, RowsUpdatedPerSecond and RowsDeletedPerSecond
+	// are the table's writes over the interval from the system's own
+	// counters: what the table's volume did, exactly, not what an estimate
+	// says it is. Absent on the first interval and after a reset.
+	RowsInsertedPerSecond *float64 `json:"rows_inserted_per_second,omitempty"`
+	RowsUpdatedPerSecond  *float64 `json:"rows_updated_per_second,omitempty"`
+	RowsDeletedPerSecond  *float64 `json:"rows_deleted_per_second,omitempty"`
+}
+
+// DatabaseSchemaChange is one column's change between two readings of a
+// table's schema: added, dropped, retyped or nullability. From and To are
+// the type as the system names it; absent where there was none, and for
+// nullability "NOT NULL" or "NULL".
+type DatabaseSchemaChange struct {
+	Column string `json:"column"`
+	Change string `json:"change"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
 }
 
 // DatabaseReplication is measured from this endpoint's side. A replica
