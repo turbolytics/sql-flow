@@ -1,5 +1,16 @@
 name: CI
-on: [push]
+on:
+  push:
+    branches: [main]
+  # A change to docs or Markdown alone cannot break a build, so it skips CI.
+  # docs/coverage still runs it: the Coverage job regenerates the page there.
+  pull_request:
+    branches: [main]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "docs/coverage/**"
 jobs:
   # The Go engine (sqlflow), unit pass only. Fast feedback with no Docker: the
   # integration tests start containers, and the job below runs those. -short
