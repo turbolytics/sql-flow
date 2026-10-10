@@ -346,26 +346,31 @@ had not yet fetched the newest part. `perfcloud.sh` now counts with
 fffd: 0
 ```
 
-**A possible engine regression.** The same day, same machine, same topic, the
-old image ran faster:
+**The self-hosted drop, found.** `v2026.10.08` runs about 11 percent slower
+than `v2026.09.17.1`: 58,457 against 65,928 rows a second, three runs each,
+alternating, no overlap. Two commits account for it, about 6 percent each.
+[throughput-bisect.out](throughput-bisect.out) holds every run.
 
-```
-v2026.09.17.1  bs=20000  65,188 and 66,473 rows/s
-v2026.10.08    bs=20000  57,877, 55,908 and 58,423 rows/s
-```
+- **#345 lowered the Kafka fetch defaults** from 100 MiB and 10 MiB to 4 MiB
+  and 1 MiB. That is a deliberate memory bound: the commit measured a log
+  pipeline's peak fall from 985 MiB to 193 MiB. The taxi topic has one
+  partition, so the 1 MiB partition bound caps each fetch at about 3,000
+  rows. Setting the old bounds in the `fetch` block returns `v2026.10.08` to
+  62,873 and 61,639. Accepted as the trade it was meant to be.
+- **#338 bumped jsonparser from 1.1.2 to 1.6.1.** Applied alone to the last
+  fast commit, it costs as much as the whole bump. The other bumps, franz-go,
+  Arrow, ADBC and compress, measure flat. The cost arrived in jsonparser
+  1.3.0: 1.2.0 ran 67,433 and 67,500, and 1.3.0 ran 62,989 and 63,015. Not
+  investigated further.
 
-That is about 13 percent. Two runs a side is not a bisect. See Pending,
-item 2.
+The user ruled on 2026-10-10 that the drop is acceptable while memory stays
+flat. A production instance's RSS held at about 92 MB from 2026-10-03 to
+2026-10-10, with the Go heap flat.
 
 ## Pending
 
 1. **Cloud on `v2026.10.08`.** Done on 2026-10-10. See Throughput.
-2. **The throughput drop between `v2026.09.17.1` and `v2026.10.08`.** Confirm
-   with more runs, then bisect. Commits between the tags that touch the
-   per-record path: the event-time assignment on the Kafka source (#389,
-   #383), the watermark (#393, #399), and the TurboStats counters
-   (#354, #359, #367, #368). This is an engine question. Publish the page on
-   the numbers measured, or fix first: the user's call.
+2. **The throughput drop.** Found and accepted. See Throughput.
 3. **Design the evidence layer the user asked for.** Every claim needs a
    config and a test behind it. Two existing patterns to extend:
    - `dev/config/examples/published/` holds the source-of-truth config for
