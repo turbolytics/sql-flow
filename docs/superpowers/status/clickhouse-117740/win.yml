@@ -1,0 +1,40 @@
+tables:
+  sql:
+    - name: agg
+      sql: |
+        CREATE TABLE agg (bucket TIMESTAMPTZ, n INT);
+      window:
+        time_column: bucket
+        size_seconds: 60
+        grace_seconds: 0
+        idle_close_seconds: 15
+        emit_sql: |
+          SELECT bucket, sum(n)::INT AS n FROM closed GROUP BY ALL
+        sink:
+          type: clickhouse
+          clickhouse:
+            dsn: {{ SQLFLOW_CLICKHOUSE_DSN }}
+            table: win
+
+pipeline:
+  batch_size: 100
+  flush_interval_seconds: 5
+  source:
+    type: kafka
+    kafka:
+      brokers: [kafka1:19092]
+      group_id: {{ SQLFLOW_GROUP_ID }}
+      auto_offset_reset: earliest
+      topics:
+        - ch-win
+      event_time:
+        path: ts
+        format: rfc3339
+  handler:
+    type: 'handlers.InferredMemBatch'
+    sql: |
+      INSERT INTO agg BY NAME
+      SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, count(*)::INT AS n
+      FROM batch GROUP BY bucket
+  sink:
+    type: noop
