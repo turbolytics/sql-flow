@@ -1,0 +1,12 @@
+cloud20k_a bs=20000 exit=0 wall=74s rows_per_s=13654.040994579676 rows=980000 errors=0
+cloud20k_b bs=20000 exit=0 wall=76s rows_per_s=13346.414882562176 rows=1000000 errors=0
+cloud20k_c bs=20000 exit=0 wall=78s rows_per_s=12885.349571603974 rows=1000000 errors=0
+  immediate:        1000000
+  sequential:       1000000
+  after 15s:        1000000
+  parts, replicas:  1000000	4  c-whiteaws-by-56-server-p58witz-0
+# control: v2026.09.17.1, the same network, the same hour
+cloudold_a bs=20000 exit=0 wall=81s rows_per_s=12495.15777337461 rows=1000000 errors=0
+cloudold_b bs=20000 exit=0 wall=78s rows_per_s=12926.160019012292 rows=1000000 errors=0
+# the run the Verify query read, v2026.10.08
+cloud20k_verify bs=20000 exit=0 wall=79s rows_per_s=12759.634869855758 rows=1000000 errors=0

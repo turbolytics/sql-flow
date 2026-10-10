@@ -19,7 +19,8 @@ STATUS.md.
 | `dedup.sh`, `dedup.out` | A replayed block against `ReplacingMergeTree` and `MergeTree`, self-hosted. |
 | `win.sh`, `win.yml`, `win.out` | The tumbling-window replay: one past bucket, read in ten batches. |
 | `perf.sh`, `perf.out` | One throughput run against self-hosted, with a fresh consumer group. |
-| `perfcloud.sh` | The same against Cloud, truncating over HTTP. |
+| `perfcloud.sh`, `perfcloud.out` | The same against Cloud. It reads `~/.sqlflow-clickhouse`, or the file `CLICKHOUSE_CREDS` names. |
+| `cloudverify.out` | The Verify query on Cloud after a `v2026.10.08` run. |
 | `taxi.yml`, `taxi.sql`, `publish.py` | The page's NYC taxi example, extracted verbatim from the MDX. |
 | `bluesky.yml`, `bluesky.sql` | The page's WebSocket example, extracted verbatim. |
 | `sqlflow.orig.mdx`, `sqlflow.mdx` | The page at the PR's head `fe238499`, and the draft with every finding applied. |

@@ -1,6 +1,7 @@
 # ClickHouse docs PR #117740: re-verification status
 
-Resumed and re-run on 2026-10-09 against `v2026.10.08`. Paused first on
+Resumed and re-run on 2026-10-09 against `v2026.10.08`, and on Cloud on
+2026-10-10. Paused first on
 2026-09-18 against `v2026.09.17.1`. Everything below was produced by running
 it, on the versions named.
 
@@ -25,12 +26,13 @@ every finding below. Nothing has been pushed to the ClickHouse fork.
 | --- | --- | --- |
 | SQLFlow | `turbolytics/sql-flow:v2026.10.08` | v1.1.0 |
 | ClickHouse self-hosted | 26.8.1.2041, timezone UTC | 26.8 |
-| ClickHouse Cloud | 26.4.1.2359, us-east-2, on `v2026.09.17.1` only | 26.2 |
+| ClickHouse Cloud | 26.6.1.2326, us-east-2 | 26.2 |
 | Kafka | `confluentinc/cp-kafka:7.3.2` | not stated |
 | Docker Desktop | 29.8.0 | not stated |
 
-Cloud was not re-run on `v2026.10.08`. This session had no Cloud DSN. See
-Pending, item 1.
+Cloud was re-run on `v2026.10.08` on 2026-10-10. The deduplication half of
+finding 3 is still the 2026-09-18 Cloud 26.4.1 measurement: it is server
+behavior and does not depend on the SQLFlow release.
 
 ## Findings
 
@@ -308,6 +310,42 @@ rows with zero errors. [perf.out](perf.out):
 The shape still holds, so the page's `batch_size` guidance stands. The draft
 carries the `v2026.10.08` figures.
 
+**ClickHouse Cloud,** us-east-2, over the public internet from the same
+machine, `batch_size` 20,000. [perfcloud.out](perfcloud.out):
+
+| Image | Rows/second |
+| --- | --- |
+| `v2026.10.08` | 13,654, 13,346, 12,885 and 12,760 |
+| `v2026.09.17.1`, the same hour | 12,495 and 12,926 |
+| `v2026.09.17.1`, 2026-09-18 | 28,215 and 25,436 |
+
+Both releases ran at the same rate over the same link, so the drop from
+September is the network, not the engine. The Cloud path cannot show the
+self-hosted regression below, because the link bounds it first.
+
+**Cloud undercounted once, and lost nothing.** The first run read 980,000
+rows on a `count()` taken right after exit, exactly one batch short.
+Cloud's own logs show every row written: `system.asynchronous_insert_log`
+holds 156 flushes, all `Ok`, for 3,000,000 rows across the three runs, and
+`system.query_log` puts 1,000,000 in the first. Cloud enables `async_insert`
+and `wait_for_async_insert` by default, so the acknowledgement the engine
+commits offsets on follows the flush. The short read came from a replica that
+had not yet fetched the newest part. `perfcloud.sh` now counts with
+`select_sequential_consistency=1`.
+
+**The Verify query on Cloud** returns the same counts as self-hosted.
+[cloudverify.out](cloudverify.out):
+
+```
+┌─payment_type─┬──trips─┬─avg_total─┐
+│ CSH          │ 617237 │     17.82 │
+│ CRE          │ 377897 │     13.91 │
+│ NOC          │   3573 │     13.89 │
+│ DIS          │   1293 │     12.09 │
+└──────────────┴────────┴───────────┘
+fffd: 0
+```
+
 **A possible engine regression.** The same day, same machine, same topic, the
 old image ran faster:
 
@@ -321,10 +359,7 @@ item 2.
 
 ## Pending
 
-1. **Cloud on `v2026.10.08`.** Needs a Cloud DSN in `$CLICKHOUSE_DSN`. Run
-   the taxi example, the Verify query and `perfcloud.sh` twice at `batch_size`
-   20,000. The draft keeps the 2026-09-18 Cloud figures marked as such, and
-   drops "the same counts against Cloud and self-hosted" until it is re-run.
+1. **Cloud on `v2026.10.08`.** Done on 2026-10-10. See Throughput.
 2. **The throughput drop between `v2026.09.17.1` and `v2026.10.08`.** Confirm
    with more runs, then bisect. Commits between the tags that touch the
    per-record path: the event-time assignment on the Kafka source (#389,
@@ -366,6 +401,10 @@ docker run --rm alpine df -h /
 `KeeperErrorCode = NodeExists` on broker registration: the old session still
 holds the broker's ZooKeeper node. Start `kafka1` again once ZooKeeper has
 expired it.
+
+**Cloud credentials** live in `~/.sqlflow-clickhouse`, one line,
+`clickhouse://user:password@host`. That scheme is plain HTTP, which Cloud
+refuses. `perfcloud.sh` derives the `clickhouses://...:8443` DSN from it.
 
 **Environment as left.** The `nyc-taxi-trips` topic holds its 1,000,660
 messages. `nyc_taxi.trips_small` holds the last run's million rows on

@@ -23,7 +23,7 @@ This page covers the ClickHouse sink: connecting to ClickHouse Cloud and self-ho
 ## Prerequisites {#prerequisites}
 
 - SQLFlow **[v2026.10.08](https://github.com/turbolytics/sql-flow/releases/tag/v2026.10.08)** or later. Every result on this page was measured on that release unless it names another.
-- ClickHouse Cloud, or self-hosted ClickHouse. This page was run against self-hosted 26.8.1 and Cloud 26.4.1. No minimum below those has been established.
+- ClickHouse Cloud, or self-hosted ClickHouse. This page was run against self-hosted 26.8.1 and Cloud 26.6.1. No minimum below those has been established.
 - A Kafka broker the pipeline can reach, for the Kafka source used in the example. The WebSocket and webhook sources need no broker.
 - Python 3 with the `confluent-kafka` package (`pip install confluent-kafka`), only for the script in the example that publishes the sample data to Kafka. SQLFlow itself needs no Python.
 - Docker is the simplest install. `turbolytics/sql-flow` is published multi-arch for `linux/amd64` and `linux/arm64`. SQLFlow can also be built from source; it needs Go, a C toolchain, and `libduckdb` present at runtime.
@@ -288,7 +288,7 @@ ORDER BY trips DESC;
 └──────────────┴────────┴───────────┘
 ```
 
-{/* PENDING: re-run the Verify query on Cloud with v2026.10.08, then restore: "The same query gives the same counts against Cloud and self-hosted." */}
+The same query gives the same counts against Cloud and self-hosted, which is a reasonable check that nothing was dropped or coerced on either path. On Cloud, a read served by a replica that has not yet fetched the newest part can undercount for a moment after the run ends. Add `SETTINGS select_sequential_consistency = 1` to the query if the total comes up short.
 
 ### A second example: WebSocket source, no Kafka {#example-websocket}
 
@@ -475,11 +475,9 @@ Measured with the example above: one million 17-column rows, one SQLFlow process
 | Target                                     | Rows/second |
 | ------------------------------------------ | ----------- |
 | Self-hosted ClickHouse, SQLFlow and Kafka on the same Docker network, v2026.10.08 | 57,900 and 55,900 |
-| ClickHouse Cloud (us-east-2), SQLFlow beside the broker, over the public internet, v2026.09.17.1 | 28,200 and 25,400 |
+| ClickHouse Cloud (us-east-2), SQLFlow beside the broker, over the public internet, v2026.10.08 | 13,700 and 13,300 |
 
-{/* PENDING: re-run the Cloud row on v2026.10.08. */}
-
-The Cloud figure is the network between the machine and the service, not SQLFlow: the same pipeline against a self-hosted server on the same Docker network runs about twice as fast. Run SQLFlow near the service, same region and ideally same VPC, for numbers closer to the self-hosted figure.
+The Cloud figure is the network between the machine and the service, not SQLFlow. Over the same link in the same hour, the previous release, v2026.09.17.1, ran 12,500 and 12,900 rows a second, and the same pipeline against a self-hosted server on one Docker network runs four times as fast. Run SQLFlow near the service, same region and ideally same VPC, for numbers closer to the self-hosted figure.
 
 `batch_size` is the lever on a nearby target, measured on the same Docker network:
 
