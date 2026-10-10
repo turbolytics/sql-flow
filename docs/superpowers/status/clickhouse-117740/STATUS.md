@@ -17,8 +17,8 @@ reviewer's three open majors, and take the page out of draft.
 a configuration to reproduce it, with versions. The page does not meet that
 bar today and neither does the repo. See Pending, item 3.
 
-**The draft page** is [sqlflow.mdx](sqlflow.mdx) beside this file. It applies
-every finding below. Nothing has been pushed to the ClickHouse fork.
+**The page** is [sqlflow.mdx](sqlflow.mdx) beside this file. It applies every
+finding below, and it is on the fork as commit `d4e94780`, the PR's head.
 
 ## Versions
 
@@ -381,10 +381,9 @@ flat. A production instance's RSS held at about 92 MB from 2026-10-03 to
    The page's behavioral claims, NULL, Enum, retry, window, flush interval
    and deduplication, have neither. `probes.sh`, `win.sh` and `dedup.sh` are
    the configurations. They are not yet tests.
-4. **Push the draft** to `turbolytics/ClickHouse:docs-sqlflow-integration`,
-   which updates the PR, and answer the three open threads. This is a write to
-   a third-party repository under the user's name: show the diff and the
-   replies, and wait for an explicit go.
+4. **Push the draft.** Done on 2026-10-10 with the user's go: fork commit
+   `d4e94780`, a reply on each of the three open threads, and one summary
+   comment. The threads are left for the reviewer to resolve.
 5. **The user decides** whether to mark it ready for review.
 
 ## Notes for whoever resumes
