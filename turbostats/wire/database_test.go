@@ -163,3 +163,23 @@ func TestDatabaseTable_SchemaAndWritesRoundTrip(t *testing.T) {
 	assert.That(t, !strings.Contains(string(out), "rows_inserted"))
 	assert.Equal(t, 60, MaxDatabaseSchemaChanges)
 }
+
+// A database counts its tables and how many of them are partitions. A
+// table partitioned by day adds a partition a day until retention drops
+// one, so a partition count that keeps climbing is retention that stopped.
+func TestDatabaseResources_TableAndPartitionCountsRoundTrip(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	raw := `{"size_bytes":247463936,"table_count":172,"partition_count":148}`
+	var r DatabaseResources
+	assert.NoError(t, json.Unmarshal([]byte(raw), &r))
+	assert.Equal(t, 172, *r.TableCount)
+	assert.Equal(t, 148, *r.PartitionCount)
+	out, err := json.Marshal(r)
+	assert.NoError(t, err)
+	assert.Equal(t, raw, string(out))
+
+	// A kind that cannot count its tables leaves both out.
+	out, err = json.Marshal(DatabaseResources{})
+	assert.NoError(t, err)
+	assert.Equal(t, `{}`, string(out))
+}

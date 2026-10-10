@@ -4,6 +4,13 @@
 
 ### Added
 
+- **TurboStats databases count their tables.** `DatabaseResources` sends
+  `table_count`, the tables in the database's own schemas with partitions
+  included, and `partition_count`, how many of them are partitions. A
+  table partitioned by day adds a partition a day until retention drops
+  one, so a partition count that keeps climbing is retention that
+  stopped. The widest database bundle grows 54 bytes, to 84,091.
+
 - **TurboStats tables carry their schema and their writes.** A
   `DatabaseTable` sends `schema_hash` every report, a hash of its columns'
   names, types and nullability, and `schema_changes` in the report where

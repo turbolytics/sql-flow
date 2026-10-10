@@ -618,6 +618,13 @@
               "required": [
                 "shared_buffers_bytes"
               ]
+            },
+            "table_count": {
+              "type": "integer",
+              "description": "TableCount is the tables in the database's own schemas, partitions\nincluded; the system catalogs are not counted. PartitionCount is how\nmany of them are partitions. A table partitioned by day adds one a\nday until retention drops one, so a PartitionCount that keeps\nclimbing is retention that stopped."
+            },
+            "partition_count": {
+              "type": "integer"
             }
           },
           "type": "object"

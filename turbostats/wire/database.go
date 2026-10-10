@@ -137,6 +137,13 @@ type DatabaseResources struct {
 	// one idle in transaction holds vacuum back.
 	OldestTransactionSeconds *int64          `json:"oldest_transaction_seconds,omitempty"`
 	Memory                   *DatabaseMemory `json:"memory,omitempty"`
+	// TableCount is the tables in the database's own schemas, partitions
+	// included; the system catalogs are not counted. PartitionCount is how
+	// many of them are partitions. A table partitioned by day adds one a
+	// day until retention drops one, so a PartitionCount that keeps
+	// climbing is retention that stopped.
+	TableCount     *int `json:"table_count,omitempty"`
+	PartitionCount *int `json:"partition_count,omitempty"`
 }
 
 // DatabaseConnections is connections in use against the configured maximum.
