@@ -133,22 +133,24 @@ jobs:
   # Image does not wait for it. Image is the long pole, and chaining it after
   # Growth would roughly double a push's wall time.
   #
-  # The length follows the ref. CI runs on push, so a pull request arrives as
-  # pushes to its branch, and a branch runs bounded: about ten seconds a test.
-  # Main runs full, where a slow leak has the time to show. A release waits
-  # for main's CI run on the tagged commit, so full growth gates every
-  # release. That puts this job on the release path: at full length it must
-  # finish within about three minutes.
+  # Main only, at full length, where a slow leak has the time to show. A pull
+  # request skips it: a leak check spends minutes on every push, and main
+  # catches a leak before any release. A release waits for main's CI run on
+  # the tagged commit, so full growth gates every release. That puts this
+  # job on the release path: it must finish within about three minutes.
+  # `make test-growth GROWTH=bounded` runs it locally in about ten seconds a
+  # test.
   #
   # No -race; the Makefile's test-growth says why.
   growth:
     name: Growth
     needs: [go, integration]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
       SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
       GOTOOLCHAIN: local
-      GROWTH: ${{ github.ref == 'refs/heads/main' && 'full' || 'bounded' }}
+      GROWTH: full
     steps:
       - uses: actions/checkout@v4
 
@@ -277,8 +279,10 @@ jobs:
           pattern: report-*
           merge-multiple: true
 
+      # A pull request runs no growth pass, so its growth cells keep their
+      # committed status. Main runs every level and checks all of them.
       - name: Check the coverage matrix
-        run: make coverage-check
+        run: make coverage-check COVERAGE_NOT_RUN="${{ github.event_name != 'push' && '--not-run growth' || '' }}"
 
       # The report carries every test name and count, which left the committed
       # page so that a PR adding a test changes nothing under docs/coverage.

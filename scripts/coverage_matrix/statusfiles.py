@@ -38,6 +38,21 @@ def status_from_snapshot(snap):
     return {"features": features, "integrations": integrations}
 
 
+def keep_levels(status, committed, levels):
+    """status with each cell at levels taken from committed, where it has
+    one. A run that skipped a level has no report for it, so its cells
+    read missing; the committed status is the last run that had one."""
+    def merge(rows, old):
+        for rid, cells in rows.items():
+            for lvl in levels:
+                if lvl in old.get(rid, {}):
+                    cells[lvl] = old[rid][lvl]
+    merge(status["features"], committed.get("features", {}))
+    for iid, rows in status["integrations"].items():
+        merge(rows, committed.get("integrations", {}).get(iid, {}))
+    return status
+
+
 def render_status_file(rows, about):
     """One row per line, sorted by id, levels in a flow mapping.
 
