@@ -620,6 +620,8 @@ func widestDatabase(tables, replicas, errors, queries, changes int) *wire.Databa
 			SizeBytes:                &big,
 			OldestTransactionSeconds: &big,
 			Memory:                   &wire.DatabaseMemory{SharedBuffersBytes: big},
+			TableCount:               &n,
+			PartitionCount:           &n,
 		},
 		Replication: &wire.DatabaseReplication{Role: "primary", LagSeconds: &secs, LastReplayedAt: &at, Upstream: host + ":65535"},
 		Load: &wire.DatabaseLoad{
