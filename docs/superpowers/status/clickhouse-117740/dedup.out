@@ -1,0 +1,35 @@
+image: turbolytics/sql-flow:v2026.10.08
+26.8.1.2041
+Created topic ch-dedup.
+
+=== ReplacingMergeTree, two distinct blocks with the same keys (a newer version of each row)
+  run into rmt_distinct (v = v): exit=0
+  run into rmt_distinct (v = 'second'): exit=0
+  count()        4
+  count() FINAL  2
+  active parts   2
+  rows           [(1,'first'),(1,'second'),(2,'first'),(2,'second')]
+  after OPTIMIZE ... FINAL: count() 2, rows [(1,'second'),(2,'second')]
+
+=== ReplacingMergeTree, the identical block twice (a replay)
+  run into rmt_replay (v = v): exit=0
+  run into rmt_replay (v = v): exit=0
+  count()        4
+  count() FINAL  2
+  active parts   2
+  rows           [(1,'first'),(1,'first'),(2,'first'),(2,'first')]
+
+=== MergeTree, the identical block twice (a replay)
+  run into mt_replay (v = v): exit=0
+  run into mt_replay (v = v): exit=0
+  count()        4
+  active parts   2
+  rows           [(1,'first'),(1,'first'),(2,'first'),(2,'first')]
+
+=== MergeTree SETTINGS non_replicated_deduplication_window = 100, the identical block twice
+  run into mt_dedup_replay (v = v): exit=0
+  run into mt_dedup_replay (v = v): exit=0
+  count()        2
+  active parts   1
+  rows           [(1,'first'),(2,'first')]
+  insert_deduplicate (session default): 1

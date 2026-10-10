@@ -8,8 +8,6 @@ tables:
         size_seconds: 60
         grace_seconds: 0
         idle_close_seconds: 15
-        late_rows: drop
-        poll_interval_seconds: 1
         emit_sql: |
           SELECT bucket, sum(n)::INT AS n FROM closed GROUP BY ALL
         sink:
@@ -20,6 +18,7 @@ tables:
 
 pipeline:
   batch_size: 100
+  flush_interval_seconds: 5
   source:
     type: kafka
     kafka:
@@ -28,11 +27,14 @@ pipeline:
       auto_offset_reset: earliest
       topics:
         - ch-win
+      event_time:
+        path: ts
+        format: rfc3339
   handler:
     type: 'handlers.InferredMemBatch'
     sql: |
       INSERT INTO agg BY NAME
-      SELECT date_trunc('minute', CAST(ts AS TIMESTAMPTZ)) AS bucket, count(*)::INT AS n
+      SELECT time_bucket(INTERVAL '1 minute', event_time) AS bucket, count(*)::INT AS n
       FROM batch GROUP BY bucket
   sink:
     type: noop
