@@ -231,3 +231,26 @@ def test_the_registry_declares_at_least_one_liveness_invariant():
     """A file of safety claims alone cannot say the pipeline does anything."""
     classes = {i["class"] for i in load_invariants()}
     assert "liveness" in classes
+
+def test_applies_to_may_name_an_integration():
+    invs = INVARIANTS + [dict(INVARIANTS[0], id="clickhouse.x",
+                              family="clickhouse", applies_to="sink.clickhouse")]
+    assert validate_registries(invs, INTEGRATIONS, FEATURES) == []
+
+
+def test_applies_to_naming_no_kind_and_no_integration_is_a_problem():
+    invs = [dict(INVARIANTS[0], id="clickhouse.x", family="clickhouse",
+                 applies_to="sink.clikchouse")]
+    problems = validate_registries(invs, INTEGRATIONS, FEATURES)
+    assert any("applies_to 'sink.clikchouse'" in p for p in problems)
+
+
+def test_an_exemption_from_another_integrations_invariant_is_a_problem():
+    invs = INVARIANTS + [dict(INVARIANTS[0], id="clickhouse.x",
+                              family="clickhouse", applies_to="sink.clickhouse")]
+    integs = [dict(i) for i in INTEGRATIONS]
+    console = next(i for i in integs if i["id"] == "sink.console")
+    console["exempt"] = [{"invariant": "clickhouse.x", "reason": "r",
+                          "proven_by": "TestZ"}]
+    problems = validate_registries(invs, integs, FEATURES)
+    assert any("sink.console" in p and "clickhouse.x" in p for p in problems)
