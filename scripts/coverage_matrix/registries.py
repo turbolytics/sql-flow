@@ -60,6 +60,12 @@ REPORT_MD = os.path.join(COVERAGE_DIR, "report.md")
 # cannot drift from the declaration the type runner judges.
 TYPES_PAGE = os.path.join(REPO, "docs", "coverage", "clickhouse-types.mdx")
 
+# Pages published in third-party docs, and the configs they embed. The pages
+# are the source of truth for what a vendor's docs say about SQLFlow, and the
+# page check holds each claim on them to its evidence.
+PUBLISHED_DIR = os.path.join(REPO, "docs", "published")
+PUBLISHED_CONFIGS = os.path.join(REPO, "dev", "config", "examples", "published")
+
 
 PASS, SKIP, FAIL = "pass", "skip", "fail"
 
