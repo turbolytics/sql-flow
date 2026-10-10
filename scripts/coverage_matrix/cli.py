@@ -8,14 +8,15 @@ import sys
 from .features import build, snapshot
 from .invariants import build_invariants, snapshot_invariants
 from .page import write_page
-from .registries import (COVERAGE_DIR, MATRIX_JSON, MATRIX_MD, REPO,
+from .registries import (COVERAGE_DIR, LEVELS, MATRIX_JSON, MATRIX_MD, REPO,
                          REPORT_MD, STATUS_DIR, TYPES_PAGE,
                          load_features, load_integrations,
                          load_invariants, load_lattice,
                          validate_registries)
 from .report import render_report
 from .suites import parse_go, parse_pytest
-from .statusfiles import read_status, status_from_snapshot, write_status
+from .statusfiles import (keep_levels, read_status, status_from_snapshot,
+                          write_status)
 from .types import validate_types
 
 
@@ -27,6 +28,9 @@ def main():
     ap.add_argument("--go-growth",
                     help="go test -json output from the growth pass")
     ap.add_argument("--pytest", help="pytest result json from the conftest hook")
+    ap.add_argument("--not-run", action="append", default=[], choices=LEVELS,
+                    help="a level this run did not run; its missing cells "
+                         "are no gap. A pull request runs no growth pass")
     ap.add_argument("--write", action="store_true",
                     help="write the status directory, the page, and the report")
     ap.add_argument("--check", action="store_true",
@@ -83,8 +87,14 @@ def main():
         {"unit": go_invariants, "integration": it_invariants,
          "growth": gr_invariants, "release": py_invariants})
     snap.update(snapshot_invariants(invariants, integrations, built))
+    # A level the run skipped has no report, so every cell at it reads
+    # missing. That says nothing about the change; main runs the level.
+    for key in ("gaps", "invariant_gaps"):
+        snap[key] = [g for g in snap[key]
+                     if not (g["level"] in args.not_run and g["status"] == "missing")]
 
-    status = status_from_snapshot(snap)
+    status = keep_levels(status_from_snapshot(snap), read_status(STATUS_DIR),
+                         args.not_run)
     report = render_report(snap)
 
     if args.write:

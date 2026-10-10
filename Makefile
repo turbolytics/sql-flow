@@ -105,6 +105,11 @@ schema:
 	@echo "regenerated turbostats/wire/schema/bundle.schema.json and response.schema.json"
 	@echo "regenerated internal/cli/testdata/config_example.golden and serve_example.golden"
 
+# The levels this run skipped, as --not-run flags. A pull request runs no
+# growth pass, so CI passes --not-run growth there: a growth cell keeps its
+# committed status rather than reading missing. Empty runs every level.
+COVERAGE_NOT_RUN ?=
+
 # Renders everything from reports that already exist. Runs no tests.
 #
 # Under docs/coverage: the status directory and the page, which are committed.
@@ -116,7 +121,7 @@ coverage-write:
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--go-growth .coverage/go-growth.json \
-		--pytest .coverage/pytest.json --write
+		--pytest .coverage/pytest.json $(COVERAGE_NOT_RUN) --write
 
 # Renders the page from the committed status files and registries. Reads no
 # report, so it runs anywhere, and it is what resolves a merge conflict on
@@ -150,7 +155,7 @@ coverage-check: coverage-write
 		--go .coverage/go.json \
 		--go-integration .coverage/go-integration.json \
 		--go-growth .coverage/go-growth.json \
-		--pytest .coverage/pytest.json --check
+		--pytest .coverage/pytest.json $(COVERAGE_NOT_RUN) --check
 	@# The Package field sits between Action and Test in go test -json, so
 	@# the pattern spans it. Without it the list below printed nothing.
 	@! grep -sq '"Action":"fail"' $(GO_REPORTS) || { \

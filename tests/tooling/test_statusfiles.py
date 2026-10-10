@@ -6,7 +6,8 @@ from coverage_matrix.registries import (
     LEVELS, PASS, STATUS_DIR, load_features, load_integrations,
     load_invariants)
 from coverage_matrix.statusfiles import (
-    read_status, render_status_file, status_from_snapshot, write_status)
+    keep_levels, read_status, render_status_file, status_from_snapshot,
+    write_status)
 from samples import *  # noqa: F401,F403
 
 
@@ -149,3 +150,17 @@ def test_the_page_snapshot_reaches_the_same_gaps_as_the_full_snapshot():
 
     assert ps["gaps"] == full["gaps"]
     assert ps["invariant_gaps"] == full["invariant_gaps"]
+
+def test_a_level_not_run_keeps_its_committed_status():
+    """A pull request runs no growth pass, so every growth cell it
+    generates reads missing. The committed status stands for that level,
+    and every other level is the run's own."""
+    run = {"features": {"a": {"unit": "covered", "growth": "missing"}},
+           "integrations": {"kafka": {"inv": {"unit": "failing", "growth": "missing"}}}}
+    committed = {"features": {"a": {"unit": "missing", "growth": "covered"}},
+                 "integrations": {"kafka": {"inv": {"unit": "covered", "growth": "covered"}}}}
+
+    kept = keep_levels(run, committed, ["growth"])
+
+    assert kept["features"]["a"] == {"unit": "covered", "growth": "covered"}
+    assert kept["integrations"]["kafka"]["inv"] == {"unit": "failing", "growth": "covered"}

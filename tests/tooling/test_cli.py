@@ -63,6 +63,23 @@ def test_the_check_reads_the_growth_report(tmp_path):
     assert "handler.inferred_mem: unit is skipped" in both.stderr
 
 
+def test_a_level_not_run_is_no_gap(tmp_path):
+    """A pull request does not run the growth pass; main does. With
+    --not-run growth, a growth level with no report is no gap, and a gap
+    at a level that did run still fails the check."""
+    name = "TestGrowthInferredInvoke_DoesNotLeakNativeMemory"
+    marker = json.dumps({"Action": "output", "Test": name,
+                         "Output": "    x.go:1: COVERS handler.inferred_mem\n"})
+    unit = write(tmp_path, "go.json", "\n".join([
+        marker, json.dumps({"Action": "skip", "Test": name})]))
+
+    proc = run_check(unit, "--not-run", "growth")
+
+    assert "growth is missing" not in proc.stderr
+    assert "handler.inferred_mem: unit is skipped" in proc.stderr
+    assert proc.returncode == 1
+
+
 def test_the_check_exits_non_zero_on_an_unknown_marker(tmp_path):
     """Once the unknown-marker list left the reviewed page, failing is the
     only way it stays visible."""
