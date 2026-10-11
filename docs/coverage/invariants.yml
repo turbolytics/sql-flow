@@ -452,9 +452,9 @@ invariants:
     class: safety
     applies_to: sink.clickhouse
     claim: >
-      Text into a DateTime column takes `YYYY-MM-DD hh:mm:ss`, read as
-      UTC, or the same with an offset, which is applied. Any other shape
-      fails as `user.sink.encode_failed`.
+      Text into a DateTime column takes `YYYY-MM-DD hh:mm:ss`, read as UTC
+      whatever the column's zone, or the same with an offset, which is
+      applied. Any other shape fails as `user.sink.encode_failed`.
     verified_by: harness
     requires: [integration]
 

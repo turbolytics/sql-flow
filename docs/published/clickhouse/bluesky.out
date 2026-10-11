@@ -1,0 +1,12 @@
+# The Bluesky WebSocket example, run as the page prints it, against self-hosted ClickHouse 26.8.1.2041.
+# turbolytics/sql-flow:v2026.10.08, --max-msgs=2000, 2026-10-09. Recorded in
+# docs/superpowers/status/clickhouse-117740/STATUS.md on sql-flow PR #329.
+exit=0 wall=40s errors=0
+count()   2000
+┌─lang─┬─posts─┐
+│ en   │  1070 │
+│ ja   │   236 │
+│ es   │    63 │
+│ de   │    53 │
+│ pt   │    50 │
+└──────┴───────┘

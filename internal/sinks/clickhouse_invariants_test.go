@@ -248,10 +248,21 @@ func TestIntegrationSinkClickhouse_TemporalTextTakesTwoShapes(t *testing.T) {
 	}
 	t.Parallel()
 	ctx := context.Background()
-	s := newLiveClickhouseSink(t, `CREATE TABLE %s (k String, ts DateTime('UTC')) ENGINE = MergeTree() ORDER BY k`)
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
+		k String, ts DateTime('UTC'), tokyo DateTime('Asia/Tokyo')
+	) ENGINE = MergeTree() ORDER BY k`)
 	assert.NoError(t, flushOnce(t, s, textColumns(t,
 		textCol{name: "k", values: []*string{str("plain"), str("offset")}},
-		textCol{name: "ts", values: []*string{str("2026-09-01 12:00:00"), str("2026-09-01 12:00:00 +09:00")}})))
+		textCol{name: "ts", values: []*string{str("2026-09-01 12:00:00"), str("2026-09-01 12:00:00 +09:00")}},
+		textCol{name: "tokyo", values: []*string{str("2026-09-01 12:00:00"), str("2026-09-01 12:00:00 +09:00")}})))
+
+	// The column's zone does not move the instant: the sink parses the text
+	// in UTC and sends the instant, so a Tokyo column holds what a UTC one
+	// does.
+	var moved uint64
+	assert.NoError(t, s.conn.QueryRow(ctx,
+		"SELECT countIf(toUnixTimestamp(ts) != toUnixTimestamp(tokyo)) FROM "+s.table).Scan(&moved))
+	assert.Equal(t, uint64(0), moved)
 
 	got := map[string]string{}
 	rows, err := s.conn.Query(ctx, "SELECT k, toString(ts) FROM "+s.table)
@@ -272,6 +283,8 @@ func TestIntegrationSinkClickhouse_TemporalTextTakesTwoShapes(t *testing.T) {
 		textCol{name: "ts", values: []*string{str("2026-09-01T12:00:00Z")}}))
 	assert.Error(t, err)
 	assert.That(t, errs.HasCode(err, errs.CodeSinkEncodeFailed))
+	assert.That(t, strings.Contains(err.Error(),
+		`parsing time "2026-09-01T12:00:00Z" as "2006-01-02 15:04:05"`))
 }
 
 func TestIntegrationSinkClickhouse_DecimalTakesText(t *testing.T) {
@@ -304,6 +317,8 @@ func TestIntegrationSinkClickhouse_DecimalTakesText(t *testing.T) {
 	err := flushOnce(t, s, floats)
 	assert.Error(t, err)
 	assert.That(t, errs.HasCode(err, errs.CodeSinkEncodeFailed))
+	assert.That(t, strings.Contains(err.Error(),
+		"converting float64 to Decimal(10, 2) is unsupported"))
 }
 
 func TestIntegrationSinkClickhouse_ReplayDuplicatesUntilMerge(t *testing.T) {

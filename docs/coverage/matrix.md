@@ -232,7 +232,7 @@ drains. An invariant holds only if it holds on all four.
 | `clickhouse.table.not_created` | The sink never creates or alters a table. A table that does not exist fails the batch as `system.sink.write_failed`. | ❌ missing |
 | `clickhouse.enum.null_is_zero` | A NULL into a non-Nullable Enum is stored as 0. With no 0 member the INSERT succeeds and reads of the column fail with `UNKNOWN_ELEMENT_OF_ENUM`. With a 0 member it reads as that member. Nullable reads NULL. | ❌ missing |
 | `clickhouse.encode.fails_once` | A value the driver cannot encode fails the batch on the first attempt as `user.sink.encode_failed`. It is not retried, and the process exits with code 10. | ❌ missing |
-| `clickhouse.temporal_text.two_shapes` | Text into a DateTime column takes `YYYY-MM-DD hh:mm:ss`, read as UTC, or the same with an offset, which is applied. Any other shape fails as `user.sink.encode_failed`. | ❌ missing |
+| `clickhouse.temporal_text.two_shapes` | Text into a DateTime column takes `YYYY-MM-DD hh:mm:ss`, read as UTC whatever the column's zone, or the same with an offset, which is applied. Any other shape fails as `user.sink.encode_failed`. | ❌ missing |
 | `clickhouse.decimal.text_only` | A Decimal column accepts its value as text. A float fails as `user.sink.encode_failed`. | ❌ missing |
 | `clickhouse.replay.duplicates_until_merge` | A batch delivered twice into a ReplacingMergeTree reads twice until a merge, and once with FINAL. An identical block inside the table's deduplication window is dropped at insert. | ❌ missing |
 | `clickhouse.flush.one_insert` | One flush is one INSERT, on one connection. | ❌ missing |

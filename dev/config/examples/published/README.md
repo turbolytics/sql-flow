@@ -19,3 +19,8 @@ generated JSON schema.
 When a page changes, change the file here first and copy it out. When the
 engine changes, CI tells you which published page needs an edit before a
 reader finds out.
+
+The ClickHouse page itself lives in this repo too, at
+[`docs/published/clickhouse.mdx`](../../../../docs/published/clickhouse.mdx).
+Its YAML blocks must equal the two `clickhouse.*` files here byte for byte,
+and the coverage generator fails when they drift.
