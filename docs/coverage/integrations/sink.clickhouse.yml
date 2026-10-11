@@ -82,6 +82,7 @@ types:
   # override the value the lattice sends.
   utf8:
     outcome: exact
+    rule: the text must already be the column's text form.
     columns:
       - type: String
         expect: "L'Œil 👁 \"quoted\" back\\slash\ttab"
@@ -374,7 +375,7 @@ types:
 nulls:
   default:
     outcome: coerced
-    rule: the column type's zero value; the DEFAULT expression is not evaluated because every produced column is named in the INSERT
+    rule: the column type's zero value; the DEFAULT expression is not evaluated because every produced column is named in the INSERT. For an Enum with no 0 member that value is not a member, and the row cannot be read
   # The third null position, and the one the published page does not
   # mention. arrowListValue appends the element type's zero value at
   # clickhouse.go:429-431, so [1, null, 3] lands as [1, 0, 3] with no
