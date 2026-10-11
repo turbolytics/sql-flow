@@ -238,7 +238,7 @@ drains. An invariant holds only if it holds on all four.
 | `clickhouse.flush.one_insert` | One flush is one INSERT, on one connection. | ❌ missing |
 | `clickhouse.dsn.scheme` | The DSN scheme decides the protocol, TLS and the default port. `@` and `:` in a password parse raw. `/`, `#` and `?` must be percent- encoded. | ❌ missing |
 | `clickhouse.tls.verifies` | With TLS, the server certificate is verified against the system roots. No option skips verification. | ❌ missing |
-| `clickhouse.auth.fails_start` | Wrong credentials fail at startup with HTTP 401, before any message is consumed. | ❌ missing |
+| `clickhouse.auth.fails_start` | Wrong credentials fail the startup probe, before any message is consumed, with ClickHouse's "Authentication failed: password is incorrect, or there is no user with such name". The HTTP status and code vary by server and user. | ❌ missing |
 | `clickhouse.type_text.per_destination` | Text into a non-String column must already be in that column's text form. The type table proves each destination with its own value. | ❌ missing |
 
 ## Liveness invariants: lifecycle

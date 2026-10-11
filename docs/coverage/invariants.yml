@@ -514,8 +514,10 @@ invariants:
     class: safety
     applies_to: sink.clickhouse
     claim: >
-      Wrong credentials fail at startup with HTTP 401, before any
-      message is consumed.
+      Wrong credentials fail the startup probe, before any message is
+      consumed, with ClickHouse's "Authentication failed: password is
+      incorrect, or there is no user with such name". The HTTP status and
+      code vary by server and user.
     verified_by: harness
     requires: [integration]
 

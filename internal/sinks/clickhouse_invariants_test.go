@@ -7,6 +7,7 @@ package sinks
 import (
 	"context"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
@@ -303,4 +304,94 @@ func TestIntegrationSinkClickhouse_DecimalTakesText(t *testing.T) {
 	err := flushOnce(t, s, floats)
 	assert.Error(t, err)
 	assert.That(t, errs.HasCode(err, errs.CodeSinkEncodeFailed))
+}
+
+func TestIntegrationSinkClickhouse_ReplayDuplicatesUntilMerge(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.replay.duplicates_until_merge", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	ctx := context.Background()
+	batch := func() arrow.Table {
+		return textColumns(t,
+			textCol{name: "id", values: []*string{str("1"), str("2")}},
+			textCol{name: "v", values: []*string{str("first"), str("first")}})
+	}
+	count := func(s *ClickhouseSink, suffix string) uint64 {
+		var n uint64
+		assert.NoError(t, s.conn.QueryRow(ctx, "SELECT count() FROM "+s.table+suffix).Scan(&n))
+		return n
+	}
+
+	// A replay into ReplacingMergeTree: both copies until a merge.
+	rmt := newLiveClickhouseSink(t, `CREATE TABLE %s (id String, v String) ENGINE = ReplacingMergeTree ORDER BY id`)
+	assert.NoError(t, flushOnce(t, rmt, batch()))
+	assert.NoError(t, flushOnce(t, rmt, batch()))
+	assert.Equal(t, uint64(4), count(rmt, ""))
+	assert.Equal(t, uint64(2), count(rmt, " FINAL"))
+	assert.NoError(t, rmt.conn.Exec(ctx, "OPTIMIZE TABLE "+rmt.table+" FINAL"))
+	assert.Equal(t, uint64(2), count(rmt, ""))
+
+	// An identical block inside the deduplication window is dropped at insert.
+	dedup := newLiveClickhouseSink(t, `CREATE TABLE %s (id String, v String) ENGINE = MergeTree ORDER BY id
+		SETTINGS non_replicated_deduplication_window = 100`)
+	assert.NoError(t, flushOnce(t, dedup, batch()))
+	assert.NoError(t, flushOnce(t, dedup, batch()))
+	assert.Equal(t, uint64(2), count(dedup, ""))
+}
+
+func TestIntegrationSinkClickhouse_OneFlushIsOneInsert(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.flush.one_insert", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	ctx := context.Background()
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (a String) ENGINE = MergeTree ORDER BY tuple()`)
+	for _, v := range []string{"x", "y", "z"} {
+		assert.NoError(t, s.WriteTable(ctx, textColumns(t, textCol{name: "a", values: []*string{str(v)}})))
+	}
+	assert.NoError(t, s.Flush(ctx))
+
+	assert.NoError(t, s.conn.Exec(ctx, "SYSTEM FLUSH LOGS"))
+	var inserts, rows uint64
+	assert.NoError(t, s.conn.QueryRow(ctx, `
+		SELECT count(), sum(written_rows) FROM system.query_log
+		WHERE type = 'QueryFinish' AND query_kind = 'Insert'
+		  AND has(tables, currentDatabase() || '.' || ?)`, s.table).Scan(&inserts, &rows))
+	assert.Equal(t, uint64(1), inserts)
+	assert.Equal(t, uint64(3), rows)
+}
+
+func TestIntegrationSinkClickhouse_WrongPasswordFailsTheProbe(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.auth.fails_start", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	ctx := context.Background()
+	ch := sharedClickhouse(t)
+	host, err := ch.Host(ctx)
+	assert.NoError(t, err)
+	port, err := ch.MappedPort(ctx, "8123/tcp")
+	assert.NoError(t, err)
+
+	dsn := fmt.Sprintf("clickhouse://%s:wrong@%s/%s",
+		clickhouseUser, net.JoinHostPort(host, port.Port()), clickhouseDatabase)
+	s, err := NewClickhouseSink(config.ClickhouseSink{
+		DSN:   dsn,
+		Table: "never_written",
+	})
+	assert.NoError(t, err)
+	t.Cleanup(func() { s.Close() })
+
+	// The HTTP status and code vary by server and user: self-hosted 26.8
+	// answers this named user 403 and code 516, and Cloud answers its default
+	// user 401 and code 194. The message is what every one of them shares.
+	err = s.Probe(ctx)
+	assert.Error(t, err)
+	t.Logf("probe error: %v", err)
+	assert.That(t, strings.Contains(err.Error(),
+		"Authentication failed: password is incorrect, or there is no user with such name"))
 }
