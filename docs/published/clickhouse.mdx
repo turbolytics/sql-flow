@@ -89,7 +89,7 @@ Username and password are carried in the DSN and, with `clickhouses://` or `nati
 
 - **Special characters in the password.** The DSN is parsed as a URL, so `/`, `#` and `?` must be percent-encoded (`%2F`, `%23`, `%3F`); left raw they produce a confusing `invalid port ":p" after host`. `@` and `:` are handled correctly either way. {/* invariant: clickhouse.dsn.scheme */}
 - **Cloud IP access lists.** If your service restricts source IPs, the address SQLFlow connects from has to be on the list.
-- **Not supported:** mutual TLS / client certificates, and custom CA bundles. Use username and password.
+- **Not supported:** mutual TLS / client certificates, and custom CA bundles. Use username and password. {/* invariant: clickhouse.tls.verifies */}
 
 ## Example: streaming the NYC taxi dataset from Kafka {#example-nyc-taxi}
 
@@ -250,7 +250,7 @@ pipeline:
       table: trips_small
 ```
 
-`batch_size` is the number of messages per DuckDB batch and per ClickHouse `INSERT`. See [Performance](#performance) for why 20,000.
+`batch_size` is the number of messages per DuckDB batch and per ClickHouse `INSERT`. {/* invariant: clickhouse.flush.one_insert */} See [Performance](#performance) for why 20,000.
 
 ### 4. Run it {#example-run}
 
@@ -480,8 +480,8 @@ These fail the batch with `user.sink.type_unsupported` rather than reaching the 
   `ReplacingMergeTree` keyed on something that identifies the row removes them **eventually**, on a background merge. Until that merge, an ordinary read sees both copies: measured on self-hosted 26.8.1, a replayed block read 4 rows, and 2 with `FINAL`. Query with `FINAL` where a read must be exact now. {/* invariant: clickhouse.replay.duplicates_until_merge */}
 
   Insert-time block deduplication drops a second copy only when the block is byte-identical. A replicated table, which every Cloud table is, does that by default, and a non-replicated one does it with `non_replicated_deduplication_window`. A replay cuts its batches again from the committed offset, and a batch the flush interval cut short does not come back with the same boundaries. Treat insert-time deduplication as a partial measure, not a guarantee. {/* invariant: clickhouse.replay.duplicates_until_merge */} {/* measured: docs/published/clickhouse/cloud-dedup.out */}
-- **Transient failures are retried.** A refused, reset, or timed-out connection to ClickHouse is retried with exponential backoff under a deadline, configured by the sink's `retry` block (`max_attempts`, `initial_backoff_ms`, `max_backoff_ms`, `deadline_seconds`). A rejected `INSERT` is not retried once the server has seen it. A value the driver itself cannot encode, such as the ISO 8601 timestamp above, is not retried: it fails at once as `user.sink.encode_failed`, and the process exits with code 10. The sink also dials ClickHouse once at startup, so an unreachable host fails before any message is consumed. {/* invariant: clickhouse.encode.fails_once */} {/* invariant: sink.probe.fails_start */}
-- **One connection, one `INSERT` per batch.** There is no parallel writer. Throughput is governed by `batch_size`; see below. {/* invariant: clickhouse.flush.one_insert */}
+- **Transient failures are retried.** A refused, reset, or timed-out connection to ClickHouse is retried with exponential backoff under a deadline, configured by the sink's `retry` block (`max_attempts`, `initial_backoff_ms`, `max_backoff_ms`, `deadline_seconds`). A rejected `INSERT` is not retried once the server has seen it. {/* invariant: sink.error.classifies */} {/* feature: sink.retry */} A value the driver itself cannot encode, such as the ISO 8601 timestamp above, is not retried: it fails at once as `user.sink.encode_failed`, and the process exits with code 10. The sink also dials ClickHouse once at startup, so an unreachable host fails before any message is consumed. {/* invariant: clickhouse.encode.fails_once */} {/* invariant: sink.probe.fails_start */}
+- **One `INSERT` per batch.** However many messages a batch holds, it reaches ClickHouse as one `INSERT`. Throughput is governed by `batch_size`; see below. {/* invariant: clickhouse.flush.one_insert */}
 - **Streaming aggregation** (tumbling windows) is supported. A window closes on an event-time watermark the engine asserts, never on wall clock. A record's event time is the payload field the source's `event_time` names, or the Kafka timestamp when it names none. The handler cuts the bucket as `time_bucket(INTERVAL '<size>', event_time)`. A replay running behind real time therefore publishes each bucket once, whole: 1,000 events in one past one-minute bucket, read in ten batches of 100, published one row of 1,000. {/* invariant: pipeline.window.counts_every_row */} {/* measured: docs/published/clickhouse/window-replay.out */} Set `allowed_lateness_seconds` above zero and a late row republishes its bucket as a whole value, so the target must then replace the row by key, with a `ReplacingMergeTree` read through `FINAL`. `sqlflow validate` warns about this for a ClickHouse window sink. {/* feature: config.validation */} See [Tumbling windows](https://github.com/turbolytics/sql-flow#tumbling-windows) in the README.
 
 ## Performance {#performance}
@@ -540,7 +540,7 @@ The error carries the code `user.sink.encode_failed`, and the process exits with
 
 ### The pipeline runs but rows never appear {#trouble-no-rows}
 
-Check the batching. A batch is executed and inserted when `batch_size` messages have arrived, or when `flush_interval_seconds` elapses with a partial batch waiting. Whichever comes first wins. `flush_interval_seconds` defaults to `30`, so a partial batch on a low-volume topic waits up to 30 seconds. For faster inserts on a quiet topic, lower `flush_interval_seconds`, which takes any whole number of seconds, or lower `batch_size`. With `--max-msgs`, the final partial batch is inserted on exit. {/* invariant: pipeline.flush.eventually */} {/* invariant: lifecycle.drain.on_cancel */}
+Check the batching. A batch is executed and inserted when `batch_size` messages have arrived, or when `flush_interval_seconds` elapses with a partial batch waiting. Whichever comes first wins. `flush_interval_seconds` defaults to `30`, so a partial batch on a low-volume topic waits up to 30 seconds. For faster inserts on a quiet topic, lower `flush_interval_seconds`, which takes any whole number of seconds, or lower `batch_size`. With `--max-msgs`, the final partial batch is inserted on exit. {/* invariant: pipeline.flush.eventually */} {/* invariant: lifecycle.drain.on_cancel */} {/* feature: cli.invocation */}
 
 ## Further reading {#further-reading}
 

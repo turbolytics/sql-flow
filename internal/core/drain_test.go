@@ -291,3 +291,18 @@ func TestLifecycleDrain_ACancelDuringAFlushIsBoundedByTheDeadline(t *testing.T) 
 	assert.That(t, took < 3*time.Second)
 	assert.Equal(t, int64(1), tb.Progress().Errors)
 }
+
+// The pipeline half of clickhouse.encode.fails_once: a sink flush that fails
+// as a user fault ends the run with its own code, which the CLI maps to exit
+// code 10. The sink half, that ClickHouse reports an unencodable value this
+// way and the ladder does not retry it, is TestIntegrationSinkClickhouse_
+// EncodeFailureIsNotRetried. An error policy that routed a sink failure
+// through IGNORE or a DLQ would break the page's "exits with code 10" here.
+func TestCore_ASinkEncodeFailureEndsTheRunWithExitCode10(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.encode.fails_once", "sink.clickhouse")
+	sink := &rejectingSink{err: errs.New(errs.CodeSinkEncodeFailed, "encode row")}
+	err, _ := drainRun(t, 3, sink)
+
+	assert.Equal(t, errs.CodeSinkEncodeFailed, errs.CodeOf(err))
+	assert.Equal(t, errs.ExitUserError, errs.ExitCode(err))
+}

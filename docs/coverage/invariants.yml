@@ -484,7 +484,7 @@ invariants:
     class: safety
     applies_to: sink.clickhouse
     claim: >
-      One flush is one INSERT, on one connection.
+      One flush is one INSERT, however many batches it buffered.
     verified_by: harness
     requires: [integration]
 

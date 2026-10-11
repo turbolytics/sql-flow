@@ -235,7 +235,7 @@ drains. An invariant holds only if it holds on all four.
 | `clickhouse.temporal_text.two_shapes` | Text into a DateTime column takes `YYYY-MM-DD hh:mm:ss`, read as UTC whatever the column's zone, or the same with an offset, which is applied. Any other shape fails as `user.sink.encode_failed`. | ❌ missing |
 | `clickhouse.decimal.text_only` | A Decimal column accepts its value as text. A float fails as `user.sink.encode_failed`. | ❌ missing |
 | `clickhouse.replay.duplicates_until_merge` | A batch delivered twice into a ReplacingMergeTree reads twice until a merge, and once with FINAL. An identical block inside the table's deduplication window is dropped at insert. | ❌ missing |
-| `clickhouse.flush.one_insert` | One flush is one INSERT, on one connection. | ❌ missing |
+| `clickhouse.flush.one_insert` | One flush is one INSERT, however many batches it buffered. | ❌ missing |
 | `clickhouse.dsn.scheme` | The DSN scheme decides the protocol, TLS and the default port. `@` and `:` in a password parse raw. `/`, `#` and `?` must be percent- encoded. | ❌ missing |
 | `clickhouse.tls.verifies` | With TLS, the server certificate is verified against the system roots. No option skips verification. | ❌ missing |
 | `clickhouse.auth.fails_start` | Wrong credentials fail the startup probe, before any message is consumed, with ClickHouse's "Authentication failed: password is incorrect, or there is no user with such name". The HTTP status and code vary by server and user. | ❌ missing |

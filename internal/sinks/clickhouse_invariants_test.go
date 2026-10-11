@@ -339,12 +339,16 @@ func TestIntegrationSinkClickhouse_ReplayDuplicatesUntilMerge(t *testing.T) {
 		return n
 	}
 
-	// A replay into ReplacingMergeTree: both copies until a merge.
+	// A replay into ReplacingMergeTree: both copies until a merge. Merges stop
+	// until the count is taken, or a background merge between the two inserts
+	// would read 2 and fail with no change to the sink.
 	rmt := newLiveClickhouseSink(t, `CREATE TABLE %s (id String, v String) ENGINE = ReplacingMergeTree ORDER BY id`)
+	assert.NoError(t, rmt.conn.Exec(ctx, "SYSTEM STOP MERGES "+rmt.table))
 	assert.NoError(t, flushOnce(t, rmt, batch()))
 	assert.NoError(t, flushOnce(t, rmt, batch()))
 	assert.Equal(t, uint64(4), count(rmt, ""))
 	assert.Equal(t, uint64(2), count(rmt, " FINAL"))
+	assert.NoError(t, rmt.conn.Exec(ctx, "SYSTEM START MERGES "+rmt.table))
 	assert.NoError(t, rmt.conn.Exec(ctx, "OPTIMIZE TABLE "+rmt.table+" FINAL"))
 	assert.Equal(t, uint64(2), count(rmt, ""))
 
@@ -409,4 +413,59 @@ func TestIntegrationSinkClickhouse_WrongPasswordFailsTheProbe(t *testing.T) {
 	t.Logf("probe error: %v", err)
 	assert.That(t, strings.Contains(err.Error(),
 		"Authentication failed: password is incorrect, or there is no user with such name"))
+}
+
+// The page's retry sentence: a connection that fails is retried, an INSERT
+// the server refused is not, and neither is a value the driver cannot encode.
+func TestIntegrationSinkClickhouse_ErrorsClassifyForTheRetryLadder(t *testing.T) {
+	coverage.Invariant(t, "sink.error.classifies", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	ladder := func(s core.Sink) (*retrying, *int) {
+		r := newRetrying(s, RetryPolicy{
+			MaxAttempts:    3,
+			InitialBackoff: time.Millisecond,
+			MaxBackoff:     time.Millisecond,
+			Deadline:       time.Minute,
+		})
+		n := 0
+		r.onRetry = func(int, error) { n++ }
+		return r, &n
+	}
+	row := func(col string) arrow.Table {
+		return textColumns(t, textCol{name: col, values: []*string{str("x")}})
+	}
+
+	// Unreachable: nothing listens on port 1, so every attempt is refused and
+	// the ladder runs to its limit.
+	dead, err := NewClickhouseSink(config.ClickhouseSink{
+		DSN:   "clickhouse://u:p@127.0.0.1:1/db",
+		Table: "t",
+	})
+	assert.NoError(t, err)
+	t.Cleanup(func() { dead.Close() })
+	r, retries := ladder(dead)
+	err = flushOnce(t, r, row("a"))
+	assert.Error(t, err)
+	assert.Equal(t, 2, *retries)
+	assert.That(t, errs.HasCode(err, errs.CodeSinkUnreachable))
+
+	// Rejected: the server answered and refused the INSERT.
+	live := newLiveClickhouseSink(t, `CREATE TABLE %s (a String) ENGINE = MergeTree() ORDER BY tuple()`)
+	r, retries = ladder(live)
+	err = flushOnce(t, r, row("extra"))
+	assert.Error(t, err)
+	assert.Equal(t, 0, *retries)
+	assert.That(t, errs.HasCode(err, errs.CodeSinkWriteFailed))
+
+	// A user fault: the value never reaches the network.
+	typed := newLiveClickhouseSink(t, `CREATE TABLE %s (ts DateTime) ENGINE = MergeTree() ORDER BY tuple()`)
+	r, retries = ladder(typed)
+	err = flushOnce(t, r, textColumns(t,
+		textCol{name: "ts", values: []*string{str("2026-09-01T12:00:00Z")}}))
+	assert.Error(t, err)
+	assert.Equal(t, 0, *retries)
+	assert.That(t, errs.HasCode(err, errs.CodeSinkEncodeFailed))
 }
