@@ -1,0 +1,8 @@
+# The same block inserted twice into a plain MergeTree on ClickHouse Cloud, 2026-10-11
+# server version: 26.6.1.2326
+# CREATE TABLE default.dedup_probe_1791713956 (id Int32, v String) ENGINE = MergeTree ORDER BY id
+engine: SharedMergeTree
+replicated_deduplication_window: 10000
+insert 1 done
+insert 2 done
+count(): 2

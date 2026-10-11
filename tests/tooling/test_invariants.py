@@ -581,3 +581,31 @@ def test_the_page_snapshot_takes_exempt_from_the_registry():
             "unit": "covered", "integration": "covered", "release": "covered"}}}})
     assert cell_state(
         ps["invariants"][0]["integrations"]["sink.console"]) == "exempt"
+
+SCOPED = {"id": "clickhouse.enum.null_is_zero", "family": "clickhouse",
+          "class": "safety", "applies_to": "sink.clickhouse", "claim": "z",
+          "verified_by": "harness", "requires": ["integration"]}
+
+
+def test_an_invariant_scoped_to_an_integration_gets_one_cell():
+    s = inv_snap(invariants=[SCOPED])
+    inv = s["invariants"][0]
+    assert set(inv["integrations"]) == {"sink.clickhouse"}
+
+
+def test_a_scoped_marker_from_another_integration_is_unknown():
+    s = inv_snap(invariants=[SCOPED], evidence={"integration": {
+        "TestX": [("clickhouse.enum.null_is_zero", "sink.console")]}},
+        results={"integration": {"TestX": PASS}})
+    assert s["unknown_invariant_markers"] == [{
+        "test": "TestX", "invariant": "clickhouse.enum.null_is_zero",
+        "integration": "sink.console"}]
+
+
+def test_a_scoped_invariant_with_evidence_is_covered_and_no_gap():
+    s = inv_snap(invariants=[SCOPED], evidence={"integration": {
+        "TestY": [("clickhouse.enum.null_is_zero", "sink.clickhouse")]}},
+        results={"integration": {"TestY": PASS}})
+    cell = s["invariants"][0]["integrations"]["sink.clickhouse"]["integration"]
+    assert cell["status"] == "covered"
+    assert s["invariant_gaps"] == []

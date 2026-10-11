@@ -1,0 +1,4 @@
+# A plain-HTTP clickhouse:// DSN against ClickHouse Cloud's TLS port 8443, 2026-10-11
+# turbolytics/sql-flow:v2026.10.08, Cloud 26.6.1.2326. Host and password redacted.
+exit=12
+Error: [system.sink.unreachable] sink: the destination could not be reached at startup: failed to query server hello: failed to query server hello info: sendQuery: Post "http://default:***@<host>:8443?client_protocol_version=54460&database=default&default_format=Native&max_execution_time=34": EOF

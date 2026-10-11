@@ -96,12 +96,15 @@ def test_the_committed_registries_load_and_validate():
         "sink", "source", "handler", "pipeline", "manager", "serve"}
 
 
-def test_every_committed_invariant_is_unenforced_in_this_revision():
-    """This revision reports and fails nothing. Filling in a requires is a
-    later change, and legal only once every non-exempt integration has a
-    subject."""
+def test_every_committed_kind_invariant_is_unenforced_in_this_revision():
+    """A kind's invariants report and fail nothing yet. Filling in a requires
+    is legal only once every non-exempt integration of the kind has a
+    subject. An invariant scoped to one integration has one subject, written
+    with it, so it may require its level from the start."""
+    kinds = {"sink", "source", "handler", "pipeline", "manager", "serve"}
     for inv in load_invariants():
-        assert inv["requires"] == [], inv["id"]
+        if inv["applies_to"] in kinds:
+            assert inv["requires"] == [], inv["id"]
 
 
 def test_validate_rejects_an_exemption_naming_no_invariant():
@@ -231,3 +234,26 @@ def test_the_registry_declares_at_least_one_liveness_invariant():
     """A file of safety claims alone cannot say the pipeline does anything."""
     classes = {i["class"] for i in load_invariants()}
     assert "liveness" in classes
+
+def test_applies_to_may_name_an_integration():
+    invs = INVARIANTS + [dict(INVARIANTS[0], id="clickhouse.x",
+                              family="clickhouse", applies_to="sink.clickhouse")]
+    assert validate_registries(invs, INTEGRATIONS, FEATURES) == []
+
+
+def test_applies_to_naming_no_kind_and_no_integration_is_a_problem():
+    invs = [dict(INVARIANTS[0], id="clickhouse.x", family="clickhouse",
+                 applies_to="sink.clikchouse")]
+    problems = validate_registries(invs, INTEGRATIONS, FEATURES)
+    assert any("applies_to 'sink.clikchouse'" in p for p in problems)
+
+
+def test_an_exemption_from_another_integrations_invariant_is_a_problem():
+    invs = INVARIANTS + [dict(INVARIANTS[0], id="clickhouse.x",
+                              family="clickhouse", applies_to="sink.clickhouse")]
+    integs = [dict(i) for i in INTEGRATIONS]
+    console = next(i for i in integs if i["id"] == "sink.console")
+    console["exempt"] = [{"invariant": "clickhouse.x", "reason": "r",
+                          "proven_by": "TestZ"}]
+    problems = validate_registries(invs, integs, FEATURES)
+    assert any("sink.console" in p and "clickhouse.x" in p for p in problems)

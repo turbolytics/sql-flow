@@ -60,6 +60,12 @@ REPORT_MD = os.path.join(COVERAGE_DIR, "report.md")
 # cannot drift from the declaration the type runner judges.
 TYPES_PAGE = os.path.join(REPO, "docs", "coverage", "clickhouse-types.mdx")
 
+# Pages published in third-party docs, and the configs they embed. The pages
+# are the source of truth for what a vendor's docs say about SQLFlow, and the
+# page check holds each claim on them to its evidence.
+PUBLISHED_DIR = os.path.join(REPO, "docs", "published")
+PUBLISHED_CONFIGS = os.path.join(REPO, "dev", "config", "examples", "published")
+
 
 PASS, SKIP, FAIL = "pass", "skip", "fail"
 
@@ -80,7 +86,8 @@ GROWTH_PREFIX = "TestGrowth"
 
 # The closed vocabularies invariants.yml may use. A value outside one of them
 # is a typo, and a typo must not reach the matrix as a missing cell.
-FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors", "cache")
+FAMILIES = ("resilience", "checkpoint", "types", "lifecycle", "errors", "cache",
+            "clickhouse")
 
 
 # What kind of claim an invariant makes, which is orthogonal to its family.
@@ -168,6 +175,7 @@ def validate_registries(invariants, integrations, features):
     exists to carry: it must not be spendable on typos.
     """
     problems = []
+    integration_ids = {i.get("id") for i in integrations}
 
     by_id = {}
     for inv in invariants:
@@ -186,9 +194,13 @@ def validate_registries(invariants, integrations, features):
         if inv.get("class") not in CLASSES:
             problems.append(
                 f"invariants.yml: {fid} class {inv.get('class')!r} is not one of {CLASSES}")
-        if inv.get("applies_to") not in KINDS:
+        # applies_to is a kind, which every integration of that kind must
+        # prove, or one integration's id, for a claim only it makes.
+        if (inv.get("applies_to") not in KINDS
+                and inv.get("applies_to") not in integration_ids):
             problems.append(
-                f"invariants.yml: {fid} applies_to {inv.get('applies_to')!r} is not one of {KINDS}")
+                f"invariants.yml: {fid} applies_to {inv.get('applies_to')!r} is "
+                f"neither one of {KINDS} nor an integration id")
         if inv.get("verified_by") not in VERIFIERS:
             problems.append(
                 f"invariants.yml: {fid} verified_by {inv.get('verified_by')!r} is not one of {VERIFIERS}")
@@ -244,9 +256,10 @@ def validate_registries(invariants, integrations, features):
                 problems.append(
                     f"integrations/{iid}.yml: exemption from {inv['id']} has no "
                     "proven_by naming a test that proves the premise")
-            if inv.get("applies_to") != integ.get("kind"):
+            scope = inv.get("applies_to")
+            if scope != integ.get("kind") and scope != iid:
                 problems.append(
-                    f"integrations/{iid}.yml: is a {integ.get('kind')} but "
-                    f"{inv['id']} applies_to {inv.get('applies_to')}")
+                    f"integrations/{iid}.yml: is exempt from {inv['id']}, which "
+                    f"applies_to {scope}")
 
     return problems

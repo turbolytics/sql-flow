@@ -1,0 +1,13 @@
+# The NYC taxi example, run as the page prints it, against self-hosted ClickHouse 26.8.1.2041.
+# turbolytics/sql-flow:v2026.10.08, Kafka cp-kafka:7.3.2, 2026-10-09. Recorded in
+# docs/superpowers/status/clickhouse-117740/STATUS.md on sql-flow PR #329.
+publish.py            1,000,660 rows published in 13s
+sqlflow               1,000,000 rows, exit 0, 0 errors, wall 18s
+┌─payment_type─┬──trips─┬─avg_total─┐
+│ CSH          │ 617237 │     17.82 │
+│ CRE          │ 377897 │     13.91 │
+│ NOC          │   3573 │     13.89 │
+│ DIS          │   1293 │     12.09 │
+└──────────────┴────────┴───────────┘
+fffd: 0
+pickup_datetime spans 2015-07-01 00:00:16 to 2015-09-30 23:59:58

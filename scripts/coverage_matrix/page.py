@@ -7,8 +7,8 @@ seconds before any suite runs.
 """
 
 from .features import feature_gaps
-from .invariants import (by_kind, declare, exemptions_of, invariant_gaps,
-                         invariant_tally)
+from .invariants import (declare, exemptions_of, invariant_gaps,
+                         invariant_tally, targets)
 from .invariantpage import render_invariants
 from .registries import LEVELS, MATRIX_MD, TYPES_PAGE
 from .types import render_types_page
@@ -40,11 +40,10 @@ def page_snapshot(features, invariants, integrations, status):
         })
     out["gaps"] = feature_gaps(out["features"])
 
-    kinds = by_kind(integrations)
     exemptions = exemptions_of(integrations)
     for inv in invariants:
         entry = declare(inv)
-        for integ in kinds.get(inv["applies_to"], []):
+        for integ in targets(inv, integrations):
             # The registry is the declaration. A status row that disagrees
             # with an exemption is stale, and the gate reports that; the
             # page does not repeat the disagreement.

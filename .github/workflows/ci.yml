@@ -4,6 +4,8 @@ on:
     branches: [main]
   # A change to docs or Markdown alone cannot break a build, so it skips CI.
   # docs/coverage still runs it: the Coverage job regenerates the page there.
+  # docs/published runs it too: the coverage generator holds each published
+  # page to the invariants it cites, so a page-only edit must reach that check.
   pull_request:
     branches: [main]
     paths:
@@ -11,6 +13,7 @@ on:
       - "!docs/**"
       - "!**.md"
       - "docs/coverage/**"
+      - "docs/published/**"
 jobs:
   # The Go engine (sqlflow), unit pass only. Fast feedback with no Docker: the
   # integration tests start containers, and the job below runs those. -short

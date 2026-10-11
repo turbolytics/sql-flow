@@ -6,7 +6,7 @@ marker carries both ids and only it knows which run this was.
 """
 
 from .features import status
-from .registries import FAIL, LEVELS, SKIP
+from .registries import FAIL, KINDS, LEVELS, SKIP
 
 
 def build_invariants(invariants, integrations, results, evidence):
@@ -23,12 +23,10 @@ def build_invariants(invariants, integrations, results, evidence):
     # The integrations each invariant may be proven on. A marker outside this
     # set is a typo, and crediting it would invent a cell: a sink invariant
     # "proven on source.kafka" says nothing about either.
-    kinds = {i["id"]: i["kind"] for i in integrations}
     allowed = {}
     for inv in invariants:
         allowed[inv["id"]] = {
-            iid for iid, kind in kinds.items() if kind == inv["applies_to"]
-        }
+            i["id"] for i in targets(inv, integrations, test_only=True)}
 
     cells = {}   # (invariant, integration, level) -> [(test, outcome)]
     unknown = []  # (test, invariant, integration)
@@ -56,7 +54,6 @@ def snapshot_invariants(invariants, integrations, built):
     reason, so a reader of the snapshot never has to open the registry to
     learn why a cell is blank.
     """
-    kinds = by_kind(integrations)
     exemptions = exemptions_of(integrations)
 
     out = {"invariants": [], "invariant_gaps": [], "unknown_invariant_markers": []}
@@ -64,7 +61,7 @@ def snapshot_invariants(invariants, integrations, built):
     for inv in invariants:
         entry = declare(inv)
 
-        for integ in kinds.get(inv["applies_to"], []):
+        for integ in targets(inv, integrations):
             exemption = exemptions.get((inv["id"], integ["id"]))
             levels = {}
             for level in LEVELS:
@@ -165,16 +162,18 @@ def exemptions_of(integrations):
     }
 
 
-def by_kind(integrations):
-    """kind -> the integrations that get cells. test_only ones get none: their
-    markers are known, so the harness's doubles are not reported as unknown,
-    and they credit nothing."""
-    out = {}
-    for integ in integrations:
-        if integ.get("test_only"):
-            continue
-        out.setdefault(integ["kind"], []).append(integ)
-    return out
+def targets(inv, integrations, test_only=False):
+    """The integrations an invariant applies to.
+
+    A kind selects every integration of it. An integration id selects that
+    one, for a claim only it makes. test_only integrations get no cells, so
+    they are left out unless test_only is set: a double's marker is then
+    known, and credits nothing.
+    """
+    scope = inv["applies_to"]
+    return [i for i in integrations
+            if (i["kind"] == scope if scope in KINDS else i["id"] == scope)
+            and (test_only or not i.get("test_only"))]
 
 
 def cell_state(levels):

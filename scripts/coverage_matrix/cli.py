@@ -17,6 +17,7 @@ from .report import render_report
 from .suites import parse_go, parse_pytest
 from .statusfiles import (keep_levels, read_status, status_from_snapshot,
                           write_status)
+from .published import validate_published
 from .types import validate_types
 
 
@@ -49,6 +50,7 @@ def main():
     # the matrix as a missing cell.
     problems = validate_registries(invariants, integrations, features)
     problems += validate_types(lattice, integrations)
+    problems += validate_published(invariants, features, integrations, lattice)
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)

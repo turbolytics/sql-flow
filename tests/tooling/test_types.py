@@ -125,3 +125,22 @@ def test_the_page_says_it_is_generated():
     })[0])
     assert "Do not edit" in md
     assert "TestIntegrationSinkClickhouse_Types" in md
+
+def test_a_text_carrier_row_names_its_cast_alone_and_says_the_rest_reach_it():
+    """The utf8 row proves each destination with its own value, so it must not
+    read as a cross-product of every cast and every column."""
+    lattice = [{"key": "utf8", "duckdb": ["VARCHAR", "UUID", "JSON"]}]
+    integ = {"types": {"utf8": {"outcome": "exact",
+                                "rule": "the text must already be the column's text form.",
+                                "columns": [{"type": "String", "expect": "x"},
+                                            {"type": "UUID", "value": "u", "expect": "u"}]}}}
+    page = render_types_page(lattice, integ)
+    assert ("| `VARCHAR` | `String`, `UUID` | the text must already be the "
+            "column's text form. `UUID` and `JSON` reach the sink as `VARCHAR`. |") in page
+
+
+def test_a_row_with_no_per_column_value_keeps_every_cast():
+    lattice = [{"key": "binary", "duckdb": ["BLOB", "BIT"]}]
+    integ = {"types": {"binary": {"outcome": "exact",
+                                  "columns": [{"type": "String", "expect": "x"}]}}}
+    assert "| `BLOB`, `BIT` | `String` |  |" in render_types_page(lattice, integ)
