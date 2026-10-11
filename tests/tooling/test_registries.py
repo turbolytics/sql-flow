@@ -96,12 +96,15 @@ def test_the_committed_registries_load_and_validate():
         "sink", "source", "handler", "pipeline", "manager", "serve"}
 
 
-def test_every_committed_invariant_is_unenforced_in_this_revision():
-    """This revision reports and fails nothing. Filling in a requires is a
-    later change, and legal only once every non-exempt integration has a
-    subject."""
+def test_every_committed_kind_invariant_is_unenforced_in_this_revision():
+    """A kind's invariants report and fail nothing yet. Filling in a requires
+    is legal only once every non-exempt integration of the kind has a
+    subject. An invariant scoped to one integration has one subject, written
+    with it, so it may require its level from the start."""
+    kinds = {"sink", "source", "handler", "pipeline", "manager", "serve"}
     for inv in load_invariants():
-        assert inv["requires"] == [], inv["id"]
+        if inv["applies_to"] in kinds:
+            assert inv["requires"] == [], inv["id"]
 
 
 def test_validate_rejects_an_exemption_naming_no_invariant():

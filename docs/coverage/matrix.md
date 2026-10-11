@@ -82,7 +82,7 @@ integration behind it keeps a batch it could not deliver, or commits
 offsets only after a flush. Those are invariants, they are counted
 separately below, and the two numbers are not interchangeable.
 
-**55 invariants declared: 47 safety and 8 liveness. Of 195 (invariant, integration) cells: 97 proven, 63 missing, 0 skipped, 0 failing, 35 exempt. 0 gap(s).**
+**67 invariants declared: 59 safety and 8 liveness. Of 207 (invariant, integration) cells: 97 proven, 75 missing, 0 skipped, 0 failing, 35 exempt. 12 gap(s).**
 
 Safety says nothing bad happens. Liveness says something good
 eventually does, and the two are not interchangeable: a sink that
@@ -224,6 +224,23 @@ drains. An invariant holds only if it holds on all four.
 | `serve.cache.errors_not_stored` | A request that fails stores nothing: the next request for its key runs a query. | ✅ u |
 | `serve.cache.one_fill` | Concurrent requests for one key run one query, and a caller leaving fails no other caller. | ✅ u |
 
+## Safety invariants: clickhouse
+
+| Invariant | Claim | `sink.clickhouse` |
+| --- | --- | --- |
+| `clickhouse.insert.by_name` | Columns are matched by name. A produced column the table lacks fails the batch as `system.sink.write_failed`, naming the column. A column the handler omits takes the table's DEFAULT. | ❌ missing |
+| `clickhouse.table.not_created` | The sink never creates or alters a table. A table that does not exist fails the batch as `system.sink.write_failed`. | ❌ missing |
+| `clickhouse.enum.null_is_zero` | A NULL into a non-Nullable Enum is stored as 0. With no 0 member the INSERT succeeds and reads of the column fail with `UNKNOWN_ELEMENT_OF_ENUM`. With a 0 member it reads as that member. Nullable reads NULL. | ❌ missing |
+| `clickhouse.encode.fails_once` | A value the driver cannot encode fails the batch on the first attempt as `user.sink.encode_failed`. It is not retried, and the process exits with code 10. | ❌ missing |
+| `clickhouse.temporal_text.two_shapes` | Text into a DateTime column takes `YYYY-MM-DD hh:mm:ss`, read as UTC, or the same with an offset, which is applied. Any other shape fails as `user.sink.encode_failed`. | ❌ missing |
+| `clickhouse.decimal.text_only` | A Decimal column accepts its value as text. A float fails as `user.sink.encode_failed`. | ❌ missing |
+| `clickhouse.replay.duplicates_until_merge` | A batch delivered twice into a ReplacingMergeTree reads twice until a merge, and once with FINAL. An identical block inside the table's deduplication window is dropped at insert. | ❌ missing |
+| `clickhouse.flush.one_insert` | One flush is one INSERT, on one connection. | ❌ missing |
+| `clickhouse.dsn.scheme` | The DSN scheme decides the protocol, TLS and the default port. `@` and `:` in a password parse raw. `/`, `#` and `?` must be percent- encoded. | ❌ missing |
+| `clickhouse.tls.verifies` | With TLS, the server certificate is verified against the system roots. No option skips verification. | ❌ missing |
+| `clickhouse.auth.fails_start` | Wrong credentials fail at startup with HTTP 401, before any message is consumed. | ❌ missing |
+| `clickhouse.type_text.per_destination` | Text into a non-String column must already be in that column's text form. The type table proves each destination with its own value. | ❌ missing |
+
 ## Liveness invariants: lifecycle
 
 | Invariant | Claim | `manager.watermark` |
@@ -251,4 +268,21 @@ drains. An invariant holds only if it holds on all four.
 | Invariant | Claim | `serve.duckdb` |
 | --- | --- | --- |
 | `serve.cache.answers_from_memory` | A second request for a key inside its TTL is answered without a query and without a session. | ✅ u |
+
+## Invariant gaps
+
+These fail `make coverage-check`.
+
+- `clickhouse.insert.by_name` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.table.not_created` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.enum.null_is_zero` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.encode.fails_once` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.temporal_text.two_shapes` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.decimal.text_only` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.replay.duplicates_until_merge` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.flush.one_insert` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.dsn.scheme` on `sink.clickhouse` requires **unit** and is *missing*.
+- `clickhouse.tls.verifies` on `sink.clickhouse` requires **unit** and is *missing*.
+- `clickhouse.auth.fails_start` on `sink.clickhouse` requires **integration** and is *missing*.
+- `clickhouse.type_text.per_destination` on `sink.clickhouse` requires **integration** and is *missing*.
 
