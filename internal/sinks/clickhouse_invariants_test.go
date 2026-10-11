@@ -215,3 +215,92 @@ func TestIntegrationSinkClickhouse_EnumNullIsZero(t *testing.T) {
 	assert.NoError(t, nullable.conn.QueryRow(ctx, "SELECT e IS NULL FROM "+nullable.table).Scan(&isNull))
 	assert.Equal(t, uint8(1), isNull)
 }
+
+func TestIntegrationSinkClickhouse_EncodeFailureIsNotRetried(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.encode.fails_once", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (ts DateTime) ENGINE = MergeTree() ORDER BY tuple()`)
+	r := newRetrying(s, RetryPolicy{
+		MaxAttempts:    4,
+		InitialBackoff: time.Millisecond,
+		MaxBackoff:     time.Millisecond,
+		Deadline:       time.Minute,
+	})
+	retries := 0
+	r.onRetry = func(int, error) { retries++ }
+
+	err := flushOnce(t, r, textColumns(t,
+		textCol{name: "ts", values: []*string{str("2026-09-01T12:00:00Z")}}))
+	assert.Error(t, err)
+	assert.That(t, errs.HasCode(err, errs.CodeSinkEncodeFailed))
+	assert.Equal(t, 0, retries)
+	assert.Equal(t, errs.ExitUserError, errs.ExitCode(err))
+}
+
+func TestIntegrationSinkClickhouse_TemporalTextTakesTwoShapes(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.temporal_text.two_shapes", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	ctx := context.Background()
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (k String, ts DateTime('UTC')) ENGINE = MergeTree() ORDER BY k`)
+	assert.NoError(t, flushOnce(t, s, textColumns(t,
+		textCol{name: "k", values: []*string{str("plain"), str("offset")}},
+		textCol{name: "ts", values: []*string{str("2026-09-01 12:00:00"), str("2026-09-01 12:00:00 +09:00")}})))
+
+	got := map[string]string{}
+	rows, err := s.conn.Query(ctx, "SELECT k, toString(ts) FROM "+s.table)
+	assert.NoError(t, err)
+	for rows.Next() {
+		var k, ts string
+		assert.NoError(t, rows.Scan(&k, &ts))
+		got[k] = ts
+	}
+	assert.NoError(t, rows.Err())
+	rows.Close()
+	assert.Equal(t, "2026-09-01 12:00:00", got["plain"])
+	assert.Equal(t, "2026-09-01 03:00:00", got["offset"])
+
+	// Any other shape fails before it reaches the server.
+	err = flushOnce(t, s, textColumns(t,
+		textCol{name: "k", values: []*string{str("iso")}},
+		textCol{name: "ts", values: []*string{str("2026-09-01T12:00:00Z")}}))
+	assert.Error(t, err)
+	assert.That(t, errs.HasCode(err, errs.CodeSinkEncodeFailed))
+}
+
+func TestIntegrationSinkClickhouse_DecimalTakesText(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.decimal.text_only", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	ctx := context.Background()
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (amount Decimal(10, 2)) ENGINE = MergeTree() ORDER BY tuple()`)
+	assert.NoError(t, flushOnce(t, s, textColumns(t,
+		textCol{name: "amount", values: []*string{str("12.34")}})))
+	var got string
+	assert.NoError(t, s.conn.QueryRow(ctx, "SELECT toString(amount) FROM "+s.table).Scan(&got))
+	assert.Equal(t, "12.34", got)
+
+	schema := arrow.NewSchema([]arrow.Field{{
+		Name: "amount",
+		Type: arrow.PrimitiveTypes.Float64,
+	}}, nil)
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	defer b.Release()
+	b.Field(0).(*array.Float64Builder).Append(12.34)
+	rec := b.NewRecord()
+	defer rec.Release()
+	floats := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	defer floats.Release()
+
+	// A float is refused: the driver has no exact conversion to Decimal.
+	err := flushOnce(t, s, floats)
+	assert.Error(t, err)
+	assert.That(t, errs.HasCode(err, errs.CodeSinkEncodeFailed))
+}
