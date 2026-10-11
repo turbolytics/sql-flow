@@ -5,13 +5,21 @@ package sinks
 // a page that is now wrong. Fix the page or the sink, never the assertion.
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/turbolytics/sql-flow/internal/config"
+	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
+	"github.com/turbolytics/sql-flow/internal/errs"
 	"github.com/zeebo/assert"
 )
 
@@ -72,4 +80,138 @@ func TestSinkClickhouse_TLSVerifiesAgainstTheSystemRoots(t *testing.T) {
 		names = append(names, typ.Field(i).Name)
 	}
 	assert.DeepEqual(t, []string{"DSN", "Table"}, names)
+}
+
+type textCol struct {
+	name   string
+	values []*string
+}
+
+func str(s string) *string { return &s }
+
+// textColumns builds one batch of nullable utf8 columns, in the order given.
+func textColumns(t *testing.T, cols ...textCol) arrow.Table {
+	t.Helper()
+	fields := make([]arrow.Field, len(cols))
+	for i, c := range cols {
+		fields[i] = arrow.Field{
+			Name:     c.name,
+			Type:     arrow.BinaryTypes.String,
+			Nullable: true,
+		}
+	}
+	schema := arrow.NewSchema(fields, nil)
+	b := array.NewRecordBuilder(memory.NewGoAllocator(), schema)
+	defer b.Release()
+	for i, c := range cols {
+		sb := b.Field(i).(*array.StringBuilder)
+		for _, v := range c.values {
+			if v == nil {
+				sb.AppendNull()
+			} else {
+				sb.Append(*v)
+			}
+		}
+	}
+	rec := b.NewRecord()
+	defer rec.Release()
+	tbl := array.NewTableFromRecords(schema, []arrow.Record{rec})
+	t.Cleanup(tbl.Release)
+	return tbl
+}
+
+// flushOnce writes one batch and flushes it, which is one delivery.
+func flushOnce(t *testing.T, s core.Sink, tbl arrow.Table) error {
+	t.Helper()
+	assert.NoError(t, s.WriteTable(context.Background(), tbl))
+	return s.Flush(context.Background())
+}
+
+func TestIntegrationSinkClickhouse_InsertsByName(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.insert.by_name", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	s := newLiveClickhouseSink(t, `CREATE TABLE %s (
+		b String, a String, d String DEFAULT 'omitted-default'
+	) ENGINE = MergeTree() ORDER BY tuple()`)
+
+	// Produced in the opposite order to the table, and without d.
+	assert.NoError(t, flushOnce(t, s, textColumns(t,
+		textCol{name: "a", values: []*string{str("A")}},
+		textCol{name: "b", values: []*string{str("B")}})))
+	var a, b, d string
+	assert.NoError(t, s.conn.QueryRow(context.Background(),
+		"SELECT a, b, d FROM "+s.table).Scan(&a, &b, &d))
+	assert.Equal(t, "A", a)
+	assert.Equal(t, "B", b)
+	assert.Equal(t, "omitted-default", d)
+
+	// A column the table lacks fails the batch, naming it.
+	err := flushOnce(t, s, textColumns(t,
+		textCol{name: "a", values: []*string{str("A")}},
+		textCol{name: "extra", values: []*string{str("X")}}))
+	assert.Error(t, err)
+	assert.That(t, errs.HasCode(err, errs.CodeSinkWriteFailed))
+	assert.That(t, strings.Contains(err.Error(), "column extra is not present in the table"))
+}
+
+func TestIntegrationSinkClickhouse_NeverCreatesATable(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.table.not_created", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	table := fmt.Sprintf("absent_%d", time.Now().UnixNano())
+	s := mustDirectSink(t, sharedClickhouse(t), table)
+
+	err := flushOnce(t, s, textColumns(t, textCol{name: "a", values: []*string{str("A")}}))
+	assert.Error(t, err)
+	assert.That(t, errs.HasCode(err, errs.CodeSinkWriteFailed))
+
+	var exists uint8
+	assert.NoError(t, s.conn.QueryRow(context.Background(),
+		"EXISTS TABLE "+table).Scan(&exists))
+	assert.Equal(t, uint8(0), exists)
+}
+
+func TestIntegrationSinkClickhouse_EnumNullIsZero(t *testing.T) {
+	coverage.Invariant(t, "clickhouse.enum.null_is_zero", "sink.clickhouse")
+	if testing.Short() {
+		t.Skip("integration test: -short runs the unit pass only")
+	}
+	t.Parallel()
+	null := textColumns(t, textCol{name: "e", values: []*string{nil}})
+	ctx := context.Background()
+
+	// No 0 member: the INSERT succeeds and the row cannot be read.
+	noZero := newLiveClickhouseSink(t,
+		`CREATE TABLE %s (e Enum8('a' = 1, 'b' = 2)) ENGINE = MergeTree() ORDER BY tuple()`)
+	assert.NoError(t, flushOnce(t, noZero, null))
+	var n uint64
+	assert.NoError(t, noZero.conn.QueryRow(ctx, "SELECT count() FROM "+noZero.table).Scan(&n))
+	assert.Equal(t, uint64(1), n)
+	var e string
+	err := noZero.conn.QueryRow(ctx, "SELECT toString(e) FROM "+noZero.table).Scan(&e)
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "UNKNOWN_ELEMENT_OF_ENUM"))
+	var raw int8
+	assert.NoError(t, noZero.conn.QueryRow(ctx, "SELECT CAST(e AS Int8) FROM "+noZero.table).Scan(&raw))
+	assert.Equal(t, int8(0), raw)
+
+	// A 0 member: the NULL reads as that member.
+	zero := newLiveClickhouseSink(t,
+		`CREATE TABLE %s (e Enum8('' = 0, 'a' = 1, 'b' = 2)) ENGINE = MergeTree() ORDER BY tuple()`)
+	assert.NoError(t, flushOnce(t, zero, null))
+	assert.NoError(t, zero.conn.QueryRow(ctx, "SELECT toString(e) FROM "+zero.table).Scan(&e))
+	assert.Equal(t, "", e)
+
+	// Nullable: the NULL reads as NULL.
+	nullable := newLiveClickhouseSink(t,
+		`CREATE TABLE %s (e Nullable(Enum8('a' = 1, 'b' = 2))) ENGINE = MergeTree() ORDER BY tuple()`)
+	assert.NoError(t, flushOnce(t, nullable, null))
+	var isNull uint8
+	assert.NoError(t, nullable.conn.QueryRow(ctx, "SELECT e IS NULL FROM "+nullable.table).Scan(&isNull))
+	assert.Equal(t, uint8(1), isNull)
 }

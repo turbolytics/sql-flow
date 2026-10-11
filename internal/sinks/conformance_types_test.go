@@ -25,6 +25,9 @@ import (
 
 func TestIntegrationSinkClickhouse_Types(t *testing.T) {
 	coverage.Covers(t, "sink.clickhouse")
+	// The type table proves each text destination with that destination's own
+	// value, which is the claim the page makes about VARCHAR.
+	coverage.Invariant(t, "clickhouse.type_text.per_destination", "sink.clickhouse")
 
 	if testing.Short() {
 		t.Skip("integration test: -short runs the unit pass only")
