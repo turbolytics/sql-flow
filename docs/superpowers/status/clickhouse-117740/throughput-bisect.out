@@ -1,0 +1,37 @@
+# Throughput bisect, 2026-10-10. Host binaries, Go 1.26.0 for every build, taxi bs=20000,
+# self-hosted ClickHouse 26.8.1 through Docker Desktop 29.8.0 port forwarding. Rows/second.
+
+## The two releases, alternating
+v2026.09.17.1 run 1: 65782
+v2026.10.08 run 1: 58871
+v2026.09.17.1 run 2: 65762
+v2026.10.08 run 2: 57489
+v2026.09.17.1 run 3: 66238
+v2026.10.08 run 3: 59010
+
+## Main-branch commits between them (87, first parent)
+3011131 serve: ask twice against the image and prove the cache answered (#339): 67072 65554 
+c24e0ed build(deps): bump the go-modules group with 9 updates (#338): 62873 62556 
+466184d ci: say what the registry said, and stop deciding a release with a gre: 62511 60692 63043 
+99180b6 dev: publish-logs, and kafka fetch defaults that were never chosen (#3: 59358 58767 
+c5bb1a4 turbostats: drop allow, a scope ceiling that enforced nothing (#355): 59597 59474 
+b4b4bfd core: a windowing pipeline refuses a record whose event time it cannot: 59036 58517 
+
+## v2026.10.08 with the fetch limits set in config (max_bytes / max_partition_bytes)
+100 MiB / 10 MiB, the defaults before #345: 62873 61639 
+16 MiB / 4 MiB: 61558 60900 
+4 MiB / 1 MiB, the defaults since #345: 58751 58116 
+
+## 3011131 (the last fast commit) with one module bump from #338 applied
+franz: 67209 66538 
+jsonparser: 62142 61849 
+arrow: 67072 66585 
+adbc: 66281 66063 
+compress: 66109 65294 
+
+## 3011131 with each jsonparser release
+v1.1.2 (as shipped at 3011131): 67072 65554 
+v1.2.0: 67433 67500 
+v1.3.0: 62989 63015 
+v1.4.0: 61979 61620 
+v1.6.1: 62142 61849 

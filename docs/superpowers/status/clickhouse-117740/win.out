@@ -1,0 +1,19 @@
+image: turbolytics/sql-flow:v2026.10.08
+Created topic ch-win.
+events published: 1000
+--- validate
+skipped source.webhook.ack: this pipeline has no webhook source
+supplied but never read: [SQLFLOW_DUCKDB_LIB]
+/conf/win.yml: valid
+--- run, no --max-msgs: the bucket closes on idle_close_seconds
+2026-10-09T13:18:13.489Z	INFO	sqlflow.run.manager.watermark	managers/watermark.go:182	starting watermark manager	{"table": "agg"}
+--- what landed
+   ┌──────────────bucket─┬────n─┐
+1. │ 2026-09-01 12:00:00 │ 1000 │
+   └─────────────────────┴──────┘
+rows published: 1
+--- validate: allowed_lateness_seconds with a ClickHouse window sink
+skipped source.mqtt: this pipeline has no mqtt source
+skipped source.webhook.ack: this pipeline has no webhook source
+supplied but never read: [SQLFLOW_DUCKDB_LIB]
+/conf/win_late.yml: valid

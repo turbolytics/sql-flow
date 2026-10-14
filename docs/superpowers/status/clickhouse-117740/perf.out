@@ -1,0 +1,17 @@
+# v2026.10.08 unless a comment names another image; perf.sh <label> <batch_size> <dsn>
+s5000_a bs=5000 exit=0 wall=30s rows_per_s=33907.62474827949 rows=1000000 errors=0
+s5000_b bs=5000 exit=0 wall=30s rows_per_s=34019.445640251484 rows=1000000 errors=0
+s20000_a bs=20000 exit=0 wall=18s rows_per_s=57877.279413660915 rows=1000000 errors=0
+s20000_b bs=20000 exit=0 wall=18s rows_per_s=55907.85738450392 rows=1000000 errors=0
+s50000_a bs=50000 exit=0 wall=18s rows_per_s=58253.18897216394 rows=1000000 errors=0
+s50000_b bs=50000 exit=0 wall=18s rows_per_s=56948.72708727435 rows=1000000 errors=0
+s100000_a bs=100000 exit=0 wall=18s rows_per_s=56152.54709693518 rows=1000000 errors=0
+s100000_b bs=100000 exit=0 wall=17s rows_per_s=57694.18106230891 rows=1000000 errors=0
+# The same day, same machine: v2026.09.17.1 as a control, IMG=turbolytics/sql-flow:v2026.09.17.1
+old20k_a bs=20000 exit=0 wall=20s rows_per_s=65187.6526589425 rows=1000000 errors=0
+old20k_b bs=20000 exit=0 wall=16s rows_per_s=66472.60337983216 rows=1000000 errors=0
+# A host binary built from main at 8ba6709, through Docker Desktop 29.8.0 port forwarding
+host_a bs=20000 exit=0 wall=18s rows_per_s=57321.697563730406 rows=1000000 errors=0
+host_b bs=20000 exit=0 wall=18s rows_per_s=55313.10592050467 rows=1000000 errors=0
+# The run the Verify query read, v2026.10.08
+verify bs=20000 exit=0 wall=18s rows_per_s=58422.76231461885 rows=1000000 errors=0

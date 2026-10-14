@@ -1,0 +1,8 @@
+# Each script writes its configs and logs here. The .out files are the evidence.
+*.log
+p_*.yml
+d_*.yml
+taxi_*.yml
+win_late.yml
+win_events.jsonl
+sqlflow.diff

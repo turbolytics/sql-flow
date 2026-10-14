@@ -1,0 +1,121 @@
+
+=== versions
+image: turbolytics/sql-flow:v2026.10.08
+26.8.1.2041	UTC
+
+=== enum_nozero: NULL into Enum8('a' = 1, 'b' = 2), not Nullable
+exit=0 wall=1s
+Error on processing query: Code: 691. DB::Exception: Unexpected value 0 in enum. (UNKNOWN_ELEMENT_OF_ENUM) (version 26.8.1.2041 (official build))
+(query: SELECT * FROM probe.enum_nozero FORMAT Vertical)
+count():      1
+SELECT e:     Error on processing query: Code: 691. DB::Exception: Unexpected value 0 in enum. (UNKNOWN_ELEMENT_OF_ENUM) (version 26.8.1.2041 (official build))
+CAST AS Int8: 0
+
+=== enum_zero: NULL into Enum8('' = 0, 'a' = 1, 'b' = 2)
+exit=0 wall=0s
+Row 1:
+──────
+e: 
+
+=== enum_nullable: NULL into Nullable(Enum8('a' = 1, 'b' = 2))
+exit=0 wall=1s
+Row 1:
+──────
+e: ᴺᵁᴸᴸ
+
+=== null_dt: NULL into DateTime DEFAULT now()
+exit=0 wall=0s
+Row 1:
+──────
+ts: 1970-01-01 00:00:00
+
+=== null_str: NULL into String DEFAULT 'unset'
+exit=0 wall=0s
+Row 1:
+──────
+s: 
+
+=== null_int: NULL into Int32 DEFAULT 7
+exit=0 wall=1s
+Row 1:
+──────
+i: 0
+
+=== null_nullable: NULL into Nullable(String)
+exit=0 wall=0s
+Row 1:
+──────
+s: ᴺᵁᴸᴸ
+
+=== omitted: a column the handler does not produce
+exit=0 wall=0s
+Row 1:
+──────
+x: 1
+s: omitted-default
+
+=== ts_plain: '2026-09-01 12:00:00' into DateTime and DateTime('UTC')
+exit=0 wall=1s
+Row 1:
+──────
+ts:  2026-09-01 12:00:00
+tsu: 2026-09-01 12:00:00
+
+=== ts_offset: '2026-09-01 12:00:00 +09:00' into DateTime
+exit=0 wall=0s
+Row 1:
+──────
+ts: 2026-09-01 03:00:00
+
+=== ts_iso: '2026-09-01T12:00:00Z' into DateTime (expect encode_failed, one attempt)
+exit=10 wall=0s
+github.com/turbolytics/sql-flow/internal/core.(*Turbine).recordError
+2026-10-09T10:44:31.430Z	INFO	sqlflow.run	core/turbine.go:1364	closing source from ConsumeLoop	{"running": true, "here": "here", "error": "[user.sink.encode_failed] clickhouse sink: encode row: clickhouse [AppendRow]: ts parsing time \"2026-09-01T12:00:00Z\" as \"2006-01-02 15:04:05\": cannot parse \"T12:00:00Z\" as \" \""}
+2026-10-09T10:44:31.433Z	ERROR	sqlflow.run	run/root.go:743	failed to consume loop	{"error": "[user.sink.encode_failed] clickhouse sink: encode row: clickhouse [AppendRow]: ts parsing time \"2026-09-01T12:00:00Z\" as \"2006-01-02 15:04:05\": cannot parse \"T12:00:00Z\" as \" \""}
+Error: [user.sink.encode_failed] clickhouse sink: encode row: clickhouse [AppendRow]: ts parsing time "2026-09-01T12:00:00Z" as "2006-01-02 15:04:05": cannot parse "T12:00:00Z" as " "
+attempts logged: 0
+
+=== dec_str: CAST(12.34 AS VARCHAR) into Decimal(10, 2)
+exit=0 wall=1s
+Row 1:
+──────
+amount: 12.34
+
+=== dec_dbl: DOUBLE into Decimal(10, 2) (expect encode_failed)
+exit=10 wall=0s
+github.com/turbolytics/sql-flow/internal/core.(*Turbine).recordError
+2026-10-09T10:44:32.673Z	INFO	sqlflow.run	core/turbine.go:1364	closing source from ConsumeLoop	{"running": true, "here": "here", "error": "[user.sink.encode_failed] clickhouse sink: encode row: clickhouse [AppendRow]: amount clickhouse [AppendRow]: converting float64 to Decimal(10, 2) is unsupported"}
+2026-10-09T10:44:32.676Z	ERROR	sqlflow.run	run/root.go:743	failed to consume loop	{"error": "[user.sink.encode_failed] clickhouse sink: encode row: clickhouse [AppendRow]: amount clickhouse [AppendRow]: converting float64 to Decimal(10, 2) is unsupported"}
+Error: [user.sink.encode_failed] clickhouse sink: encode row: clickhouse [AppendRow]: amount clickhouse [AppendRow]: converting float64 to Decimal(10, 2) is unsupported
+
+=== json_str: to_json({'k': 1}) into String
+exit=0 wall=0s
+Row 1:
+──────
+s: {"k":1}
+
+=== struct: STRUCT into String (expect type_unsupported)
+exit=10 wall=0s
+github.com/turbolytics/sql-flow/internal/core.(*Turbine).recordError
+2026-10-09T10:44:33.868Z	INFO	sqlflow.run	core/turbine.go:1364	closing source from ConsumeLoop	{"running": true, "here": "here", "error": "clickhouse sink: column \"s\": [user.sink.type_unsupported] unsupported arrow type struct<k: int32 nullable>"}
+2026-10-09T10:44:33.870Z	ERROR	sqlflow.run	run/root.go:743	failed to consume loop	{"error": "clickhouse sink: column \"s\": [user.sink.type_unsupported] unsupported arrow type struct<k: int32 nullable>"}
+Error: clickhouse sink: column "s": [user.sink.type_unsupported] unsupported arrow type struct<k: int32 nullable>
+
+=== colmiss: a column the table lacks (expect write_failed)
+exit=1 wall=0s
+github.com/turbolytics/sql-flow/internal/core.(*Turbine).recordError
+2026-10-09T10:44:34.457Z	INFO	sqlflow.run	core/turbine.go:1364	closing source from ConsumeLoop	{"running": true, "here": "here", "error": "[system.sink.write_failed] clickhouse sink: prepare batch: failed to init block for HTTP batch: failed to determine columns for HTTP insert: column extra is not present in the table colmiss"}
+2026-10-09T10:44:34.461Z	ERROR	sqlflow.run	run/root.go:743	failed to consume loop	{"error": "[system.sink.write_failed] clickhouse sink: prepare batch: failed to init block for HTTP batch: failed to determine columns for HTTP insert: column extra is not present in the table colmiss"}
+Error: [system.sink.write_failed] clickhouse sink: prepare batch: failed to init block for HTTP batch: failed to determine columns for HTTP insert: column extra is not present in the table colmiss
+
+=== flush5: flush_interval_seconds: 5 validates and runs
+exit=0 wall=1s
+Row 1:
+──────
+x: 1
+skipped source.webhook.ack: this pipeline has no webhook source
+supplied but never read: [SQLFLOW_DUCKDB_LIB]
+/conf/p_flush5.yml: valid
+flush_interval_seconds: 5
+
+=== done
