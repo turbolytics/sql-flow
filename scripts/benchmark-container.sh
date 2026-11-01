@@ -22,7 +22,7 @@ CONFIG="${3:-${CONFIG:-dev/config/examples/benchmark.structured.mem.yml}}"
 # host port-forwarding understates throughput ~10x.
 STATE_PATH="${STATE_PATH:-}"
 NETWORK="dev_default"
-GO_IMAGE="golang:1.26-bookworm"
+GO_IMAGE="golang:1.27.3-bookworm"
 RUN_IMAGE="debian:bookworm-slim"
 
 echo "=== sqlflow benchmark (in-network) ==="
