@@ -116,7 +116,7 @@ environment variable is needed.
 
 ### From source
 
-Requires Go 1.26+, a C toolchain (cgo is mandatory), and libduckdb.
+Requires Go 1.27.3+, a C toolchain (cgo is mandatory), and libduckdb.
 
 ```
 # macOS

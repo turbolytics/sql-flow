@@ -11,7 +11,7 @@
 # manager, plain C and C++ that Debian's cross toolchain compiles. libduckdb
 # is never linked, only dlopened, so the target's copy is downloaded as a
 # file. The runtime stage only copies, so nothing runs under emulation at all.
-ARG GO_IMAGE=golang:1.26-bookworm
+ARG GO_IMAGE=golang:1.27.3-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS builder
