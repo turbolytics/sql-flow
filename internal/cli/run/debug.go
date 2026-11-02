@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/turbolytics/sql-flow/internal/arrowfmt"
 	"go.uber.org/zap"
 )
 
@@ -68,7 +69,7 @@ func queryRows(ctx context.Context, conn adbc.Connection, lock *sync.Mutex, sql 
 		for i := range int(rec.NumRows()) {
 			row := make([]json.RawMessage, rec.NumCols())
 			for c := range int(rec.NumCols()) {
-				v, err := json.Marshal(rec.Column(c).GetOneForMarshal(i))
+				v, err := arrowfmt.Marshal(rec.Column(c), i)
 				if err != nil {
 					return nil, err
 				}

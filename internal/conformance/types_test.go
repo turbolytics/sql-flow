@@ -9,6 +9,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/arrowfmt"
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/errs"
@@ -97,7 +98,7 @@ func (s *typeSink) value() any {
 	if str, ok := chunk.(*array.String); ok {
 		return str.Value(0)
 	}
-	return chunk.ValueStr(0)
+	return arrowfmt.Text(chunk, 0)
 }
 
 // lastString returns the single string value of the last delivered table, or
