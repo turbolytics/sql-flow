@@ -140,7 +140,7 @@ func TestCliServe_EncodeRendersEachTypeByTheContract(t *testing.T) {
 		"dec":     `"12.34"`,
 		"huge":    `"170141183460469231731687303715884105727"`,
 		"tz":      `"2026-09-10T00:00:00Z"`,
-		"naive":   `"2026-09-10T01:02:03.456"`,
+		"naive":   `"2026-09-10T01:02:03.456Z"`,
 		"day":     `"2026-09-10"`,
 		"list":    `[1,2]`,
 		"obj":     `{"a":1}`,
@@ -148,6 +148,23 @@ func TestCliServe_EncodeRendersEachTypeByTheContract(t *testing.T) {
 	} {
 		assert.Equal(t, want, string(row[name]))
 	}
+}
+
+// A timestamp inside a list or a struct renders by the same contract as a
+// top-level one. Arrow renders a nested timestamp itself, and 18.8.0 changed
+// how.
+func TestCliServe_EncodeRendersNestedTimestampsByTheContract(t *testing.T) {
+	coverage.Covers(t, "cli.serve")
+	conn := newConn(t)
+
+	res := encodeSQL(t, conn, `SELECT
+		[TIMESTAMP '2026-09-10 01:02:03.456'] AS l,
+		{'t': TIMESTAMP '2026-09-10 01:02:03.456'} AS o`, 10)
+
+	var rows []map[string]json.RawMessage
+	assert.NoError(t, json.Unmarshal(res.Rows, &rows))
+	assert.Equal(t, `["2026-09-10T01:02:03.456Z"]`, string(rows[0]["l"]))
+	assert.Equal(t, `{"t":"2026-09-10T01:02:03.456Z"}`, string(rows[0]["o"]))
 }
 
 // A DuckDB ENUM arrives as an Arrow dictionary. It reports the value type,
