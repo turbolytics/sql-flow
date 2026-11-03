@@ -80,10 +80,16 @@ type listLike interface {
 }
 
 // timestampText renders the instant in the column's zone, or in UTC when the
-// column has none. This is arrow-go 18.7.0's rendering, kept so that a sink
+// column has none, or when Go cannot load it. This is arrow-go 18.7.0's rendering, kept so that a sink
 // writes the same string it wrote before the layout moved out of our hands.
 func timestampText(a *array.Timestamp, i int) string {
-	toTime, _ := a.DataType().(*arrow.TimestampType).GetToTimeFunc()
+	typ := a.DataType().(*arrow.TimestampType)
+	toTime, err := typ.GetToTimeFunc()
+	if err != nil {
+		// A zone Go cannot load, such as a runtime image without zoneinfo,
+		// still names a known instant. UTC renders it without a panic.
+		return a.Value(i).ToTime(typ.Unit).UTC().Format(time.RFC3339Nano)
+	}
 	return toTime(a.Value(i)).Format(time.RFC3339Nano)
 }
 

@@ -221,3 +221,15 @@ func TestArrowfmtRecordRow_MatchesRecordToJSON(t *testing.T) {
 		assert.Equal(t, line, string(got))
 	}
 }
+
+// A zone that Go cannot load must not panic the sink. The instant is still
+// known, so it renders in UTC.
+func TestArrowfmtTimestamp_AnUnloadableZoneRendersInUTC(t *testing.T) {
+	col := tsArray(t, tsType(arrow.Microsecond, ""), &instant)
+	bad := array.NewTimestampData(array.NewData(
+		tsType(arrow.Microsecond, "Not/AZone"), 1,
+		col.Data().Buffers(), nil, 0, 0))
+
+	assert.Equal(t, `"2026-09-08T12:00:00.123456Z"`, marshal(t, bad, 0))
+	assert.Equal(t, "2026-09-08T12:00:00.123456Z", Text(bad, 0))
+}
