@@ -183,3 +183,57 @@ func TestDatabaseResources_TableAndPartitionCountsRoundTrip(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, `{}`, string(out))
 }
+
+// A slot holds WAL on the primary's disk until its consumer confirms it, so
+// it reports whether a consumer is connected and what it holds. A stopped
+// connector is the case that matters: its slot stays, inactive, and nothing
+// in pg_stat_replication mentions it.
+func TestDatabaseReplicationSlot_RoundTrips(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	raw := `{"role":"primary","slots":[{"name":"debezium","type":"logical","plugin":"pgoutput","database":"billing","active":false,"wal_status":"extended","retained_bytes":2147483648,"behind_bytes":2147000000,"safe_wal_bytes":1073741824}]}`
+	var r DatabaseReplication
+	assert.NoError(t, json.Unmarshal([]byte(raw), &r))
+	assert.Equal(t, 1, len(r.Slots))
+	s := r.Slots[0]
+	assert.Equal(t, "debezium", s.Name)
+	assert.Equal(t, "logical", s.Type)
+	assert.Equal(t, "pgoutput", s.Plugin)
+	assert.Equal(t, "billing", s.Database)
+	assert.That(t, !s.Active)
+	assert.Equal(t, "extended", s.WALStatus)
+	assert.Equal(t, int64(2147483648), *s.RetainedBytes)
+	assert.Equal(t, int64(2147000000), *s.BehindBytes)
+	assert.Equal(t, int64(1073741824), *s.SafeWALBytes)
+	out, err := json.Marshal(r)
+	assert.NoError(t, err)
+	assert.Equal(t, raw, string(out))
+
+	// An active slot says so, and a slot that was never told a limit, or a
+	// physical slot with no confirmed position, leaves those facts out.
+	// Active is not omitted: false is the fact that matters most.
+	out, err = json.Marshal(DatabaseReplicationSlot{Name: "standby", Type: "physical"})
+	assert.NoError(t, err)
+	assert.Equal(t, `{"name":"standby","type":"physical","active":false}`, string(out))
+	assert.Equal(t, 32, MaxDatabaseReplicationSlots)
+}
+
+// WAL on disk is a resource and the rate it is written at is load. Both are
+// optional: a role without the grant, or a kind with no WAL, leaves them out.
+func TestDatabase_WALFactsRoundTrip(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	raw := `{"wal_bytes":17179869184}`
+	var r DatabaseResources
+	assert.NoError(t, json.Unmarshal([]byte(raw), &r))
+	assert.Equal(t, int64(17179869184), *r.WALBytes)
+	out, err := json.Marshal(r)
+	assert.NoError(t, err)
+	assert.Equal(t, raw, string(out))
+
+	raw = `{"wal_bytes_per_second":1048576.5}`
+	var l DatabaseLoad
+	assert.NoError(t, json.Unmarshal([]byte(raw), &l))
+	assert.Equal(t, 1048576.5, *l.WALBytesPerSecond)
+	out, err = json.Marshal(l)
+	assert.NoError(t, err)
+	assert.Equal(t, raw, string(out))
+}

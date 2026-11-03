@@ -410,7 +410,7 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 				// wire.MaxDatabaseErrors. None grows with the data in the
 				// database. TestCollect_AFullDatabaseBundleStaysUnderTheCeiling
 				// prices all three at their caps.
-				if at == ".Bundle.Database.Tables" || at == ".Bundle.Database.Replication.Replicas" || at == ".Bundle.Database.Collection.Errors" {
+				if at == ".Bundle.Database.Tables" || at == ".Bundle.Database.Replication.Replicas" || at == ".Bundle.Database.Replication.Slots" || at == ".Bundle.Database.Collection.Errors" {
 					continue
 				}
 				// The queries doing the work, opt-in and at most
@@ -449,8 +449,9 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 // buckets took the widest bundle to 4212 bytes, which is the price of the
 // one nested array the shape guard exempts. It was 8 KiB until the
 // database section's load landed, with one of each of its lists and every
-// load field: 8.7 KiB on 2026-10-06, and 9183 bytes on 2026-10-07 with the
-// one table's schema hash, one schema change and its write rates. The
+// load field: 8.7 KiB on 2026-10-06, 9183 bytes on 2026-10-07 with the
+// one table's schema hash, one schema change and its write rates, and 9707
+// bytes on 2026-11-03 with one replication slot and the WAL facts. The
 // receiver's limit is 16 KiB, so 10 leaves the alarm a margin without
 // letting the shape double quietly; the next field here costs the margin.
 func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
@@ -588,7 +589,7 @@ func widestBundle(t *testing.T) wire.Bundle {
 		// One of each repeated field: enough for the schema to validate
 		// the shape. The full width is priced by
 		// TestCollect_AFullDatabaseBundleStaysUnderTheCeiling.
-		Database: widestDatabase(1, 1, 1, 1, 1),
+		Database: widestDatabase(1, 1, 1, 1, 1, 1),
 		Exit: &wire.Exit{
 			Reason: "system.internal.unexpected",
 			Code:   255,
@@ -599,8 +600,8 @@ func widestBundle(t *testing.T) wire.Bundle {
 // widestDatabase is a database section with every field at its widest
 // value: the longest identifiers Postgres allows, the longest host name DNS
 // allows, and 2^62 in every count, with the given number of tables,
-// replicas, errors and queries, and every load field set.
-func widestDatabase(tables, replicas, errors, queries, changes int) *wire.Database {
+// replicas, slots, errors and queries, and every load field set.
+func widestDatabase(tables, replicas, slots, errors, queries, changes int) *wire.Database {
 	big := int64(1) << 62
 	n := 1 << 30
 	at := time.Now().UTC()
@@ -622,13 +623,14 @@ func widestDatabase(tables, replicas, errors, queries, changes int) *wire.Databa
 			Memory:                   &wire.DatabaseMemory{SharedBuffersBytes: big},
 			TableCount:               &n,
 			PartitionCount:           &n,
+			WALBytes:                 &big,
 		},
 		Replication: &wire.DatabaseReplication{Role: "primary", LagSeconds: &secs, LastReplayedAt: &at, Upstream: host + ":65535"},
 		Load: &wire.DatabaseLoad{
 			SessionsActiveNow: &n, SessionsIdleInTransactionNow: &n, SessionsWaitingNow: &n, QueriesQueuedNow: &n,
 			LongestQuerySeconds: &secs, QueriesPerSecond: &secs, TransactionsPerSecond: &secs, RollbacksPerSecond: &secs,
 			RowsReadPerSecond: &secs, RowsWrittenPerSecond: &secs, BytesScannedPerSecond: &secs, CacheHitRatio: &ratio,
-			DeadlocksPerSecond: &secs, TempBytesPerSecond: &secs,
+			DeadlocksPerSecond: &secs, TempBytesPerSecond: &secs, WALBytesPerSecond: &secs,
 		},
 		Collection: wire.DatabaseCollection{Queries: n, DurationMs: big},
 	}
@@ -657,6 +659,12 @@ func widestDatabase(tables, replicas, errors, queries, changes int) *wire.Databa
 	for i := 0; i < replicas; i++ {
 		d.Replication.Replicas = append(d.Replication.Replicas, wire.DatabaseReplica{Name: ident, LagSeconds: &secs, State: "streaming"})
 	}
+	for i := 0; i < slots; i++ {
+		d.Replication.Slots = append(d.Replication.Slots, wire.DatabaseReplicationSlot{
+			Name: ident, Type: "physical", Plugin: ident, Database: ident, Active: true, WALStatus: "unreserved",
+			RetainedBytes: &big, BehindBytes: &big, SafeWALBytes: &big,
+		})
+	}
 	for i := 0; i < errors; i++ {
 		d.Collection.Errors = append(d.Collection.Errors, wire.DatabaseError{Table: table, Error: strings.Repeat("e", 200)})
 	}
@@ -667,13 +675,15 @@ func widestDatabase(tables, replicas, errors, queries, changes int) *wire.Databa
 // wire.MaxDatabaseTables tables, each with the longest schema and table
 // name Postgres allows, its load counters, its write rates and a schema
 // hash, wire.MaxDatabaseSchemaChanges changes at the widest type names,
-// wire.MaxDatabaseReplicas replicas, an error for every table and every
+// wire.MaxDatabaseReplicas replicas, wire.MaxDatabaseReplicationSlots
+// slots, an error for every table and every
 // catalog query, every load field, wire.MaxDatabaseQueries queries at 200
 // characters, and every count at 2^62. It measured 47725 bytes on
 // 2026-10-05 before load, 60925 with it on 2026-10-06, and 84037 with
 // the schema and the writes on 2026-10-07, past the 64 KiB a receiver
 // allowed before; a receiver that accepts database bundles allows 128 KiB
-// now, which is what the load spec first asked for. A field added here is
+// now, which is what the load spec first asked for. Replication slots and
+// WAL took it to 96775 on 2026-11-03. A field added here is
 // paid for by this comment saying what it measured. The 16 KiB limit that
 // holds every pipeline bundle cannot hold it.
 func TestCollect_AFullDatabaseBundleStaysUnderTheCeiling(t *testing.T) {
@@ -686,7 +696,7 @@ func TestCollect_AFullDatabaseBundleStaysUnderTheCeiling(t *testing.T) {
 			Arch: "linux/arm64", ConfigHash: "sha256:" + strings.Repeat("f", 64), Labels: widestLabels(t),
 		},
 		Process:  wire.Process{StartedAt: at, RSSBytes: 1 << 62, Goroutines: 1 << 30},
-		Database: widestDatabase(wire.MaxDatabaseTables, wire.MaxDatabaseReplicas, wire.MaxDatabaseErrors, wire.MaxDatabaseQueries, wire.MaxDatabaseSchemaChanges),
+		Database: widestDatabase(wire.MaxDatabaseTables, wire.MaxDatabaseReplicas, wire.MaxDatabaseReplicationSlots, wire.MaxDatabaseErrors, wire.MaxDatabaseQueries, wire.MaxDatabaseSchemaChanges),
 	}
 	raw, err := json.Marshal(b)
 	assert.NoError(t, err)

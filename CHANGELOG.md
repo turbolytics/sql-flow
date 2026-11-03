@@ -4,6 +4,16 @@
 
 ### Added
 
+- **TurboStats databases report replication slots and WAL.** A primary's
+  `replication` section sends `slots`: each slot's name, type, plugin,
+  database, whether a consumer is connected, its WAL status, the WAL it
+  retains, the WAL its consumer has not confirmed, and the room left before
+  the slot is at risk. At most `wire.MaxDatabaseReplicationSlots` (32), the
+  ones holding the most WAL first. `DatabaseResources` sends `wal_bytes`
+  and `DatabaseLoad` sends `wal_bytes_per_second`. A stopped CDC connector
+  leaves `replicas` but stays in `slots`, still holding WAL. The widest
+  database bundle grows 12,684 bytes, to 96,775.
+
 - **TurboStats databases count their tables.** `DatabaseResources` sends
   `table_count`, the tables in the database's own schemas with partitions
   included, and `partition_count`, how many of them are partitions. A
