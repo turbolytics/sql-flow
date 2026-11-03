@@ -14,6 +14,11 @@ const MaxDatabaseTables = 50
 // more sends the first MaxDatabaseReplicas by name.
 const MaxDatabaseReplicas = 16
 
+// MaxDatabaseReplicationSlots bounds DatabaseReplication.Slots. A server with
+// more sends the slots that hold the most WAL, because those fill the disk
+// first.
+const MaxDatabaseReplicationSlots = 32
+
 // MaxDatabaseErrors bounds DatabaseCollection.Errors: one per watched table
 // and one per catalog query, which is fewer than ten.
 const MaxDatabaseErrors = MaxDatabaseTables + 10
@@ -98,6 +103,9 @@ type DatabaseLoad struct {
 	DeadlocksPerSecond *float64 `json:"deadlocks_per_second,omitempty"`
 	// TempBytesPerSecond is sorts and hashes spilling to disk.
 	TempBytesPerSecond *float64 `json:"temp_bytes_per_second,omitempty"`
+	// WALBytesPerSecond is the write-ahead log the server wrote. Compared
+	// with a slot's RetainedBytes, it says whether a slot keeps up.
+	WALBytesPerSecond *float64 `json:"wal_bytes_per_second,omitempty"`
 }
 
 // DatabaseQuery is one query shape's share of the interval's work.
@@ -144,6 +152,10 @@ type DatabaseResources struct {
 	// climbing is retention that stopped.
 	TableCount     *int `json:"table_count,omitempty"`
 	PartitionCount *int `json:"partition_count,omitempty"`
+	// WALBytes is the write-ahead log on disk for the whole server, which
+	// SizeBytes does not count. A replication slot that stops advancing
+	// grows it until the disk fills.
+	WALBytes *int64 `json:"wal_bytes,omitempty"`
 }
 
 // DatabaseConnections is connections in use against the configured maximum.
@@ -216,6 +228,10 @@ type DatabaseReplication struct {
 	Upstream       string     `json:"upstream,omitempty"`
 	// Replicas is a primary's view of each replica.
 	Replicas []DatabaseReplica `json:"replicas,omitempty"`
+	// Slots is a primary's replication slots, for the whole server, the
+	// ones holding the most WAL first. A consumer that stops leaves
+	// Replicas but stays here, still holding WAL.
+	Slots []DatabaseReplicationSlot `json:"slots,omitempty"`
 }
 
 // DatabaseReplica is one replica as its primary sees it.
@@ -223,6 +239,33 @@ type DatabaseReplica struct {
 	Name       string   `json:"name"`
 	LagSeconds *float64 `json:"lag_seconds,omitempty"`
 	State      string   `json:"state,omitempty"`
+}
+
+// DatabaseReplicationSlot is one replication slot and the WAL it holds.
+type DatabaseReplicationSlot struct {
+	Name string `json:"name"`
+	// Type is logical or physical.
+	Type string `json:"type"`
+	// Plugin is a logical slot's decoding plugin. Database is the database
+	// a logical slot reads.
+	Plugin   string `json:"plugin,omitempty"`
+	Database string `json:"database,omitempty"`
+	// Active is whether a consumer is connected.
+	Active bool `json:"active"`
+	// WALStatus is the system's word for the WAL the slot needs: for
+	// Postgres reserved, extended, unreserved or lost. Lost means the slot
+	// can no longer serve its consumer.
+	WALStatus string `json:"wal_status,omitempty"`
+	// RetainedBytes is the WAL the slot keeps on disk, from its restart
+	// position to the server's current position.
+	RetainedBytes *int64 `json:"retained_bytes,omitempty"`
+	// BehindBytes is the WAL the consumer has not confirmed, from its
+	// confirmed position to the server's current position. A physical slot
+	// has no confirmed position and leaves it out.
+	BehindBytes *int64 `json:"behind_bytes,omitempty"`
+	// SafeWALBytes is the WAL the server can write before the slot is at
+	// risk of losing what it needs. Absent when the server sets no limit.
+	SafeWALBytes *int64 `json:"safe_wal_bytes,omitempty"`
 }
 
 // DatabaseCollection is what the interval cost, so the receiver can show

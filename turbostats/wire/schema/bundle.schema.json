@@ -625,6 +625,10 @@
             },
             "partition_count": {
               "type": "integer"
+            },
+            "wal_bytes": {
+              "type": "integer",
+              "description": "WALBytes is the write-ahead log on disk for the whole server, which\nSizeBytes does not count. A replication slot that stops advancing\ngrows it until the disk fills."
             }
           },
           "type": "object"
@@ -760,6 +764,55 @@
               },
               "type": "array",
               "description": "Replicas is a primary's view of each replica."
+            },
+            "slots": {
+              "items": {
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "Type is logical or physical."
+                  },
+                  "plugin": {
+                    "type": "string",
+                    "description": "Plugin is a logical slot's decoding plugin. Database is the database\na logical slot reads."
+                  },
+                  "database": {
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean",
+                    "description": "Active is whether a consumer is connected."
+                  },
+                  "wal_status": {
+                    "type": "string",
+                    "description": "WALStatus is the system's word for the WAL the slot needs: for\nPostgres reserved, extended, unreserved or lost. Lost means the slot\ncan no longer serve its consumer."
+                  },
+                  "retained_bytes": {
+                    "type": "integer",
+                    "description": "RetainedBytes is the WAL the slot keeps on disk, from its restart\nposition to the server's current position."
+                  },
+                  "behind_bytes": {
+                    "type": "integer",
+                    "description": "BehindBytes is the WAL the consumer has not confirmed, from its\nconfirmed position to the server's current position. A physical slot\nhas no confirmed position and leaves it out."
+                  },
+                  "safe_wal_bytes": {
+                    "type": "integer",
+                    "description": "SafeWALBytes is the WAL the server can write before the slot is at\nrisk of losing what it needs. Absent when the server sets no limit."
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "name",
+                  "type",
+                  "active"
+                ],
+                "description": "DatabaseReplicationSlot is one replication slot and the WAL it holds."
+              },
+              "type": "array",
+              "description": "Slots is a primary's replication slots, for the whole server, the\nones holding the most WAL first. A consumer that stops leaves\nReplicas but stays here, still holding WAL."
             }
           },
           "type": "object",
@@ -819,6 +872,10 @@
             "temp_bytes_per_second": {
               "type": "number",
               "description": "TempBytesPerSecond is sorts and hashes spilling to disk."
+            },
+            "wal_bytes_per_second": {
+              "type": "number",
+              "description": "WALBytesPerSecond is the write-ahead log the server wrote. Compared\nwith a slot's RetainedBytes, it says whether a slot keeps up."
             }
           },
           "type": "object",
