@@ -250,6 +250,26 @@ const (
 	StateFailed  = "failed"
 )
 
+// PipelineSource names the database a pipeline reads, from its config. It holds
+// no credential: a reporter sends these fields and nothing else from a config.
+//
+// A reporter applies its connector's defaults first, so an absent field means it
+// could not read the value, such as one behind a config provider. It sends Kind
+// even when it can read nothing else, so a receiver can tell a source it cannot
+// name from no source at all.
+type PipelineSource struct {
+	// Kind is the database's kind: postgres.
+	Kind string `json:"kind"`
+	Host string `json:"host,omitempty"`
+	// Port is a JSON integer. A value that does not parse as one is absent: a
+	// string here fails the whole report's decode, not just this field.
+	Port int `json:"port,omitempty"`
+	// Database is the database the pipeline reads, not the server.
+	Database string `json:"database,omitempty"`
+	// Slot is the replication slot the pipeline holds on that server.
+	Slot string `json:"slot,omitempty"`
+}
+
 // BackfillNone is the state of a source that can backfill and is not.
 const BackfillNone = "none"
 
@@ -367,6 +387,10 @@ type Pipeline struct {
 	SinkWireBytes   *int64 `json:"sink_wire_bytes,omitempty"`
 	// Backfill is present for a source that can backfill. See Backfill.
 	Backfill *Backfill `json:"backfill,omitempty"`
+	// Source is the database this pipeline reads, from its config. A receiver
+	// joins it to the database's own reports. Absent for a pipeline that reads
+	// no database, and from engines that predate it. See PipelineSource.
+	Source *PipelineSource `json:"source,omitempty"`
 
 	MessageCount int64 `json:"message_count"`
 	// MessagePayloadBytes is the bytes of every message value received,
