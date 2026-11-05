@@ -4,6 +4,12 @@
 
 ### Added
 
+- **A TurboStats pipeline can name the database it reads.** `pipeline.source`
+  sends `kind`, `host`, `port`, `database` and `slot`, from the pipeline's
+  config, and no credential. A reporter applies its connector's defaults first,
+  so an absent field means it could not read the value. `port` is a JSON integer.
+  SQLFlow sends none today. The widest pipeline bundle grows 455 bytes, to 10,162.
+
 - **TurboStats databases report replication slots and WAL.** A primary's
   `replication` section sends `slots`: each slot's name, type, plugin,
   database, whether a consumer is connected, its WAL status, the WAL it

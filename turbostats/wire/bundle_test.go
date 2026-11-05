@@ -378,3 +378,88 @@ func TestInstance_KindMarshalsAndIsOmittedWhenEmpty(t *testing.T) {
 		t.Fatalf("empty kind sent: %s", without)
 	}
 }
+
+// A receiver joins a pipeline to the database it reads through these fields,
+// so each must survive the trip by name.
+func TestPipeline_SourceRoundTrips(t *testing.T) {
+	want := PipelineSource{Kind: "postgres", Host: "db.internal", Port: 5432, Database: "billing", Slot: "debezium_billing"}
+	raw, err := json.Marshal(Pipeline{Source: &want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"source":`, `"kind":"postgres"`, `"host":"db.internal"`, `"port":5432`, `"database":"billing"`, `"slot":"debezium_billing"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("%s has no %s", raw, key)
+		}
+	}
+	var got Pipeline
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Source == nil || *got.Source != want {
+		t.Errorf("got %+v, want %+v", got.Source, want)
+	}
+}
+
+// A pipeline that reads no database, and an older reporter, send no source.
+func TestPipeline_SourceIsAbsentUntilSet(t *testing.T) {
+	raw, err := json.Marshal(Pipeline{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"source"`) {
+		t.Errorf("%s has a source", raw)
+	}
+}
+
+// A reporter leaves out a field it cannot read, such as a value its config
+// holds behind a provider, so a receiver can say the source cannot be named.
+func TestPipeline_ASourceFieldItCannotReadIsAbsent(t *testing.T) {
+	raw, err := json.Marshal(PipelineSource{Kind: "postgres", Database: "billing", Slot: "debezium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"host"`, `"port"`} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("%s has %s", raw, key)
+		}
+	}
+}
+
+// A receiver tells a source it cannot name from no source at all by whether the
+// object arrived. Only Kind is required, so this is what a reporter that could
+// read nothing else sends.
+func TestPipeline_ASourceDecodesApartFromNoSource(t *testing.T) {
+	for _, c := range []struct {
+		name, raw string
+		present   bool
+	}{
+		{"no source", `{"message_count":0}`, false},
+		{"a null source", `{"message_count":0,"source":null}`, false},
+		{"a source it could not read", `{"message_count":0,"source":{"kind":"postgres"}}`, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var p Pipeline
+			if err := json.Unmarshal([]byte(c.raw), &p); err != nil {
+				t.Fatal(err)
+			}
+			if (p.Source != nil) != c.present {
+				t.Fatalf("source = %+v, want present %v", p.Source, c.present)
+			}
+			if c.present && (p.Source.Kind != "postgres" || p.Source.Host != "" || p.Source.Port != 0 ||
+				p.Source.Database != "" || p.Source.Slot != "") {
+				t.Errorf("source = %+v", p.Source)
+			}
+		})
+	}
+}
+
+// A string port fails the whole report's decode. This pins why a reporter must
+// send a JSON integer or nothing: Kafka Connect's config values are all strings.
+func TestPipeline_AStringPortFailsTheWholeDecode(t *testing.T) {
+	var p Pipeline
+	err := json.Unmarshal([]byte(`{"message_count":0,"source":{"kind":"postgres","port":"5432"}}`), &p)
+	if err == nil {
+		t.Fatal("a string port decoded")
+	}
+}

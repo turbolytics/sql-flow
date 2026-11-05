@@ -451,9 +451,10 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 // database section's load landed, with one of each of its lists and every
 // load field: 8.7 KiB on 2026-10-06, 9183 bytes on 2026-10-07 with the
 // one table's schema hash, one schema change and its write rates, and 9707
-// bytes on 2026-11-03 with one replication slot and the WAL facts. The
-// receiver's limit is 16 KiB, so 10 leaves the alarm a margin without
-// letting the shape double quietly; the next field here costs the margin.
+// bytes on 2026-11-03 with one replication slot and the WAL facts, and 10162
+// bytes on 2026-11-05 with the pipeline's source. The receiver's limit is 16
+// KiB, so 10 leaves the alarm a margin without letting the shape double
+// quietly; the next field here costs the margin.
 func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	raw, err := json.Marshal(widestBundle(t))
@@ -560,6 +561,10 @@ func widestBundle(t *testing.T) wire.Bundle {
 				Batch:     widestDuration(),
 				SinkFlush: widestDuration(),
 			},
+			// A DNS name is at most 253 characters, and a Postgres database
+			// or slot name at most 63 bytes.
+			Source: &wire.PipelineSource{Kind: "postgres", Host: strings.Repeat("h", 253), Port: 65535,
+				Database: strings.Repeat("d", 63), Slot: strings.Repeat("s", 63)},
 			Backfill: &wire.Backfill{
 				State:          "completed",
 				BlocksStream:   true,

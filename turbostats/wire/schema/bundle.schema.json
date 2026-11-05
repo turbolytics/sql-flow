@@ -232,6 +232,34 @@
           ],
           "description": "Backfill is present for a source that can backfill. See Backfill."
         },
+        "source": {
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "Kind is the database's kind: postgres."
+            },
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer",
+              "description": "Port is a JSON integer. A value that does not parse as one is absent: a\nstring here fails the whole report's decode, not just this field."
+            },
+            "database": {
+              "type": "string",
+              "description": "Database is the database the pipeline reads, not the server."
+            },
+            "slot": {
+              "type": "string",
+              "description": "Slot is the replication slot the pipeline holds on that server."
+            }
+          },
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "description": "Source is the database this pipeline reads, from its config. A receiver\njoins it to the database's own reports. Absent for a pipeline that reads\nno database, and from engines that predate it. See PipelineSource."
+        },
         "message_count": {
           "type": "integer"
         },
