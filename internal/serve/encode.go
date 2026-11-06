@@ -10,6 +10,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/arrowfmt"
 )
 
 // column describes one result column in a response.
@@ -27,10 +28,6 @@ type result struct {
 	RowCount  int
 	Truncated bool
 }
-
-// naiveTimestampLayout renders a timestamp without a zone. It carries no
-// offset, because the value names a wall-clock time, not an instant.
-const naiveTimestampLayout = "2006-01-02T15:04:05.999999999"
 
 // readRows encodes at most maxRows rows from rdr.
 //
@@ -101,11 +98,14 @@ func readRows(ctx context.Context, rdr array.RecordReader, maxRows int) (result,
 
 // encodeValue writes one value as JSON.
 //
-// Four types leave Arrow's own rendering. A zoned timestamp renders in UTC
-// rather than the session zone. A naive timestamp carries no offset rather
-// than a Z. A decimal is a string of its exact digits, because Arrow's
-// rendering goes through a float and prints HUGEINT as 1.7e+38. A float that
-// is NaN or infinite is a string, because JSON has no literal for either.
+// Three types leave Arrow's own rendering. A top-level zoned timestamp renders
+// in UTC rather than the session zone. A decimal is a string of its exact
+// digits, because Arrow's rendering goes through a float and prints HUGEINT
+// as 1.7e+38. A float that is NaN or infinite is a string, because JSON has
+// no literal for either.
+//
+// Every other timestamp, nested ones included, renders through arrowfmt: a
+// zone-less timestamp is a UTC instant and ends in Z.
 func encodeValue(buf *bytes.Buffer, col arrow.Array, i int) error {
 	if col.IsNull(i) {
 		buf.WriteString("null")
@@ -115,11 +115,10 @@ func encodeValue(buf *bytes.Buffer, col arrow.Array, i int) error {
 	switch a := col.(type) {
 	case *array.Timestamp:
 		typ := a.DataType().(*arrow.TimestampType)
-		t := a.Value(i).ToTime(typ.Unit)
 		if typ.TimeZone != "" {
+			t := a.Value(i).ToTime(typ.Unit)
 			return marshalInto(buf, t.UTC().Format(time.RFC3339Nano))
 		}
-		return marshalInto(buf, t.Format(naiveTimestampLayout))
 	case *array.Decimal128:
 		typ := a.DataType().(*arrow.Decimal128Type)
 		return marshalInto(buf, a.Value(i).ToString(typ.Scale))
@@ -128,7 +127,12 @@ func encodeValue(buf *bytes.Buffer, col arrow.Array, i int) error {
 	case *array.Float64:
 		return writeFloat(buf, a.Value(i), a.Value(i))
 	}
-	return marshalInto(buf, col.GetOneForMarshal(i))
+	encoded, err := arrowfmt.Marshal(col, i)
+	if err != nil {
+		return err
+	}
+	buf.Write(encoded)
+	return nil
 }
 
 // writeFloat takes the value twice: as a float64 to test, and as its own

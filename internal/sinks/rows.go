@@ -1,10 +1,9 @@
 package sinks
 
 import (
-	"bytes"
-
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/turbolytics/sql-flow/internal/arrowfmt"
 	"github.com/turbolytics/sql-flow/internal/errs"
 )
 
@@ -28,18 +27,11 @@ func tableRowsAsJSON(table arrow.Table) ([][]byte, error) {
 			continue
 		}
 
-		// RecordToJSON writes one JSON object per line.
-		var buf bytes.Buffer
-		if err := array.RecordToJSON(rec, &buf); err != nil {
-			return nil, err
-		}
-
-		for _, line := range bytes.Split(bytes.TrimRight(buf.Bytes(), "\n"), []byte("\n")) {
-			if len(bytes.TrimSpace(line)) == 0 {
-				continue
+		for i := 0; i < int(rec.NumRows()); i++ {
+			row, err := arrowfmt.RecordRow(rec, i)
+			if err != nil {
+				return nil, err
 			}
-			row := make([]byte, len(line))
-			copy(row, line)
 			rows = append(rows, row)
 		}
 	}
@@ -71,7 +63,7 @@ func tableRowKeys(table arrow.Table, column string) ([][]byte, error) {
 				return nil, errs.New(errs.CodeSinkEncodeFailed,
 					"kafka sink: key column %q is null in row %d", column, len(keys))
 			}
-			keys = append(keys, []byte(col.ValueStr(i)))
+			keys = append(keys, []byte(arrowfmt.Text(col, i)))
 		}
 	}
 	return keys, nil

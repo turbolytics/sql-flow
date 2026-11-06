@@ -1,13 +1,13 @@
 package sinks
 
 import (
-	"encoding/json"
 	"math"
 	"strconv"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/turbolytics/sql-flow/internal/arrowfmt"
 	"github.com/turbolytics/sql-flow/internal/errs"
 )
 
@@ -122,9 +122,8 @@ func postgresValue(arr arrow.Array, i int) (any, error) {
 		if arr.IsNull(i) {
 			return nil, nil
 		}
-		// Rendered from the Arrow array itself: GetOneForMarshal is what
-		// the array's own MarshalJSON uses for each element.
-		b, err := json.Marshal(arr.(interface{ GetOneForMarshal(int) any }).GetOneForMarshal(i))
+		// arrowfmt owns the text of a timestamp inside the container.
+		b, err := arrowfmt.Marshal(arr, i)
 		if err != nil {
 			return nil, errs.Wrap(errs.CodeSinkEncodeFailed, err, "rendering %s as JSON", arr.DataType())
 		}
