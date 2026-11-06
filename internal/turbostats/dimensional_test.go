@@ -451,16 +451,17 @@ func TestWire_NoFieldScalesWithCardinality(t *testing.T) {
 // database section's load landed, with one of each of its lists and every
 // load field: 8.7 KiB on 2026-10-06, 9183 bytes on 2026-10-07 with the
 // one table's schema hash, one schema change and its write rates, and 9707
-// bytes on 2026-11-03 with one replication slot and the WAL facts, and 10162
-// bytes on 2026-11-05 with the pipeline's source. The receiver's limit is 16
-// KiB, so 10 leaves the alarm a margin without letting the shape double
-// quietly; the next field here costs the margin.
+// bytes on 2026-11-03 with one replication slot and the WAL facts, 10162
+// bytes on 2026-11-05 with the pipeline's source, and 10271 bytes on
+// 2026-11-06 with the source's flush and heartbeat settings, which passed 10
+// KiB. The receiver's limit is 16 KiB, so 11 leaves the alarm a margin without
+// letting the shape double quietly; the next field here costs the margin.
 func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 	coverage.Covers(t, "observability.turbostats")
 	raw, err := json.Marshal(widestBundle(t))
 	assert.NoError(t, err)
 	t.Logf("a bundle with every field at its widest is %d bytes", len(raw))
-	assert.That(t, len(raw) < 10<<10)
+	assert.That(t, len(raw) < 11<<10)
 }
 
 // widestBundle is a bundle with every field at its widest value. The size
@@ -469,6 +470,7 @@ func TestCollect_AFullBundleStaysUnderTheCeiling(t *testing.T) {
 func widestBundle(t *testing.T) wire.Bundle {
 	t.Helper()
 	big := int64(1) << 62
+	yes := true
 	n := 1 << 30
 	at := time.Now().UTC()
 	// The longest code in the taxonomy is shorter than this; a code is a
@@ -564,7 +566,8 @@ func widestBundle(t *testing.T) wire.Bundle {
 			// A DNS name is at most 253 characters, and a Postgres database
 			// or slot name at most 63 bytes.
 			Source: &wire.PipelineSource{Kind: "postgres", Host: strings.Repeat("h", 253), Port: 65535,
-				Database: strings.Repeat("d", 63), Slot: strings.Repeat("s", 63)},
+				Database: strings.Repeat("d", 63), Slot: strings.Repeat("s", 63),
+				LSNFlushMode: "connector_and_driver", HeartbeatIntervalMs: &big, HeartbeatActionQuery: &yes},
 			Backfill: &wire.Backfill{
 				State:          "completed",
 				BlocksStream:   true,

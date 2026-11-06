@@ -252,6 +252,18 @@
             "slot": {
               "type": "string",
               "description": "Slot is the replication slot the pipeline holds on that server."
+            },
+            "lsn_flush_mode": {
+              "type": "string",
+              "description": "LSNFlushMode is how the pipeline confirms its place in the slot, as\nDebezium's lsn.flush.mode names it: connector, connector_and_driver or\nmanual."
+            },
+            "heartbeat_interval_ms": {
+              "type": "integer",
+              "description": "HeartbeatIntervalMs is how often the pipeline sends a heartbeat, in\nmilliseconds. 0 is off, and a reporter sends it."
+            },
+            "heartbeat_action_query": {
+              "type": "boolean",
+              "description": "HeartbeatActionQuery is whether each heartbeat runs a query. A reporter\nsends whether one is set, never the query, which could carry anything."
             }
           },
           "type": "object",

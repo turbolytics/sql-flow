@@ -268,6 +268,22 @@ type PipelineSource struct {
 	Database string `json:"database,omitempty"`
 	// Slot is the replication slot the pipeline holds on that server.
 	Slot string `json:"slot,omitempty"`
+
+	// The settings that decide whether the slot advances while the pipeline reads
+	// nothing it captures, after the connector's defaults. Each is absent when the
+	// reporter could not read it, so a receiver never reads an unread setting as
+	// the default.
+
+	// LSNFlushMode is how the pipeline confirms its place in the slot, as
+	// Debezium's lsn.flush.mode names it: connector, connector_and_driver or
+	// manual.
+	LSNFlushMode string `json:"lsn_flush_mode,omitempty"`
+	// HeartbeatIntervalMs is how often the pipeline sends a heartbeat, in
+	// milliseconds. 0 is off, and a reporter sends it.
+	HeartbeatIntervalMs *int64 `json:"heartbeat_interval_ms,omitempty"`
+	// HeartbeatActionQuery is whether each heartbeat runs a query. A reporter
+	// sends whether one is set, never the query, which could carry anything.
+	HeartbeatActionQuery *bool `json:"heartbeat_action_query,omitempty"`
 }
 
 // BackfillNone is the state of a source that can backfill and is not.
