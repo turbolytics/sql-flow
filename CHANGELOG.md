@@ -4,6 +4,14 @@
 
 ### Added
 
+- **A TurboStats pipeline's source sends the settings that decide whether its
+  slot advances.** `pipeline.source` gains `lsn_flush_mode`,
+  `heartbeat_interval_ms` and `heartbeat_action_query`, after the connector's
+  defaults. A heartbeat that is off is sent as `0`. `heartbeat_action_query` says
+  whether a query is set, never the query. A setting the reporter could not read
+  is absent, so a receiver never reads it as the default. The widest bundle grows
+  to 10,271 bytes, so its size alarm moves from 10 KiB to 11 KiB.
+
 - **A TurboStats pipeline can name the database it reads.** `pipeline.source`
   sends `kind`, `host`, `port`, `database` and `slot`, from the pipeline's
   config, and no credential. A reporter applies its connector's defaults first,

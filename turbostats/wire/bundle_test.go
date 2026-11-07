@@ -454,6 +454,57 @@ func TestPipeline_ASourceDecodesApartFromNoSource(t *testing.T) {
 	}
 }
 
+// The three settings that decide whether a slot confirms in a quiet spell
+// round-trip, including the zero and false values that mean off.
+func TestPipeline_SourceSettingsRoundTrip(t *testing.T) {
+	off, none := int64(0), false
+	every, set := int64(10000), true
+	for _, want := range []PipelineSource{
+		{Kind: "postgres", LSNFlushMode: "connector", HeartbeatIntervalMs: &off, HeartbeatActionQuery: &none},
+		{Kind: "postgres", LSNFlushMode: "connector_and_driver", HeartbeatIntervalMs: &every, HeartbeatActionQuery: &set},
+	} {
+		raw, err := json.Marshal(Pipeline{Source: &want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got Pipeline
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		s := got.Source
+		if s == nil || s.LSNFlushMode != want.LSNFlushMode || s.HeartbeatIntervalMs == nil ||
+			*s.HeartbeatIntervalMs != *want.HeartbeatIntervalMs || s.HeartbeatActionQuery == nil ||
+			*s.HeartbeatActionQuery != *want.HeartbeatActionQuery {
+			t.Errorf("got %+v from %s, want %+v", s, raw, want)
+		}
+	}
+}
+
+// A heartbeat that is off is sent as 0, and a query that is not set as false. A
+// setting the reporter could not read is absent, so a receiver never reads it as
+// the default.
+func TestPipeline_AnOffHeartbeatIsSentAndAnUnreadOneIsAbsent(t *testing.T) {
+	off, none := int64(0), false
+	raw, err := json.Marshal(PipelineSource{Kind: "postgres", HeartbeatIntervalMs: &off, HeartbeatActionQuery: &none})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"heartbeat_interval_ms":0`, `"heartbeat_action_query":false`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("%s lacks %s", raw, want)
+		}
+	}
+	raw, err = json.Marshal(PipelineSource{Kind: "postgres"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, absent := range []string{"lsn_flush_mode", "heartbeat_interval_ms", "heartbeat_action_query"} {
+		if strings.Contains(string(raw), absent) {
+			t.Errorf("%s carries %s, which the reporter could not read", raw, absent)
+		}
+	}
+}
+
 // A string port fails the whole report's decode. This pins why a reporter must
 // send a JSON integer or nothing: Kafka Connect's config values are all strings.
 func TestPipeline_AStringPortFailsTheWholeDecode(t *testing.T) {
