@@ -16,13 +16,13 @@ dev = [
     # cmd/publish-test-data.py and cmd/websocket-test.py, the dev scripts the
     # README's quickstart drives the pipeline with.
     "click==8.5.0",
-    "websockets==17.3",
+    "websockets==17.4",
 
     "duckdb==2.0.0",
     # pyarrow 14 is built against the numpy 1.x C ABI. Left to the resolver,
     # numpy 2 wins and `import pyarrow` dies on "_ARRAY_API not found".
     "numpy==2.4.6",
-    "pyarrow==26.0.0",
+    "pyarrow==26.0.1",
     "pyiceberg[sql-sqlite]==0.12.0",
     "pytest==9.2.0",
     "pyyaml==6.0.3",
