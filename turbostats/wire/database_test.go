@@ -217,6 +217,30 @@ func TestDatabaseReplicationSlot_RoundTrips(t *testing.T) {
 	assert.Equal(t, 32, MaxDatabaseReplicationSlots)
 }
 
+// A slot names the connection that holds it, so a receiver can tell which
+// tool holds the WAL. Both fields are optional: a slot with no consumer
+// connected, or a report from an older collector, leaves them out, and its
+// JSON is what it was before the fields existed.
+func TestDatabaseReplicationSlot_NamesItsConsumer(t *testing.T) {
+	coverage.Covers(t, "observability.turbostats")
+	raw := `{"name":"dbz_orders","type":"logical","active":true,"consumer_application_name":"Debezium Streaming","consumer_user":"debezium"}`
+	var s DatabaseReplicationSlot
+	assert.NoError(t, json.Unmarshal([]byte(raw), &s))
+	assert.Equal(t, "Debezium Streaming", s.ConsumerApplicationName)
+	assert.Equal(t, "debezium", s.ConsumerUser)
+	out, err := json.Marshal(s)
+	assert.NoError(t, err)
+	assert.Equal(t, raw, string(out))
+
+	var old DatabaseReplicationSlot
+	assert.NoError(t, json.Unmarshal([]byte(`{"name":"dbz_orders","type":"logical","active":false}`), &old))
+	assert.Equal(t, "", old.ConsumerApplicationName)
+	assert.Equal(t, "", old.ConsumerUser)
+	out, err = json.Marshal(old)
+	assert.NoError(t, err)
+	assert.Equal(t, `{"name":"dbz_orders","type":"logical","active":false}`, string(out))
+}
+
 // WAL on disk is a resource and the rate it is written at is load. Both are
 // optional: a role without the grant, or a kind with no WAL, leaves them out.
 func TestDatabase_WALFactsRoundTrip(t *testing.T) {

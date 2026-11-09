@@ -841,6 +841,13 @@
                   "safe_wal_bytes": {
                     "type": "integer",
                     "description": "SafeWALBytes is the WAL the server can write before the slot is at\nrisk of losing what it needs. Absent when the server sets no limit."
+                  },
+                  "consumer_application_name": {
+                    "type": "string",
+                    "description": "ConsumerApplicationName and ConsumerUser name the connection that\nholds the slot, such as \"Debezium Streaming\" and \"debezium\", so a\nreceiver can tell which tool holds the WAL. Both are absent when no\nconsumer is connected, or when it isn't a replication connection."
+                  },
+                  "consumer_user": {
+                    "type": "string"
                   }
                 },
                 "type": "object",

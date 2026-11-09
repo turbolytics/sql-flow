@@ -266,6 +266,12 @@ type DatabaseReplicationSlot struct {
 	// SafeWALBytes is the WAL the server can write before the slot is at
 	// risk of losing what it needs. Absent when the server sets no limit.
 	SafeWALBytes *int64 `json:"safe_wal_bytes,omitempty"`
+	// ConsumerApplicationName and ConsumerUser name the connection that
+	// holds the slot, such as "Debezium Streaming" and "debezium", so a
+	// receiver can tell which tool holds the WAL. Both are absent when no
+	// consumer is connected, or when it isn't a replication connection.
+	ConsumerApplicationName string `json:"consumer_application_name,omitempty"`
+	ConsumerUser            string `json:"consumer_user,omitempty"`
 }
 
 // DatabaseCollection is what the interval cost, so the receiver can show
