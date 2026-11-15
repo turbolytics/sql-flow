@@ -580,3 +580,45 @@ func assertTypeFailure(t *testing.T, verdicts []verdict, invariant, substring st
 	}
 	t.Fatalf("no verdict for %s", invariant)
 }
+
+// Each declared type is its own member of the sink.types lattice, so the
+// runner reports one result per row, and an unsupported row says so: that is
+// the test a subject's `proven_by` points at.
+func TestToolingConformanceTypes_EachDeclaredTypeGetsItsOwnResult(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "-9223372036854775808"}}},
+		{Key: "month_day_nano_interval", Outcome: "unsupported", Code: "user.sink.type_unsupported"},
+	}
+	_, rows := typeRun(t, typeSubject(newTypeSink("int64"), declared))
+
+	assert.DeepEqual(t, []rowVerdict{
+		{key: "int64"},
+		{key: "month_day_nano_interval", unsupported: true},
+	}, rows)
+}
+
+// A row that does not hold fails its own result and no other. The failure
+// names the row, so the subtest that carries it is the one to read.
+func TestToolingConformanceTypes_AFailingRowFailsOnlyItself(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+
+	declared := []coverage.TypeDecl{
+		{Key: "int64", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int64", Expect: "-9223372036854775808"}}},
+		{Key: "int32", Outcome: "exact", Columns: []coverage.ColumnDecl{{Type: "Int32", Expect: "-2147483648"}}},
+	}
+	// The sink refuses int32 and takes int64.
+	_, rows := typeRun(t, typeSubject(newTypeSink("int64"), declared))
+
+	assert.Equal(t, "", rows[0].failure)
+	assert.That(t, strings.Contains(rows[1].failure, "int32"))
+}
+
+// A type key may hold spaces and punctuation, and a subject names the subtest
+// in its proven_by, so the name is a fixed function of the key.
+func TestToolingConformanceTypes_MemberTestNameIsFixedByTheKey(t *testing.T) {
+	coverage.Covers(t, "tooling.conformance")
+	assert.Equal(t, "member/list<struct>", MemberTestName("list<struct>"))
+	assert.Equal(t, "member/decimal(*, *)", MemberTestName("decimal(*, *)"))
+}
