@@ -1,0 +1,762 @@
+# The invariants every integration must hold, and the evidence each requires.
+#
+# This file is declared, not derived, for the reason features.yml gives: the
+# failure it catches is an integration with no evidence at all. Ten of these
+# have been violated and fixed since v1.0.4, and each of those rows names the
+# fix.
+#
+# `applies_to` is the interface the invariant is a property of. Every
+# integration of that kind must prove it, or be exempt in the registry
+# with a reason. It may instead name one integration, for a claim only that
+# integration makes; the id then starts with the integration's namespace.
+#
+# `verified_by` says how evidence attaches:
+#
+#   harness    internal/conformance emits COVERS invariant=... integration=...
+#   typetable  the generated type round-trip emits the same marker per type
+#
+# Both are explicit markers: a test says what it proves. There is no way to
+# attribute an invariant by test name -- `named` was declared here once,
+# never implemented, and dropped as a third way to claim the same evidence.
+# scripts/coverage_matrix accepts the two above and nothing else.
+#
+# `requires` lists the levels evidence must exist at. Every kind's entry is
+# empty in this revision: the matrix reports, and nothing fails. An invariant
+# is enforced by filling one in, which is legal only once every non-exempt
+# integration has a subject. An invariant scoped to one integration, such as
+# clickhouse.*, is written with its subject and requires its level.
+#
+# `tracked_by` marks an invariant the code does not yet satisfy. It renders as
+# declared-unenforced until that issue lands.
+
+invariants:
+  # --- Resilience: the sink contract ---------------------------------------
+  - id: sink.write.buffers_only
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: WriteTable does not reach the destination. Only Flush does.
+    x-verified_by: harness
+    # Every sink proves this, so a new one cannot merge without a conformance
+    # subject. The level is the integration's business: ClickHouse and Kafka
+    # need a container, console and sqlcommand fail in-process.
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: sink.flush.keeps_batch
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      A failed Flush leaves every undelivered row buffered. The next Flush re-attempts them. Delivery is at-least-once, so a row that arrives twice holds the claim and a row that never arrives breaks it.
+
+    x-verified_by: harness
+    enforced: true
+    violated_once: ["#221"]
+    requires_any: [unit, integration, growth, release]
+  - id: sink.flush.no_hollow_success
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      Flush returns nil only when every row since the last success was acknowledged by the destination.
+
+    x-verified_by: harness
+    violated_once: ["#221"]
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: sink.rows.counted_on_delivery
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      sink_rows_written counts a row once, when a Flush acknowledged it. A failed flush counts nothing; the retry that delivers those rows counts them.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: sink.flush.preserves_order
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      Rows reach the destination in WriteTable order, across a retry. Repeats are permitted, because delivery is at-least-once; a row that overtakes one written before it is not.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: sink.flush.honours_context
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: Flush returns ctx.Err() when the context ends. Rows stay buffered.
+    x-verified_by: harness
+    violated_once: ["#219"]
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: sink.flush.empty_is_noop
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: Flush with nothing buffered returns nil and touches nothing.
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: sink.buffer.reports_depth
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      A sink reports how many rows it is holding, and the count rises when a flush fails and falls to zero when one succeeds.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: sink.error.classifies
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      The sink's errors classify as unreachable, rejected, or a user fault, so the retry ladder retries only the first. A value the sink's client cannot encode is a user fault: it never reaches the network and fails the same way every attempt.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: sink.probe.fails_start
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      A Prober whose destination is unreachable fails the start once, without retrying.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: sink.flush.idempotent_on_key
+    family: resilience
+    class: safety
+    applies_to: sink
+    claim: >
+      Delivering the same batch twice leaves the destination holding it once. The engine promises at-least-once; a sink that identifies rows by key is what turns that into exactly-once for the reader. A sink that declares no key is exempt, with a proof that it declares none.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  # --- Checkpoint: the pipeline and source contract ------------------------
+  - id: pipeline.commit.after_flush
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: Offsets and state commit only after Flush returned nil.
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  # The property pipeline.commit.after_flush approximates. after_flush asserts
+  # the order the loop does things, which is a mechanism: a correct rewrite
+  # that committed optimistically and rolled back would fail it. This asserts
+  # the outcome, against rows a destination actually holds, so it survives any
+  # implementation that keeps the guarantee.
+  - id: pipeline.commit.only_delivered_rows
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      The pipeline never commits a position covering a row the destination did not take, and never leaves a delivered row uncommitted after a clean run.
+
+    x-verified_by: harness
+    enforced: true
+    violated_once: ["#154"]
+    requires_any: [unit, integration, growth, release]
+  # The same guarantee as only_delivered_rows, judged after the consume loop
+  # returns. run commits again on the way out, syncing state before and after
+  # the table managers' final poll, and every other pipeline check stops at
+  # the loop's return. Positions advance when a message reaches the handler,
+  # before its batch is flushed, so a batch the sink refused left positions
+  # the shutdown then made durable.
+  - id: pipeline.shutdown.commits_only_delivered
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      After the consume loop returns, clean or failed, the commits the process makes on its way out never make a position durable past the last message the sink acknowledged. Not in the state database, and not at the source.
+
+    x-verified_by: harness
+    enforced: true
+    violated_once: ["#279"]
+    requires_any: [unit, integration, growth, release]
+  - id: pipeline.commit.nothing_on_failure
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: A failed flush commits nothing. Not offsets, not state.
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: pipeline.state.with_offsets
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: Window state and the offsets that produced it commit atomically.
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  # No invariant owned the window's output, which is how a local reproduction
+  # of #183 published 12% fewer records than were produced while all 52 of
+  # these passed. Two defects broke it; one is left.
+  #
+  # A rebalance: two workers each hold part of a bucket, both publish, and an
+  # upserting sink keeps the last writer (#183). Still open, and the
+  # watermark does not touch it -- per-partition watermarks fix the ordering
+  # half of scale-out, not the splitting half, which is a destination-schema
+  # contract (pipeline.writers.merge_exactly) or a co-partitioning rule.
+  #
+  # And a burst on a pipeline with no state path: the handler's rows
+  # autocommitted before the commit that accounted for them, so a poll
+  # between the two closed the bucket on the silence the burst just ended and
+  # dropped the rest of it as late (#374). Unrepresentable now rather than
+  # fixed: the engine asserts the window's watermark in that same commit, and
+  # a poll decides on the assertion alone, so there is no instant at which
+  # rows are visible without the watermark that accounts for them. The
+  # reading the manager used to infer this from -- the gap between the
+  # progress row's two clocks -- is gone, and so is every rule that read it.
+  - id: pipeline.window.counts_every_row
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      A bucket's published value counts exactly the rows produced for it, once. Rows the engine refused as late are excluded and counted in window_late_rows_total; a row admitted within allowed_lateness_seconds is in the bucket's republished value.
+
+    x-verified_by: harness
+    tracked_by: "#183"
+    requires_any: [unit, integration, growth, release]
+  - id: pipeline.window.lateness_decided_at_arrival
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      A record whose bucket ended at or before the watermark less allowed_lateness_seconds is refused before the handler and counted; one within lateness is written and its bucket is republished as a whole value; the window table never holds a row the engine did not admit.
+
+    x-verified_by: harness
+    tracked_by: "the conformance harness has no windowed pipeline subject yet; internal/core, internal/managers/model.go and internal/simulate verify it"
+    requires_any: [unit, integration, growth, release]
+  - id: source.commit.only_processed
+    family: checkpoint
+    class: safety
+    applies_to: source
+    claim: >
+      A source commits the marks the pipeline processed, never what it fetched.
+
+    x-verified_by: harness
+    violated_once: ["#154"]
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: source.resume.from_committed
+    family: checkpoint
+    class: safety
+    applies_to: source
+    claim: >
+      Restart resumes at the committed position. No gap, and no replay before it.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: source.marks.never_regress
+    family: checkpoint
+    class: safety
+    applies_to: source
+    claim: A committed position never moves backwards.
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: source.commit.on_revoke
+    family: checkpoint
+    class: safety
+    applies_to: source
+    claim: >
+      Marks commit when a partition is revoked, before the rebalance completes.
+
+    x-verified_by: harness
+    tracked_by: "#183"
+    requires_any: [unit, integration, growth, release]
+  # The three below hold on this branch and are verified by internal/metering,
+  # which runs real sqlflow processes against Kafka and Postgres, outside the
+  # conformance harness. They are declared and unenforced until a subject
+  # exists there.
+  - id: source.webhook.ack_after_flush
+    family: checkpoint
+    class: safety
+    applies_to: source
+    claim: >
+      With ack after_flush, a delivery answered 200 is in the sink: the answer is sent after the batch holding it flushed and committed, and a failed flush answers 503.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: pipeline.window.replays_lost_state
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      A windowed Kafka pipeline commits no position past a row a retained bucket holds, so a worker that starts without the rows rebuilds each bucket whole from Kafka, and refuses what the previous owner finalized.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: pipeline.window.partition_owned_single_writer
+    family: checkpoint
+    class: safety
+    applies_to: pipeline
+    claim: >
+      With partition_owned, a revoked partition's rows are deleted without being published before the rebalance completes, so one process writes each (bucket, partition) key.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  # --- Types: per integration, from its declared table ---------------------
+  - id: type.roundtrip
+    family: types
+    class: safety
+    applies_to: sink
+    claim: >
+      Every declared Arrow type reads back with the declared outcome: exact, coerced by the stated rule, or unsupported with a coded error.
+
+    x-verified_by: typetable
+    violated_once: ["#147", "#150", "#151"]
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: type.null
+    family: types
+    class: safety
+    applies_to: sink
+    claim: A null in every declared type reads back as declared.
+    x-verified_by: typetable
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: type.timestamp.instant
+    family: types
+    class: safety
+    applies_to: sink
+    claim: >
+      A timestamp reads back as the same instant. Zone-less is UTC, and the host zone never leaks into the type.
+
+    x-verified_by: typetable
+    violated_once: ["#153"]
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: type.nested
+    family: types
+    class: safety
+    applies_to: sink
+    claim: >
+      list, struct, list-of-struct and list-of-list read back, or are declared unsupported. Never silently flattened.
+
+    x-verified_by: typetable
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: type.string.fidelity
+    family: types
+    class: safety
+    applies_to: sink
+    claim: Unicode, escapes and the empty string round-trip byte for byte.
+    x-verified_by: typetable
+    violated_once: ["#149"]
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: type.undeclared.fails_loud
+    family: types
+    class: safety
+    applies_to: sink
+    claim: >
+      An Arrow type absent from the table fails the batch with a coded error. Never coerced silently.
+
+    x-verified_by: typetable
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  # --- ClickHouse ----------------------------------------------------------
+  # Claims only sink.clickhouse makes. Each one backs a sentence on
+  # docs/published/clickhouse.mdx, which cites it by id, and the page check
+  # fails when the two disagree. A failing test here is a page that is now
+  # wrong: fix the page or the sink, never the assertion.
+  - id: clickhouse.insert.by_name
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      Columns are matched by name. A produced column the table lacks fails the batch as `system.sink.write_failed`, naming the column. A column the handler omits takes the table's DEFAULT.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.table.not_created
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      The sink never creates or alters a table. A table that does not exist fails the batch as `system.sink.write_failed`.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.enum.null_is_zero
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      A NULL into a non-Nullable Enum is stored as 0. With no 0 member the INSERT succeeds and reads of the column fail with `UNKNOWN_ELEMENT_OF_ENUM`. With a 0 member it reads as that member. Nullable reads NULL.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.encode.fails_once
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      A value the driver cannot encode fails the batch on the first attempt as `user.sink.encode_failed`. It is not retried, and the process exits with code 10.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.temporal_text.two_shapes
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      Text into a DateTime column takes `YYYY-MM-DD hh:mm:ss`, read as UTC whatever the column's zone, or the same with an offset, which is applied. Any other shape fails as `user.sink.encode_failed`.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.decimal.text_only
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      A Decimal column accepts its value as text. A float fails as `user.sink.encode_failed`.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.replay.duplicates_until_merge
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      A batch delivered twice into a ReplacingMergeTree reads twice until a merge, and once with FINAL. An identical block inside the table's deduplication window is dropped at insert.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.flush.one_insert
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      One flush is one INSERT, however many batches it buffered.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.dsn.scheme
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      The DSN scheme decides the protocol, TLS and the default port. `@` and `:` in a password parse raw. `/`, `#` and `?` must be percent- encoded.
+
+    x-verified_by: harness
+    requires: [unit]
+  - id: clickhouse.tls.verifies
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      With TLS, the server certificate is verified against the system roots. No option skips verification.
+
+    x-verified_by: harness
+    requires: [unit]
+  - id: clickhouse.auth.fails_start
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      Wrong credentials fail the startup probe, before any message is consumed, with ClickHouse's "Authentication failed: password is incorrect, or there is no user with such name". The HTTP status and code vary by server and user.
+
+    x-verified_by: harness
+    requires: [integration]
+  - id: clickhouse.type_text.per_destination
+    family: clickhouse
+    class: safety
+    applies_to: sink.clickhouse
+    claim: >
+      Text into a non-String column must already be in that column's text form. The type table proves each destination with its own value.
+
+    x-verified_by: harness
+    requires: [integration]
+  # --- Lifecycle -----------------------------------------------------------
+  - id: lifecycle.drain.on_cancel
+    family: lifecycle
+    class: safety
+    applies_to: pipeline
+    claim: Cancel or SIGTERM flushes the buffered batch, then commits.
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  # --- Liveness: the pipeline makes progress -------------------------------
+  # Every claim above is safety: nothing bad happens. None of them says the
+  # pipeline does anything, and a sink that never flushes satisfies all of
+  # them. These are the claims that it does.
+  - id: pipeline.flush.eventually
+    family: lifecycle
+    class: liveness
+    applies_to: pipeline
+    claim: >
+      A batch that never reaches batchSize still reaches the sink, within the flush interval.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: pipeline.progress.no_silent_stall
+    family: lifecycle
+    class: liveness
+    applies_to: pipeline
+    claim: >
+      A configuration cannot remove the flush ticker. flush_interval_seconds absent, zero or negative all run with the thirty second default, so a batch a low-traffic topic never fills still leaves on time. This entry previously claimed the opposite, that zero removed the ticker and stalled such a topic forever; the run command has always defaulted it.
+
+      Pinned by TestCliInvocation_FlushIntervalNeverZero, not by the harness, and unenforced for that reason: the harness drives a pipeline that is already constructed, and this is a property of resolving the config before construction. There is nothing per-subject to observe, so demanding a cell from every subject would buy a fake rather than a proof. The liveness the harness can see is pipeline.flush.eventually, which it proves.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: lifecycle.drain.bounded
+    family: lifecycle
+    class: liveness
+    applies_to: pipeline
+    claim: >
+      A drain finishes or fails inside pipeline.drain_deadline_seconds. A sink that never answers cannot hold the process past it: the loop returns system.lifecycle.drain_incomplete, commits nothing for the batch it could not write, and the next start replays it.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: lifecycle.close.idempotent
+    family: lifecycle
+    class: safety
+    applies_to: sink
+    claim: Close twice is safe.
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: pipeline.batch.timeout
+    family: lifecycle
+    class: liveness
+    applies_to: pipeline
+    claim: >
+      A batch whose query exceeds the timeout fails the batch, not the process.
+
+    x-verified_by: harness
+    tracked_by: "#163"
+    requires_any: [unit, integration, growth, release]
+  # --- Error policy --------------------------------------------------------
+  - id: error.dlq.carries_provenance
+    family: errors
+    class: safety
+    applies_to: pipeline
+    claim: A DLQ record carries the payload, offset, partition and reason.
+    x-verified_by: harness
+    tracked_by: "#166"
+    requires_any: [unit, integration, growth, release]
+  - id: error.bad_record.threshold
+    family: errors
+    class: safety
+    applies_to: pipeline
+    claim: >
+      N bad records in a window fail the pipeline rather than discarding forever.
+
+    x-verified_by: harness
+    tracked_by: "#166"
+    requires_any: [unit, integration, growth, release]
+  # --- Managers: a second loop that reaches a sink ------------------------
+  # A watermark manager collects the buckets its watermark has passed,
+  # flushes them, deletes them from the table, and advances the watermark.
+  # The delete and the watermark are its commit, so these are the consume
+  # loop's checkpoint claims restated for it, plus the liveness a poll loop
+  # owes on its own, plus what the watermark adds. The manager is not a sink
+  # and not a handler: it has a commit step and a liveness obligation, and a
+  # handler has neither. internal/conformance drives it the way it drives
+  # the loop.
+  - id: manager.delete.after_flush
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      Closed windows leave the state table only after the sink acknowledged them. The table still holds every one of them when Flush runs.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: manager.delete.nothing_on_failure
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      A failed flush deletes nothing. Every closed window stays in the state table for the next attempt.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: manager.publish.eventually
+    family: lifecycle
+    class: liveness
+    applies_to: manager
+    claim: >
+      A closed window reaches the sink on the manager's start pass or on the kick that follows the commit which closed it, without anything else happening. The manager has no clock; the engine tells it.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: manager.failure.exits
+    family: lifecycle
+    class: liveness
+    applies_to: manager
+    claim: >
+      A poll the sink refuses stops the manager with the sink's error, after one attempt, and the process exits with its code. The sink ran its retry ladder before the error arrived, so the manager does not retry in place, and a window the destination will not take is never collected, written and refused every tick while the process reports healthy.
+
+    x-verified_by: harness
+    enforced: true
+    violated_once: ["#267"]
+    requires_any: [unit, integration, growth, release]
+  - id: manager.watermark.never_regresses
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      The persisted watermark never moves backwards, across polls and across a restart. A manager built over the state another one saved publishes nothing that one published.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: manager.close.committed_rows_only
+    family: checkpoint
+    class: safety
+    applies_to: manager
+    claim: >
+      A close publishes rows the pipeline has committed and no others. Rows an open batch has written are not counted, so a batch that rolls back was never published.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  - id: manager.drain.bounded
+    family: lifecycle
+    class: liveness
+    applies_to: manager
+    claim: >
+      The final poll after a cancel finishes or fails inside the drain deadline. A sink that never answers cannot hold the process past it, and every closed window it did not deliver stays in the state table.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  # A window closes and publishes on DuckDB connections of its own (#281), so
+  # the consume loop's lock no longer orders its statements against the
+  # window's. #283's rule, every statement on the pipeline's connection holds
+  # the lock, stopped reaching the window when it moved, and no row said so.
+  # This one does, from the pipeline's side: whatever the window's I/O is
+  # doing and however long it takes, a batch does not fail because of it.
+  - id: pipeline.batch.independent_of_window_io
+    family: lifecycle
+    class: safety
+    applies_to: manager
+    claim: >
+      A window's sink write or close, however long, never fails the consume loop. A batch that runs while the window's flush has not returned, or while its close has written the delete and the watermark and not committed them, succeeds, and the close still lands once released.
+
+    x-verified_by: harness
+    enforced: true
+    requires_any: [unit, integration, growth, release]
+  # --- Resilience: more than one process writing one destination -------------
+  # The engine gives each pipeline process its own window, and a windowed
+  # pipeline publishes a closed minute by replacing the row for its key. That
+  # is right for one process and wrong for two: instances behind a load
+  # balancer each hold part of a minute, and keyed on the series alone the
+  # second to publish replaces the first. Two real instances, sent 7 and 5 of
+  # one minute, stored 7 (#331). Two instances also run during every deploy,
+  # the old beside the new.
+  #
+  # Nothing in the engine prevents it, so the claim is about what a destination
+  # ends up holding, and it is proven where a destination's schema makes it
+  # true: the Deploy to Render template keys its write on the process and has
+  # Postgres merge the processes. A pipeline configuration with no such schema
+  # has no evidence here, and that empty cell is accurate.
+  - id: pipeline.writers.merge_exactly
+    family: resilience
+    class: safety
+    applies_to: pipeline
+    claim: >
+      When several pipeline processes publish the same window of the same key to one destination, the destination holds the merge of what every process last published: no process's rows replace another's, and a process that republishes replaces only its own. It holds at every grain derived from that window, under concurrent publishes, without deadlock. Proven in internal/rendertemplate against the Deploy to Render template's migrations and the Postgres sink, not by the conformance harness: the property belongs to the destination's schema.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  # --- Cache: serve's response cache ----------------------------------------
+  # Serve is never told that its backend changed, so the cache invalidates
+  # nothing and bounds everything. These say what the bounds are. Each is
+  # proven through the HTTP handler over a counting executor, never against
+  # the cache alone: the claim is about what a caller is sent.
+  - id: serve.cache.bounded_staleness
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      A response is never built from a result whose fill started more than the dataset's ttl_seconds before the request arrived.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: serve.cache.bucket_exact
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      For a ranged dataset, a response from the cache carries the rows a query bound to the request's own since and until would have returned against the same data. Rounding to the bucket changes the key and never the rows.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: serve.cache.opt_in
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      A dataset without a cache block runs one query per request, and its response carries no cache or age_ms.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: serve.cache.bounded_bytes
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: The bytes the cache holds never exceed max_mb, whatever is requested.
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: serve.cache.errors_not_stored
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      A request that fails stores nothing: the next request for its key runs a query.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  - id: serve.cache.one_fill
+    family: cache
+    class: safety
+    applies_to: serve
+    claim: >
+      Concurrent requests for one key run one query, and a caller leaving fails no other caller.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false
+  # Every safety row above holds for a cache that never stores anything.
+  - id: serve.cache.answers_from_memory
+    family: cache
+    class: liveness
+    applies_to: serve
+    claim: >
+      A second request for a key inside its TTL is answered without a query and without a session.
+
+    x-verified_by: harness
+    requires_any: [unit, integration, growth, release]
+    enforced: false

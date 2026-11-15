@@ -1,0 +1,7 @@
+id: sink.nulls
+description: Every place a null can appear in a row a sink is handed.
+applies_to: sink+TypeTable
+requires: []
+members:
+  - key: default
+  - key: list_element
