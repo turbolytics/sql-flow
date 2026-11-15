@@ -245,7 +245,7 @@ jobs:
   # still the merge gate. Once the two agree for a while, a follow-up moves the
   # gate here and removes the generator.
   #
-  # Growth is not run yet: it is main-only. That level reads "not run".
+  # On a pull request growth reads "not run", as it does for the generator.
   temper-evidence:
     name: Temper evidence (${{ matrix.level }})
     runs-on: ubuntu-latest
@@ -253,7 +253,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        level: [unit, integration, release]
+        # Growth runs on main only, as the gating Growth job does: a leak check
+        # spends minutes on every push, and main catches a leak before a release.
+        level: ${{ fromJSON(github.event_name == 'push' && '["unit","integration","release","growth"]' || '["unit","integration","release"]') }}
     env:
       SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
       GOTOOLCHAIN: local
@@ -301,11 +303,11 @@ jobs:
       - name: Test (${{ matrix.level }})
         if: matrix.level != 'release'
         run: |
-          if [ "$TEMPER_LEVEL" = unit ]; then
-            go test -short -count=1 ./...
-          else
-            go test -count=1 -timeout 30m -run '^TestIntegration' ./...
-          fi
+          case "$TEMPER_LEVEL" in
+            unit) go test -short -count=1 ./... ;;
+            integration) go test -count=1 -timeout 30m -run '^TestIntegration' ./... ;;
+            growth) make test-growth GROWTH=full ;;
+          esac
 
       - name: Upload the evidence
         if: always()
