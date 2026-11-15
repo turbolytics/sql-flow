@@ -245,8 +245,7 @@ jobs:
   # still the merge gate. Once the two agree for a while, a follow-up moves the
   # gate here and removes the generator.
   #
-  # Growth and release are not run yet: growth is main-only and release needs
-  # the image and the pytest adapter. Those levels read "not run" until then.
+  # Growth is not run yet: it is main-only. That level reads "not run".
   temper-evidence:
     name: Temper evidence (${{ matrix.level }})
     runs-on: ubuntu-latest
@@ -254,7 +253,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        level: [unit, integration]
+        level: [unit, integration, release]
     env:
       SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
       GOTOOLCHAIN: local
@@ -264,19 +263,43 @@ jobs:
       TEMPER_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release level builds the image, and VERSION comes from
+          # `git describe`, which needs tags and history.
+          fetch-depth: 0
 
       - name: Set up Go 1.27.3
+        if: matrix.level != 'release'
         uses: actions/setup-go@v5
         with:
           go-version: '1.27.3'
 
       - name: Install libduckdb
+        if: matrix.level != 'release'
         run: ./scripts/install-libduckdb.sh bin
+
+      # The release level is the pytest suite against the built image. The
+      # adapter, temper-python, reads the same TEMPER_* variables as the Go one.
+      - name: Set up uv
+        if: matrix.level == 'release'
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.6.10'
+          enable-cache: true
+
+      - name: Install python dependencies
+        if: matrix.level == 'release'
+        run: uv sync --locked
+
+      - name: Test (release)
+        if: matrix.level == 'release'
+        run: make test-release
 
       # The same commands the gating jobs run, so each level counts the same
       # tests: -short is the unit pass, and the integration pass is selected by
       # name, never by also running unit tests under its level.
       - name: Test (${{ matrix.level }})
+        if: matrix.level != 'release'
         run: |
           if [ "$TEMPER_LEVEL" = unit ]; then
             go test -short -count=1 ./...

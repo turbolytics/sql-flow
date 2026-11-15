@@ -675,6 +675,7 @@ dev = [
     { name = "pytest" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "temper-python" },
     { name = "testcontainers" },
     { name = "websockets" },
 ]
@@ -692,6 +693,7 @@ dev = [
     { name = "pytest", specifier = "==9.2.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "requests", specifier = "==2.34.2" },
+    { name = "temper-python", specifier = "==0.1.0" },
     { name = "testcontainers", specifier = "==4.15.0" },
     { name = "websockets", specifier = "==17.4" },
 ]
@@ -706,6 +708,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b3/08/efd28d49162ce89c2ad61a88bd80e11fb77bc9f6c145402589112d38f8af/strictyaml-1.7.3.tar.gz", hash = "sha256:22f854a5fcab42b5ddba8030a0e4be51ca89af0267961c8d6cfa86395586c407", size = 115206, upload-time = "2023-03-10T12:50:27.062Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/7c/a81ef5ef10978dd073a854e0fa93b5d8021d0594b639cc8f6453c3c78a1d/strictyaml-1.7.3-py3-none-any.whl", hash = "sha256:fb5c8a4edb43bebb765959e420f9b3978d7f1af88c80606c03fb420888f5d1c7", size = 123917, upload-time = "2023-03-10T12:50:17.242Z" },
+]
+
+[[package]]
+name = "temper-python"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d8/67/e6f21aa4de44fc957bf740d85968fe967f206a994b21c37cd5a2ec0e5ad2/temper_python-0.1.0.tar.gz", hash = "sha256:f89b84443360c11dbc808841e680b5e6291e41f117c64b81e2521a9ae485cb82", size = 12865, upload-time = "2026-11-15T02:02:58.842Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/47/3a/faa435ea7457c34b45990e4afd605e354b910fbf1ebc34d50943d0342a13/temper_python-0.1.0-py3-none-any.whl", hash = "sha256:af5be125eb12a6d3bb073ba8fe21f4e4c8bead39c89efd6b91e4b6b183f88671", size = 7552, upload-time = "2026-11-15T02:02:57.339Z" },
 ]
 
 [[package]]
