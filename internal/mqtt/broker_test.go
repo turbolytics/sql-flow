@@ -3,6 +3,7 @@ package mqtt
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/temper"
 	"net/url"
 	"os"
 	"strings"
@@ -74,7 +75,7 @@ func startBroker() {
 // TestMain stops the container the package started, so a developer running
 // the pass in a loop does not accumulate brokers.
 func TestMain(m *testing.M) {
-	code := m.Run()
+	code := temper.Run(m)
 	if brokerCtr != nil {
 		if err := brokerCtr.Terminate(context.Background()); err != nil {
 			fmt.Fprintf(os.Stderr, "leaving the mosquitto container for ryuk: %v\n", err)

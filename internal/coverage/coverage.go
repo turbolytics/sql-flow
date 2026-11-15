@@ -14,9 +14,27 @@
 // feature needs a marker to be covered at all, it wants its own test.
 package coverage
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/turbolytics/temper"
+)
+
+// toTemper forwards a claim to Temper, which records it as evidence when the
+// test runs under `temper run` and does nothing otherwise. Only a real test
+// forwards: the tests of this package pass a stand-in that records log lines.
+func toTemper(t testing.TB, ref string, opts ...temper.Option) {
+	switch t.(type) {
+	case *testing.T, *testing.B:
+		temper.Covers(t, ref, opts...)
+	}
+}
 
 // Covers records additional features this test proves.
+//
+// It also states the claim to Temper (see the temper/ directory), which reads
+// it from evidence rather than from the log. The log line stays: the matrix
+// generator in scripts/coverage_matrix still gates merges.
 //
 // The marker goes to the test log, which `go test -json` carries as output
 // events, so the matrix reads it from ordinary suite output with no plugin
@@ -25,6 +43,7 @@ func Covers(t testing.TB, features ...string) {
 	t.Helper()
 	for _, feature := range features {
 		t.Logf("COVERS %s", feature)
+		toTemper(t, feature)
 	}
 }
 
@@ -37,4 +56,5 @@ func Covers(t testing.TB, features ...string) {
 func Invariant(t testing.TB, invariant, integration string) {
 	t.Helper()
 	t.Logf("COVERS invariant=%s integration=%s", invariant, integration)
+	toTemper(t, invariant, temper.Subject(integration))
 }
