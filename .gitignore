@@ -30,3 +30,4 @@ soak-*/
 dev/iot/data/
 dev/iot/report-*.json
 dev/iot/ceiling.txt
+/.temper/

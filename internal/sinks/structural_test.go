@@ -3,6 +3,7 @@ package sinks
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/temper"
 	"io"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ import (
 // is exempt for each, and these are the proof: nothing names a key to
 // replace on, so a second delivery is a second row.
 func TestSinkClickhouse_IsNotKeyed(t *testing.T) {
+	temper.Exempts(t, "sink.flush.idempotent_on_key", temper.Subject("sink.clickhouse"))
 	coverage.Covers(t, "sink.clickhouse")
 	built, err := NewClickhouseSink(config.ClickhouseSink{DSN: "clickhouse://localhost:8123/db", Table: "t"})
 	assert.NoError(t, err)
@@ -38,6 +40,7 @@ func TestSinkClickhouse_IsNotKeyed(t *testing.T) {
 }
 
 func TestSinkIceberg_IsNotKeyed(t *testing.T) {
+	temper.Exempts(t, "sink.flush.idempotent_on_key", temper.Subject("sink.iceberg"))
 	coverage.Covers(t, "sink.iceberg")
 	catalogName, tableName := newLocalIcebergTable(t)
 	built, err := NewIcebergSink(context.Background(), catalogName, tableName)
@@ -48,6 +51,7 @@ func TestSinkIceberg_IsNotKeyed(t *testing.T) {
 }
 
 func TestSinkKafka_IsNotKeyed(t *testing.T) {
+	temper.Exempts(t, "sink.flush.idempotent_on_key", temper.Subject("sink.kafka"))
 	coverage.Covers(t, "sink.kafka")
 	var s core.Sink = newUnreachableKafkaSink(t)
 	_, ok := s.(core.KeyedSink)
@@ -55,6 +59,7 @@ func TestSinkKafka_IsNotKeyed(t *testing.T) {
 }
 
 func TestSinkConsole_IsNotKeyed(t *testing.T) {
+	temper.Exempts(t, "sink.flush.idempotent_on_key", temper.Subject("sink.console"))
 	coverage.Covers(t, "sink.console")
 	var s core.Sink = NewConsoleSink()
 	_, ok := s.(core.KeyedSink)
@@ -62,6 +67,7 @@ func TestSinkConsole_IsNotKeyed(t *testing.T) {
 }
 
 func TestSinkNoop_IsNotKeyed(t *testing.T) {
+	temper.Exempts(t, "sink.flush.idempotent_on_key", temper.Subject("sink.noop"))
 	coverage.Covers(t, "sink.noop")
 	var s core.Sink = &NoopSink{}
 	_, ok := s.(core.KeyedSink)
@@ -69,6 +75,7 @@ func TestSinkNoop_IsNotKeyed(t *testing.T) {
 }
 
 func TestSinkSqlcommand_IsNotKeyed(t *testing.T) {
+	temper.Exempts(t, "sink.flush.idempotent_on_key", temper.Subject("sink.sqlcommand"))
 	coverage.Covers(t, "sink.sqlcommand")
 	built, err := NewSQLCommandSink(newSinkTestConn(t), "SELECT 1", nil)
 	assert.NoError(t, err)
@@ -95,6 +102,7 @@ func TestSinkPostgres_IsKeyedOnlyForUpsert(t *testing.T) {
 }
 
 func TestSinkConsole_ImplementsNoProber(t *testing.T) {
+	temper.Exempts(t, "sink.probe.fails_start", temper.Subject("sink.console"))
 	coverage.Covers(t, "sink.console")
 	var s core.Sink = NewConsoleSink()
 	_, ok := s.(Prober)
@@ -102,6 +110,7 @@ func TestSinkConsole_ImplementsNoProber(t *testing.T) {
 }
 
 func TestSinkSqlcommand_ImplementsNoProber(t *testing.T) {
+	temper.Exempts(t, "sink.probe.fails_start", temper.Subject("sink.sqlcommand"))
 	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	built, err := NewSQLCommandSink(conn, "SELECT 1", nil)
@@ -113,6 +122,7 @@ func TestSinkSqlcommand_ImplementsNoProber(t *testing.T) {
 }
 
 func TestSinkNoop_ImplementsNoProber(t *testing.T) {
+	temper.Exempts(t, "sink.probe.fails_start", temper.Subject("sink.noop"))
 	coverage.Covers(t, "sink.noop")
 	var s core.Sink = &NoopSink{}
 	_, ok := s.(Prober)
@@ -124,6 +134,7 @@ func TestSinkNoop_ImplementsNoProber(t *testing.T) {
 // start -- but through the constructor, not through the interface sinks.New
 // probes.
 func TestSinkIceberg_ImplementsNoProber(t *testing.T) {
+	temper.Exempts(t, "sink.probe.fails_start", temper.Subject("sink.iceberg"))
 	coverage.Covers(t, "sink.iceberg")
 	catalogName, tableName := newLocalIcebergTable(t)
 
@@ -140,6 +151,7 @@ func TestSinkIceberg_ImplementsNoProber(t *testing.T) {
 // twice. ClickHouse and Kafka own a client and do implement it.
 
 func TestSinkConsole_ImplementsNoCloser(t *testing.T) {
+	temper.Exempts(t, "lifecycle.close.idempotent", temper.Subject("sink.console"))
 	coverage.Covers(t, "sink.console")
 	var s core.Sink = NewConsoleSink()
 	_, ok := s.(io.Closer)
@@ -147,6 +159,7 @@ func TestSinkConsole_ImplementsNoCloser(t *testing.T) {
 }
 
 func TestSinkSqlcommand_ImplementsNoCloser(t *testing.T) {
+	temper.Exempts(t, "lifecycle.close.idempotent", temper.Subject("sink.sqlcommand"))
 	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	built, err := NewSQLCommandSink(conn, "SELECT 1", nil)
@@ -158,6 +171,7 @@ func TestSinkSqlcommand_ImplementsNoCloser(t *testing.T) {
 }
 
 func TestSinkNoop_ImplementsNoCloser(t *testing.T) {
+	temper.Exempts(t, "lifecycle.close.idempotent", temper.Subject("sink.noop"))
 	coverage.Covers(t, "sink.noop")
 	var s core.Sink = &NoopSink{}
 	_, ok := s.(io.Closer)
@@ -165,6 +179,7 @@ func TestSinkNoop_ImplementsNoCloser(t *testing.T) {
 }
 
 func TestSinkIceberg_ImplementsNoCloser(t *testing.T) {
+	temper.Exempts(t, "lifecycle.close.idempotent", temper.Subject("sink.iceberg"))
 	coverage.Covers(t, "sink.iceberg")
 	catalogName, tableName := newLocalIcebergTable(t)
 
@@ -183,6 +198,14 @@ func TestSinkIceberg_ImplementsNoCloser(t *testing.T) {
 // legitimate exemption if discarding is deliberate and total, which is what
 // this asserts.
 func TestSinkNoop_DeliversNothingAndSaysSo(t *testing.T) {
+	temper.Exempts(t, "sink.write.buffers_only", temper.Subject("sink.noop"))
+	temper.Exempts(t, "sink.flush.keeps_batch", temper.Subject("sink.noop"))
+	temper.Exempts(t, "sink.flush.no_hollow_success", temper.Subject("sink.noop"))
+	temper.Exempts(t, "sink.flush.preserves_order", temper.Subject("sink.noop"))
+	temper.Exempts(t, "sink.flush.honours_context", temper.Subject("sink.noop"))
+	temper.Exempts(t, "sink.flush.empty_is_noop", temper.Subject("sink.noop"))
+	temper.Exempts(t, "sink.buffer.reports_depth", temper.Subject("sink.noop"))
+	temper.Exempts(t, "sink.error.classifies", temper.Subject("sink.noop"))
 	coverage.Covers(t, "sink.noop")
 	s := &NoopSink{}
 	ctx := context.Background()
@@ -209,6 +232,7 @@ func TestSinkNoop_DeliversNothingAndSaysSo(t *testing.T) {
 // that the flush failed while the context was still live.
 
 func TestSinkConsole_FlushCannotOutliveItsContext(t *testing.T) {
+	temper.Exempts(t, "sink.flush.honours_context", temper.Subject("sink.console"))
 	coverage.Covers(t, "sink.console")
 	w := &breakableWriter{}
 	s := NewConsoleSinkTo(w)
@@ -226,6 +250,7 @@ func TestSinkConsole_FlushCannotOutliveItsContext(t *testing.T) {
 }
 
 func TestSinkSqlcommand_FlushCannotOutliveItsContext(t *testing.T) {
+	temper.Exempts(t, "sink.flush.honours_context", temper.Subject("sink.sqlcommand"))
 	coverage.Covers(t, "sink.sqlcommand")
 	conn := newSinkTestConn(t)
 	target := fmt.Sprintf("outlive_target_%d", time.Now().UnixNano())
@@ -249,6 +274,7 @@ func TestSinkSqlcommand_FlushCannotOutliveItsContext(t *testing.T) {
 }
 
 func TestSinkIceberg_FlushCannotOutliveItsContext(t *testing.T) {
+	temper.Exempts(t, "sink.flush.honours_context", temper.Subject("sink.iceberg"))
 	coverage.Covers(t, "sink.iceberg")
 	catalogName, tableName := newLocalIcebergTable(t)
 

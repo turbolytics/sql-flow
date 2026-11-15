@@ -16,6 +16,7 @@ package sinks
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/temper"
 	"net/url"
 	"os"
 	"sync"
@@ -52,7 +53,7 @@ var shared struct {
 // TestMain stops the containers a test started. A run killed before it
 // returns leaves them to testcontainers' reaper.
 func TestMain(m *testing.M) {
-	code := m.Run()
+	code := temper.Run(m)
 	// Teardown must not change the verdict: the tests have already run. The
 	// network goes last, because Docker refuses to remove one in use.
 	ctx := context.Background()

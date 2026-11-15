@@ -66,6 +66,21 @@ Clean means the committed page matches the status files and the registries. A
 new feature needs an entry in `docs/coverage/features.yml` and a marker on the
 tests that prove it, or the gate reports it missing.
 
+### Temper, alongside the gate
+
+[Temper](https://github.com/turbolytics/temper) reads the same declarations in
+`temper/` and the evidence the tests write. It does not gate a merge yet. The
+`Temper` job in CI reports what it finds.
+
+`coverage.Covers` and `coverage.Invariant` already state each claim to Temper,
+so a test needs no second marker. A subject that cannot hold an invariant adds
+an exemption in `temper/subjects/` and a test that calls `temper.Exempts`. Run
+the unit level without Docker:
+
+```bash
+make temper
+```
+
 ### 4. The release suite, when the artifact changes
 
 ```bash

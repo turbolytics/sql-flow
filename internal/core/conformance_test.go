@@ -3,6 +3,7 @@
 package core_test
 
 import (
+	"github.com/turbolytics/temper"
 	"testing"
 
 	"github.com/turbolytics/sql-flow/internal/conformance"
@@ -42,6 +43,7 @@ func TestPipelineStateless_Conformance(t *testing.T) {
 // commit alongside the offsets, and pipeline.state.with_offsets is vacuous
 // rather than unproven.
 func TestPipelineStateless_KeepsNoDurableState(t *testing.T) {
+	temper.Exempts(t, "pipeline.state.with_offsets", temper.Subject("pipeline.stateless"))
 	coverage.Covers(t, "core.consume_loop")
 
 	rec := &conformance.Recorder{}

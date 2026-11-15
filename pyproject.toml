@@ -28,6 +28,9 @@ dev = [
     "pyyaml==6.0.3",
     "requests==2.34.2",
     "testcontainers==4.15.0",
+    # The pytest adapter for Temper. It records evidence only when a run sets
+    # TEMPER_LEVEL and TEMPER_EVIDENCE, so a plain pytest is unchanged.
+    "temper-python==0.1.0",
 ]
 
 [build-system]

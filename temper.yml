@@ -1,0 +1,11 @@
+temper: "0.1"
+project: sqlflow
+levels:
+  - name: unit
+    description: go test -short; the logic is right
+  - name: integration
+    description: against the real service in a container; never skips
+  - name: growth
+    description: memory does not grow with the work
+  - name: release
+    description: the shipped image does it

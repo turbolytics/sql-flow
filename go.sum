@@ -550,6 +550,8 @@ github.com/tonistiigi/units v0.0.0-20180711220420-6950e57a87ea h1:SXhTLE6pb6eld/
 github.com/tonistiigi/units v0.0.0-20180711220420-6950e57a87ea/go.mod h1:WPnis/6cRcDZSUvVmezrxJPkiO87ThFYsoUiMwWNDJk=
 github.com/tonistiigi/vt100 v0.0.0-20240514184818-90bafcd6abab h1:H6aJ0yKQ0gF49Qb2z5hI1UHxSQt4JMyxebFR15KnApw=
 github.com/tonistiigi/vt100 v0.0.0-20240514184818-90bafcd6abab/go.mod h1:ulncasL3N9uLrVann0m+CDlJKWsIAP34MPcOJF6VRvc=
+github.com/turbolytics/temper v0.1.0 h1:umZt8O10rD8NDXQtx5JXBsxjENWkzyDx9kg9VbTjPvs=
+github.com/turbolytics/temper v0.1.0/go.mod h1:U/+hKr3fE1pCWQQZJIacQNBf8pDi2qC+wQmL7XI7Y9I=
 github.com/twmb/avro v1.7.2 h1:cmrEBRSbELRqsg/dRkQvVWuOaR2EfGifHIt/2iJ9lfI=
 github.com/twmb/avro v1.7.2/go.mod h1:X0fT1dY2xcbV4YuCE4mYro+qljHl4kUF5uA/2z1rgSk=
 github.com/twmb/franz-go v1.21.7 h1:/DkA/o8wQN55gZWtpj2QNb9SIdxwFR7M+NecQWMdmc0=

@@ -1,0 +1,184 @@
+id: sink.types
+description: Every Arrow type the engine can hand a sink, measured from the DuckDB types the engine produces.
+applies_to: sink+TypeTable
+requires: []
+members:
+  # --- Booleans and integers -----------------------------------------------
+  - key: bool
+    x-duckdb: [BOOLEAN]
+    depth: 1
+  - key: int8
+    x-duckdb: [TINYINT]
+    depth: 1
+  - key: int16
+    x-duckdb: [SMALLINT]
+    depth: 1
+  - key: int32
+    x-duckdb: [INTEGER]
+    depth: 1
+  - key: int64
+    x-duckdb: [BIGINT]
+    depth: 1
+  - key: uint8
+    x-duckdb: [UTINYINT]
+    depth: 1
+  - key: uint16
+    x-duckdb: [USMALLINT]
+    depth: 1
+  - key: uint32
+    x-duckdb: [UINTEGER]
+    depth: 1
+  - key: uint64
+    x-duckdb: [UBIGINT]
+    depth: 1
+  # --- Floating point and decimals -----------------------------------------
+  - key: float32
+    x-duckdb: [REAL]
+    depth: 1
+  - key: float64
+    x-duckdb: [DOUBLE]
+    depth: 1
+  # HUGEINT is here and not with the integers. DuckDB promotes integer
+  # overflow to HUGEINT, so a user reaches this key without asking for it.
+  - key: "decimal(*, *)"
+    x-duckdb: ["DECIMAL(p, s)", HUGEINT, UHUGEINT]
+    depth: 1
+  # --- Bytes ---------------------------------------------------------------
+  - key: utf8
+    x-duckdb: [VARCHAR, UUID, JSON]
+    depth: 1
+  - key: binary
+    x-duckdb: [BLOB, BIT, VARINT]
+    depth: 1
+  # --- Dates and times -----------------------------------------------------
+  - key: date32
+    x-duckdb: [DATE]
+    depth: 1
+  # TIMETZ is here and under no zoned key: DuckDB drops the zone on the way to
+  # Arrow, which is a coercion a type table must state rather than inherit.
+  - key: "time64[us]"
+    x-duckdb: [TIME, TIMETZ]
+    depth: 1
+  - key: "time64[ns]"
+    x-duckdb: [TIME_NS]
+    depth: 1
+  - key: "timestamp[s]"
+    x-duckdb: [TIMESTAMP_S]
+    depth: 1
+  - key: "timestamp[ms]"
+    x-duckdb: [TIMESTAMP_MS]
+    depth: 1
+  - key: "timestamp[us]"
+    x-duckdb: [TIMESTAMP]
+    depth: 1
+  - key: "timestamp[ns]"
+    x-duckdb: [TIMESTAMP_NS]
+    depth: 1
+  - key: "timestamp[us, tz=*]"
+    x-duckdb: [TIMESTAMPTZ]
+    depth: 1
+  - key: month_day_nano_interval
+    x-duckdb: [INTERVAL]
+    depth: 1
+  # --- Constructors --------------------------------------------------------
+  # A constructor is one key however deep it nests. An unsupported constructor
+  # fails on its outermost type, so struct-of-struct proves nothing a struct
+  # does not: "unsupported" has no depth.
+  # One list key per element type a sink might convert. This looks repetitive
+  # and it is the point: a sink converts a list element through a different
+  # code path than a bare column -- in ClickHouse, goElemType rather than
+  # arrowValue -- and the two are switches over the same type set that nothing
+  # holds equal. A divergence shows up as one element type that works alone
+  # and fails inside an Array.
+  - key: "list<bool>"
+    x-duckdb: ["BOOLEAN[]"]
+    depth: 2
+  - key: "list<int8>"
+    x-duckdb: ["TINYINT[]"]
+    depth: 2
+  - key: "list<int16>"
+    x-duckdb: ["SMALLINT[]"]
+    depth: 2
+  - key: "list<int32>"
+    x-duckdb: ["INTEGER[]"]
+    depth: 2
+  - key: "list<int64>"
+    x-duckdb: ["BIGINT[]"]
+    depth: 2
+  - key: "list<uint8>"
+    x-duckdb: ["UTINYINT[]"]
+    depth: 2
+  - key: "list<uint16>"
+    x-duckdb: ["USMALLINT[]"]
+    depth: 2
+  - key: "list<uint32>"
+    x-duckdb: ["UINTEGER[]"]
+    depth: 2
+  - key: "list<uint64>"
+    x-duckdb: ["UBIGINT[]"]
+    depth: 2
+  - key: "list<float32>"
+    x-duckdb: ["REAL[]"]
+    depth: 2
+  - key: "list<float64>"
+    x-duckdb: ["DOUBLE[]"]
+    depth: 2
+  - key: "list<utf8>"
+    x-duckdb: ["VARCHAR[]"]
+    depth: 2
+  - key: "list<binary>"
+    x-duckdb: ["BLOB[]"]
+    depth: 2
+  - key: "list<date32>"
+    x-duckdb: ["DATE[]"]
+    depth: 2
+  - key: "list<timestamp[s]>"
+    x-duckdb: ["TIMESTAMP_S[]"]
+    depth: 2
+  - key: "list<timestamp[ms]>"
+    x-duckdb: ["TIMESTAMP_MS[]"]
+    depth: 2
+  - key: "list<timestamp[us]>"
+    x-duckdb: ["TIMESTAMP[]"]
+    depth: 2
+  - key: "list<timestamp[ns]>"
+    x-duckdb: ["TIMESTAMP_NS[]"]
+    depth: 2
+  - key: "list<timestamp[us, tz=*]>"
+    x-duckdb: ["TIMESTAMPTZ[]"]
+    depth: 2
+  # A container holding something the sink cannot convert. These are the rows
+  # that prove a list does not launder its element: an unsupported element
+  # must fail the batch from inside a supported container, exactly as it does
+  # on its own.
+  - key: "list<decimal(*, *)>"
+    x-duckdb: ["DECIMAL(p, s)[]", "HUGEINT[]"]
+    depth: 2
+  - key: "list<time64[us]>"
+    x-duckdb: ["TIME[]"]
+    depth: 2
+  # Depth 3, two witnesses. A sink nests through one recursive pair, so depth 4
+  # re-runs the code depth 3 already ran. list-of-struct is the second witness
+  # because struct is unsupported: it proves the recursion carries the failure
+  # up rather than flattening it away.
+  - key: "list<list<int64>>"
+    x-duckdb: ["BIGINT[][]"]
+    depth: 2
+  - key: "list<struct>"
+    x-duckdb: ["STRUCT(...)[]"]
+    depth: 2
+  - key: "fixed_size_list<int32>[3]"
+    x-duckdb: ["INTEGER[3]"]
+    depth: 2
+  - key: struct
+    x-duckdb: ["STRUCT(...)"]
+    depth: 2
+  - key: map
+    x-duckdb: ["MAP(K, V)"]
+    depth: 2
+  - key: sparse_union
+    x-duckdb: ["UNION(...)"]
+    depth: 2
+  - key: dictionary
+    x-duckdb: [ENUM]
+    depth: 2

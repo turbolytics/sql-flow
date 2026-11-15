@@ -12,6 +12,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/temper"
 	"os"
 	"sync"
 	"testing"
@@ -90,7 +91,7 @@ func startBroker() {
 // but only after a delay, and a developer running the pass in a loop should
 // not accumulate brokers.
 func TestMain(m *testing.M) {
-	code := m.Run()
+	code := temper.Run(m)
 
 	if brokerCtr != nil {
 		// Teardown must not change the verdict: the tests have already run.

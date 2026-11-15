@@ -1,0 +1,266 @@
+# The features sqlflow ships, and the coverage each one must carry.
+#
+# This file is declared, not derived. That is the point: a generated list can
+# only show tests that exist, and the failure this catches is a feature with
+# no test at all. Iceberg shipped for months with a unit test that skipped and
+# printed "ok"; nothing could see it, because nothing had written down that
+# Iceberg was supposed to be covered.
+#
+# `id` is the feature. It never encodes a test level, so the same id appears in
+# every level a test covers it at, and the matrix can ask "covered at unit but
+# not in the image".
+#
+# `requires` lists the levels the feature must be covered at. A missing level
+# fails `make coverage-matrix`. Four levels, in the order CI runs them:
+#
+#   unit         go test -short ./...              near instant: the logic is
+#                                                  right
+#   integration  go test -run '^TestIntegration'   the function works against
+#                                                  the real service, not a
+#                                                  stand-in
+#   growth       go test -run '^TestGrowth'        non-functional: memory does
+#                                                  not grow with the work
+#   release      pytest tests/release              the shipped image does it
+#
+# Growth follows unit and integration because a leak check is worth reading
+# only once the function it drives is proven.
+#
+# An integration test is named TestIntegration<Feature>_<Behaviour>, and a
+# growth test TestGrowth<Feature>_<Behaviour>. The prefix selects the pass; the
+# rest of the name still says which feature it covers, so level and feature
+# stay independent.
+#
+# A growth test drives a component for many iterations and fails if memory
+# grows with them. It skips under -short, so the unit pass never runs it. Its
+# length comes from growth.Budget: bounded on a branch, full on main and
+# before a release.
+#
+# An integration test starts what it needs, in a container, and fails if it
+# cannot. It must never skip: for months the Kafka source's only real tests
+# skipped wherever no broker answered, so they ran on laptops and nowhere else,
+# and `source.kafka` showed covered at unit on the strength of its TLS option
+# builders.
+#
+# Tests attach to a feature by name. `sink.clickhouse` is covered by any Go
+# test named TestSinkClickhouse* or any Python test named test_sink_clickhouse*.
+# Names are matched against this registry rather than parsed, so a name that
+# matches nothing is reported rather than silently inventing a feature.
+#
+# Invariants -- what every integration must hold, whatever it does -- are a
+# second axis. See invariants.yml and integrations/ beside this file.
+
+features:
+  # --- Sources ------------------------------------------------------------
+  - id: source.kafka
+    description: Consumes a Kafka topic, tracking offsets and leader epochs.
+    requires: [unit, integration, release]
+
+  - id: source.webhook
+    description: Accepts records over HTTP, with optional HMAC signature checks.
+    requires: [unit]
+
+  - id: source.websocket
+    description: Consumes a websocket stream, reconnecting on drop.
+    requires: [unit, release]
+
+  - id: source.mqtt
+    description: Consumes MQTT 5 at QoS 1 on a persistent session, acknowledging on commit.
+    requires: [unit, integration]
+
+  # --- Sinks --------------------------------------------------------------
+  - id: sink.kafka
+    description: Publishes result rows to a Kafka topic.
+    requires: [unit, release]
+
+  - id: sink.clickhouse
+    description: Inserts result batches into a ClickHouse table.
+    requires: [unit, release]
+
+  - id: sink.postgres
+    description: Upserts or appends result batches into a Postgres table over a native client.
+    requires: [unit, integration]
+
+  - id: sink.iceberg
+    description: Appends result batches to an Iceberg table through a catalog.
+    requires: [unit, release]
+
+  - id: sink.parquet
+    description: Writes result batches as parquet files to a local path.
+    requires: [release]
+
+  - id: sink.sqlcommand
+    description: Runs a SQL command against the pipeline's own DuckDB connection.
+    requires: [unit]
+
+  - id: sink.console
+    description: Writes result rows to stdout as JSON.
+    requires: [unit, release]
+
+  # Configurable, so it ships. It exists to measure the engine without a sink,
+  # and borrowing sink.console's row hid its tests from the matrix.
+  - id: sink.noop
+    description: Discards every result row, for measuring the engine without a sink.
+    requires: [unit]
+
+  - id: sink.retry
+    description: Retries a sink whose destination is not answering, bounded by a deadline.
+    requires: [unit]
+
+  # --- Handlers -----------------------------------------------------------
+  - id: handler.inferred_mem
+    description: Infers a schema per batch and runs the query in memory.
+    requires: [unit, growth, release]
+
+  - id: handler.inferred_disk
+    description: Infers a schema per batch, staging the batch on disk.
+    requires: [unit]
+
+  - id: handler.structured
+    description: Binds a declared schema, ingesting through Arrow.
+    requires: [unit, growth, release]
+
+  # --- Durable state ------------------------------------------------------
+  - id: state.durability
+    description: Window state and the offsets that produced it commit together.
+    requires: [unit, release]
+
+  - id: state.offsets
+    description: Kafka positions are stored in DuckDB and resumed on restart.
+    requires: [unit, release]
+
+  - id: state.corruption
+    description: A damaged state file fails the start rather than silently resetting.
+    requires: [unit, release]
+
+  # --- Process lifecycle --------------------------------------------------
+  - id: lifecycle.drain
+    description: SIGTERM writes the buffered batch before exiting.
+    requires: [unit, release]
+
+  - id: lifecycle.exit_codes
+    description: The process exit status carries the error code a supervisor reads.
+    requires: [unit, release]
+
+  - id: lifecycle.health
+    description: /healthz reports starting, healthy, degraded or failed, with a reason.
+    requires: [unit, release]
+
+  # --- The batch loop -----------------------------------------------------
+  - id: core.consume_loop
+    description: Accumulates a batch, flushes it, and commits in that order.
+    requires: [unit]
+
+  # --- Error policy -------------------------------------------------------
+  - id: error.taxonomy
+    description: Every failure carries a class.domain.reason code.
+    requires: [unit]
+
+  - id: error.raise
+    description: Policy RAISE stops the pipeline on a bad record.
+    requires: [unit]
+
+  - id: error.ignore
+    description: Policy IGNORE drops a bad record and keeps the pipeline running.
+    requires: [unit, release]
+
+  - id: error.dlq
+    description: Policy DLQ diverts a bad record to a sink instead of dropping it.
+    requires: [unit, release]
+
+  # --- Table managers -----------------------------------------------------
+  - id: manager.window
+    description: A declared window is closed by the engine against a persisted event-time watermark, with a late-row policy.
+    requires: [unit, growth, release]
+
+  # --- Config -------------------------------------------------------------
+  - id: config.templating
+    description: Renders a config through Jinja2 against SQLFLOW_ environment variables.
+    requires: [unit]
+
+  - id: config.validation
+    description: Validates a config against the schema and reports where it is wrong.
+    requires: [unit, release]
+
+  - id: validate.template
+    description: Reports referenced, provided, missing, and unused template variables.
+    requires: [unit]
+
+  - id: validate.schema
+    description: Validates a rendered config against the config JSON Schema, naming the line.
+    requires: [unit]
+
+  # --- Observability ------------------------------------------------------
+  - id: observability.metrics
+    description: Exports pipeline counters and histograms over Prometheus.
+    requires: [unit]
+
+  - id: observability.turbostats
+    description: Reports the process's own state as one versioned document, served at /turbostats/v1.
+    requires: [unit, growth, release]
+
+  - id: observability.turbostats.serve
+    description: Reports `sqlflow serve`'s totals as the bundle's serve section, served at /turbostats/v1.
+    requires: [unit, growth, release]
+
+  - id: observability.turbostats.reporter
+    description: Posts the process's own state to a control plane on an interval, signed.
+    requires: [unit, release]
+
+  - id: observability.debug_api
+    description: Serves ad-hoc SQL against the live DuckDB connection.
+    requires: [unit]
+
+  # --- CLI ----------------------------------------------------------------
+  - id: cli.invocation
+    description: Resolves the config path and message limits from either flag form.
+    requires: [unit]
+
+  - id: cli.dev_invoke
+    description: Runs a pipeline against a fixture file, without a source.
+    requires: [unit, release]
+
+  - id: cli.serve
+    description: Serves a config's named SQL datasets over HTTP, with client ids, typed params, grains and limits.
+    requires: [unit, integration, growth, release]
+
+  - id: cli.turbostats_keygen
+    description: Generates a TurboStats keypair on the instance, writes the private half to a file only, and prints the public half to register.
+    requires: [unit]
+
+  - id: cli.rollup
+    description: Generates rollup tables, the triggers that keep them current, and the serve datasets that read them from one declaration, and checks the generated files have not drifted.
+    requires: [unit, integration]
+
+  # The daemon that manages rollup tables: install, run and verify. The
+  # release level joins with the image test for `sqlflow rollup run`.
+  - id: cli.rollup_run
+    description: Installs, backfills, checks and reports on the rollup tables a rollups file declares.
+    requires: [unit, integration, release]
+
+  - id: cli.rollup_test
+    description: Checks a rollups file on a real Postgres, in a schema it creates and drops, with a seeded workload and fixture cases.
+    requires: [unit, integration]
+
+  # The template is YAML, SQL and shell, so what it promises under concurrency
+  # is tested from Go against its migrations, in internal/rendertemplate.
+  - id: template.render
+    description: The Deploy to Render template's schema keeps the minute table and every rollup exact when several pipeline processes write to one database.
+    requires: [integration]
+
+  # Release only. The defect this catches -- build args that never reached the
+  # -ldflags symbol path, so the binary reports "dev" -- exists only in a built
+  # image, and no unit test can see it.
+  - id: cli.version
+    description: The shipped binary reports the version it was built from.
+    requires: [release]
+
+  # --- The gate itself ----------------------------------------------------
+  # These are not shipped, and they are declared anyway: a wrong gate is worse
+  # than no gate, so losing its tests must show up here like any other gap.
+  - id: tooling.conformance
+    description: The harness proves the declared invariants for any integration.
+    requires: [unit]
+
+  - id: tooling.coverage
+    description: Tests attribute to features and invariants, and the registries match the code.
+    requires: [unit]

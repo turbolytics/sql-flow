@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/turbolytics/temper"
 	"io"
 	"net/url"
 	"sync"
@@ -66,11 +67,13 @@ func New(opts Options) *Server {
 	return &Server{opts: opts}
 }
 
-// Run runs the tests, then stops the container if a test started it.
+// Run runs the tests, then stops the container if a test started it. It runs
+// them through temper.Run, which settles each test's evidence only after every
+// cleanup has run, so a test may claim what it proves after registering one.
 // TestMain calls it as os.Exit(server.Run(m)). A run killed before it
 // returns leaves the container to testcontainers' reaper.
 func (s *Server) Run(m *testing.M) int {
-	code := m.Run()
+	code := temper.Run(m)
 	if s.container != nil {
 		_ = s.container.Terminate(context.Background())
 	}

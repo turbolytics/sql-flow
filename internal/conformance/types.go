@@ -18,6 +18,7 @@ package conformance
 import (
 	"context"
 	"fmt"
+	"github.com/turbolytics/temper"
 	"strings"
 	"testing"
 	"time"
@@ -102,7 +103,8 @@ func Types(t *testing.T, s TypeSubject) {
 		t.Fatalf("conformance: %v", err)
 	}
 
-	for _, v := range typeVerdicts(t, s) {
+	verdicts, rows := typeRun(t, s)
+	for _, v := range verdicts {
 		t.Run(v.invariant, func(t *testing.T) {
 			if hasFeature {
 				coverage.Covers(t, feature)
@@ -116,6 +118,40 @@ func Types(t *testing.T, s TypeSubject) {
 			coverage.Invariant(t, v.invariant, s.Integration)
 		})
 	}
+
+	// One subtest per declared type, so each member of the sink.types lattice
+	// has a test of its own to be credited to. A supported type is covered by
+	// its subtest; an unsupported one is excused, and the subtest is what the
+	// subject's `proven_by` names: MemberTest(integration-test, key).
+	for _, r := range rows {
+		t.Run(MemberTestName(r.key), func(t *testing.T) {
+			ref := typesLattice + "/" + r.key
+			if r.unsupported {
+				temper.Exempts(t, ref, temper.Subject(s.Integration))
+			} else {
+				temper.Covers(t, ref, temper.Subject(s.Integration))
+			}
+			if r.failure != "" {
+				t.Fatal(r.failure)
+			}
+		})
+	}
+}
+
+// typesLattice is the lattice a type table's rows are the members of.
+const typesLattice = "sink.types"
+
+// MemberTestName is the subtest Types runs for one declared type. A subject
+// that declares that type unsupported names it, after its own test's name, as
+// the test that proves the gap.
+func MemberTestName(key string) string { return "member/" + key }
+
+// rowVerdict is what one declared type came to: the first failure across the
+// value and the null written for it, or "" when it held.
+type rowVerdict struct {
+	key         string
+	unsupported bool
+	failure     string
 }
 
 func requireTypeSubject(t *testing.T, s TypeSubject) {
@@ -136,22 +172,42 @@ func requireTypeSubject(t *testing.T, s TypeSubject) {
 // without a type sends the reader nowhere.
 func typeVerdicts(t *testing.T, s TypeSubject) []verdict {
 	t.Helper()
+	verdicts, _ := typeRun(t, s)
+	return verdicts
+}
+
+// typeRun is typeVerdicts, and also what each declared type came to. Every
+// row is written once: the per-row result and the per-invariant verdict are
+// two readings of the same writes, not two runs against the destination.
+func typeRun(t *testing.T, s TypeSubject) ([]verdict, []rowVerdict) {
+	t.Helper()
 
 	roundtrip := verdict{invariant: typeRoundtrip}
 	nulls := verdict{invariant: typeNull}
+	rows := make([]rowVerdict, 0, len(s.Declared))
 
 	for _, d := range s.Declared {
-		if f := judgeTypeRow(t, s, d, false); f != "" && roundtrip.failure == "" {
-			roundtrip.failure = f
+		row := rowVerdict{key: d.Key, unsupported: d.Outcome == "unsupported"}
+		if f := judgeTypeRow(t, s, d, false); f != "" {
+			row.failure = f
+			if roundtrip.failure == "" {
+				roundtrip.failure = f
+			}
 		}
-		if f := judgeTypeRow(t, s, d, true); f != "" && nulls.failure == "" {
-			nulls.failure = f
+		if f := judgeTypeRow(t, s, d, true); f != "" {
+			if row.failure == "" {
+				row.failure = f
+			}
+			if nulls.failure == "" {
+				nulls.failure = f
+			}
 		}
+		rows = append(rows, row)
 	}
 
 	return []verdict{roundtrip, nulls, judgeNested(t, s),
 		judgeTimestampInstant(t, s), judgeStringFidelity(t, s),
-		judgeUndeclaredType(t, s)}
+		judgeUndeclaredType(t, s)}, rows
 }
 
 // judgeTypeRow writes one value of one type into every column type the row

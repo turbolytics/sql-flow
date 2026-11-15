@@ -263,7 +263,8 @@ def run_image(image, command, volumes=None, env=None):
     return result.returncode, result.stdout, result.stderr
 
 
-@pytest.mark.covers("cli.dev_invoke", "sink.console")
+@pytest.mark.covers("cli.dev_invoke")
+@pytest.mark.covers("sink.console")
 @pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_invoke_renders_rows(image):
     """The README quickstart, run against the image.
@@ -437,7 +438,8 @@ def test_config_validation_accepts_a_shipped_example(image):
     assert expected == container.get_logs()
     '''
 
-@pytest.mark.covers("source.kafka", "sink.kafka")
+@pytest.mark.covers("source.kafka")
+@pytest.mark.covers("sink.kafka")
 @pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_aggregates_every_message(image, stack):
     num_messages = 1000
@@ -696,7 +698,8 @@ rollups:
 """
 
 
-@pytest.mark.covers("cli.rollup_run", "observability.turbostats.reporter")
+@pytest.mark.covers("cli.rollup_run")
+@pytest.mark.covers("observability.turbostats.reporter")
 def test_cli_rollup_run_reports_its_rollups_and_freshness(image):
     """`sqlflow rollup run` in the shipped image fills a Postgres, verifies it,
     and reports both TurboStats sections.
@@ -793,7 +796,8 @@ def wait_for_bundle(receiver, match, timeout):
     raise AssertionError(f"no matching bundle arrived in {timeout}s")
 
 
-@pytest.mark.covers("source.websocket", "handler.structured")
+@pytest.mark.covers("source.websocket")
+@pytest.mark.covers("handler.structured")
 @pytest.mark.covers("handler.inferred_mem")
 def test_handler_inferred_mem_preserves_arrays_and_unioned_fields(image):
     """Arrays, unioned struct fields and decoded JSON escapes, via the image.
@@ -946,7 +950,9 @@ def test_sink_clickhouse_inserts_rows(image, stack, request):
         "SELECT count(DISTINCT action) FROM test.user_actions") == str(len(actions))
 
 
-@pytest.mark.covers("state.offsets", "manager.window", "source.kafka")
+@pytest.mark.covers("state.offsets")
+@pytest.mark.covers("manager.window")
+@pytest.mark.covers("source.kafka")
 @pytest.mark.covers("state.durability")
 def test_state_durability_survives_a_restart(image, stack):
     """A crash mid-window must not lose the aggregate.
