@@ -235,6 +235,124 @@ jobs:
           path: .coverage/pytest.json
           overwrite: true
 
+  # Temper, alongside the generator below. It runs the suites once more with
+  # TEMPER_LEVEL set, so the tests write evidence, and builds a matrix from the
+  # declarations in temper/.
+  #
+  # Isolated on purpose: these runs are separate from the jobs above, so a
+  # finding here cannot fail a gating suite, and continue-on-error keeps it from
+  # failing the run. The findings are in the job summary. The generator is
+  # still the merge gate. Once the two agree for a while, a follow-up moves the
+  # gate here and removes the generator.
+  #
+  # Growth and release are not run yet: growth is main-only and release needs
+  # the image and the pytest adapter. Those levels read "not run" until then.
+  temper-evidence:
+    name: Temper evidence (${{ matrix.level }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        level: [unit, integration]
+    env:
+      SQLFLOW_DUCKDB_LIB: ${{ github.workspace }}/bin/libduckdb.so
+      GOTOOLCHAIN: local
+      SQLFLOW_METERING: ${{ github.ref == 'refs/heads/main' && 'full' || 'bounded' }}
+      TEMPER_LEVEL: ${{ matrix.level }}
+      TEMPER_EVIDENCE: ${{ github.workspace }}/.temper/evidence
+      TEMPER_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go 1.27.3
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+
+      - name: Install libduckdb
+        run: ./scripts/install-libduckdb.sh bin
+
+      # The same commands the gating jobs run, so each level counts the same
+      # tests: -short is the unit pass, and the integration pass is selected by
+      # name, never by also running unit tests under its level.
+      - name: Test (${{ matrix.level }})
+        run: |
+          if [ "$TEMPER_LEVEL" = unit ]; then
+            go test -short -count=1 ./...
+          else
+            go test -count=1 -timeout 30m -run '^TestIntegration' ./...
+          fi
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ matrix.level }}
+          path: .temper/evidence
+          if-no-files-found: warn
+          overwrite: true
+
+  temper:
+    name: Temper
+    runs-on: ubuntu-latest
+    needs: [temper-evidence]
+    if: always()
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go 1.27.3
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+
+      - name: Install temper
+        run: go install github.com/turbolytics/temper/cmd/temper@v0.1.0
+
+      # Evidence files are named for their process, so merging every level's
+      # directory into one cannot overwrite anything.
+      - name: Download the evidence
+        uses: actions/download-artifact@v4
+        with:
+          path: .temper/evidence
+          pattern: evidence-*
+          merge-multiple: true
+
+      - name: Check the declarations
+        run: temper check
+
+      # A level with no evidence is reported as not run and not judged, the
+      # way the generator's --not-run does.
+      - name: Build the matrix
+        run: |
+          set +e
+          temper matrix --json > .temper/matrix.json
+          temper matrix 2> .temper/findings.txt | tee .temper/summary.txt
+          code=${PIPESTATUS[0]}
+          {
+            echo '### Temper'
+            echo
+            echo "exit code: $code"
+            echo
+            echo '```'
+            cat .temper/summary.txt .temper/findings.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+
+      - name: Upload the matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: temper-matrix
+          path: |
+            MATRIX.md
+            temper/status/
+            .temper/matrix.json
+            .temper/findings.txt
+          overwrite: true
+
   # The merge gate on feature coverage, and the last job to run.
   #
   # It runs no tests. Every suite above already ran and uploaded its report,

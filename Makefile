@@ -90,6 +90,17 @@ coverage-matrix: sqlflow-image
 		$(PY) pytest tests/release -q
 	@$(MAKE) --no-print-directory coverage-write
 
+# Temper's unit level, judged alone, with no Docker. The other levels read
+# "not run" until their suites run through `temper run --level`; CI runs them.
+# Needs the temper CLI: go install github.com/turbolytics/temper/cmd/temper@v0.1.0
+.PHONY: temper
+temper:
+	temper check
+	temper clean
+	CGO_ENABLED=1 temper run --level unit -- go test -short -count=1 ./...
+	temper matrix
+	@rm -rf temper/status MATRIX.md
+
 # Regenerates the config and TurboStats JSON Schemas from the Go types.
 #
 # The schema is an artifact, not a source file: internal/config is the config
