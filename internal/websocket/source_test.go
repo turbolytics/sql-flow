@@ -4,6 +4,7 @@ import (
 	"github.com/turbolytics/sql-flow/internal/core"
 	"github.com/turbolytics/sql-flow/internal/coverage"
 	"github.com/turbolytics/sql-flow/internal/eventtime"
+	"github.com/turbolytics/temper"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -292,4 +293,18 @@ func TestSourceWebsocket_BasisNamesTheConfiguredPath(t *testing.T) {
 	at := stamped.stamp([]byte(`{"time_us": 1790253296789000}`))
 	assert.Equal(t, int64(1790253296789000)*int64(time.Microsecond), at)
 	assert.Equal(t, core.EventTimeMissing, stamped.stamp([]byte(`{"kind": "commit"}`)))
+}
+
+// A websocket has no position to commit: the server pushes and moves on, so
+// the source is at-most-once by construction and implements no MarkCommitter.
+// The invariants about marks, resume and revoke have nothing to hold for it.
+func TestSourceWebsocket_ImplementsNoMarkCommitter(t *testing.T) {
+	temper.Exempts(t, "source.commit.only_processed", temper.Subject("source.websocket"))
+	temper.Exempts(t, "source.resume.from_committed", temper.Subject("source.websocket"))
+	temper.Exempts(t, "source.marks.never_regress", temper.Subject("source.websocket"))
+	temper.Exempts(t, "source.commit.on_revoke", temper.Subject("source.websocket"))
+	coverage.Covers(t, "source.websocket")
+	var s any = &Source{}
+	_, ok := s.(core.MarkCommitter)
+	assert.That(t, !ok)
 }

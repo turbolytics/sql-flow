@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"encoding/json"
+	"github.com/turbolytics/temper"
 	"net/url"
 	"testing"
 	"time"
@@ -97,6 +98,7 @@ func TestSourceMqtt_ImplementsTheEngineInterfaces(t *testing.T) {
 // revoke hook to commit from. The engine reaches that hook through
 // core.PartitionOwner.
 func TestSourceMqtt_HasNoPartitionAssignmentToRevoke(t *testing.T) {
+	temper.Exempts(t, "source.commit.on_revoke", temper.Subject("source.mqtt"))
 	coverage.Covers(t, "source.mqtt")
 	var s any = &Source{}
 	_, ok := s.(core.PartitionOwner)

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/turbolytics/temper"
 	"io"
 	"net"
 	"net/http"
@@ -810,4 +811,18 @@ func TestSourceWebhook_OnReceiveIsTheDefault(t *testing.T) {
 	resp := post(t, srv.URL+"/events", []byte(`"x"`), "", "")
 	assert.Equal(t, `{"status":"received"}`, readBody(t, resp))
 	s.Settle(5, nil) // nothing waits; must not panic
+}
+
+// A webhook has no position to commit: the sender pushes and moves on, so the
+// source is at-most-once by construction and implements no MarkCommitter. The
+// invariants about marks, resume and revoke have nothing to hold for it.
+func TestSourceWebhook_ImplementsNoMarkCommitter(t *testing.T) {
+	temper.Exempts(t, "source.commit.only_processed", temper.Subject("source.webhook"))
+	temper.Exempts(t, "source.resume.from_committed", temper.Subject("source.webhook"))
+	temper.Exempts(t, "source.marks.never_regress", temper.Subject("source.webhook"))
+	temper.Exempts(t, "source.commit.on_revoke", temper.Subject("source.webhook"))
+	coverage.Covers(t, "source.webhook")
+	var s any = &Source{}
+	_, ok := s.(core.MarkCommitter)
+	assert.That(t, !ok)
 }
