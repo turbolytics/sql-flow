@@ -50,7 +50,7 @@ services:
       SQLFLOW_WEBHOOK_HMAC_SECRET: ${SQLFLOW_WEBHOOK_HMAC_SECRET-local-secret}
       SQLFLOW_WEBHOOK_PORT: "10000"
       SQLFLOW_METRIC_NAME_PREFIX: ${SQLFLOW_METRIC_NAME_PREFIX:-}
-      # No value: on unless the caller says off, as on Render.
+      # No value: off unless the caller says on, as on Render.
       SQLFLOW_TELEMETRY:
       SQLFLOW_TELEMETRY_URL: ${SQLFLOW_TELEMETRY_URL:-http://collector:10000}
       SQLFLOW_TELEMETRY_POLL_SECONDS: "1"

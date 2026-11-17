@@ -93,7 +93,10 @@ docker compose up -d --wait postgres
 # Whatever ran before this, the pipelines below start with no claim held.
 docker compose exec -T postgres psql -U metrics -d metrics -X -Atqc "UPDATE install SET deployed_claimed_at = NULL, first_request_claimed_at = NULL" >/dev/null 2>&1 || true
 
-docker compose up -d collector ingest ingest2 api
+# Telemetry is off by default. On here, inline rather than exported, so the
+# telemetry section below has events to check and the probes after it start
+# with the default.
+SQLFLOW_TELEMETRY=on docker compose up -d collector ingest ingest2 api
 wait_for ingest "$INGEST/events"
 wait_for ingest2 "$INGEST2/events"
 wait_for api "$API/healthz"
@@ -280,21 +283,27 @@ reset_install() { psqlc 'UPDATE install SET deployed_claimed_at = NULL, deployed
 run_probe() { # run_probe <label> <env...>: starts a pipeline on :10077 and leaves it running
   local label="$1"; shift
   local args=(); for e in "$@"; do args+=(-e "$e"); done
-  docker compose run -d --rm --no-deps -p 127.0.0.1:10077:10000 "${args[@]}" ingest >/dev/null
+  # The guarded expansion: bash 3.2 calls an empty array unbound under set -u.
+  docker compose run -d --rm --no-deps -p 127.0.0.1:10077:10000 ${args[@]+"${args[@]}"} ingest >/dev/null
   wait_for "$label" "http://127.0.0.1:10077/events"
 }
 stop_probe() { docker ps -q --filter "publish=10077" | xargs -r docker rm -f >/dev/null; }
 
-reset_install
-run_probe "ingest with telemetry off" SQLFLOW_TELEMETRY=off
-sleep 6
-[ "$(psqlc 'SELECT deployed_sent_at IS NULL AND deployed_claimed_at IS NULL FROM install')" = t ] \
-  || fail "SQLFLOW_TELEMETRY=off still claimed or sent install.deployed"
-stop_probe
-echo "ok   SQLFLOW_TELEMETRY=off sends nothing and claims nothing"
+# Unset is the default: the Blueprint does not name the variable. Blank is a
+# variable added with no value. Neither may send.
+for env in "" "SQLFLOW_TELEMETRY=" "SQLFLOW_TELEMETRY=off" "SQLFLOW_TELEMETRY=maybe"; do
+  label="${env:-SQLFLOW_TELEMETRY unset}"
+  reset_install
+  if [ -n "$env" ]; then run_probe "ingest with $label" "$env"; else run_probe "ingest with $label"; fi
+  sleep 6
+  [ "$(psqlc 'SELECT deployed_sent_at IS NULL AND deployed_claimed_at IS NULL FROM install')" = t ] \
+    || fail "$label still claimed or sent install.deployed"
+  stop_probe
+  echo "ok   $label sends nothing and claims nothing"
+done
 
 reset_install
-run_probe "ingest with a collector that is down" SQLFLOW_TELEMETRY_URL=http://127.0.0.1:9
+run_probe "ingest with a collector that is down" SQLFLOW_TELEMETRY=on SQLFLOW_TELEMETRY_URL=http://127.0.0.1:9
 sleep 6
 [ "$(psqlc 'SELECT deployed_sent_at IS NULL FROM install')" = t ] \
   || fail "install.deployed is recorded as sent though the collector was down"

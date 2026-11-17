@@ -3,7 +3,9 @@
 # received its first metric. Two events, each sent once per install, and
 # nothing else, ever. render/README.md, "What this sends", prints both.
 #
-#   SQLFLOW_TELEMETRY=off   sends nothing. Also: false, 0, no.
+# Off by default.
+#   SQLFLOW_TELEMETRY=on    sends the two events. Also: true, 1, yes.
+#   anything else           sends nothing, blank and unset included.
 #
 # bin/entrypoint.sh starts this in the background after the migrations. It must
 # never be the reason a pipeline does not start or stops: every failure here is
@@ -13,9 +15,10 @@ set -uo pipefail
 
 log() { echo "telemetry: $*" >&2; }
 
-case "$(printf '%s' "${SQLFLOW_TELEMETRY:-on}" | tr '[:upper:]' '[:lower:]')" in
-  off|false|0|no)
-    log "off (SQLFLOW_TELEMETRY=${SQLFLOW_TELEMETRY}). Nothing is sent."
+case "$(printf '%s' "${SQLFLOW_TELEMETRY:-}" | tr '[:upper:]' '[:lower:]')" in
+  on|true|1|yes) ;;
+  *)
+    log "off (SQLFLOW_TELEMETRY=${SQLFLOW_TELEMETRY:-}). Nothing is sent. Set it to on to send two events; see render/README.md."
     exit 0
     ;;
 esac
