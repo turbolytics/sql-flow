@@ -25,7 +25,7 @@ openssl rand -hex 16   # SQLFLOW_SERVE_CLIENT_ID
 |---|---|
 | `SQLFLOW_WEBHOOK_HMAC_SECRET` | Signs what you send. Any long random string. |
 | `SQLFLOW_SERVE_CLIENT_ID` | Reads what you sent, as `?client_id=`. Letters, digits, `.`, `_`, `~` and `-` only, so it can be pasted into a URL. |
-| `SQLFLOW_TELEMETRY` | Leave it blank, or type `off`. See [What this sends](#what-this-sends). |
+| `SQLFLOW_TELEMETRY` | Leave it blank to send nothing, or type `on`. See [What this sends](#what-this-sends). |
 
 A blank value fails its service, on purpose. The pipeline writes to your
 database and will not start unsigned unless you set
@@ -39,10 +39,10 @@ When the deploy finishes, copy the URLs of `sqlflow-metrics-ingest` and
 
 ## What this sends
 
-Unless you type `off` at the `SQLFLOW_TELEMETRY` prompt, this deploy sends the
-sqlflow maintainers two events, once each, for as long as it exists. They
-tell us that the template was deployed and that it worked. This is the whole
-of both:
+Nothing, unless you type `on` at the `SQLFLOW_TELEMETRY` prompt. With `on`,
+this deploy sends the sqlflow maintainers two events, once each, for as long
+as it exists. They tell us that the template was deployed and that it worked.
+This is the whole of both:
 
 ```json
 {"name": "install.deployed", "type": "count", "value": 1,
@@ -73,12 +73,12 @@ address it came from. The pipeline neither reads nor stores it. Render's
 request log for that service holds it for a while, as any host's does.
 
 The ingest service logs each event in full when it sends it. `bin/telemetry.sh`
-is 91 lines and is the only code that sends anything. The sqlflow
+is 97 lines and is the only code that sends anything. The sqlflow
 binary itself never phones home.
 
-**To turn it off**, type `off` at the prompt, or set `SQLFLOW_TELEMETRY=off` on
-`sqlflow-metrics-ingest` later. `false`, `0` and `no` also work. Nothing is
-sent, and the log says so.
+**To turn it on**, type `on` at the prompt, or set `SQLFLOW_TELEMETRY=on` on
+`sqlflow-metrics-ingest` later. `true`, `1` and `yes` also work. Any other
+value, blank included, sends nothing, and the log says so.
 
 A collector that is down, slow or gone never affects your deploy. A send is
 bounded at five seconds, runs in the background, and is retried later.
@@ -273,7 +273,7 @@ not name and rewrites one it does, so a setting made here survives a sync.
 | `SQLFLOW_WEBHOOK_HMAC_SECRET` | | Required under `hmac`. |
 | `SQLFLOW_METRIC_NAME_PREFIX` | empty | When set, a metric whose name does not start with it is dropped. Letters, digits, `.`, `_` and `-`. |
 | `SQLFLOW_WEBHOOK_MAX_BODY_BYTES` | 26214400 | A larger body is refused with 413. |
-| `SQLFLOW_TELEMETRY` | on | `off` sends nothing. See [What this sends](#what-this-sends). |
+| `SQLFLOW_TELEMETRY` | off | `on` sends two events. See [What this sends](#what-this-sends). |
 
 ## Run it locally
 
