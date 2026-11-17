@@ -12,9 +12,8 @@ services, in `virginia`. Render shows the price before you confirm.
 
 ## Deploy
 
-Render asks for three values. Make the first two before you click, and keep
-them. You choose both, so you have
-them when the deploy finishes:
+Render asks for two values. Make both before you click, and keep them. You
+choose both, so you have them when the deploy finishes:
 
 ```sh
 openssl rand -hex 32   # SQLFLOW_WEBHOOK_HMAC_SECRET
@@ -25,7 +24,6 @@ openssl rand -hex 16   # SQLFLOW_SERVE_CLIENT_ID
 |---|---|
 | `SQLFLOW_WEBHOOK_HMAC_SECRET` | Signs what you send. Any long random string. |
 | `SQLFLOW_SERVE_CLIENT_ID` | Reads what you sent, as `?client_id=`. Letters, digits, `.`, `_`, `~` and `-` only, so it can be pasted into a URL. |
-| `SQLFLOW_TELEMETRY` | Leave it blank to send nothing, or type `on`. See [What this sends](#what-this-sends). |
 
 A blank value fails its service, on purpose. The pipeline writes to your
 database and will not start unsigned unless you set
@@ -39,10 +37,10 @@ When the deploy finishes, copy the URLs of `sqlflow-metrics-ingest` and
 
 ## What this sends
 
-Nothing, unless you type `on` at the `SQLFLOW_TELEMETRY` prompt. With `on`,
-this deploy sends the sqlflow maintainers two events, once each, for as long
-as it exists. They tell us that the template was deployed and that it worked.
-This is the whole of both:
+Nothing. The deploy leaves `SQLFLOW_TELEMETRY` unset and does not ask for it.
+If you set it to `on`, this deploy sends the sqlflow maintainers two events,
+once each, for as long as it exists. They tell us that the template was
+deployed and that it worked. This is the whole of both:
 
 ```json
 {"name": "install.deployed", "type": "count", "value": 1,
@@ -76,9 +74,9 @@ The ingest service logs each event in full when it sends it. `bin/telemetry.sh`
 is 97 lines and is the only code that sends anything. The sqlflow
 binary itself never phones home.
 
-**To turn it on**, type `on` at the prompt, or set `SQLFLOW_TELEMETRY=on` on
-`sqlflow-metrics-ingest` later. `true`, `1` and `yes` also work. Any other
-value, blank included, sends nothing, and the log says so.
+**To turn it on**, add `SQLFLOW_TELEMETRY=on` to `sqlflow-metrics-ingest` in
+the Render dashboard. `true`, `1` and `yes` also work. Any other value, blank
+included, sends nothing, and the log says so.
 
 A collector that is down, slow or gone never affects your deploy. A send is
 bounded at five seconds, runs in the background, and is retried later.

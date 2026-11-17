@@ -289,8 +289,8 @@ run_probe() { # run_probe <label> <env...>: starts a pipeline on :10077 and leav
 }
 stop_probe() { docker ps -q --filter "publish=10077" | xargs -r docker rm -f >/dev/null; }
 
-# Unset is the default. Blank is what Render stores when the prompt is left
-# empty. Neither may send.
+# Unset is the default: the Blueprint does not name the variable. Blank is a
+# variable added with no value. Neither may send.
 for env in "" "SQLFLOW_TELEMETRY=" "SQLFLOW_TELEMETRY=off" "SQLFLOW_TELEMETRY=maybe"; do
   label="${env:-SQLFLOW_TELEMETRY unset}"
   reset_install
