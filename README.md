@@ -15,7 +15,8 @@ SQLFlow is a stream processing engine that lets you define pipelines with just S
 
 One click runs SQLFlow on Render: a webhook that accepts metrics, a one-minute
 aggregation into Postgres, and an HTTP API that reads them back. It asks for
-one secret and is a paid deploy. See [`render/`](render/README.md).
+a signing secret and a client id, and is a paid deploy. Telemetry is off. See
+[`render/`](render/README.md).
 
 # Quick Start (Getting Started in 5 Minutes)
 
