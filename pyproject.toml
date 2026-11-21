@@ -8,14 +8,14 @@ requires-python = ">=3.11,<3.13"
 # release suite, the coverage matrix generator, and the Kafka fixtures those
 # two share.
 dependencies = [
-    "confluent-kafka==2.16.1",
+    "confluent-kafka==2.16.2",
 ]
 
 [dependency-groups]
 dev = [
     # cmd/publish-test-data.py and cmd/websocket-test.py, the dev scripts the
     # README's quickstart drives the pipeline with.
-    "click==8.5.0",
+    "click==8.5.1",
     "websockets==17.4",
 
     "duckdb==2.0.0",

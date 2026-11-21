@@ -92,11 +92,11 @@ wheels = [
 
 [[package]]
 name = "click"
-version = "8.5.0"
+version = "8.5.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c7/0e/7fa0ef50764b67090eca4114772a2abf8b6148198475e54c660b97caeee6/click-8.5.0.tar.gz", hash = "sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34", size = 382235, upload-time = "2026-08-26T13:33:14.56Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/45/37/edbf1b0707709013c0cf2e8317e03d97ed29bf4cac709fe328904ae92a38/click-8.5.1.tar.gz", hash = "sha256:9bbfada76703fd1d784b83eea012e3e8c6a001a876543ef104fa56aaaeb072b4", size = 399151, upload-time = "2026-11-06T17:37:01.021Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl", hash = "sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360", size = 125251, upload-time = "2026-08-26T13:33:12.928Z" },
+    { url = "https://files.pythonhosted.org/packages/31/7d/164b7ffc8624fe9efb4221bf9af485d5c1e41b9ae118045d2b6dc5457d8b/click-8.5.1-py3-none-any.whl", hash = "sha256:8bb5376d2006950386f8c6427613334a2acadc5f559cb80e638d00b4df957e37", size = 126163, upload-time = "2026-11-06T17:36:59.287Z" },
 ]
 
 [[package]]
@@ -110,22 +110,22 @@ wheels = [
 
 [[package]]
 name = "confluent-kafka"
-version = "2.16.1"
+version = "2.16.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/29/67/c254f3f4a2d9d6cdf8b87fcef149b8d1b043b4598ecc8b9e0e92eca60f12/confluent_kafka-2.16.1.tar.gz", hash = "sha256:ec1474347615b9dd1bd0e269d37e31fa442782e67c4942661751e81b09d9f0c8", size = 453708, upload-time = "2026-10-28T05:37:43.925Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/23/bd/292fda1e0c21ff9b1223646ed73d0ec9133bf2d192927da15ccfbbc0fd22/confluent_kafka-2.16.2.tar.gz", hash = "sha256:18e15d76d1e43fb80c4574dc0ecb7aa5f7e6cfb72de6ef8340ca02f81fbd7b89", size = 453761, upload-time = "2026-11-18T05:00:45.758Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/c5/5175cc2ba31340313da8b6081551ae69bd378b0daa3807bdf06650fa563c/confluent_kafka-2.16.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:6e089a1f561ad08faee2c27f5b3c17de24761880945d1ac2c327c5e245c719ab", size = 4526756, upload-time = "2026-10-28T05:36:40.144Z" },
-    { url = "https://files.pythonhosted.org/packages/24/5c/325913a09e975de1116a13d0c342d1c07a82c8198d4dc70b980690b905d7/confluent_kafka-2.16.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:8b8a8d34d5e6586997606e7e6f07885330f45b05580f4e77eb275b7b5d3a7eda", size = 4496452, upload-time = "2026-10-28T05:36:41.715Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/50/ee2d15fafe346a368bda6608fca7bd6db4d0bb7ea110c78b5f9263e7189f/confluent_kafka-2.16.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:c012a1d74f95e91c9c43f0aa996d5fea8582397144c1f96b553f24b594afa7c6", size = 5145253, upload-time = "2026-10-28T05:36:43.358Z" },
-    { url = "https://files.pythonhosted.org/packages/31/f7/f6cabe54708018b132f57cb38ae12f8e60ef941fd4548ca65b0d5308dfe0/confluent_kafka-2.16.1-cp311-cp311-manylinux_2_28_s390x.whl", hash = "sha256:38fc4868bbd66c2242a36173952f5b2f6d1f7e62b43b4648015cbf57bd169328", size = 6091921, upload-time = "2026-10-28T05:36:44.794Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/9b/f66e55f5f33c5d625900469aa51fb6744cd04ce895ee9859290dcc95f09e/confluent_kafka-2.16.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:24f613cc81a856b6fbb2d7d11044a9aa770044eecc1f83ff84618688b056be06", size = 4958087, upload-time = "2026-10-28T05:36:46.311Z" },
-    { url = "https://files.pythonhosted.org/packages/f9/63/a6c33e96e97d94f0f4d775aa448268ae597c73a5a2a195c006eb37cd70db/confluent_kafka-2.16.1-cp311-cp311-win_amd64.whl", hash = "sha256:bf917cc9a980228516ae5472ffb6f975bf5a43a6159b02e3b581d969942160c7", size = 4709455, upload-time = "2026-10-28T05:36:47.857Z" },
-    { url = "https://files.pythonhosted.org/packages/8d/57/7c3c9020d74ae370e771837a679ef02043597b3ae8b67b84a816107cb46e/confluent_kafka-2.16.1-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:11677c2318afe589135f87c3f0eda7d1960b5f9deafd341a17c157322fcc77f8", size = 4533144, upload-time = "2026-10-28T05:36:49.401Z" },
-    { url = "https://files.pythonhosted.org/packages/4e/9a/da796c090d641df294cfeb55d53da125c76342d2dfe9ffee31a16539dd32/confluent_kafka-2.16.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:ef8b8ea6b237aec595f5254b59a37e1cf5f0b7851b6739afa93ed0bb1c0be77f", size = 4502174, upload-time = "2026-10-28T05:36:50.891Z" },
-    { url = "https://files.pythonhosted.org/packages/9a/02/e8379994c83fcd568f3b9815c663120aff8b2f095e2d0317d75d3a372118/confluent_kafka-2.16.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:9deb0aa8920d567d09dd6258db6428f16ab9d229ee93aaf35a014aec771c2500", size = 5151050, upload-time = "2026-10-28T05:36:52.55Z" },
-    { url = "https://files.pythonhosted.org/packages/aa/76/39a0805e5cdccf438a9dabbd89802de1c6d6af080a08e5a30b4d97083d95/confluent_kafka-2.16.1-cp312-cp312-manylinux_2_28_s390x.whl", hash = "sha256:3365eb68d0c645209cdc6af0b4db9100a11e6032c07a3606f8f703eaa24529ee", size = 6104063, upload-time = "2026-10-28T05:36:54.104Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/4f/9e5e725bd7bf29f031de080c92677db02322f822870160cc500bce5f1801/confluent_kafka-2.16.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:fdb2c4d53e84e10f4e567f4e74bba45d0ce90276b81259c3fc58df6960caabf5", size = 4962615, upload-time = "2026-10-28T05:36:55.514Z" },
-    { url = "https://files.pythonhosted.org/packages/c1/d9/be54b0812e4f8042f1e41ac94b21fef90ae7c577dd951ac04c9de669bd15/confluent_kafka-2.16.1-cp312-cp312-win_amd64.whl", hash = "sha256:5d61d8214453d31cceb438b9dfc03bdd078ceeeac742d970990dd2dfc398e4aa", size = 4710292, upload-time = "2026-10-28T05:36:56.905Z" },
+    { url = "https://files.pythonhosted.org/packages/39/00/d9497644816729c11008dab93b009f0d0e74528392c565598fde5cc58e70/confluent_kafka-2.16.2-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:6d3ac62adb6f0a0169138ca372301e7f5e5b66fd09b74a927e75f21cb5058a66", size = 4526756, upload-time = "2026-11-18T04:59:26.251Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/cd/bd90690b3c85922c5cd9b2af45380d5131ab971bb621a15a1c9ef3457cf0/confluent_kafka-2.16.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:19603a81b9bb193f43cd3c0503f7e189263df9b19a3d589bbaaab33b2a585057", size = 4496454, upload-time = "2026-11-18T04:59:27.911Z" },
+    { url = "https://files.pythonhosted.org/packages/57/f2/1c856cd53c8af60e77f5822a19ba565c87dd7934c5d7f70c8d4820372d8e/confluent_kafka-2.16.2-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:dc47a5ce6e228f04f0e38841de50cf779e7934009d9746f4cbf7bbc06ca027fc", size = 5146357, upload-time = "2026-11-18T04:59:29.762Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/6e/9d9325a71d1a46c48c2c210721fdfa51022e95298a5a27355c83bf61b4e5/confluent_kafka-2.16.2-cp311-cp311-manylinux_2_28_s390x.whl", hash = "sha256:1b5f2906184334ebc8ab8b5ac3affa5ce0d4d47e5d05c2d08b887937accdab10", size = 6107582, upload-time = "2026-11-18T04:59:31.204Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/9d/140b8e0cc68efbaf27042afb77607edf8daa2bcf2c2190e3a5a3037db01d/confluent_kafka-2.16.2-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:f4cae8bc8e5208def5cfe9ac07b85c934c07e5424011608b3bac713cbcc82c3e", size = 4958827, upload-time = "2026-11-18T04:59:32.822Z" },
+    { url = "https://files.pythonhosted.org/packages/06/6f/a88abfbe0765cba04f47568b8e67c771b05cf51dd81a6044685c8a3dffea/confluent_kafka-2.16.2-cp311-cp311-win_amd64.whl", hash = "sha256:87d9a8ba824a38731f19013791d476bc157bec066b69027a487fb623a528e2f6", size = 4709456, upload-time = "2026-11-18T04:59:34.234Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/d6/e8212584d46718fb10621c8fc890365d8c9f8be3f58d2e85c8f46973c9d1/confluent_kafka-2.16.2-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:6183e0e6edae78f7aaa6d02b29c6043e8259ba04a389e7e00d7a66028d8cb561", size = 4533144, upload-time = "2026-11-18T04:59:35.773Z" },
+    { url = "https://files.pythonhosted.org/packages/82/f0/27f99b1d57cbcb63752a6df13a2067e31a7d4baea02e1653862d13c14e99/confluent_kafka-2.16.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:9d047e8689754922d192687dc9ac2901992fde411ccd96a890e9ac940652eecd", size = 4502179, upload-time = "2026-11-18T04:59:37.205Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/8b/52c03fe78dc25230057900860bc3d4c404245d00b11bccef88273430f427/confluent_kafka-2.16.2-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:27784bfe54fa5c2b5eb1a2214f8ec8462e15ec21dda7bf69c67b3d77621c9b19", size = 5152127, upload-time = "2026-11-18T04:59:38.851Z" },
+    { url = "https://files.pythonhosted.org/packages/16/54/898f219d89be74e7f7b7111cfb71dfa4641bf481665e3b240a56ec045875/confluent_kafka-2.16.2-cp312-cp312-manylinux_2_28_s390x.whl", hash = "sha256:ef03fbce43e4c6b66ca9395bd077645d219e41a125abc1c70079b049c6bb3305", size = 6118478, upload-time = "2026-11-18T04:59:40.396Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/bf/787b155457daba2f1b0430d30ee8f24b21479559a065b93531216600472c/confluent_kafka-2.16.2-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:ecbbe58ddc8a1c9cbcdb1db33ba2d8865c539f2fd8ffd2668900672b8df0aca8", size = 4963493, upload-time = "2026-11-18T04:59:42Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/b2/76d3a7439fb382a7a4c3ec90af579b0ff3ccf4630c21284ad10af04fa937/confluent_kafka-2.16.2-cp312-cp312-win_amd64.whl", hash = "sha256:62e4f21e05340b10bb36fbf10e2a5ebc068a60de8cbe66739ba8d6b543b88ba3", size = 4710293, upload-time = "2026-11-18T04:59:43.413Z" },
 ]
 
 [[package]]
@@ -681,11 +681,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "confluent-kafka", specifier = "==2.16.1" }]
+requires-dist = [{ name = "confluent-kafka", specifier = "==2.16.2" }]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "click", specifier = "==8.5.0" },
+    { name = "click", specifier = "==8.5.1" },
     { name = "duckdb", specifier = "==2.0.0" },
     { name = "numpy", specifier = "==2.4.6" },
     { name = "pyarrow", specifier = "==26.0.1" },
